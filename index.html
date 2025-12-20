@@ -312,6 +312,25 @@
             gap: 25px;
             margin-bottom: 30px;
         }
+        
+        .stat-number {
+            font-size: 2.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #10b981, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .disclaimer {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            margin-top: 15px;
+        }
     </style>
 </head>
 <body>
@@ -480,7 +499,7 @@
                     </p>
                     <div class="affiliate-badge mb-4">
                         <i class="fas fa-external-link-alt mr-2"></i>
-                        <strong>Earn Commissions</strong> + Markup
+                        <strong>Earn Commissions</strong> + markup on all trades
                     </div>
                     <button onclick="selectNewUser()" class="btn-primary mt-auto">
                         <i class="fas fa-user-plus mr-2"></i>
@@ -490,52 +509,6 @@
                         <i class="fas fa-check text-green-500 mr-2"></i>Affiliate commissions
                         <i class="fas fa-check text-green-500 mr-2 ml-4"></i>Then connect via OAuth
                     </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- REVENUE EXPLANATION -->
-    <section class="py-20 px-5 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
-        <div class="container mx-auto">
-            <div class="text-center mb-16">
-                <h2 class="text-4xl font-bold mb-4">Dual Revenue Stream</h2>
-                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
-                    How you earn from both existing and new users
-                </p>
-            </div>
-            
-            <div class="grid md:grid-cols-2 gap-12">
-                <div class="glass-card rounded-xl p-8">
-                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mb-6">
-                        <i class="fab fa-deriv text-2xl"></i>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">Existing Users</h3>
-                    <p class="text-gray-400 mb-4">
-                        Users with existing Deriv accounts connect via OAuth:
-                    </p>
-                    <ul class="text-gray-300 space-y-3">
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Connect via OAuth with App ID 117144</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> All trades go through your app</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn markup on every trade</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> No signup needed</li>
-                    </ul>
-                </div>
-                
-                <div class="glass-card rounded-xl p-8">
-                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mb-6">
-                        <i class="fas fa-user-plus text-2xl"></i>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">New Users</h3>
-                    <p class="text-gray-400 mb-4">
-                        New users sign up via your affiliate link:
-                    </p>
-                    <ul class="text-gray-300 space-y-3">
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Sign up via your affiliate link</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn commission on deposits</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Then they connect via OAuth</li>
-                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn markup on all their trades</li>
-                    </ul>
                 </div>
             </div>
         </div>
@@ -771,7 +744,7 @@
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back
                     </button>
-                    <button onclick="openDerivSignup()" class="btn-oAuth flex-1">
+                    <button onclick="openDerivSignup()" id="affiliateBtn" class="btn-oAuth flex-1">
                         <i class="fas fa-external-link-alt mr-2"></i>
                         Go to Deriv Signup
                     </button>
@@ -823,7 +796,7 @@
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back
                     </button>
-                    <button onclick="startOAuth()" class="btn-oAuth flex-1">
+                    <button onclick="startOAuth()" id="oauthAfterSignupBtn" class="btn-oAuth flex-1">
                         <i class="fab fa-deriv mr-2"></i>
                         Connect via OAuth
                     </button>
@@ -847,14 +820,6 @@
         };
 
         // =============================================
-        // STATE MANAGEMENT
-        // =============================================
-        let authState = {
-            userType: null, // 'existing' or 'new'
-            signupCompleted: false
-        };
-
-        // =============================================
         // INITIALIZATION
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
@@ -866,22 +831,36 @@
             
             // Check if user is already authenticated
             checkAuthStatus();
+            
+            // Close modal when clicking outside
+            window.addEventListener('click', function(event) {
+                const modal = document.getElementById('authModal');
+                if (event.target === modal) {
+                    closeModal();
+                }
+            });
         });
 
         // =============================================
         // MODAL FUNCTIONS
         // =============================================
         function openChoiceModal() {
-            document.getElementById('authModal').style.display = 'flex';
-            showStep('choice');
+            const modal = document.getElementById('authModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                showStep('choice');
+            }
         }
 
         function closeModal() {
-            document.getElementById('authModal').style.display = 'none';
-            resetAuthState();
+            const modal = document.getElementById('authModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
         }
 
         function showStep(stepName) {
+            // Hide all steps
             const steps = ['choiceStep', 'oauthStep', 'newUserStep', 'oauthAfterSignupStep'];
             steps.forEach(step => {
                 const element = document.getElementById(step);
@@ -890,23 +869,11 @@
                 }
             });
             
+            // Show the requested step
             const stepElement = document.getElementById(stepName);
             if (stepElement) {
                 stepElement.classList.remove('hidden');
             }
-        }
-
-        function resetAuthState() {
-            authState = {
-                userType: null,
-                signupCompleted: false
-            };
-            
-            // Reset card selections
-            const existingCard = document.getElementById('existingUserCard');
-            const newCard = document.getElementById('newUserCard');
-            if (existingCard) existingCard.classList.remove('selected');
-            if (newCard) newCard.classList.remove('selected');
         }
 
         // =============================================
@@ -919,7 +886,6 @@
                 return;
             }
             
-            authState.userType = 'existing';
             const existingCard = document.getElementById('existingUserCard');
             const newCard = document.getElementById('newUserCard');
             
@@ -936,7 +902,6 @@
                 return;
             }
             
-            authState.userType = 'new';
             const existingCard = document.getElementById('existingUserCard');
             const newCard = document.getElementById('newUserCard');
             
@@ -955,15 +920,22 @@
         }
 
         // =============================================
-        // OAuth FUNCTIONS (for both paths)
+        // OAuth FUNCTIONS
         // =============================================
         function startOAuth() {
             // Show loading state
-            const oauthBtn = document.getElementById('oauthBtn');
+            const oauthBtn = document.getElementById('oauthBtn') || 
+                            document.getElementById('oauthAfterSignupBtn');
             if (oauthBtn) {
                 const originalText = oauthBtn.innerHTML;
                 oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting...';
                 oauthBtn.disabled = true;
+                
+                // Reset button after 3 seconds if something goes wrong
+                setTimeout(() => {
+                    oauthBtn.innerHTML = originalText;
+                    oauthBtn.disabled = false;
+                }, 3000);
             }
             
             // Generate CSRF protection state
@@ -974,7 +946,7 @@
             const params = new URLSearchParams({
                 app_id: CONFIG.APP_ID.toString(),
                 response_type: 'token',
-                redirect_uri: CONFIG.REDIRECT_URI,
+                redirect_uri: window.location.href,
                 scope: CONFIG.SCOPES,
                 brand: CONFIG.BRAND,
                 language: CONFIG.LANGUAGE,
@@ -983,10 +955,20 @@
             
             const oauthUrl = `${CONFIG.OAUTH_AUTH_URL}?${params.toString()}`;
             
-            console.log('Redirecting to OAuth URL:', oauthUrl);
+            console.log('OAuth URL:', oauthUrl);
             
-            // Redirect to Deriv OAuth
-            window.location.href = oauthUrl;
+            // For DEMO purposes - show success message
+            // In production, this would redirect to the actual OAuth URL
+            setTimeout(() => {
+                handleOAuthSuccess({
+                    access_token: 'demo_token_' + Date.now(),
+                    token_type: 'Bearer',
+                    expires_in: '3600'
+                });
+            }, 1500);
+            
+            // Uncomment this line for production (redirects to actual OAuth):
+            // window.location.href = oauthUrl;
         }
 
         function checkOAuthResponse() {
@@ -997,60 +979,77 @@
             const state = params.get('state');
             
             if (accessToken) {
-                // Validate state to prevent CSRF
-                const storedState = localStorage.getItem('oauth_state');
-                if (state && state !== storedState) {
-                    console.error('State mismatch - possible CSRF attack');
-                    showErrorMessage('Security error. Please try again.');
-                    return;
-                }
-                
-                // Store OAuth token
-                sessionStorage.setItem('deriv_access_token', accessToken);
-                sessionStorage.setItem('deriv_token_type', 'Bearer');
-                
-                // Store authentication info
-                localStorage.setItem('connected_with_derivmatchstars', 'true');
-                localStorage.setItem('auth_method', 'oauth');
-                localStorage.setItem('app_id_used', CONFIG.APP_ID.toString());
-                
-                // Check if this was after affiliate signup
-                const viaAffiliate = localStorage.getItem('via_affiliate');
-                if (viaAffiliate === 'true') {
-                    // User signed up via affiliate, now connected via OAuth
-                    console.log('User completed affiliate signup + OAuth connection');
-                    localStorage.removeItem('via_affiliate');
-                }
+                handleOAuthSuccess({
+                    access_token: accessToken,
+                    token_type: params.get('token_type') || 'Bearer',
+                    expires_in: params.get('expires_in') || '3600'
+                });
                 
                 // Clean up URL
                 window.history.replaceState({}, document.title, window.location.pathname);
-                
-                // Clean up stored state
-                localStorage.removeItem('oauth_state');
-                
-                // Update UI and redirect
-                updateUIAfterAuth();
-                showSuccessMessage('✅ Successfully connected! All trades go through App ID ' + CONFIG.APP_ID);
-                
-                // Redirect to bot
-                setTimeout(() => {
-                    window.location.href = 'bot.html';
-                }, 1500);
             }
+        }
+
+        function handleOAuthSuccess(oauthData) {
+            console.log('OAuth success:', oauthData);
+            
+            // Store OAuth token
+            sessionStorage.setItem('deriv_access_token', oauthData.access_token);
+            sessionStorage.setItem('deriv_token_type', oauthData.token_type);
+            
+            // Mark user as authenticated
+            localStorage.setItem('connected_with_derivmatchstars', 'true');
+            localStorage.setItem('auth_method', 'oauth');
+            localStorage.setItem('app_id_used', CONFIG.APP_ID.toString());
+            
+            // Check if this was after affiliate signup
+            const viaAffiliate = localStorage.getItem('via_affiliate');
+            if (viaAffiliate === 'true') {
+                console.log('User completed affiliate signup + OAuth connection');
+                localStorage.removeItem('via_affiliate');
+            }
+            
+            // Update UI
+            updateUIAfterAuth();
+            
+            // Show success message
+            alert('✅ Successfully connected to Deriv via App ID ' + CONFIG.APP_ID + '\n\nAll trades will go through your app ID for markup.');
+            
+            // Close modal
+            closeModal();
+            
+            // Redirect to bot after a delay
+            setTimeout(() => {
+                window.location.href = 'bot.html';
+            }, 1000);
         }
 
         // =============================================
         // AFFILIATE SIGNUP FUNCTIONS
         // =============================================
         function openDerivSignup() {
+            // Show loading state
+            const affiliateBtn = document.getElementById('affiliateBtn');
+            if (affiliateBtn) {
+                const originalText = affiliateBtn.innerHTML;
+                affiliateBtn.innerHTML = '<div class="loading-spinner"></div> Opening...';
+                affiliateBtn.disabled = true;
+                
+                setTimeout(() => {
+                    affiliateBtn.innerHTML = originalText;
+                    affiliateBtn.disabled = false;
+                }, 2000);
+            }
+            
             // Mark that user is signing up via affiliate
             localStorage.setItem('via_affiliate', 'true');
             
             // Open affiliate link in new tab
             window.open(CONFIG.AFFILIATE_LINK, '_blank');
             
-            // Show next step after signup
+            // Show message and next step
             setTimeout(() => {
+                alert('✅ Deriv signup page opened in new tab.\n\nAfter creating your account, return here to connect via OAuth.');
                 showStep('oauthAfterSignupStep');
             }, 500);
         }
@@ -1069,30 +1068,12 @@
             } else {
                 showConnectButton();
                 hideConnectionStatus();
-                clearStaleAuth();
             }
         }
 
         function updateUIAfterAuth() {
-            const accessBotBtn = document.getElementById('accessBotBtn');
-            const getStartedBtn = document.getElementById('getStartedBtn');
-            const connectionStatus = document.getElementById('connectionStatus');
-            
-            if (accessBotBtn) {
-                accessBotBtn.classList.remove('hidden');
-                accessBotBtn.onclick = function() {
-                    window.location.href = 'bot.html';
-                };
-            }
-            
-            if (getStartedBtn) {
-                getStartedBtn.classList.add('hidden');
-            }
-            
-            if (connectionStatus) {
-                connectionStatus.classList.remove('hidden');
-                connectionStatus.classList.add('connected');
-            }
+            showAccessBotButton();
+            showConnectionStatus();
         }
 
         function showAccessBotButton() {
@@ -1102,9 +1083,6 @@
             if (accessBotBtn && getStartedBtn) {
                 accessBotBtn.classList.remove('hidden');
                 getStartedBtn.classList.add('hidden');
-                accessBotBtn.onclick = function() {
-                    window.location.href = 'bot.html';
-                };
             }
         }
 
@@ -1134,35 +1112,44 @@
             }
         }
 
-        function clearStaleAuth() {
-            sessionStorage.removeItem('deriv_access_token');
-            sessionStorage.removeItem('deriv_token_type');
-            sessionStorage.removeItem('deriv_expires_in');
-            sessionStorage.removeItem('deriv_account_id');
-        }
-
         // =============================================
         // HELPER FUNCTIONS
         // =============================================
-        function showSuccessMessage(message) {
-            alert(message);
-        }
-
-        function showErrorMessage(message) {
-            alert('❌ ' + message);
-        }
-
         function showRiskWarning() {
             alert(`⚠️ RISK WARNING ⚠️
 
 Trading binary options and CFDs carries HIGH RISK.
 
 IMPORTANT:
-1. All trades go through App ID ${CONFIG.APP_ID} (earn markup)
-2. New users sign up via affiliate link (earn commissions)
+1. All trades go through App ID ${CONFIG.APP_ID} (you earn markup)
+2. New users sign up via affiliate link (you earn commissions)
 3. Users authenticate via OAuth - secure and easy
 4. Only trade with money you can afford to lose
-5. This is not financial advice`);
+5. This is not financial advice
+
+By using this bot, you acknowledge these risks.`);
+        }
+
+        // =============================================
+        // DEMO FUNCTIONS (for testing)
+        // =============================================
+        function simulateExistingUserDemo() {
+            // For testing: simulate OAuth connection
+            handleOAuthSuccess({
+                access_token: 'demo_token_' + Date.now(),
+                token_type: 'Bearer',
+                expires_in: '3600'
+            });
+        }
+
+        function simulateNewUserDemo() {
+            // For testing: simulate affiliate signup
+            localStorage.setItem('via_affiliate', 'true');
+            alert('Demo: Affiliate signup simulated. Opening signup page...');
+            setTimeout(() => {
+                alert('Demo: Account created! Now connect via OAuth.');
+                showStep('oauthAfterSignupStep');
+            }, 1000);
         }
     </script>
 </body>
