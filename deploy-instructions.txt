@@ -1,0 +1,75 @@
+🚀 DIGITMATCH PRO - DEPLOYMENT INSTRUCTIONS
+============================================
+
+STEP 1: PREPARE YOUR FILES
+--------------------------
+1. Copy all these files to your project folder
+2. Open terminal in your project folder
+
+STEP 2: INSTALL DEPENDENCIES
+---------------------------
+cd backend
+npm install
+cd ..
+
+STEP 3: OBFUSCATE THE BOT
+-------------------------
+node obfuscate.js
+This will create bot-obfuscated.html
+
+STEP 4: TEST LOCALLY
+-------------------
+1. Start backend: cd backend && npm start
+2. Open index.html in browser
+3. Test the complete flow
+
+STEP 5: DEPLOY TO VERCEL
+------------------------
+Option A: Drag & Drop (Easiest)
+1. Go to vercel.com
+2. Drag your entire project folder to Vercel
+3. Wait for deployment
+
+Option B: Vercel CLI
+1. npm install -g vercel
+2. vercel login
+3. vercel
+4. Follow prompts
+
+Option C: GitHub
+1. Create GitHub repository
+2. git init
+3. git add .
+4. git commit -m "Deploy DigitMatch Pro"
+5. git push
+6. Import in Vercel
+
+STEP 6: CONFIGURE VERCEL ENVIRONMENT VARIABLES
+---------------------------------------------
+1. Go to Vercel Dashboard → Your Project → Settings → Environment Variables
+2. Add:
+   - NODE_ENV: production
+   - AFFILIATE_CODE: 0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk
+   - PORT: 3000
+
+STEP 7: TEST PRODUCTION
+----------------------
+1. Visit your Vercel URL
+2. Complete signup flow
+3. Use REAL Deriv API token (get from app.deriv.com)
+4. Start with SMALL stakes ($0.35)
+5. Monitor carefully
+
+⚠️ IMPORTANT SAFETY NOTES:
+- Start with Deriv DEMO account first
+- Use SMALL stakes initially ($0.35-$1.00)
+- Set conservative limits (Max trades: 5-7)
+- Enable stop-loss in bot settings
+- Monitor first 20-30 trades carefully
+
+📞 SUPPORT:
+- WhatsApp: https://wa.me/254763941520
+- Telegram: Your channel link
+- Email: support@digitmatchpro.com
+
+✅ YOU'RE READY TO GO LIVE!

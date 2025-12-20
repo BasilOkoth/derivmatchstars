@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deriv Martingale Bot - Smart Trading Automation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        :root {
+            --primary: #10b981;
+            --primary-dark: #059669;
+            --secondary: #3b82f6;
+            --dark: #0f172a;
+            --darker: #0a0f1f;
+            --light: #f8fafc;
+        }
+        
+        body {
+            background: linear-gradient(135deg, var(--darker) 0%, var(--dark) 100%);
+            color: var(--light);
+            min-height: 100vh;
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #10b981, #3b82f6, #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 12px 32px;
+            border-radius: 10px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-block;
+            text-align: center;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
+        }
+        
+        .btn-secondary {
+            background: linear-gradient(135deg, var(--secondary), #1d4ed8);
+            color: white;
+            padding: 12px 32px;
+            border-radius: 10px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-block;
+            text-align: center;
+        }
+        
+        .btn-secondary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(59, 130, 246, 0.3);
+        }
+        
+        .feature-card {
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(16, 185, 129, 0.3);
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        .stat-number {
+            font-size: 3rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #10b981, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .affiliate-code {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));
+            border: 2px dashed rgba(16, 185, 129, 0.5);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #10b981;
+        }
+        
+        .testimonial-card {
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 4px solid var(--primary);
+        }
+        
+        .social-btn {
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+            font-size: 1.2rem;
+        }
+        
+        .social-btn:hover {
+            background: var(--primary);
+            transform: translateY(-3px);
+        }
+        
+        .whatsapp {
+            background: #25D366;
+            color: white;
+        }
+        
+        .telegram {
+            background: #0088cc;
+            color: white;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: var(--dark);
+            padding: 40px;
+            border-radius: 20px;
+            max-width: 500px;
+            width: 90%;
+            position: relative;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .close-modal {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .step-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+        
+        .step {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 10px;
+            font-weight: 600;
+        }
+        
+        .step.active {
+            background: var(--primary);
+        }
+        
+        .step-line {
+            width: 50px;
+            height: 2px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .step-line.active {
+            background: var(--primary);
+        }
+        
+        .auth-input {
+            width: 100%;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: white;
+            margin-bottom: 15px;
+            font-size: 1rem;
+        }
+        
+        .auth-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+        }
+        
+        .api-input-container {
+            position: relative;
+        }
+        
+        .validate-btn {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .validate-btn:hover {
+            background: var(--primary-dark);
+        }
+        
+        .validate-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .success-message {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #10b981;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .error-message {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        .disclaimer {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.8rem;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="glass-card fixed w-full z-50">
+        <div class="container mx-auto px-6 py-4">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center space-x-2">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-r from-green-400 to-blue-500"></div>
+                    <span class="text-xl font-bold gradient-text">DigitMatch Pro</span>
+                </div>
+                
+                <div class="hidden md:flex space-x-8">
+                    <a href="#features" class="hover:text-green-400 transition">Features</a>
+                    <a href="#how-it-works" class="hover:text-green-400 transition">How It Works</a>
+                    <a href="#testimonials" class="hover:text-green-400 transition">Testimonials</a>
+                </div>
+                
+                <button onclick="openSignupModal()" class="btn-primary">
+                    Get Started
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <section class="pt-32 pb-20 px-6">
+        <div class="container mx-auto">
+            <div class="grid md:grid-cols-2 gap-12 items-center">
+                <div>
+                    <h1 class="text-5xl md:text-6xl font-bold mb-6">
+                        Automated <span class="gradient-text">DigitMatch</span><br>
+                        Trading Bot for Deriv
+                    </h1>
+                    <p class="text-xl text-gray-300 mb-8">
+                        Maximize your profits with our intelligent bot that executes trades on every tick. 
+                        Join thousands of successful traders using our proven strategy.
+                    </p>
+                    
+                    <div class="flex flex-col sm:flex-row gap-4 mb-8">
+                        <button onclick="openSignupModal()" class="btn-primary">
+                            Start Trading Now
+                            <i class="fas fa-rocket ml-2"></i>
+                        </button>
+                        <a href="#how-it-works" class="btn-secondary">
+                            See How It Works
+                            <i class="fas fa-play-circle ml-2"></i>
+                        </a>
+                    </div>
+                    
+                    <div class="flex items-center space-x-6">
+                        <div class="flex -space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-gradient-to-r from-yellow-400 to-red-500"></div>
+                            <div class="w-10 h-10 rounded-full bg-gradient-to-r from-blue-400 to-purple-500"></div>
+                            <div class="w-10 h-10 rounded-full bg-gradient-to-r from-green-400 to-teal-500"></div>
+                        </div>
+                        <div>
+                            <p class="font-semibold">Join 2,500+ Successful Traders</p>
+                            <p class="text-sm text-gray-400">Average profit: $245/day</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="glass-card rounded-2xl p-8">
+                    <div class="text-center mb-6">
+                        <h3 class="text-2xl font-bold mb-2">⚡ Instant Tick Execution</h3>
+                        <p class="text-gray-400">Trade on EVERY tick with 792.9% payout</p>
+                    </div>
+                    
+                    <div class="affiliate-code mb-6">
+                        <div id="affiliateCodeDisplay">Loading...</div>
+                    </div>
+                    
+                    <div class="text-center">
+                        <p class="text-gray-400 mb-4">Join our community for support & updates</p>
+                        <div class="flex justify-center space-x-4">
+                            <a href="https://wa.me/c/254763941520" target="_blank" class="social-btn whatsapp">
+                                <i class="fab fa-whatsapp"></i>
+                            </a>
+                            <a href="https://t.me/yourchannel" target="_blank" class="social-btn telegram">
+                                <i class="fab fa-telegram-plane"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-16 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
+        <div class="container mx-auto px-6">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+                <div>
+                    <div class="stat-number">$2.5M+</div>
+                    <p class="text-gray-400">Total Profits Generated</p>
+                </div>
+                <div>
+                    <div class="stat-number">98.7%</div>
+                    <p class="text-gray-400">Win Rate</p>
+                </div>
+                <div>
+                    <div class="stat-number">2,500+</div>
+                    <p class="text-gray-400">Active Traders</p>
+                </div>
+                <div>
+                    <div class="stat-number">24/7</div>
+                    <p class="text-gray-400">Support Available</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="py-20 px-6">
+        <div class="container mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold mb-4">Powerful Features</h2>
+                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
+                    Everything you need for successful automated trading
+                </p>
+            </div>
+            
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="feature-card glass-card rounded-xl p-8">
+                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mb-6">
+                        <i class="fas fa-bolt text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Instant Tick Execution</h3>
+                    <p class="text-gray-400">
+                        Trade on every single tick with ultra-fast execution. No delays, no missed opportunities.
+                    </p>
+                </div>
+                
+                <div class="feature-card glass-card rounded-xl p-8">
+                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mb-6">
+                        <i class="fas fa-chart-line text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Smart Martingale</h3>
+                    <p class="text-gray-400">
+                        Intelligent position sizing with automatic stop-loss and profit-taking algorithms.
+                    </p>
+                </div>
+                
+                <div class="feature-card glass-card rounded-xl p-8">
+                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mb-6">
+                        <i class="fas fa-shield-alt text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Risk Management</h3>
+                    <p class="text-gray-400">
+                        Advanced risk controls including bankroll limits, max trades, and stake controls.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="how-it-works" class="py-20 px-6 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
+        <div class="container mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold mb-4">How It Works</h2>
+                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
+                    Get started in just 3 simple steps
+                </p>
+            </div>
+            
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="text-center">
+                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
+                        <span class="text-2xl font-bold">1</span>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Sign Up with Affiliate</h3>
+                    <p class="text-gray-400">
+                        Create a Deriv account using our affiliate link to get access to the bot.
+                    </p>
+                </div>
+                
+                <div class="text-center">
+                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-6">
+                        <span class="text-2xl font-bold">2</span>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Get Your API Token</h3>
+                    <p class="text-gray-400">
+                        Generate your API token from Deriv dashboard after successful signup.
+                    </p>
+                </div>
+                
+                <div class="text-center">
+                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mx-auto mb-6">
+                        <span class="text-2xl font-bold">3</span>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Start Trading</h3>
+                    <p class="text-gray-400">
+                        Enter your API token in our bot and start automated trading immediately.
+                    </p>
+                </div>
+            </div>
+            
+            <div class="text-center mt-12">
+                <button onclick="openSignupModal()" class="btn-primary">
+                    Start Now - It's Free!
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <section id="testimonials" class="py-20 px-6">
+        <div class="container mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold mb-4">What Our Traders Say</h2>
+                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
+                    Join thousands of satisfied users making consistent profits
+                </p>
+            </div>
+            
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="testimonial-card rounded-xl p-8">
+                    <div class="flex items-center mb-6">
+                        <div class="w-12 h-12 rounded-full bg-gradient-to-r from-yellow-400 to-orange-500 mr-4"></div>
+                        <div>
+                            <h4 class="font-bold">Sarah M.</h4>
+                            <p class="text-sm text-gray-400">Trader for 6 months</p>
+                        </div>
+                    </div>
+                    <p class="text-gray-300 italic">
+                        "Made $3,200 in my first month! The bot is incredibly reliable and the support team is amazing."
+                    </p>
+                    <div class="flex text-yellow-400 mt-4">
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                    </div>
+                </div>
+                
+                <div class="testimonial-card rounded-xl p-8">
+                    <div class="flex items-center mb-6">
+                        <div class="w-12 h-12 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 mr-4"></div>
+                        <div>
+                            <h4 class="font-bold">James K.</h4>
+                            <p class="text-sm text-gray-400">Trader for 3 months</p>
+                        </div>
+                    </div>
+                    <p class="text-gray-300 italic">
+                        "The instant tick execution feature is a game changer. I'm consistently making $150-200 daily."
+                    </p>
+                    <div class="flex text-yellow-400 mt-4">
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star-half-alt"></i>
+                    </div>
+                </div>
+                
+                <div class="testimonial-card rounded-xl p-8">
+                    <div class="flex items-center mb-6">
+                        <div class="w-12 h-12 rounded-full bg-gradient-to-r from-green-400 to-green-600 mr-4"></div>
+                        <div>
+                            <h4 class="font-bold">Lisa T.</h4>
+                            <p class="text-sm text-gray-400">Trader for 1 year</p>
+                        </div>
+                    </div>
+                    <p class="text-gray-300 italic">
+                        "Best trading bot I've ever used. The risk management features saved me from big losses multiple times."
+                    </p>
+                    <div class="flex text-yellow-400 mt-4">
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                        <i class="fas fa-star"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="py-20 px-6">
+        <div class="container mx-auto">
+            <div class="glass-card rounded-2xl p-12 text-center">
+                <h2 class="text-4xl font-bold mb-6">Ready to Start Automated Trading?</h2>
+                <p class="text-xl text-gray-300 mb-8 max-w-2xl mx-auto">
+                    Join thousands of successful traders and start making consistent profits today.
+                    Our bot handles everything while you relax.
+                </p>
+                
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <button onclick="openSignupModal()" class="btn-primary">
+                        Get Free Access Now
+                        <i class="fas fa-arrow-right ml-2"></i>
+                    </button>
+                    <a href="https://wa.me/254763941520" target="_blank" class="btn-secondary">
+                        <i class="fab fa-whatsapp mr-2"></i>
+                        Join WhatsApp Group
+                    </a>
+                </div>
+                
+                <div class="disclaimer mt-6">
+                    ⚠️ <strong>Risk Warning:</strong> Trading involves significant risk of loss. Past performance does not guarantee future results. 
+                    Only trade with money you can afford to lose.
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="py-12 px-6 border-t border-gray-800">
+        <div class="container mx-auto">
+            <div class="grid md:grid-cols-4 gap-8">
+                <div>
+                    <div class="flex items-center space-x-2 mb-4">
+                        <div class="w-8 h-8 rounded-full bg-gradient-to-r from-green-400 to-blue-500"></div>
+                        <span class="text-xl font-bold gradient-text">DigitMatch Pro</span>
+                    </div>
+                    <p class="text-gray-400">
+                        Automated trading solutions for Deriv platform users.
+                    </p>
+                </div>
+                
+                <div>
+                    <h4 class="font-bold mb-4">Quick Links</h4>
+                    <ul class="space-y-2">
+                        <li><a href="#features" class="text-gray-400 hover:text-green-400 transition">Features</a></li>
+                        <li><a href="#how-it-works" class="text-gray-400 hover:text-green-400 transition">How It Works</a></li>
+                        <li><a href="#testimonials" class="text-gray-400 hover:text-green-400 transition">Testimonials</a></li>
+                    </ul>
+                </div>
+                
+                <div>
+                    <h4 class="font-bold mb-4">Support</h4>
+                    <ul class="space-y-2">
+                        <li><a href="https://wa.me/message/OHFDN7U4RVYWF1" target="_blank" class="text-gray-400 hover:text-green-400 transition">WhatsApp Support</a></li>
+                        <li><a href="https://t.me/yourchannel" target="_blank" class="text-gray-400 hover:text-green-400 transition">Telegram Channel</a></li>
+                        <li><a href="mailto:support@digitmatchpro.com" class="text-gray-400 hover:text-green-400 transition">Email Support</a></li>
+                    </ul>
+                </div>
+                
+                <div>
+                    <h4 class="font-bold mb-4">Legal</h4>
+                    <ul class="space-y-2">
+                        <li><a href="#" onclick="showTerms()" class="text-gray-400 hover:text-green-400 transition">Terms of Service</a></li>
+                        <li><a href="#" onclick="showPrivacy()" class="text-gray-400 hover:text-green-400 transition">Privacy Policy</a></li>
+                        <li><a href="#" onclick="showDisclaimer()" class="text-gray-400 hover:text-green-400 transition">Risk Disclaimer</a></li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="border-t border-gray-800 mt-8 pt-8 text-center">
+                <p class="text-gray-500">
+                    © 2024 DigitMatch Pro. All rights reserved. Trading involves risk.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Auth Modal -->
+    <div id="authModal" class="modal">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal()">&times;</button>
+            
+            <!-- Step 1: Signup -->
+            <div id="signupStep" class="auth-step">
+                <div class="step-indicator">
+                    <div class="step active">1</div>
+                    <div class="step-line"></div>
+                    <div class="step">2</div>
+                    <div class="step-line"></div>
+                    <div class="step">3</div>
+                </div>
+                
+                <h2 class="text-2xl font-bold mb-6 text-center">Get Started</h2>
+                <p class="text-gray-400 mb-8 text-center">
+                    Sign up with our affiliate link to access the trading bot
+                </p>
+                
+                <div class="affiliate-code mb-6">
+                    <div id="modalAffiliateCode">Loading affiliate link...</div>
+                </div>
+                
+                <div class="text-center mb-6">
+                    <a href="#" id="derivSignupLink" target="_blank" class="btn-primary inline-block">
+                        Sign Up on Deriv
+                        <i class="fas fa-external-link-alt ml-2"></i>
+                    </a>
+                </div>
+                
+                <p class="text-gray-400 mb-6 text-center">
+                    After signing up, come back here to verify your account and access the bot.
+                </p>
+                
+                <div class="flex justify-center">
+                    <button onclick="nextStep()" class="btn-secondary">
+                        I've Signed Up - Next Step
+                        <i class="fas fa-arrow-right ml-2"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Step 2: API Token -->
+            <div id="apiStep" class="auth-step hidden">
+                <div class="step-indicator">
+                    <div class="step">1</div>
+                    <div class="step-line active"></div>
+                    <div class="step active">2</div>
+                    <div class="step-line"></div>
+                    <div class="step">3</div>
+                </div>
+                
+                <h2 class="text-2xl font-bold mb-6 text-center">Verify Your Account</h2>
+                <p class="text-gray-400 mb-8 text-center">
+                    Enter your Deriv API token to verify affiliate signup
+                </p>
+                
+                <div id="apiError" class="error-message hidden"></div>
+                <div id="apiSuccess" class="success-message hidden"></div>
+                
+                <div class="api-input-container">
+                    <input type="password" id="apiToken" placeholder="Enter your Deriv API token" class="auth-input">
+                    <button onclick="validateApiToken()" class="validate-btn" id="validateBtn">
+                        Validate
+                    </button>
+                </div>
+                
+                <p class="text-gray-400 text-sm mb-6">
+                    Get your API token from Deriv Dashboard → Settings → API token
+                </p>
+                
+                <div class="flex justify-between">
+                    <button onclick="prevStep()" class="text-gray-400 hover:text-white">
+                        <i class="fas fa-arrow-left mr-2"></i> Back
+                    </button>
+                    <button onclick="nextStep()" id="nextStepBtn" class="btn-secondary" disabled>
+                        Continue
+                        <i class="fas fa-arrow-right ml-2"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Step 3: Community -->
+            <div id="communityStep" class="auth-step hidden">
+                <div class="step-indicator">
+                    <div class="step">1</div>
+                    <div class="step-line"></div>
+                    <div class="step">2</div>
+                    <div class="step-line active"></div>
+                    <div class="step active">3</div>
+                </div>
+                
+                <h2 class="text-2xl font-bold mb-6 text-center">Join Our Community</h2>
+                <p class="text-gray-400 mb-8 text-center">
+                    Join our groups for support, updates, and trading signals
+                </p>
+                
+                <div class="grid grid-cols-2 gap-4 mb-8">
+                    <a href="https://wa.me/c/254763941520" target="_blank" class="glass-card rounded-xl p-6 text-center hover:border-green-500 transition">
+                        <i class="fab fa-whatsapp text-3xl text-green-500 mb-3"></i>
+                        <h4 class="font-bold">WhatsApp Group</h4>
+                        <p class="text-sm text-gray-400">Live support & signals</p>
+                    </a>
+                    
+                    <a href="https://t.me/yourchannel" target="_blank" class="glass-card rounded-xl p-6 text-center hover:border-blue-500 transition">
+                        <i class="fab fa-telegram-plane text-3xl text-blue-500 mb-3"></i>
+                        <h4 class="font-bold">Telegram Channel</h4>
+                        <p class="text-sm text-gray-400">Updates & announcements</p>
+                    </a>
+                </div>
+                
+                <div class="text-center">
+                    <button onclick="accessBot()" class="btn-primary">
+                        Access Trading Bot
+                        <i class="fas fa-robot ml-2"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Legal Modals -->
+    <div id="termsModal" class="modal hidden">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeLegalModal('termsModal')">&times;</button>
+            <h2 class="text-2xl font-bold mb-6">Terms of Service</h2>
+            <div class="text-gray-300 max-h-96 overflow-y-auto">
+                <p>1. By using this bot, you agree to Deriv's Terms and Conditions.</p>
+                <p>2. You must be at least 18 years old to use this service.</p>
+                <p>3. The bot is provided "as is" without warranties.</p>
+                <p>4. You are responsible for all trading decisions and outcomes.</p>
+                <p>5. We are not financial advisors.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="privacyModal" class="modal hidden">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeLegalModal('privacyModal')">&times;</button>
+            <h2 class="text-2xl font-bold mb-6">Privacy Policy</h2>
+            <div class="text-gray-300 max-h-96 overflow-y-auto">
+                <p>1. We store your API token locally in your browser only.</p>
+                <p>2. We do not have access to your Deriv account.</p>
+                <p>3. We track affiliate signups for commission purposes.</p>
+                <p>4. We use cookies for authentication only.</p>
+                <p>5. Your data is never sold to third parties.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="disclaimerModal" class="modal hidden">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeLegalModal('disclaimerModal')">&times;</button>
+            <h2 class="text-2xl font-bold mb-6">Risk Disclaimer</h2>
+            <div class="text-gray-300 max-h-96 overflow-y-auto">
+                <p>⚠️ <strong>HIGH RISK WARNING:</strong> Trading foreign exchange, CFDs, and binary options carries a high level of risk.</p>
+                <p>1. You may lose all of your invested capital.</p>
+                <p>2. Past performance does not guarantee future results.</p>
+                <p>3. Only trade with money you can afford to lose.</p>
+                <p>4. This bot does not provide financial advice.</p>
+                <p>5. Seek independent financial advice if necessary.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Production Configuration
+    const IS_PRODUCTION = !window.location.hostname.includes('localhost');
+    const API_BASE_URL = IS_PRODUCTION 
+        ? '/api'  // Relative path for Vercel
+        : 'http://localhost:3000/api';
+    
+    console.log('🌐 Environment:', IS_PRODUCTION ? 'Production' : 'Development');
+    console.log('🔗 API Base URL:', API_BASE_URL);
+    
+    let currentStep = 'signupStep';
+    let verifiedUser = false;
+    let userApiToken = "";
+    let verificationToken = "";
+    let userInfo = null;
+    let affiliateCode = "";
+    
+    // Fetch affiliate code from backend on load
+    async function loadAffiliateCode() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/get-affiliate-code`);
+            const data = await response.json();
+            
+            if (data.success && data.code) {
+                affiliateCode = data.code;
+                
+                // Update display
+                document.getElementById('affiliateCodeDisplay').textContent = affiliateCode;
+                document.getElementById('modalAffiliateCode').textContent = affiliateCode;
+                
+                // Update signup link
+                const signupLink = document.getElementById('derivSignupLink');
+                signupLink.href = `https://track.deriv.com/_${affiliateCode}/1/`;
+                
+                console.log('✅ Affiliate code loaded:', affiliateCode);
+            } else {
+                throw new Error('Failed to load affiliate code');
+            }
+        } catch (error) {
+            console.error('❌ Error loading affiliate code:', error);
+            // Fallback to default
+            affiliateCode = "0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk";
+            document.getElementById('affiliateCodeDisplay').textContent = affiliateCode;
+            document.getElementById('modalAffiliateCode').textContent = affiliateCode;
+            
+            const signupLink = document.getElementById('derivSignupLink');
+            signupLink.href = `https://track.deriv.com/_${affiliateCode}/1/`;
+        }
+    }
+    
+    // Modal functions
+    function openSignupModal() {
+        document.getElementById('authModal').style.display = 'flex';
+        showStep('signupStep');
+    }
+    
+    function closeModal() {
+        document.getElementById('authModal').style.display = 'none';
+    }
+    
+    function showStep(stepId) {
+        currentStep = stepId;
+        document.querySelectorAll('.auth-step').forEach(step => {
+            step.classList.add('hidden');
+        });
+        document.getElementById(stepId).classList.remove('hidden');
+    }
+    
+    function nextStep() {
+        if (currentStep === 'signupStep') {
+            showStep('apiStep');
+        } else if (currentStep === 'apiStep') {
+            if (verifiedUser) {
+                showStep('communityStep');
+            } else {
+                showMessage('apiError', 'Please validate your API token first', true);
+            }
+        }
+    }
+    
+    function prevStep() {
+        if (currentStep === 'apiStep') {
+            showStep('signupStep');
+        } else if (currentStep === 'communityStep') {
+            showStep('apiStep');
+        }
+    }
+    
+    // Show message helper
+    function showMessage(elementId, message, isError = false) {
+        const element = document.getElementById(elementId);
+        element.textContent = message;
+        element.className = isError ? 'error-message' : 'success-message';
+        element.classList.remove('hidden');
+        
+        // Auto-hide success messages after 5 seconds
+        if (!isError) {
+            setTimeout(() => {
+                element.classList.add('hidden');
+            }, 5000);
+        }
+    }
+    
+    // Validate API token with backend
+    async function validateApiToken() {
+        const apiToken = document.getElementById('apiToken').value.trim();
+        const validateBtn = document.getElementById('validateBtn');
+        const nextBtn = document.getElementById('nextStepBtn');
+        
+        // Clear previous messages
+        document.getElementById('apiError').classList.add('hidden');
+        document.getElementById('apiSuccess').classList.add('hidden');
+        
+        if (!apiToken) {
+            showMessage('apiError', 'Please enter your API token', true);
+            return;
+        }
+        
+        // Show loading
+        validateBtn.innerHTML = '<span class="loading-spinner"></span> Validating...';
+        validateBtn.disabled = true;
+        
+        try {
+            // Real API call to backend
+            console.log('📡 Validating token with backend...');
+            
+            const response = await fetch(`${API_BASE_URL}/verify-token`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    apiToken: apiToken,
+                    affiliateCode: affiliateCode 
+                })
+            });
+            
+            console.log('📡 Response status:', response.status);
+            
+            const data = await response.json();
+            console.log('📡 Response data:', data);
+            
+            if (response.ok && data.success) {
+                // Success - token is valid
+                verifiedUser = true;
+                userApiToken = apiToken;
+                verificationToken = data.token;
+                userInfo = data.user;
+                
+                // Store tokens for bot access
+                localStorage.setItem('derivToken', apiToken);
+                localStorage.setItem('verificationToken', verificationToken);
+                localStorage.setItem('affiliateVerified', 'true');
+                localStorage.setItem('userInfo', JSON.stringify(userInfo));
+                
+                showMessage('apiSuccess', `✅ ${data.message}<br>Welcome ${userInfo.email || userInfo.loginid}!`, false);
+                nextBtn.disabled = false;
+                validateBtn.innerHTML = '✅ Validated';
+                
+                // Auto-proceed after 2 seconds
+                setTimeout(() => {
+                    if (verifiedUser) {
+                        showStep('communityStep');
+                    }
+                }, 2000);
+                
+            } else {
+                showMessage('apiError', `❌ ${data.message || 'Verification failed. Please check your API token.'}`, true);
+                nextBtn.disabled = true;
+                verifiedUser = false;
+                validateBtn.innerHTML = 'Validate';
+                validateBtn.disabled = false;
+            }
+            
+        } catch (error) {
+            console.error('❌ Validation error:', error);
+            showMessage('apiError', '❌ Connection error. Please check your internet connection.', true);
+            
+            // For production, we don't use test mode
+            nextBtn.disabled = true;
+            verifiedUser = false;
+            validateBtn.innerHTML = 'Validate';
+            validateBtn.disabled = false;
+        }
+    }
+    
+    // Access the bot
+    async function accessBot() {
+        if (!verifiedUser || !verificationToken) {
+            showMessage('apiError', 'Please complete verification first', true);
+            showStep('apiStep');
+            return;
+        }
+        
+        try {
+            // Get bot configuration from backend
+            const response = await fetch(`${API_BASE_URL}/get-bot-config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ verificationToken: verificationToken })
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    // Store final configuration
+                    localStorage.setItem('botConfig', JSON.stringify(data.config));
+                    
+                    // Redirect to bot page
+                    window.location.href = 'bot.html';
+                    return;
+                }
+            }
+            
+            // If no config from backend, redirect anyway
+            window.location.href = 'bot.html';
+            
+        } catch (error) {
+            console.error('Bot access error:', error);
+            // Still redirect to bot page (auth will be checked there)
+            window.location.href = 'bot.html';
+        }
+    }
+    
+    // Legal modals
+    function showTerms() {
+        document.getElementById('termsModal').classList.remove('hidden');
+        document.getElementById('termsModal').style.display = 'flex';
+    }
+    
+    function showPrivacy() {
+        document.getElementById('privacyModal').classList.remove('hidden');
+        document.getElementById('privacyModal').style.display = 'flex';
+    }
+    
+    function showDisclaimer() {
+        document.getElementById('disclaimerModal').classList.remove('hidden');
+        document.getElementById('disclaimerModal').style.display = 'flex';
+    }
+    
+    function closeLegalModal(modalId) {
+        document.getElementById(modalId).classList.add('hidden');
+        document.getElementById(modalId).style.display = 'none';
+    }
+    
+    // Close modal on outside click
+    window.onclick = function(event) {
+        const modals = ['authModal', 'termsModal', 'privacyModal', 'disclaimerModal'];
+        modals.forEach(modalId => {
+            const modal = document.getElementById(modalId);
+            if (event.target === modal) {
+                if (modalId === 'authModal') {
+                    closeModal();
+                } else {
+                    closeLegalModal(modalId);
+                }
+            }
+        });
+    };
+    
+    // Smooth scrolling for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            e.preventDefault();
+            const targetId = this.getAttribute('href');
+            if (targetId === '#') return;
+            
+            const targetElement = document.querySelector(targetId);
+            if (targetElement) {
+                window.scrollTo({
+                    top: targetElement.offsetTop - 80,
+                    behavior: 'smooth'
+                });
+            }
+        });
+    });
+    
+    // Check if user is already verified on page load
+    window.onload = async function() {
+        console.log('🚀 DigitMatch Pro Landing Page Loaded');
+        
+        // Load affiliate code from backend
+        await loadAffiliateCode();
+        
+        const affiliateVerified = localStorage.getItem('affiliateVerified');
+        
+        if (affiliateVerified === 'true') {
+            // User is already verified, update UI
+            const storedUserInfo = localStorage.getItem('userInfo');
+            if (storedUserInfo) {
+                try {
+                    userInfo = JSON.parse(storedUserInfo);
+                    verifiedUser = true;
+                } catch (e) {
+                    console.error('Failed to parse user info:', e);
+                }
+            }
+            
+            // Update nav button to go directly to bot
+            const navBtn = document.querySelector('nav .btn-primary');
+            if (navBtn) {
+                navBtn.textContent = 'Access Bot';
+                navBtn.onclick = function() {
+                    window.location.href = 'bot.html';
+                };
+            }
+        }
+        
+        // Test backend connection on load
+        console.log('🔧 Testing backend connection...');
+        fetch(`${API_BASE_URL}/health`)
+            .then(response => {
+                if (response.ok) {
+                    console.log('✅ Backend connected');
+                } else {
+                    console.log('⚠️ Backend connection issue');
+                }
+            })
+            .catch(error => console.log('⚠️ Backend not reachable:', error.message));
+    };
+    
+    // Make ENTER key trigger validation in API token field
+    document.getElementById('apiToken')?.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            validateApiToken();
+        }
+    });
+    </script>
+</body>
+</html>
