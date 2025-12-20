@@ -1104,12 +1104,12 @@
             updateUIAfterAuth();
             
             // Show success message
-            showSuccessMessage('✅ Successfully connected to Deriv via App ID ' + CONFIG.APP_ID + '\n\nAll trades will go through your app ID for markup.');
+            showSuccessMessage('✅ Successfully connected to Deriv via App ID ' + CONFIG.APP_ID + '\n\nAll trades will go through your app ID for markup.\n\nRedirecting to trading bot...');
             
             // Close modal
             closeModal();
             
-            // Redirect to bot after a delay
+            // FIXED: Redirect to bot.html after successful authentication
             setTimeout(() => {
                 window.location.href = 'bot.html';
             }, 2000);
@@ -1176,7 +1176,7 @@
                 accessBotBtn.classList.remove('hidden');
                 getStartedBtn.classList.add('hidden');
                 
-                // Ensure the button has click handler
+                // FIXED: Redirect to bot.html when Access Bot button is clicked
                 accessBotBtn.onclick = function() {
                     window.location.href = 'bot.html';
                 };
@@ -1218,7 +1218,36 @@
         // HELPER FUNCTIONS
         // =============================================
         function showSuccessMessage(message) {
-            alert(message);
+            // Create a custom modal for success messages
+            const successModal = document.createElement('div');
+            successModal.className = 'modal';
+            successModal.style.display = 'flex';
+            successModal.innerHTML = `
+                <div class="modal-content" style="max-width: 400px;">
+                    <button onclick="this.parentElement.parentElement.remove()" class="close-modal">&times;</button>
+                    <div class="text-center mb-6">
+                        <div class="w-16 h-16 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-4">
+                            <i class="fas fa-check text-white text-2xl"></i>
+                        </div>
+                        <h3 class="text-2xl font-bold mb-3">Success!</h3>
+                        <div class="success-message text-left">
+                            ${message.replace(/\n/g, '<br>')}
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <div class="loading-spinner mx-auto"></div>
+                        <p class="text-gray-400 text-sm mt-2">Redirecting to trading bot...</p>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(successModal);
+            
+            // Auto-remove modal after 5 seconds
+            setTimeout(() => {
+                if (successModal.parentNode) {
+                    successModal.parentNode.removeChild(successModal);
+                }
+            }, 5000);
         }
 
         function showErrorMessage(message) {
