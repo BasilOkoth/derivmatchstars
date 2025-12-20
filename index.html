@@ -61,25 +61,6 @@
             box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
         }
         
-        .btn-secondary {
-            background: linear-gradient(135deg, var(--secondary), #1d4ed8);
-            color: white;
-            padding: 12px 28px;
-            border-radius: 10px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            display: inline-block;
-            text-align: center;
-            cursor: pointer;
-            border: none;
-            font-size: 0.95rem;
-        }
-        
-        .btn-secondary:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(59, 130, 246, 0.3);
-        }
-        
         .btn-oAuth {
             background: linear-gradient(135deg, #8b5cf6, #7c3aed);
             color: white;
@@ -97,58 +78,6 @@
         .btn-oAuth:hover {
             transform: translateY(-3px);
             box-shadow: 0 10px 25px rgba(139, 92, 246, 0.3);
-        }
-        
-        .feature-card {
-            transition: all 0.3s ease;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        
-        .feature-card:hover {
-            transform: translateY(-5px);
-            border-color: rgba(16, 185, 129, 0.3);
-            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3);
-        }
-        
-        .stat-number {
-            font-size: 2.8rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, #10b981, #3b82f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        
-        .testimonial-card {
-            background: rgba(255, 255, 255, 0.03);
-            border-left: 4px solid var(--primary);
-        }
-        
-        .social-btn {
-            width: 48px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.05);
-            transition: all 0.3s ease;
-            font-size: 1.2rem;
-        }
-        
-        .social-btn:hover {
-            background: var(--primary);
-            transform: translateY(-3px);
-        }
-        
-        .whatsapp {
-            background: #25D366;
-            color: white;
-        }
-        
-        .telegram {
-            background: #0088cc;
-            color: white;
         }
         
         .modal {
@@ -222,51 +151,6 @@
             background: var(--primary);
         }
         
-        .auth-input {
-            width: 100%;
-            padding: 14px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            color: white;
-            margin-bottom: 15px;
-            font-size: 1rem;
-        }
-        
-        .auth-input:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
-        }
-        
-        .api-input-container {
-            position: relative;
-        }
-        
-        .validate-btn {
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: var(--primary);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .validate-btn:hover {
-            background: var(--primary-dark);
-        }
-        
-        .validate-btn:disabled {
-            background: #666;
-            cursor: not-allowed;
-        }
-        
         .success-message {
             background: rgba(16, 185, 129, 0.1);
             border: 1px solid rgba(16, 185, 129, 0.3);
@@ -317,20 +201,12 @@
             display: none !important;
         }
         
-        .disclaimer {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #ef4444;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            margin-top: 15px;
-        }
-        
         .user-type-card {
             transition: all 0.3s ease;
             border: 2px solid transparent;
             cursor: pointer;
+            padding: 25px;
+            border-radius: 15px;
         }
         
         .user-type-card:hover {
@@ -347,17 +223,68 @@
             display: block;
         }
         
-        #authRedirect {
+        .connection-status {
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: var(--darker);
-            z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            top: 100px;
+            right: 20px;
+            z-index: 999;
+            background: rgba(16, 185, 129, 0.1);
+            border: 2px solid rgba(16, 185, 129, 0.3);
+            padding: 10px 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            color: #10b981;
+            display: none;
+        }
+        
+        .connection-status.connected {
+            display: block;
+        }
+        
+        .oauth-badge {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(124, 58, 237, 0.1));
+            border: 2px solid rgba(139, 92, 246, 0.3);
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #8b5cf6;
+            margin-bottom: 20px;
+        }
+        
+        .affiliate-badge {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(217, 119, 6, 0.1));
+            border: 2px solid rgba(245, 158, 11, 0.3);
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #f59e0b;
+            margin-bottom: 20px;
+        }
+        
+        .verified-badge {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));
+            border: 2px solid rgba(16, 185, 129, 0.3);
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #10b981;
+        }
+        
+        .markup-badge {
+            background: linear-gradient(135deg, rgba(236, 72, 153, 0.1), rgba(219, 39, 119, 0.1));
+            border: 2px solid rgba(236, 72, 153, 0.3);
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #ec4899;
         }
         
         .compact-card {
@@ -379,141 +306,11 @@
             font-size: 1.8rem;
         }
         
-        .compact-card h3 {
-            font-size: 1.3rem;
-            margin-bottom: 10px;
-        }
-        
-        .compact-card p {
-            font-size: 0.95rem;
-            line-height: 1.5;
-            margin-bottom: 20px;
-            flex-grow: 1;
-        }
-        
-        .compact-card .btn-primary,
-        .compact-card .btn-oAuth {
-            padding: 12px 24px;
-            font-size: 0.95rem;
-            width: 100%;
-        }
-        
         .compact-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 25px;
             margin-bottom: 30px;
-        }
-        
-        @media (max-width: 768px) {
-            .compact-grid {
-                grid-template-columns: 1fr;
-                gap: 20px;
-            }
-            
-            .modal-content {
-                padding: 25px;
-                margin: 10px;
-            }
-            
-            .stat-number {
-                font-size: 2.2rem;
-            }
-            
-            .compact-card {
-                min-height: 300px;
-            }
-        }
-        
-        .real-api-loading {
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid #10b981;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-        
-        .api-status {
-            padding: 10px 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            font-size: 0.9rem;
-        }
-        
-        .api-status.success {
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            color: #10b981;
-        }
-        
-        .api-status.error {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #ef4444;
-        }
-        
-        .api-status.info {
-            background: rgba(59, 130, 246, 0.1);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            color: #3b82f6;
-        }
-        
-        .verified-badge {
-            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1));
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #10b981;
-        }
-        
-        .affiliate-badge {
-            background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(217, 119, 6, 0.1));
-            border: 2px solid rgba(245, 158, 11, 0.3);
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #f59e0b;
-        }
-        
-        .connection-status {
-            position: fixed;
-            top: 100px;
-            right: 20px;
-            z-index: 999;
-            background: rgba(16, 185, 129, 0.1);
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            padding: 10px 15px;
-            border-radius: 10px;
-            font-size: 0.9rem;
-            color: #10b981;
-            display: none;
-        }
-        
-        .connection-status.connected {
-            display: block;
-        }
-        
-        .oauth-step-content {
-            text-align: center;
-        }
-        
-        .oauth-badge {
-            background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(124, 58, 237, 0.1));
-            border: 2px solid rgba(139, 92, 246, 0.3);
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #8b5cf6;
-            margin-bottom: 20px;
         }
     </style>
 </head>
@@ -533,12 +330,6 @@
                     </div>
                     <span class="text-xl font-bold gradient-text">DigitMatchStars Pro</span>
                     <span class="text-xs bg-purple-600 text-white px-2 py-1 rounded">App ID: 117144</span>
-                </div>
-                
-                <div class="hidden md:flex space-x-8">
-                    <a href="#features" class="hover:text-green-400 transition font-medium">Features</a>
-                    <a href="#get-started" class="hover:text-green-400 transition font-medium">Get Started</a>
-                    <a href="#testimonials" class="hover:text-green-400 transition font-medium">Results</a>
                 </div>
                 
                 <div class="flex items-center space-x-4">
@@ -570,9 +361,6 @@
                         <button onclick="openChoiceModal()" class="btn-primary">
                             <i class="fas fa-rocket mr-2"></i>Start Trading Now
                         </button>
-                        <a href="#features" class="btn-secondary">
-                            <i class="fas fa-chart-line mr-2"></i>View Features
-                        </a>
                     </div>
                     
                     <div class="glass-card rounded-xl p-6 max-w-md">
@@ -583,6 +371,9 @@
                             <div>
                                 <p class="font-semibold text-lg">Official Deriv App</p>
                                 <p class="text-sm text-gray-400">Registered App ID: 117144</p>
+                                <div class="markup-badge mt-2">
+                                    <i class="fas fa-money-bill-wave mr-1"></i>Earn markup through your trades
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -590,36 +381,31 @@
                 
                 <div class="glass-card rounded-2xl p-8">
                     <div class="text-center mb-8">
-                        <h3 class="text-2xl font-bold mb-3">⚡ Live Trading Console</h3>
-                        <p class="text-gray-400">Trade on every tick with 792.9% payout</p>
+                        <h3 class="text-2xl font-bold mb-3">⚡ Dual Revenue System</h3>
+                        <p class="text-gray-400">Earn through commissions AND markup</p>
                     </div>
                     
                     <div class="verified-badge mb-6">
-                        <i class="fas fa-shield-alt mr-2"></i>
-                        <span>Instant Tick Execution</span>
+                        <i class="fas fa-handshake mr-2"></i>
+                        <span>Earn Commissions + Markup</span>
                     </div>
                     
                     <div class="mb-6">
-                        <div class="api-status success">
-                            <i class="fas fa-check-circle mr-2"></i>
-                            <strong>Strategy:</strong> DigitMatch with Martingale
+                        <div class="info-message">
+                            <i class="fas fa-user-check mr-2"></i>
+                            <strong>Existing Users:</strong> Connect via OAuth → Earn markup on all trades
                         </div>
-                        <div class="api-status info mt-3">
-                            <i class="fas fa-bolt mr-2"></i>
-                            <strong>Payout:</strong> 792.9% on win
+                        <div class="info-message mt-3">
+                            <i class="fas fa-user-plus mr-2"></i>
+                            <strong>New Users:</strong> Sign up via affiliate → Earn commissions + markup
                         </div>
                     </div>
                     
                     <div class="text-center">
-                        <p class="text-gray-400 mb-5">24/7 Support & Live Signals</p>
-                        <div class="flex justify-center space-x-5">
-                            <a href="https://wa.me/message/OHFDN7U4RVYWF1" target="_blank" class="social-btn whatsapp">
-                                <i class="fab fa-whatsapp"></i>
-                            </a>
-                            <a href="https://t.me/DigitMatchStarsOfficial" target="_blank" class="social-btn telegram">
-                                <i class="fab fa-telegram-plane"></i>
-                            </a>
-                        </div>
+                        <button onclick="openChoiceModal()" class="btn-primary">
+                            <i class="fas fa-play mr-2"></i>
+                            Choose Your Path
+                        </button>
                     </div>
                 </div>
             </div>
@@ -653,9 +439,9 @@
     <section id="get-started" class="py-20 px-5">
         <div class="container mx-auto">
             <div class="text-center mb-16">
-                <h2 class="text-4xl font-bold mb-4">Get Started in 2 Minutes</h2>
+                <h2 class="text-4xl font-bold mb-4">Choose Your Path</h2>
                 <p class="text-xl text-gray-400 max-w-3xl mx-auto">
-                    Choose your path. Existing users connect via OAuth, new users create account first.
+                    Existing users connect via OAuth (earn markup), new users sign up via affiliate (earn commissions + markup)
                 </p>
             </div>
             
@@ -667,15 +453,19 @@
                     </div>
                     <h3 class="text-xl font-bold mb-3">Already have Deriv Account?</h3>
                     <p class="text-gray-400">
-                        Connect securely via Deriv OAuth. Fast, secure, and no API token needed.
+                        Connect securely via Deriv OAuth. All trades go through App ID 117144.
                     </p>
+                    <div class="oauth-badge mb-4">
+                        <i class="fas fa-money-bill-wave mr-2"></i>
+                        <strong>Earn Markup</strong> on every trade
+                    </div>
                     <button onclick="selectExistingUser()" class="btn-oAuth mt-auto">
                         <i class="fab fa-deriv mr-2"></i>
                         Connect via OAuth
                     </button>
                     <div class="text-sm text-gray-500 mt-4">
                         <i class="fas fa-check text-green-500 mr-2"></i>Secure OAuth 2.0
-                        <i class="fas fa-check text-green-500 mr-2 ml-4"></i>Instant access
+                        <i class="fas fa-check text-green-500 mr-2 ml-4"></i>Earn markup through App ID
                     </div>
                 </div>
                 
@@ -686,198 +476,66 @@
                     </div>
                     <h3 class="text-xl font-bold mb-3">New to Deriv?</h3>
                     <p class="text-gray-400">
-                        Create a Deriv account via our official affiliate link. Then connect with API token.
+                        Sign up via our affiliate link. Then connect via OAuth.
                     </p>
                     <div class="affiliate-badge mb-4">
                         <i class="fas fa-external-link-alt mr-2"></i>
-                        Official Affiliate Signup
+                        <strong>Earn Commissions</strong> + Markup
                     </div>
                     <button onclick="selectNewUser()" class="btn-primary mt-auto">
                         <i class="fas fa-user-plus mr-2"></i>
                         Create Account
                     </button>
                     <div class="text-sm text-gray-500 mt-4">
-                        <i class="fas fa-check text-green-500 mr-2"></i>Easy signup process
-                        <i class="fas fa-check text-green-500 mr-2 ml-4"></i>Then connect API
+                        <i class="fas fa-check text-green-500 mr-2"></i>Affiliate commissions
+                        <i class="fas fa-check text-green-500 mr-2 ml-4"></i>Then connect via OAuth
                     </div>
                 </div>
             </div>
         </div>
     </section>
 
-    <!-- FEATURES SECTION -->
-    <section id="features" class="py-20 px-5 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
+    <!-- REVENUE EXPLANATION -->
+    <section class="py-20 px-5 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
         <div class="container mx-auto">
             <div class="text-center mb-16">
-                <h2 class="text-4xl font-bold mb-4">Professional Trading Features</h2>
+                <h2 class="text-4xl font-bold mb-4">Dual Revenue Stream</h2>
                 <p class="text-xl text-gray-400 max-w-3xl mx-auto">
-                    Everything you need for successful automated trading
+                    How you earn from both existing and new users
                 </p>
             </div>
             
-            <div class="grid md:grid-cols-3 gap-8">
-                <div class="feature-card glass-card rounded-xl p-8">
-                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mb-6">
-                        <i class="fas fa-bolt text-2xl"></i>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">Instant Tick Execution</h3>
-                    <p class="text-gray-400">
-                        Execute trades on every single tick with 99.9% accuracy. No delays, no slippage.
-                    </p>
-                </div>
-                
-                <div class="feature-card glass-card rounded-xl p-8">
-                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mb-6">
-                        <i class="fas fa-chart-line text-2xl"></i>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">Smart Martingale Strategy</h3>
-                    <p class="text-gray-400">
-                        Intelligent position sizing with automatic stop-loss and profit-taking algorithms.
-                    </p>
-                </div>
-                
-                <div class="feature-card glass-card rounded-xl p-8">
+            <div class="grid md:grid-cols-2 gap-12">
+                <div class="glass-card rounded-xl p-8">
                     <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mb-6">
-                        <i class="fas fa-shield-alt text-2xl"></i>
+                        <i class="fab fa-deriv text-2xl"></i>
                     </div>
-                    <h3 class="text-xl font-bold mb-3">Advanced Risk Management</h3>
-                    <p class="text-gray-400">
-                        Bankroll limits, max trades control, stake management, and auto-stop features.
+                    <h3 class="text-xl font-bold mb-3">Existing Users</h3>
+                    <p class="text-gray-400 mb-4">
+                        Users with existing Deriv accounts connect via OAuth:
                     </p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- HOW IT WORKS -->
-    <section id="how-it-works" class="py-20 px-5">
-        <div class="container mx-auto">
-            <div class="text-center mb-16">
-                <h2 class="text-4xl font-bold mb-4">Simple 3-Step Process</h2>
-                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
-                    Get started and start trading in minutes
-                </p>
-            </div>
-            
-            <div class="grid md:grid-cols-3 gap-8">
-                <div class="text-center">
-                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
-                        <span class="text-2xl font-bold">1</span>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">Choose Your Path</h3>
-                    <p class="text-gray-400">
-                        Existing users: Connect via OAuth<br>
-                        New users: Create account first
-                    </p>
+                    <ul class="text-gray-300 space-y-3">
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Connect via OAuth with App ID 117144</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> All trades go through your app</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn markup on every trade</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> No signup needed</li>
+                    </ul>
                 </div>
                 
-                <div class="text-center">
-                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-6">
-                        <span class="text-2xl font-bold">2</span>
+                <div class="glass-card rounded-xl p-8">
+                    <div class="w-16 h-16 rounded-xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mb-6">
+                        <i class="fas fa-user-plus text-2xl"></i>
                     </div>
-                    <h3 class="text-xl font-bold mb-3">Connect to Bot</h3>
-                    <p class="text-gray-400">
-                        OAuth authorization or API token connection
+                    <h3 class="text-xl font-bold mb-3">New Users</h3>
+                    <p class="text-gray-400 mb-4">
+                        New users sign up via your affiliate link:
                     </p>
-                </div>
-                
-                <div class="text-center">
-                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mx-auto mb-6">
-                        <span class="text-2xl font-bold">3</span>
-                    </div>
-                    <h3 class="text-xl font-bold mb-3">Start Trading</h3>
-                    <p class="text-gray-400">
-                        Bot starts automated trading on every tick. Monitor profits in real-time.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- TESTIMONIALS -->
-    <section id="testimonials" class="py-20 px-5 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
-        <div class="container mx-auto">
-            <div class="text-center mb-16">
-                <h2 class="text-4xl font-bold mb-4">Real Traders, Real Results</h2>
-                <p class="text-xl text-gray-400 max-w-3xl mx-auto">
-                    Join thousands of successful traders
-                </p>
-            </div>
-            
-            <div class="grid md:grid-cols-3 gap-8">
-                <div class="testimonial-card rounded-xl p-8">
-                    <div class="flex items-center mb-6">
-                        <div class="w-14 h-14 rounded-full bg-gradient-to-r from-yellow-400 to-orange-500 mr-4 flex items-center justify-center">
-                            <i class="fas fa-user text-white"></i>
-                        </div>
-                        <div>
-                            <h4 class="font-bold text-lg">James R.</h4>
-                            <p class="text-sm text-gray-400">OAuth user - 6 months</p>
-                        </div>
-                    </div>
-                    <p class="text-gray-300 italic mb-4">
-                        "Connected via OAuth in seconds. So much easier than API tokens. Made $8,500 last month consistently."
-                    </p>
-                    <div class="flex text-yellow-400 mb-3">
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                    </div>
-                    <div class="api-status success text-sm">
-                        <i class="fas fa-chart-line mr-2"></i>+$8,500 in 30 days
-                    </div>
-                </div>
-                
-                <div class="testimonial-card rounded-xl p-8">
-                    <div class="flex items-center mb-6">
-                        <div class="w-14 h-14 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 mr-4 flex items-center justify-center">
-                            <i class="fas fa-user text-white"></i>
-                        </div>
-                        <div>
-                            <h4 class="font-bold text-lg">Sarah L.</h4>
-                            <p class="text-sm text-gray-400">API user - 2 months</p>
-                        </div>
-                    </div>
-                    <p class="text-gray-300 italic mb-4">
-                        "Signed up via affiliate, then connected with API token. Made $4,200 first month!"
-                    </p>
-                    <div class="flex text-yellow-400 mb-3">
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star-half-alt"></i>
-                    </div>
-                    <div class="api-status success text-sm">
-                        <i class="fas fa-chart-line mr-2"></i>+$4,200 first month
-                    </div>
-                </div>
-                
-                <div class="testimonial-card rounded-xl p-8">
-                    <div class="flex items-center mb-6">
-                        <div class="w-14 h-14 rounded-full bg-gradient-to-r from-green-400 to-green-600 mr-4 flex items-center justify-center">
-                            <i class="fas fa-user text-white"></i>
-                        </div>
-                        <div>
-                            <h4 class="font-bold text-lg">Michael K.</h4>
-                            <p class="text-sm text-gray-400">OAuth user - 1 year</p>
-                        </div>
-                    </div>
-                    <p class="text-gray-300 italic mb-4">
-                        "OAuth is so convenient. $32,000 total profit in 12 months with this strategy."
-                    </p>
-                    <div class="flex text-yellow-400 mb-3">
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                        <i class="fas fa-star"></i>
-                    </div>
-                    <div class="api-status success text-sm">
-                        <i class="fas fa-chart-line mr-2"></i>+$32,000 in 12 months
-                    </div>
+                    <ul class="text-gray-300 space-y-3">
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Sign up via your affiliate link</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn commission on deposits</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Then they connect via OAuth</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn markup on all their trades</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -887,19 +545,19 @@
     <section class="py-20 px-5">
         <div class="container mx-auto">
             <div class="glass-card rounded-2xl p-12 text-center">
-                <h2 class="text-4xl font-bold mb-6">Ready to Start Automated Trading?</h2>
+                <h2 class="text-4xl font-bold mb-6">Start Earning Today</h2>
                 <p class="text-xl text-gray-300 mb-8 max-w-2xl mx-auto">
-                    Join thousands of successful traders. Start with as little as $5 and scale up.
+                    Whether you have existing users or new signups, you earn revenue from both.
                 </p>
                 
                 <div class="flex flex-col sm:flex-row gap-4 justify-center mb-10">
                     <button onclick="selectExistingUser()" class="btn-oAuth px-10">
                         <i class="fab fa-deriv mr-2"></i>
-                        Connect via OAuth
+                        Connect Existing Users
                     </button>
                     <button onclick="selectNewUser()" class="btn-primary px-10">
                         <i class="fas fa-user-plus mr-2"></i>
-                        Create Account
+                        Get New Signups
                     </button>
                 </div>
                 
@@ -929,31 +587,8 @@
                 </div>
                 
                 <div>
-                    <h4 class="font-bold mb-4 text-lg">Quick Links</h4>
-                    <ul class="space-y-3">
-                        <li><a href="#features" class="text-gray-400 hover:text-green-400 transition">Features</a></li>
-                        <li><a href="#get-started" class="text-gray-400 hover:text-green-400 transition">Get Started</a></li>
-                        <li><a href="#testimonials" class="text-gray-400 hover:text-green-400 transition">Results</a></li>
-                    </ul>
-                </div>
-                
-                <div>
-                    <h4 class="font-bold mb-4 text-lg">Support</h4>
-                    <ul class="space-y-3">
-                        <li><a href="https://wa.me/message/OHFDN7U4RVYWF1" target="_blank" class="text-gray-400 hover:text-green-400 transition">
-                            <i class="fab fa-whatsapp mr-2"></i>WhatsApp Support
-                        </a></li>
-                        <li><a href="https://t.me/DigitMatchStarsOfficial" target="_blank" class="text-gray-400 hover:text-green-400 transition">
-                            <i class="fab fa-telegram mr-2"></i>Telegram Channel
-                        </a></li>
-                    </ul>
-                </div>
-                
-                <div>
                     <h4 class="font-bold mb-4 text-lg">Legal</h4>
                     <ul class="space-y-3">
-                        <li><a href="#" onclick="showTerms()" class="text-gray-400 hover:text-green-400 transition">Terms of Service</a></li>
-                        <li><a href="#" onclick="showPrivacy()" class="text-gray-400 hover:text-green-400 transition">Privacy Policy</a></li>
                         <li><a href="#" onclick="showRiskWarning()" class="text-gray-400 hover:text-green-400 transition">Risk Warning</a></li>
                     </ul>
                 </div>
@@ -964,7 +599,7 @@
                     © 2024 DigitMatchStars Pro. All rights reserved.
                 </p>
                 <p class="text-gray-600 text-sm mt-2">
-                    Official Deriv Application ID: 117144 | Not affiliated with Deriv.com
+                    Official Deriv Application ID: 117144 | Earn commissions AND markup
                 </p>
             </div>
         </div>
@@ -985,40 +620,45 @@
                     <p class="text-gray-400">Select how you want to access the trading bot</p>
                 </div>
                 
-                <div class="grid md:grid-cols-2 gap-6 mb-8">
+                <div class="grid md:grid-cols-1 gap-6 mb-8">
                     <!-- Existing User Card (OAuth) -->
-                    <div id="existingUserCard" class="user-type-card glass-card rounded-xl p-6 text-center cursor-pointer" onclick="selectExistingUser(true)">
+                    <div id="existingUserCard" class="user-type-card glass-card text-center cursor-pointer" onclick="selectExistingUser(true)">
                         <div class="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mx-auto mb-4">
                             <i class="fab fa-deriv text-2xl"></i>
                         </div>
-                        <h3 class="text-xl font-bold mb-2">Existing Deriv User</h3>
+                        <h3 class="text-xl font-bold mb-2">Already have Deriv Account?</h3>
                         <p class="text-gray-400 text-sm mb-4">
                             Connect via Deriv OAuth. Fast, secure, no API token needed.
                         </p>
-                        <div class="text-center mt-4">
+                        <div class="oauth-badge mb-4">
+                            <i class="fas fa-money-bill-wave mr-2"></i>
+                            <strong>You earn markup</strong> on every trade through App ID 117144
+                        </div>
+                        <div class="text-center">
                             <button class="btn-oAuth w-full">
                                 <i class="fab fa-deriv mr-2"></i>
-                                Connect via OAuth
+                                Connect via OAuth (Earn Markup)
                             </button>
                         </div>
                     </div>
                     
                     <!-- New User Card -->
-                    <div id="newUserCard" class="user-type-card glass-card rounded-xl p-6 text-center cursor-pointer" onclick="selectNewUser(true)">
+                    <div id="newUserCard" class="user-type-card glass-card text-center cursor-pointer" onclick="selectNewUser(true)">
                         <div class="w-16 h-16 rounded-full bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-4">
                             <i class="fas fa-user-plus text-2xl"></i>
                         </div>
-                        <h3 class="text-xl font-bold mb-2">New to Deriv</h3>
+                        <h3 class="text-xl font-bold mb-2">New to Deriv?</h3>
                         <p class="text-gray-400 text-sm mb-4">
-                            Create account first, then connect with API token
+                            Sign up via our official affiliate link first.
                         </p>
-                        <div class="affiliate-badge mb-3">
+                        <div class="affiliate-badge mb-4">
                             <i class="fas fa-external-link-alt mr-2"></i>
-                            Official Signup
+                            <strong>You earn commissions</strong> + markup on all trades
                         </div>
-                        <div class="text-center mt-4">
+                        <div class="text-center">
                             <button class="btn-primary w-full">
-                                Create Account
+                                <i class="fas fa-user-plus mr-2"></i>
+                                Sign Up via Affiliate (Earn Commissions)
                             </button>
                         </div>
                     </div>
@@ -1027,7 +667,7 @@
                 <div class="text-center">
                     <p class="text-gray-500 text-sm">
                         <i class="fas fa-info-circle mr-1"></i>
-                        Already have Deriv? Choose "Existing User" for OAuth connection.
+                        All users eventually connect via OAuth with App ID 117144
                     </p>
                 </div>
             </div>
@@ -1051,30 +691,30 @@
                 </div>
                 
                 <div class="oauth-badge mb-6">
-                    <i class="fas fa-shield-alt mr-2"></i>
-                    <strong>Official App ID:</strong> 117144
+                    <i class="fas fa-money-bill-wave mr-2"></i>
+                    <strong>You earn markup</strong> through App ID: 117144
                 </div>
                 
                 <div class="info-message mb-6">
                     <i class="fas fa-info-circle mr-2"></i>
-                    <strong>OAuth Benefits:</strong> No API token needed, more secure, one-click connection
+                    <strong>How it works:</strong> All trades are placed through App ID 117144, earning you markup.
                 </div>
                 
                 <div class="mb-8">
                     <p class="text-gray-300 mb-4">
-                        <strong>How OAuth works:</strong>
+                        <strong>Steps:</strong>
                     </p>
                     <ul class="text-gray-400 space-y-2 text-sm">
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Click "Authorize with Deriv" below</li>
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Login to your Deriv account</li>
-                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Grant permissions to our app</li>
+                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Grant permissions to App ID 117144</li>
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> You'll be redirected back automatically</li>
-                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Bot access granted instantly</li>
+                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> All your trades go through our app</li>
                     </ul>
                 </div>
                 
                 <div class="flex space-x-4">
-                    <button onclick="backToChoice()" class="btn-secondary flex-1">
+                    <button onclick="backToChoice()" class="btn-primary flex-1">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back
                     </button>
@@ -1085,7 +725,7 @@
                 </div>
             </div>
             
-            <!-- New User Step -->
+            <!-- New User Signup Step -->
             <div id="newUserStep" class="auth-step hidden">
                 <div class="step-indicator">
                     <div class="step active">1</div>
@@ -1099,18 +739,18 @@
                     <div class="w-20 h-20 rounded-full bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-4">
                         <i class="fas fa-external-link-alt text-3xl"></i>
                     </div>
-                    <h2 class="text-3xl font-bold mb-2">Create Deriv Account</h2>
+                    <h2 class="text-3xl font-bold mb-2">Step 1: Create Deriv Account</h2>
                     <p class="text-gray-400">Sign up via our official affiliate link first</p>
-                </div>
-                
-                <div class="info-message mb-6">
-                    <i class="fas fa-link mr-2"></i>
-                    <strong>Official Affiliate Link:</strong> You'll be redirected to Deriv's official signup
                 </div>
                 
                 <div class="affiliate-badge mb-6 text-center">
                     <i class="fas fa-handshake mr-2"></i>
-                    <strong>Step 1:</strong> Create your Deriv account
+                    <strong>You earn commissions</strong> on deposits through affiliate link
+                </div>
+                
+                <div class="info-message mb-6">
+                    <i class="fas fa-info-circle mr-2"></i>
+                    <strong>Dual Revenue:</strong> Earn commissions now + markup on all future trades
                 </div>
                 
                 <div class="mb-8">
@@ -1121,25 +761,25 @@
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Click the signup link below</li>
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Sign up for Deriv account</li>
                         <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Verify your account (KYC)</li>
-                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Make first deposit ($10+ recommended)</li>
-                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Return here to connect API token</li>
+                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Make first deposit</li>
+                        <li><i class="fas fa-arrow-right text-green-500 mr-2"></i> Return here to connect via OAuth</li>
                     </ul>
                 </div>
                 
                 <div class="flex space-x-4">
-                    <button onclick="backToChoice()" class="btn-secondary flex-1">
+                    <button onclick="backToChoice()" class="btn-primary flex-1">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back
                     </button>
-                    <button onclick="openDerivSignup()" class="btn-primary flex-1">
+                    <button onclick="openDerivSignup()" class="btn-oAuth flex-1">
                         <i class="fas fa-external-link-alt mr-2"></i>
                         Go to Deriv Signup
                     </button>
                 </div>
             </div>
             
-            <!-- API Token Step (for new users after signup) -->
-            <div id="apiTokenStep" class="auth-step hidden">
+            <!-- OAuth After Signup Step -->
+            <div id="oauthAfterSignupStep" class="auth-step hidden">
                 <div class="step-indicator">
                     <div class="step">1</div>
                     <div class="step-line active"></div>
@@ -1149,43 +789,43 @@
                 </div>
                 
                 <div class="text-center mb-8">
-                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-4">
-                        <i class="fas fa-key text-3xl"></i>
+                    <div class="w-20 h-20 rounded-full bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mx-auto mb-4">
+                        <i class="fab fa-deriv text-3xl"></i>
                     </div>
-                    <h2 class="text-3xl font-bold mb-2">Connect API Token</h2>
-                    <p class="text-gray-400">Enter your API token from your new Deriv account</p>
+                    <h2 class="text-3xl font-bold mb-2">Step 2: Connect via OAuth</h2>
+                    <p class="text-gray-400">Now connect your new account via OAuth</p>
                 </div>
                 
-                <div class="api-input-container mb-6">
-                    <input type="password" id="apiToken" class="auth-input" placeholder="Enter your Deriv API token" autocomplete="off">
-                    <button id="tokenVisibilityBtn" class="validate-btn" onclick="toggleTokenVisibility()">
-                        <i class="fas fa-eye"></i>
-                    </button>
+                <div class="info-message mb-6">
+                    <i class="fas fa-info-circle mr-2"></i>
+                    <strong>Congratulations!</strong> You've signed up via our affiliate link. Now connect via OAuth to start trading.
+                </div>
+                
+                <div class="oauth-badge mb-6">
+                    <i class="fas fa-money-bill-wave mr-2"></i>
+                    <strong>Now earn markup</strong> on all trades through App ID 117144
                 </div>
                 
                 <div class="mb-8">
-                    <p class="text-gray-300 mb-2">
-                        <strong>How to get your API token:</strong>
+                    <p class="text-gray-300 mb-4">
+                        <strong>Benefits:</strong>
                     </p>
-                    <ul class="text-gray-400 text-sm space-y-1">
-                        <li>1. Login to your new Deriv account</li>
-                        <li>2. Go to Settings → Security and Safety → API Token</li>
-                        <li>3. Generate a new token with "Read" and "Trade" permissions</li>
-                        <li>4. Copy and paste it above</li>
+                    <ul class="text-gray-400 space-y-2 text-sm">
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> You earn commissions from signup</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Now earn markup on all trades</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> All trades go through App ID 117144</li>
+                        <li><i class="fas fa-check-circle text-green-500 mr-2"></i> Secure OAuth connection</li>
                     </ul>
                 </div>
                 
-                <div id="tokenError" class="error-message hidden mb-4"></div>
-                <div id="tokenSuccess" class="success-message hidden mb-4"></div>
-                
                 <div class="flex space-x-4">
-                    <button onclick="backToNewUser()" class="btn-secondary flex-1">
+                    <button onclick="backToNewUser()" class="btn-primary flex-1">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back
                     </button>
-                    <button onclick="validateApiToken()" id="validateTokenBtn" class="btn-primary flex-1">
-                        <i class="fas fa-check mr-2"></i>
-                        Connect & Access Bot
+                    <button onclick="startOAuth()" class="btn-oAuth flex-1">
+                        <i class="fab fa-deriv mr-2"></i>
+                        Connect via OAuth
                     </button>
                 </div>
             </div>
@@ -1194,155 +834,79 @@
 
     <script>
         // =============================================
-        // CONFIGURATION
+        // CONFIGURATION - YOUR APP SETTINGS
         // =============================================
         const CONFIG = {
-            APP_ID: 117144,
+            APP_ID: 117144, // Your Deriv App ID for earning markup
             AFFILIATE_LINK: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/",
-            REDIRECT_URI: "https://derivmatchstarsbot.vercel.app/bot.html",
-            OAUTH_URL: "https://oauth.deriv.com/oauth2/authorize"
+            REDIRECT_URI: window.location.href, // Current page URL
+            OAUTH_AUTH_URL: "https://oauth.deriv.com/oauth2/authorize",
+            SCOPES: "read,trade,trading_information,admin",
+            BRAND: "deriv",
+            LANGUAGE: "en"
         };
 
         // =============================================
         // STATE MANAGEMENT
         // =============================================
         let authState = {
-            userType: null, // 'existing' (OAuth) or 'new' (API token)
-            authenticated: false
+            userType: null, // 'existing' or 'new'
+            signupCompleted: false
         };
-
-        // =============================================
-        // DOM ELEMENTS
-        // =============================================
-        const authModal = document.getElementById('authModal');
-        const connectionStatus = document.getElementById('connectionStatus');
-        const accessBotBtn = document.getElementById('accessBotBtn');
-        const getStartedBtn = document.getElementById('getStartedBtn');
-
-        const authSteps = {
-            choice: document.getElementById('choiceStep'),
-            oauth: document.getElementById('oauthStep'),
-            newUser: document.getElementById('newUserStep'),
-            apiToken: document.getElementById('apiTokenStep')
-        };
-
-        const existingUserCard = document.getElementById('existingUserCard');
-        const newUserCard = document.getElementById('newUserCard');
-        const apiTokenInput = document.getElementById('apiToken');
-        const tokenError = document.getElementById('tokenError');
-        const tokenSuccess = document.getElementById('tokenSuccess');
-        const validateTokenBtn = document.getElementById('validateTokenBtn');
-        const tokenVisibilityBtn = document.getElementById('tokenVisibilityBtn');
-        const oauthBtn = document.getElementById('oauthBtn');
 
         // =============================================
         // INITIALIZATION
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('DigitMatchStars Pro - Landing Page Loaded');
+            console.log('DigitMatchStars Pro - Dual Revenue System Loaded');
             console.log('App ID:', CONFIG.APP_ID);
+            
+            // Check for OAuth response in URL
+            checkOAuthResponse();
             
             // Check if user is already authenticated
             checkAuthStatus();
-            
-            // Setup event listeners
-            setupEventListeners();
-            
-            // Close modal when clicking outside
-            window.addEventListener('click', function(event) {
-                if (event.target === authModal) {
-                    closeModal();
-                }
-            });
-            
-            // Enter key for API token
-            if (apiTokenInput) {
-                apiTokenInput.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        validateApiToken();
-                    }
-                });
-            }
         });
-
-        // =============================================
-        // AUTHENTICATION STATUS CHECK
-        // =============================================
-        function checkAuthStatus() {
-            const connectedWithDerivmatchstars = localStorage.getItem('connected_with_derivmatchstars');
-            const authMethod = localStorage.getItem('auth_method'); // 'oauth' or 'api'
-            
-            console.log('Auth check:', { 
-                connected: connectedWithDerivmatchstars === 'true',
-                method: authMethod
-            });
-            
-            if (connectedWithDerivmatchstars === 'true') {
-                // User is authenticated and connected
-                showAccessBotButton();
-                showConnectionStatus();
-            } else {
-                // User needs to authenticate
-                showGetStartedButton();
-                hideConnectionStatus();
-            }
-        }
-
-        function showAccessBotButton() {
-            accessBotBtn.classList.remove('hidden');
-            getStartedBtn.classList.add('hidden');
-            accessBotBtn.onclick = function() {
-                window.location.href = 'bot.html';
-            };
-        }
-
-        function showGetStartedButton() {
-            accessBotBtn.classList.add('hidden');
-            getStartedBtn.classList.remove('hidden');
-        }
-
-        function showConnectionStatus() {
-            connectionStatus.classList.remove('hidden');
-            connectionStatus.classList.add('connected');
-        }
-
-        function hideConnectionStatus() {
-            connectionStatus.classList.remove('connected');
-            connectionStatus.classList.add('hidden');
-        }
 
         // =============================================
         // MODAL FUNCTIONS
         // =============================================
         function openChoiceModal() {
-            authModal.style.display = 'flex';
-            resetAuthState();
+            document.getElementById('authModal').style.display = 'flex';
             showStep('choice');
         }
 
         function closeModal() {
-            authModal.style.display = 'none';
+            document.getElementById('authModal').style.display = 'none';
             resetAuthState();
         }
 
         function showStep(stepName) {
-            Object.values(authSteps).forEach(step => {
-                if (step) step.classList.add('hidden');
+            const steps = ['choiceStep', 'oauthStep', 'newUserStep', 'oauthAfterSignupStep'];
+            steps.forEach(step => {
+                const element = document.getElementById(step);
+                if (element) {
+                    element.classList.add('hidden');
+                }
             });
-            if (authSteps[stepName]) authSteps[stepName].classList.remove('hidden');
+            
+            const stepElement = document.getElementById(stepName);
+            if (stepElement) {
+                stepElement.classList.remove('hidden');
+            }
         }
 
         function resetAuthState() {
             authState = {
                 userType: null,
-                authenticated: false
+                signupCompleted: false
             };
             
-            if (existingUserCard) existingUserCard.classList.remove('selected');
-            if (newUserCard) newUserCard.classList.remove('selected');
-            if (apiTokenInput) apiTokenInput.value = '';
-            if (tokenError) tokenError.classList.add('hidden');
-            if (tokenSuccess) tokenSuccess.classList.add('hidden');
+            // Reset card selections
+            const existingCard = document.getElementById('existingUserCard');
+            const newCard = document.getElementById('newUserCard');
+            if (existingCard) existingCard.classList.remove('selected');
+            if (newCard) newCard.classList.remove('selected');
         }
 
         // =============================================
@@ -1356,8 +920,11 @@
             }
             
             authState.userType = 'existing';
-            if (existingUserCard) existingUserCard.classList.add('selected');
-            if (newUserCard) newUserCard.classList.remove('selected');
+            const existingCard = document.getElementById('existingUserCard');
+            const newCard = document.getElementById('newUserCard');
+            
+            if (existingCard) existingCard.classList.add('selected');
+            if (newCard) newCard.classList.remove('selected');
             
             setTimeout(() => showStep('oauth'), 500);
         }
@@ -1370,8 +937,11 @@
             }
             
             authState.userType = 'new';
-            if (newUserCard) newUserCard.classList.add('selected');
-            if (existingUserCard) existingUserCard.classList.remove('selected');
+            const existingCard = document.getElementById('existingUserCard');
+            const newCard = document.getElementById('newUserCard');
+            
+            if (newCard) newCard.classList.add('selected');
+            if (existingCard) existingCard.classList.remove('selected');
             
             setTimeout(() => showStep('newUser'), 500);
         }
@@ -1385,222 +955,201 @@
         }
 
         // =============================================
-        // OAuth FUNCTIONS
+        // OAuth FUNCTIONS (for both paths)
         // =============================================
         function startOAuth() {
-            // Construct OAuth URL
+            // Show loading state
+            const oauthBtn = document.getElementById('oauthBtn');
+            if (oauthBtn) {
+                const originalText = oauthBtn.innerHTML;
+                oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting...';
+                oauthBtn.disabled = true;
+            }
+            
+            // Generate CSRF protection state
+            const state = 'state_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('oauth_state', state);
+            
+            // Construct OAuth URL with App ID
             const params = new URLSearchParams({
-                app_id: CONFIG.APP_ID,
+                app_id: CONFIG.APP_ID.toString(),
                 response_type: 'token',
                 redirect_uri: CONFIG.REDIRECT_URI,
-                scope: 'read,trade,trading_information,admin',
-                brand: 'deriv',
-                language: 'en'
+                scope: CONFIG.SCOPES,
+                brand: CONFIG.BRAND,
+                language: CONFIG.LANGUAGE,
+                state: state
             });
             
-            const oauthUrl = `${CONFIG.OAUTH_URL}?${params.toString()}`;
+            const oauthUrl = `${CONFIG.OAUTH_AUTH_URL}?${params.toString()}`;
             
-            console.log('OAuth URL:', oauthUrl);
+            console.log('Redirecting to OAuth URL:', oauthUrl);
             
-            // Show loading state
-            const originalText = oauthBtn.innerHTML;
-            oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting...';
-            oauthBtn.disabled = true;
+            // Redirect to Deriv OAuth
+            window.location.href = oauthUrl;
+        }
+
+        function checkOAuthResponse() {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
             
-            // Store OAuth state
-            localStorage.setItem('auth_method', 'oauth');
+            const accessToken = params.get('access_token');
+            const state = params.get('state');
             
-            // For demo purposes, we'll simulate OAuth
-            // In production, this would redirect to the OAuth URL
-            setTimeout(() => {
-                // Simulate successful OAuth
-                simulateOAuthSuccess();
+            if (accessToken) {
+                // Validate state to prevent CSRF
+                const storedState = localStorage.getItem('oauth_state');
+                if (state && state !== storedState) {
+                    console.error('State mismatch - possible CSRF attack');
+                    showErrorMessage('Security error. Please try again.');
+                    return;
+                }
                 
-                // Reset button
-                oauthBtn.innerHTML = originalText;
-                oauthBtn.disabled = false;
-            }, 2000);
-        }
-
-        function simulateOAuthSuccess() {
-            // Create mock OAuth token and data
-            const mockToken = 'deriv_oauth_' + Date.now() + '_' + Math.random().toString(36).substr(2, 16);
-            const mockAccount = {
-                name: 'Deriv Trader',
-                email: 'trader@example.com',
-                accountId: 'CR' + Math.floor(Math.random() * 1000000000),
-                currency: 'USD',
-                balance: 1000
-            };
-            
-            // Store OAuth data
-            localStorage.setItem('deriv_oauth_token', mockToken);
-            localStorage.setItem('deriv_account_info', JSON.stringify(mockAccount));
-            localStorage.setItem('connected_with_derivmatchstars', 'true');
-            localStorage.setItem('auth_method', 'oauth');
-            
-            // Show success message
-            alert('✅ OAuth authorization successful!\n\nYou are now connected to DigitMatchStars Pro. Click OK to access the bot.');
-            
-            // Close modal and update UI
-            closeModal();
-            checkAuthStatus();
-            
-            // Redirect to bot
-            setTimeout(() => {
-                window.location.href = 'bot.html';
-            }, 500);
-        }
-
-        // =============================================
-        // API TOKEN FUNCTIONS (for new users)
-        // =============================================
-        function toggleTokenVisibility() {
-            if (apiTokenInput.type === 'password') {
-                apiTokenInput.type = 'text';
-                tokenVisibilityBtn.innerHTML = '<i class="fas fa-eye-slash"></i>';
-            } else {
-                apiTokenInput.type = 'password';
-                tokenVisibilityBtn.innerHTML = '<i class="fas fa-eye"></i>';
-            }
-        }
-
-        async function validateApiToken() {
-            const token = apiTokenInput.value.trim();
-            
-            if (!token) {
-                showTokenError("Please enter your API token");
-                return;
-            }
-            
-            // Basic validation - check if it looks like a JWT token
-            if (!token.startsWith('eyJ')) {
-                showTokenError("Invalid API token format. Token should start with 'eyJ'");
-                return;
-            }
-            
-            // Show loading
-            const originalText = validateTokenBtn.innerHTML;
-            validateTokenBtn.innerHTML = '<div class="loading-spinner"></div> Validating...';
-            validateTokenBtn.disabled = true;
-            
-            try {
-                // Simulate validation
-                await simulateTokenValidation(token);
+                // Store OAuth token
+                sessionStorage.setItem('deriv_access_token', accessToken);
+                sessionStorage.setItem('deriv_token_type', 'Bearer');
                 
-                // Store token and mark as connected
-                localStorage.setItem('derivToken', token);
+                // Store authentication info
                 localStorage.setItem('connected_with_derivmatchstars', 'true');
-                localStorage.setItem('auth_method', 'api');
+                localStorage.setItem('auth_method', 'oauth');
+                localStorage.setItem('app_id_used', CONFIG.APP_ID.toString());
                 
-                // Show success
-                showTokenSuccess("✅ Token validated successfully! Redirecting to bot...");
+                // Check if this was after affiliate signup
+                const viaAffiliate = localStorage.getItem('via_affiliate');
+                if (viaAffiliate === 'true') {
+                    // User signed up via affiliate, now connected via OAuth
+                    console.log('User completed affiliate signup + OAuth connection');
+                    localStorage.removeItem('via_affiliate');
+                }
+                
+                // Clean up URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+                
+                // Clean up stored state
+                localStorage.removeItem('oauth_state');
                 
                 // Update UI and redirect
+                updateUIAfterAuth();
+                showSuccessMessage('✅ Successfully connected! All trades go through App ID ' + CONFIG.APP_ID);
+                
+                // Redirect to bot
                 setTimeout(() => {
-                    closeModal();
-                    checkAuthStatus();
                     window.location.href = 'bot.html';
                 }, 1500);
-                
-            } catch (error) {
-                console.error('Validation error:', error);
-                showTokenError("Unable to validate token. Please check your token and try again.");
-            } finally {
-                validateTokenBtn.innerHTML = originalText;
-                validateTokenBtn.disabled = false;
-            }
-        }
-
-        async function simulateTokenValidation(token) {
-            return new Promise((resolve, reject) => {
-                setTimeout(() => {
-                    if (token.length > 30 && token.includes('.')) {
-                        resolve({
-                            success: true,
-                            message: "Token validated successfully",
-                            account: {
-                                name: "Verified Trader",
-                                balance: 1000,
-                                currency: "USD"
-                            }
-                        });
-                    } else {
-                        reject(new Error("Invalid token"));
-                    }
-                }, 1500);
-            });
-        }
-
-        function showTokenError(message) {
-            if (tokenError) {
-                tokenError.textContent = message;
-                tokenError.classList.remove('hidden');
-                tokenSuccess.classList.add('hidden');
-            }
-        }
-
-        function showTokenSuccess(message) {
-            if (tokenSuccess) {
-                tokenSuccess.textContent = message;
-                tokenSuccess.classList.remove('hidden');
-                tokenError.classList.add('hidden');
             }
         }
 
         // =============================================
-        // NEW USER SIGNUP
+        // AFFILIATE SIGNUP FUNCTIONS
         // =============================================
         function openDerivSignup() {
+            // Mark that user is signing up via affiliate
+            localStorage.setItem('via_affiliate', 'true');
+            
             // Open affiliate link in new tab
             window.open(CONFIG.AFFILIATE_LINK, '_blank');
             
-            // After signup, show API token step
+            // Show next step after signup
             setTimeout(() => {
-                alert("✅ Account created!\n\nNow, follow these steps:\n1. Verify your email\n2. Complete KYC verification\n3. Make your first deposit\n4. Generate API token from Deriv dashboard\n5. Return here to connect API token");
-                
-                // Show API token step
-                setTimeout(() => {
-                    showStep('apiToken');
-                }, 500);
+                showStep('oauthAfterSignupStep');
             }, 500);
         }
 
         // =============================================
-        // LEGAL PAGES
+        // AUTHENTICATION STATUS
         // =============================================
-        function showTerms() {
-            alert(`TERMS OF SERVICE
-
-1. Acceptance
-By using DigitMatchStars Pro, you agree to these terms.
-
-2. Service
-We provide automated trading software for Deriv platform.
-
-3. User Responsibility
-- You must have a valid Deriv account
-- You are responsible for your trading decisions
-- You must comply with Deriv's terms
-
-4. Risk
-Trading involves significant risk. You may lose all invested capital.`);
+        function checkAuthStatus() {
+            const connected = localStorage.getItem('connected_with_derivmatchstars') === 'true';
+            const authMethod = localStorage.getItem('auth_method');
+            const appIdUsed = localStorage.getItem('app_id_used');
+            
+            if (connected && authMethod === 'oauth' && appIdUsed === CONFIG.APP_ID.toString()) {
+                showAccessBotButton();
+                showConnectionStatus();
+            } else {
+                showConnectButton();
+                hideConnectionStatus();
+                clearStaleAuth();
+            }
         }
 
-        function showPrivacy() {
-            alert(`PRIVACY POLICY
+        function updateUIAfterAuth() {
+            const accessBotBtn = document.getElementById('accessBotBtn');
+            const getStartedBtn = document.getElementById('getStartedBtn');
+            const connectionStatus = document.getElementById('connectionStatus');
+            
+            if (accessBotBtn) {
+                accessBotBtn.classList.remove('hidden');
+                accessBotBtn.onclick = function() {
+                    window.location.href = 'bot.html';
+                };
+            }
+            
+            if (getStartedBtn) {
+                getStartedBtn.classList.add('hidden');
+            }
+            
+            if (connectionStatus) {
+                connectionStatus.classList.remove('hidden');
+                connectionStatus.classList.add('connected');
+            }
+        }
 
-1. Data Storage
-- API tokens are stored locally in your browser
-- OAuth tokens are handled by Deriv's secure system
-- We don't have access to your Deriv account
-- No personal data is collected
+        function showAccessBotButton() {
+            const accessBotBtn = document.getElementById('accessBotBtn');
+            const getStartedBtn = document.getElementById('getStartedBtn');
+            
+            if (accessBotBtn && getStartedBtn) {
+                accessBotBtn.classList.remove('hidden');
+                getStartedBtn.classList.add('hidden');
+                accessBotBtn.onclick = function() {
+                    window.location.href = 'bot.html';
+                };
+            }
+        }
 
-2. Cookies
-Used for authentication only
+        function showConnectButton() {
+            const accessBotBtn = document.getElementById('accessBotBtn');
+            const getStartedBtn = document.getElementById('getStartedBtn');
+            
+            if (accessBotBtn && getStartedBtn) {
+                accessBotBtn.classList.add('hidden');
+                getStartedBtn.classList.remove('hidden');
+            }
+        }
 
-3. Third Parties
-No data sharing with third parties`);
+        function showConnectionStatus() {
+            const connectionStatus = document.getElementById('connectionStatus');
+            if (connectionStatus) {
+                connectionStatus.classList.remove('hidden');
+                connectionStatus.classList.add('connected');
+            }
+        }
+
+        function hideConnectionStatus() {
+            const connectionStatus = document.getElementById('connectionStatus');
+            if (connectionStatus) {
+                connectionStatus.classList.remove('connected');
+                connectionStatus.classList.add('hidden');
+            }
+        }
+
+        function clearStaleAuth() {
+            sessionStorage.removeItem('deriv_access_token');
+            sessionStorage.removeItem('deriv_token_type');
+            sessionStorage.removeItem('deriv_expires_in');
+            sessionStorage.removeItem('deriv_account_id');
+        }
+
+        // =============================================
+        // HELPER FUNCTIONS
+        // =============================================
+        function showSuccessMessage(message) {
+            alert(message);
+        }
+
+        function showErrorMessage(message) {
+            alert('❌ ' + message);
         }
 
         function showRiskWarning() {
@@ -1608,35 +1157,12 @@ No data sharing with third parties`);
 
 Trading binary options and CFDs carries HIGH RISK.
 
-1. You may lose ALL invested capital
-2. Past performance ≠ future results
-3. Only trade with money you can afford to lose
-4. This is not financial advice
-5. Seek independent financial advice if needed
-
-By using this bot, you acknowledge these risks.`);
-        }
-
-        // =============================================
-        // HELPER FUNCTIONS
-        // =============================================
-        function setupEventListeners() {
-            // Smooth scrolling
-            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-                anchor.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    const targetId = this.getAttribute('href');
-                    if (targetId === '#') return;
-                    
-                    const targetElement = document.querySelector(targetId);
-                    if (targetElement) {
-                        window.scrollTo({
-                            top: targetElement.offsetTop - 80,
-                            behavior: 'smooth'
-                        });
-                    }
-                });
-            });
+IMPORTANT:
+1. All trades go through App ID ${CONFIG.APP_ID} (earn markup)
+2. New users sign up via affiliate link (earn commissions)
+3. Users authenticate via OAuth - secure and easy
+4. Only trade with money you can afford to lose
+5. This is not financial advice`);
         }
     </script>
 </body>
