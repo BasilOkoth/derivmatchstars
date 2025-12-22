@@ -34,9 +34,9 @@
                         <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">Disconnected</span>
                     </div>
                 </div>
-                <div class="flex items-center space-x-4">
-                    <button onclick="logout()" class="text-gray-400 hover:text-white transition-colors">Logout</button>
-                </div>
+                <button onclick="logout()" class="text-gray-400 hover:text-white p-2">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                </button>
             </div>
         </div>
     </nav>
@@ -56,8 +56,8 @@
                 <p class="text-2xl font-bold text-white"><span id="metricWins" class="text-green-400">0</span> / <span id="metricLosses" class="text-red-400">0</span></p>
             </div>
             <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
-                <p class="text-sm font-medium text-gray-400 mb-1">Current Multiplier</p>
-                <p id="metricMultiplier" class="text-2xl font-bold text-blue-400">1x</p>
+                <p class="text-sm font-medium text-gray-400 mb-1">Status</p>
+                <p id="metricStatus" class="text-2xl font-bold text-blue-400 italic text-sm mt-2">Ready</p>
             </div>
         </div>
     </div>
@@ -67,103 +67,101 @@
             <section id="auth-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700">
                 <h2 class="text-lg font-bold mb-4">Authentication</h2>
                 <input type="password" id="authTokenInput" placeholder="Enter API Token..." 
-                       class="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 outline-none mb-4">
+                       class="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 outline-none mb-4 focus:ring-2 focus:ring-green-500">
                 <button onclick="verifyToken()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl">Verify & Connect</button>
             </section>
 
-            <section id="controls-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 opacity-50 cursor-not-allowed pointer-events-none">
+            <section id="controls-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 opacity-50 pointer-events-none">
                 <h2 class="text-lg font-bold mb-4">Bot Config</h2>
                 <div class="space-y-4">
                     <div class="grid grid-cols-2 gap-4">
                         <input type="number" id="baseStake" value="1.00" class="bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm" placeholder="Stake">
                         <input type="number" id="takeProfit" value="10.00" class="bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm" placeholder="Target">
                     </div>
+                    <select id="marketSelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm">
+                        <option value="R_100">Volatility 100 Index</option>
+                        <option value="R_75">Volatility 75 Index</option>
+                        <option value="R_50">Volatility 50 Index</option>
+                    </select>
                     <select id="strategySelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm">
                         <option value="DIGITMATCH">Digit Match</option>
                         <option value="DIGITDIFF">Digit Diff</option>
                     </select>
-                    <button id="mainActionButton" onclick="toggleBot()" class="w-full bg-blue-600 font-bold py-4 rounded-2xl uppercase">Start Bot</button>
+                    <button id="mainActionButton" onclick="toggleBot()" class="w-full bg-blue-600 font-bold py-4 rounded-2xl uppercase tracking-widest">Start Bot</button>
                 </div>
             </section>
         </div>
 
         <div class="lg:col-span-8 space-y-6">
             <div class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 h-[320px] flex flex-col">
-                <div class="flex justify-between mb-6">
-                    <h2 class="text-lg font-bold">Analysis</h2>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-lg font-bold">Tick Stream Analysis</h2>
                     <div class="flex items-center space-x-4">
-                        <span id="price-display" class="font-mono text-xl text-green-400">0.0000</span>
-                        <div id="last-digit-circle" class="w-12 h-12 rounded-full bg-gray-900 flex items-center justify-center text-2xl font-black">-</div>
+                        <span id="price-display" class="font-mono text-xl text-green-400 font-bold">0.0000</span>
+                        <div id="last-digit-circle" class="w-12 h-12 rounded-full bg-gray-900 border-2 border-gray-700 flex items-center justify-center text-2xl font-black">-</div>
                     </div>
                 </div>
-                <div class="flex-grow flex items-end justify-between gap-1" id="digit-histogram">
-                    </div>
+                <div id="digit-histogram" class="flex-grow flex items-end justify-between gap-1 px-2 pb-2">
+                    <div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div><div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div>
+                    <div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div><div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div>
+                    <div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div><div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div>
+                    <div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div><div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div>
+                    <div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div><div class="flex-1 bg-gray-700 rounded-t h-[10%]"></div>
+                </div>
             </div>
-            <div id="log-area" class="bg-black/20 rounded-3xl p-4 h-[400px] overflow-y-auto font-mono text-xs">
-                <div class="text-gray-500 italic">[SYSTEM] Initialized. Awaiting connection...</div>
+            <div id="log-area" class="bg-black/40 rounded-3xl p-4 h-[350px] overflow-y-auto font-mono text-xs space-y-1">
+                <div class="text-gray-500">[SYSTEM] Awaiting session...</div>
             </div>
         </div>
     </main>
 
     <script>
-        // GLOBAL STATE
-        window.appId = '65435'; 
+        // APP CONFIG
+        window.appId = '65435';
         window.ws = null;
         window.isBotRunning = false;
-        window.selectedDigit = 9;
-        window.startingBalance = 0;
-        window.currentBalance = 0;
-        window.netProfit = 0;
-        window.stats = { wins: 0, losses: 0 };
         window.digitHistory = [];
-        const synth = new Tone.PolySynth(Tone.Synth).toDestination();
 
         function log(msg, type = 'INFO') {
-            const logArea = document.getElementById('log-area');
-            const entry = document.createElement('div');
-            entry.innerHTML = `<span class="text-gray-600">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
-            logArea.prepend(entry);
+            const area = document.getElementById('log-area');
+            const div = document.createElement('div');
+            div.className = type === 'WIN' ? 'text-green-400 font-bold' : (type === 'LOSS' ? 'text-red-400' : 'text-gray-400');
+            div.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            area.prepend(div);
         }
 
         function verifyToken() {
             const token = document.getElementById('authTokenInput').value.trim();
-            if (!token) return log('❌ Enter token', 'SYSTEM');
+            if (!token) return;
             
             if (window.ws) window.ws.close();
             window.ws = new WebSocket(`wss://ws.derivws.com/stocks/v3?app_id=${window.appId}`);
             
             window.ws.onopen = () => window.ws.send(JSON.stringify({ authorize: token }));
-            window.ws.onmessage = (msg) => handleWsMessage(JSON.parse(msg.data));
-        }
-
-        function handleWsMessage(data) {
-            if (data.msg_type === 'authorize') {
-                window.startingBalance = parseFloat(data.authorize.balance);
-                document.getElementById('status-badge').textContent = 'Connected';
-                document.getElementById('status-badge').className = 'bg-green-600 px-3 py-1 rounded-full text-sm';
-                document.getElementById('controls-section').classList.remove('opacity-50', 'pointer-events-none');
-                log(`✅ Welcome ${data.authorize.loginid}`);
-                window.ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
-            }
-            if (data.msg_type === 'tick') {
-                const digit = parseInt(data.tick.quote.toFixed(data.tick.pip_size).slice(-1));
-                document.getElementById('price-display').textContent = data.tick.quote;
-                document.getElementById('last-digit-circle').textContent = digit;
-                updateHistogram(digit);
-            }
-        }
-
-        function updateHistogram(digit) {
-            window.digitHistory.push(digit);
-            if (window.digitHistory.length > 100) window.digitHistory.shift();
-            // Histogram rendering logic...
+            window.ws.onmessage = (msg) => {
+                const data = JSON.parse(msg.data);
+                if (data.msg_type === 'authorize') {
+                    document.getElementById('status-badge').textContent = 'Connected';
+                    document.getElementById('status-badge').className = 'ml-3 bg-green-600 px-3 py-1 rounded-full text-sm';
+                    document.getElementById('controls-section').classList.remove('opacity-50', 'pointer-events-none');
+                    log(`✅ Authorized: ${data.authorize.loginid}`, 'SYSTEM');
+                }
+                if (data.msg_type === 'tick') {
+                    const digit = parseInt(data.tick.quote.toFixed(data.tick.pip_size).slice(-1));
+                    document.getElementById('price-display').textContent = data.tick.quote;
+                    document.getElementById('last-digit-circle').textContent = digit;
+                }
+            };
         }
 
         function toggleBot() {
             window.isBotRunning = !window.isBotRunning;
-            document.getElementById('mainActionButton').textContent = window.isBotRunning ? 'Stop Bot' : 'Start Bot';
+            const btn = document.getElementById('mainActionButton');
+            btn.textContent = window.isBotRunning ? 'Stop Bot' : 'Start Bot';
+            btn.className = window.isBotRunning ? 'w-full bg-red-600 font-bold py-4 rounded-2xl uppercase' : 'w-full bg-blue-600 font-bold py-4 rounded-2xl uppercase';
+            
             if (window.isBotRunning) {
-                window.ws.send(JSON.stringify({ ticks: 'R_100', subscribe: 1 }));
+                window.ws.send(JSON.stringify({ ticks: document.getElementById('marketSelect').value, subscribe: 1 }));
             }
         }
 
@@ -172,20 +170,27 @@
             window.location.reload();
         }
 
-        // ENHANCED AUTO-AUTHENTICATION (URL HANDLER)
+        // =============================================
+        // ENHANCED UNIVERSAL AUTH HANDLER (VERCEL)
+        // =============================================
         window.addEventListener('DOMContentLoaded', () => {
-            const urlParams = new URLSearchParams(window.location.search);
-            const tokenFromUrl = urlParams.get('token1') || urlParams.get('token2');
+            // Check both Query (?) and Hash (#) for tokens sent by Deriv
+            const searchStr = window.location.search || window.location.hash.replace('#', '?');
+            const urlParams = new URLSearchParams(searchStr);
+            const activeToken = urlParams.get('token1') || urlParams.get('token2');
 
-            if (tokenFromUrl) {
-                localStorage.setItem('derivToken', tokenFromUrl);
+            if (activeToken) {
+                log('🎫 Token detected from URL. Syncing session...', 'SYSTEM');
+                localStorage.setItem('derivToken', activeToken);
+                // Clear URL to hide token for security
                 window.history.replaceState({}, document.title, window.location.pathname);
             }
 
             const savedToken = localStorage.getItem('derivToken');
             if (savedToken) {
                 document.getElementById('authTokenInput').value = savedToken;
-                setTimeout(verifyToken, 500);
+                log('🔐 Session found. Auto-connecting...', 'SYSTEM');
+                setTimeout(verifyToken, 800);
             }
         });
     </script>
