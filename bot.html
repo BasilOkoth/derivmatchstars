@@ -156,6 +156,19 @@
             justify-content: center;
             flex-direction: column;
         }
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -169,7 +182,7 @@
             </div>
             <h2 class="text-4xl font-bold mb-4 gradient-text">DigitMatchStars Pro™</h2>
             <p class="text-xl text-gray-300 mb-8">Auto-starting trading bot...</p>
-            <div class="loading-spinner mx-auto" style="width: 40px; height: 40px; border-top-color: white;"></div>
+            <div class="loading-spinner mx-auto mb-4"></div>
             <p class="text-gray-400 mt-6">Authenticating and connecting to Deriv</p>
         </div>
     </div>
@@ -270,7 +283,7 @@
             <div id="tokenVerificationStep" class="auth-step">
                 <div class="text-center mb-8">
                     <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
-                        <div class="loading-spinner" style="border-top-color: white; width: 40px; height: 40px;"></div>
+                        <div class="loading-spinner"></div>
                     </div>
                     <h2 class="text-2xl font-bold mb-2">Verifying Token</h2>
                     <p class="text-gray-400">Checking token validity with Deriv...</p>
@@ -505,49 +518,70 @@
 
     <script>
         // ============================================================================
-        // AUTOMATIC OAuth REDIRECT HANDLER - FOR VERCEL DEPLOYMENT
+        // AUTOMATIC OAuth REDIRECT HANDLER - FIXED VERSION
         // ============================================================================
 
         // Check for token passed from main page via localStorage or URL
         function checkForAutoAuth() {
             console.log('🔍 Checking for automatic OAuth authentication...');
             
-            // Method 1: Check for token in localStorage (set by main page)
-            const savedToken = localStorage.getItem('derivToken');
-            const authMethod = localStorage.getItem('auth_method');
-            const autoOpenFlag = localStorage.getItem('auto_open_bot');
-            
-            // Method 2: Check URL parameters (from main page redirect)
+            // FIRST: Check URL parameters (from main page redirect)
             const urlParams = new URLSearchParams(window.location.search);
             const urlToken = urlParams.get('token');
             const oauthRedirect = urlParams.get('oauth_redirect');
             const autoOpen = urlParams.get('auto_open');
+            
+            // SECOND: Check for token in localStorage (set by main page)
+            const savedToken = localStorage.getItem('derivToken');
+            const authMethod = localStorage.getItem('auth_method');
+            const autoOpenFlag = localStorage.getItem('auto_open_bot');
+            
+            console.log('🔍 Bot: Auth check results:', {
+                urlToken: !!urlToken,
+                oauthRedirect: oauthRedirect,
+                autoOpen: autoOpen,
+                savedToken: !!savedToken,
+                authMethod: authMethod,
+                autoOpenFlag: autoOpenFlag
+            });
             
             // Clean URL if we have parameters
             if (urlToken || oauthRedirect || autoOpen) {
                 window.history.replaceState({}, document.title, window.location.pathname);
             }
             
-            if ((savedToken && authMethod === 'oauth') || urlToken) {
-                const token = urlToken || savedToken;
-                console.log('✅ Found OAuth token for auto-authentication');
+            // PRIORITY 1: URL token from OAuth redirect
+            if (urlToken && oauthRedirect === '1') {
+                console.log('✅ Found OAuth token in URL (direct redirect)');
                 
-                // Store token if from URL
-                if (urlToken) {
-                    localStorage.setItem('derivToken', urlToken);
-                    localStorage.setItem('auth_method', 'oauth');
-                }
+                // Store token from URL
+                localStorage.setItem('derivToken', urlToken);
+                localStorage.setItem('auth_method', 'oauth');
+                localStorage.setItem('last_auth_time', Date.now());
+                localStorage.setItem('auto_open_bot', 'true');
+                
+                return {
+                    token: urlToken,
+                    autoStart: (autoOpen === '1' || autoOpenFlag === 'true'),
+                    source: 'url_oauth'
+                };
+            }
+            
+            // PRIORITY 2: LocalStorage token with OAuth method
+            if (savedToken && authMethod === 'oauth') {
+                console.log('✅ Found OAuth token in localStorage');
                 
                 // Clear auto-open flag after use
                 localStorage.removeItem('auto_open_bot');
                 
                 return {
-                    token: token,
-                    autoStart: (autoOpenFlag === 'true' || autoOpen === '1'),
-                    source: urlToken ? 'url' : 'localStorage'
+                    token: savedToken,
+                    autoStart: (autoOpenFlag === 'true'),
+                    source: 'localStorage_oauth'
                 };
             }
             
+            console.log('⚠️ No OAuth token found for auto-authentication');
             return null;
         }
 
@@ -635,13 +669,18 @@
                 console.log('🚀 Auto-login detected from main page');
                 console.log('Auto-start flag:', autoAuth.autoStart);
                 
-                // Show auto-start overlay
+                // Show auto-start overlay immediately
                 document.getElementById('autoStartOverlay').style.display = 'flex';
                 
                 // Skip auth modal, directly verify token with auto-start
                 showStep('tokenVerificationStep');
                 window.autoStartEnabled = autoAuth.autoStart;
-                verifyToken(autoAuth.token, autoAuth.autoStart);
+                
+                // Wait a moment for UI to update, then verify
+                setTimeout(() => {
+                    verifyToken(autoAuth.token, autoAuth.autoStart);
+                }, 500);
+                
             } else {
                 // If no auto-auth, check for existing token
                 const savedToken = localStorage.getItem('derivToken');
@@ -649,6 +688,7 @@
                 
                 if (savedToken) {
                     console.log('🔍 Found saved token, verifying...');
+                    showAuthModal();
                     showStep('tokenVerificationStep');
                     verifyToken(savedToken, false);
                 } else {
@@ -663,6 +703,14 @@
                 showError('Please enter a valid token');
                 showStep('tokenRequiredStep');
                 return;
+            }
+            
+            // Update auto-start overlay message if auto-starting
+            if (autoStart) {
+                const overlayText = document.querySelector('#autoStartOverlay p.text-gray-400');
+                if (overlayText) {
+                    overlayText.textContent = 'Auto-starting trading bot after authentication...';
+                }
             }
             
             // Show verifying step
@@ -706,14 +754,6 @@
                         setTimeout(() => {
                             hideAuthModal();
                             initializeBot();
-                            
-                            // AUTO-START BOT if flag is set
-                            if (autoStart) {
-                                console.log('🚀 Auto-starting bot after authentication');
-                                setTimeout(() => {
-                                    startBot();
-                                }, 1000);
-                            }
                         }, 1000);
                     }
                 } catch (e) {
@@ -842,9 +882,17 @@
             log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
             log('🔐 All trades go through App ID 117144', 'AUTH');
             
-            // Show auto-start message if applicable
+            // CRITICAL: Auto-start bot if flag is set
             if (window.autoStartEnabled) {
+                console.log('🚀 Auto-start: Starting bot automatically');
                 log('🚀 Auto-start: Bot will start trading automatically', 'SYSTEM');
+                
+                // Wait 1 second for UI to fully initialize, then start
+                setTimeout(() => {
+                    if (!window.isBotRunning) {
+                        startBot();
+                    }
+                }, 1000);
             }
         }
         
