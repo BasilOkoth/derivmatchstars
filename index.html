@@ -150,20 +150,6 @@
             border: 1px solid rgba(16, 185, 129, 0.2);
         }
         
-        .bot-redirect-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(10, 15, 31, 0.98);
-            z-index: 99999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-        }
-        
         @media (max-width: 768px) {
             .modal-content {
                 padding: 30px 20px;
@@ -232,9 +218,9 @@
                     <div class="w-16 h-16 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-6">
                         <i class="fas fa-cogs text-white text-2xl"></i>
                     </div>
-                    <h3 class="text-xl font-bold mb-4">2. Auto-Open Trading Bot</h3>
+                    <h3 class="text-xl font-bold mb-4">2. Trades Execute Through App</h3>
                     <p class="text-gray-400">
-                        After authentication, the bot opens automatically.
+                        All trades are placed through the official application interface.
                     </p>
                 </div>
                 
@@ -242,9 +228,9 @@
                     <div class="w-16 h-16 rounded-2xl bg-gradient-to-r from-purple-500 to-purple-700 flex items-center justify-center mx-auto mb-6">
                         <i class="fas fa-chart-line text-white text-2xl"></i>
                     </div>
-                    <h3 class="text-xl font-bold mb-4">3. Start Trading Instantly</h3>
+                    <h3 class="text-xl font-bold mb-4">3. Monitor Performance</h3>
                     <p class="text-gray-400">
-                        Begin trading immediately with automated execution.
+                        Track your trading performance with advanced analytics.
                     </p>
                 </div>
             </div>
@@ -276,7 +262,7 @@
                         </div>
                         <div class="flex items-center text-green-400">
                             <i class="fas fa-check-circle mr-3"></i>
-                            <span>Auto-opens bot after auth</span>
+                            <span>Instant access to trading bot</span>
                         </div>
                         <div class="flex items-center text-green-400">
                             <i class="fas fa-check-circle mr-3"></i>
@@ -305,7 +291,7 @@
                         </div>
                         <div class="flex items-center text-green-400">
                             <i class="fas fa-check-circle mr-3"></i>
-                            <span>Bot opens automatically</span>
+                            <span>Full bot access</span>
                         </div>
                     </div>
                 </div>
@@ -328,19 +314,6 @@
             </div>
         </div>
     </section>
-
-    <!-- Bot Redirect Overlay -->
-    <div id="botRedirectOverlay" class="bot-redirect-overlay" style="display: none;">
-        <div class="text-center">
-            <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
-                <i class="fas fa-robot text-white text-5xl"></i>
-            </div>
-            <h2 class="text-4xl font-bold mb-4 gradient-text">Opening Trading Bot</h2>
-            <p class="text-xl text-gray-300 mb-8">Your DigitMatchStars Pro™ bot is loading...</p>
-            <div class="loading-spinner mx-auto" style="width: 40px; height: 40px;"></div>
-            <p class="text-gray-400 mt-6">You will be redirected automatically</p>
-        </div>
-    </div>
 
     <!-- Auth Modal -->
     <div id="authModal" class="modal">
@@ -376,7 +349,7 @@
                         <div class="mt-4 p-3 bg-purple-500/10 rounded-lg border border-purple-500/20">
                             <div class="flex items-center">
                                 <i class="fas fa-shield-alt text-purple-400 mr-2"></i>
-                                <span class="text-sm font-medium">Auto-opens bot after authentication</span>
+                                <span class="text-sm font-medium">Secure OAuth 2.0 connection</span>
                             </div>
                         </div>
                     </div>
@@ -421,7 +394,7 @@
                         <i class="fas fa-info-circle mt-1 mr-3"></i>
                         <div>
                             <strong>How OAuth Works:</strong> You'll be redirected to Deriv's secure login page. 
-                            After authorization, you'll return here automatically and the bot will open.
+                            After authorization, you'll return here automatically. 
                             <strong>No API tokens needed.</strong>
                         </div>
                     </div>
@@ -438,7 +411,7 @@
                     </div>
                     <div class="flex items-center p-3 bg-green-500/10 rounded-lg border border-green-500/20">
                         <i class="fas fa-check-circle text-green-400 mr-3"></i>
-                        <span class="text-sm">Bot opens automatically after auth</span>
+                        <span class="text-sm">Instant bot access</span>
                     </div>
                 </div>
                 
@@ -464,11 +437,11 @@
                 
                 <div class="info-message mb-6">
                     <div class="flex items-start">
-                        <i class="fas fa-info-circle mt=1 mr-3"></i>
+                        <i class="fas fa-info-circle mt-1 mr-3"></i>
                         <div>
                             <strong>Two-Step Process:</strong> 
                             1. Create your free Deriv account
-                            2. Return here and connect via OAuth (bot opens automatically)
+                            2. Return here and connect via OAuth
                         </div>
                     </div>
                 </div>
@@ -484,7 +457,7 @@
                     </div>
                     <div class="flex items-center p-3 bg-green-500/10 rounded-lg border border-green-500/20">
                         <i class="fas fa-check-circle text-green-400 mr-3"></i>
-                        <span class="text-sm">Bot auto-opens after connection</span>
+                        <span class="text-sm">Full access to trading bot</span>
                     </div>
                 </div>
                 
@@ -518,7 +491,7 @@
                         <i class="fas fa-check-circle mt=1 mr-3"></i>
                         <div>
                             <strong>Great!</strong> You've created your Deriv account. 
-                            Now connect via OAuth to automatically open the trading bot.
+                            Now connect via OAuth to start trading.
                         </div>
                     </div>
                 </div>
@@ -530,7 +503,7 @@
                     </div>
                     <div class="flex items-center p-3 bg-green-500/10 rounded-lg border border-green-500/20">
                         <i class="fas fa-check-circle text-green-400 mr-3"></i>
-                        <span class="text-sm">Bot opens automatically after OAuth</span>
+                        <span class="text-sm">Now connect to access trading bot</span>
                     </div>
                 </div>
                 
@@ -548,21 +521,21 @@
 
     <script>
         // =============================================
-        // CONFIGURATION FOR VERCEL
+        // CONFIGURATION - FIXED FOR PRODUCTION
         // =============================================
         const CONFIG = {
             APP_ID: 117144,
-            // Use current page URL for Vercel
+            // FIXED: Use origin + pathname instead of full href
             REDIRECT_URI: window.location.origin + window.location.pathname,
-            // Point to bot.html (Vercel will route it)
-            BOT_PAGE: "/bot.html"
+            // FIXED: Use bot.html (not /bot)
+            BOT_PAGE: "bot.html"
         };
 
         // =============================================
         // INITIALIZATION
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('✅ DigitMatchStars Pro - Vercel Version Loaded');
+            console.log('✅ DigitMatchStars Pro - Trading Platform Loaded');
             
             // Check for OAuth response from Deriv
             checkOAuthResponse();
@@ -591,9 +564,12 @@
         }
 
         function showStep(stepId) {
+            // Hide all steps
             document.querySelectorAll('.auth-step').forEach(step => {
                 step.classList.remove('active');
             });
+            
+            // Show target step
             const targetStep = document.getElementById(stepId);
             if (targetStep) {
                 targetStep.classList.add('active');
@@ -601,225 +577,155 @@
         }
 
         // =============================================
-        // OAuth FUNCTIONS
+        // OAuth FUNCTIONS - PRODUCTION READY
         // =============================================
         function startOAuth() {
-            try {
-                const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
-                if (oauthBtn) {
-                    oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting to Deriv...';
-                    oauthBtn.disabled = true;
-                }
-                
-                const state = 'dmpro_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                sessionStorage.setItem('oauth_state', state);
-                sessionStorage.setItem('oauth_redirect', 'true');
-                
-                // Log for debugging
-                console.log('Starting OAuth with redirect:', CONFIG.REDIRECT_URI);
-                
-                const params = new URLSearchParams({
-                    app_id: CONFIG.APP_ID.toString(),
-                    response_type: 'token',
-                    redirect_uri: CONFIG.REDIRECT_URI,
-                    scope: 'read,trade,trading_information',
-                    brand: 'deriv',
-                    language: 'en',
-                    state: state,
-                    date_first_contact: new Date().toISOString().split('T')[0]
-                });
-                
-                const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
-                
-                console.log('OAuth URL generated');
-                
-                // Redirect immediately
-                window.location.href = oauthUrl;
-                
-            } catch (error) {
-                console.error('OAuth error:', error);
-                showError('Connection error. Please try again.');
-                
-                // Reset button
-                const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
-                if (oauthBtn) {
-                    oauthBtn.innerHTML = '<i class="fab fa-deriv mr-3"></i>Authorize with Deriv';
-                    oauthBtn.disabled = false;
-                }
+            const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
+            if (oauthBtn) {
+                oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting to Deriv...';
+                oauthBtn.disabled = true;
             }
+            
+            // Generate state for CSRF protection
+            const state = generateState();
+            localStorage.setItem('oauth_state', state);
+            
+            // Construct REAL OAuth URL for Deriv
+            const params = new URLSearchParams({
+                app_id: CONFIG.APP_ID.toString(),
+                response_type: 'token',
+                redirect_uri: CONFIG.REDIRECT_URI,
+                scope: 'read,trade,trading_information',
+                brand: 'deriv',
+                language: 'en',
+                state: state
+            });
+            
+            const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
+            
+            console.log('🔗 Redirecting to Deriv OAuth:', oauthUrl);
+            
+            // REAL REDIRECT - User will see Deriv's official login page
+            setTimeout(() => {
+                window.location.href = oauthUrl;
+            }, 300);
         }
 
         function createAccount() {
+            // Hidden affiliate link for account creation
             const affiliateLink = "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/";
             localStorage.setItem('via_new_account_flow', 'true');
+            
+            // Open in new tab
             window.open(affiliateLink, '_blank');
+            
+            // Show OAuth step after a delay
             setTimeout(() => {
                 showStep('oauthAfterSignupStep');
             }, 500);
         }
 
-        // =============================================
-        // OAuth RESPONSE HANDLER - UPDATED FOR QUERY PARAMS
-        // =============================================
         function checkOAuthResponse() {
-            console.log('🔍 Checking for OAuth response...');
-            console.log('Full URL:', window.location.href);
-            console.log('Search:', window.location.search);
-            console.log('Hash:', window.location.hash);
+            // Check if Deriv redirected back with OAuth token
+            const hash = window.location.hash.substring(1);
+            if (!hash) return;
             
-            // Check BOTH query parameters AND hash parameters
-            let accessToken = null;
-            let state = null;
-            let tokenType = null;
-            let accountId = null;
-            
-            // First, check query parameters (what Deriv is actually returning)
-            const searchParams = new URLSearchParams(window.location.search);
-            const token1 = searchParams.get('token1');
-            const token2 = searchParams.get('token2');
-            const stateParam = searchParams.get('state');
-            
-            console.log('Query params - token1:', token1 ? 'yes' : 'no', 'token2:', token2 ? 'yes' : 'no', 'state:', stateParam);
-            
-            // Use token1 (main account token) if available
-            if (token1) {
-                accessToken = token1;
-                state = stateParam;
-                tokenType = 'Bearer';
-                accountId = searchParams.get('acct1');
-                
-                console.log('✅ Found token in query parameters (token1)');
-            }
-            // Also check hash parameters (for compatibility)
-            else if (window.location.hash) {
-                const hashParams = new URLSearchParams(window.location.hash.substring(1));
-                accessToken = hashParams.get('access_token');
-                state = hashParams.get('state');
-                tokenType = hashParams.get('token_type');
-                accountId = hashParams.get('account_id');
-                
-                console.log('✅ Found token in hash parameters');
-            }
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const state = params.get('state');
             
             if (accessToken) {
-                console.log('🎯 OAuth response detected:', { 
-                    hasToken: !!accessToken, 
-                    state: state,
-                    tokenType: tokenType,
-                    accountId: accountId 
-                });
+                console.log('✅ OAuth Response Received from Deriv');
                 
-                // Verify state parameter for security
-                const storedState = sessionStorage.getItem('oauth_state');
+                // Validate state for CSRF protection
+                const storedState = localStorage.getItem('oauth_state');
                 if (state && state !== storedState) {
-                    console.error('State mismatch:', { received: state, stored: storedState });
+                    console.error('❌ Security Error: State mismatch');
                     showError('Security error. Please try again.');
                     return;
                 }
                 
-                // Clear OAuth state
-                sessionStorage.removeItem('oauth_state');
-                
-                // Show loading overlay
-                showBotOpeningOverlay();
-                
-                // Process successful authentication
+                // Process successful OAuth
                 handleOAuthSuccess({
                     access_token: accessToken,
-                    token_type: tokenType || 'Bearer',
-                    expires_in: '3600',
-                    account_id: accountId,
-                    state: state
+                    token_type: params.get('token_type') || 'Bearer',
+                    expires_in: params.get('expires_in') || '3600',
+                    account_id: params.get('account_id')
                 });
                 
-                // Clean URL (remove all parameters)
-                cleanUrl();
-            } else {
-                console.log('⚠️ No OAuth token found in URL');
+                // Clean URL - remove OAuth parameters
+                window.history.replaceState({}, document.title, window.location.pathname);
+                localStorage.removeItem('oauth_state');
             }
-        }
-        
-        function cleanUrl() {
-            // Remove all query parameters and hash from URL
-            window.history.replaceState({}, document.title, window.location.pathname);
         }
 
         // =============================================
-        // SUCCESS HANDLER - OPENS BOT AUTOMATICALLY
+        // OAuth SUCCESS - PASS TOKEN TO BOT.HTML
         // =============================================
         function handleOAuthSuccess(oauthData) {
-            console.log('OAuth success! Storing tokens and opening bot...', oauthData);
+            console.log('✅ OAuth Successfully Completed');
             
-            // Store authentication data in multiple ways for bot.html to access
-            // Method 1: localStorage (persistent)
+            // Store token for bot.html
             localStorage.setItem('derivToken', oauthData.access_token);
             localStorage.setItem('auth_method', 'oauth');
-            localStorage.setItem('connected_with_derivmatchstars', 'true');
-            localStorage.setItem('app_id_used', CONFIG.APP_ID.toString());
-            localStorage.setItem('last_connection', new Date().toISOString());
-            
-            // Method 2: sessionStorage (temporary)
-            sessionStorage.setItem('deriv_access_token', oauthData.access_token);
-            sessionStorage.setItem('deriv_token_type', oauthData.token_type);
-            if (oauthData.account_id) {
-                sessionStorage.setItem('deriv_account_id', oauthData.account_id);
-            }
-            
-            // Method 3: Set a flag to indicate auto-redirect
             localStorage.setItem('auto_open_bot', 'true');
-            // Also store token in sessionStorage for immediate access
-            sessionStorage.setItem('immediate_token', oauthData.access_token);
             
-            // Show success notification
-            showSuccessMessage('✅ Successfully connected to Deriv! Opening trading bot...');
+            // Show success message
+            showSuccessMessage('✅ Successfully connected to Deriv! Redirecting to trading bot...');
             
-            // Close auth modal if open
+            // Close modal
             closeModal();
             
-            // AUTO-OPEN BOT: Redirect to bot page with token
+            // Redirect to bot WITH token in URL
+            const botUrl = "bot.html?token=" + encodeURIComponent(oauthData.access_token) + "&oauth_redirect=1&auto_open=1";
             setTimeout(() => {
-                // Store token in URL as well for immediate access
-                const token = oauthData.access_token;
-                const botUrl = CONFIG.BOT_PAGE + `?token=${encodeURIComponent(token)}&oauth_redirect=true&auto_open=1`;
-                console.log('🚀 Auto-redirecting to bot page:', botUrl);
                 window.location.href = botUrl;
-            }, 1000); // Reduced delay for faster redirect
-        }
-
-        // =============================================
-        // BOT OPENING FUNCTIONS
-        // =============================================
-        function showBotOpeningOverlay() {
-            document.getElementById('botRedirectOverlay').style.display = 'flex';
+            }, 1500);
         }
 
         // =============================================
         // HELPER FUNCTIONS
         // =============================================
+        function generateState() {
+            return 'state_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
         function showSuccessMessage(message) {
+            // Create and show success notification
             const notification = document.createElement('div');
-            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-4 rounded-xl shadow-2xl z-99999';
+            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-4 rounded-xl shadow-2xl z-9999';
             notification.innerHTML = `
                 <div class="flex items-center">
                     <i class="fas fa-check-circle text-xl mr-3"></i>
                     <span>${message}</span>
                 </div>
             `;
+            
             document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), 3000);
+            
+            // Remove after 5 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
         }
 
         function showError(message) {
+            // Create and show error notification
             const notification = document.createElement('div');
-            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-4 rounded-xl shadow-2xl z-99999';
+            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-4 rounded-xl shadow-2xl z-9999';
             notification.innerHTML = `
                 <div class="flex items-center">
                     <i class="fas fa-exclamation-circle text-xl mr-3"></i>
                     <span>${message}</span>
                 </div>
             `;
+            
             document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), 5000);
+            
+            // Remove after 5 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
         }
     </script>
 </body>
