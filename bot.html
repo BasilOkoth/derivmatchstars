@@ -15,1570 +15,498 @@
         .tick-flash { animation: pulse-once 0.1s ease-out; }
         .queue-indicator { animation: pulse-once 0.3s ease-out; }
         @keyframes win-pulse { 0% { box-shadow: 0 0 5px #10B981; } 50% { box-shadow: 0 0 20px #10B981; } 100% { box-shadow: 0 0 5px #10B981; } }
-        .win-detected { animation: win-pulse 0.5s infinite; }
-        .queue-digit { 
-            width: 32px; 
-            height: 32px; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            border-radius: 50%; 
-            font-weight: bold; 
-            margin: 0 2px;
-        }
-        .contract-type-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-weight: bold;
-            margin-left: 5px;
-        }
-        .stop-button-active {
-            background-color: #dc2626 !important;
-            border: 2px solid #fca5a5 !important;
-            animation: pulse-once 0.5s infinite;
-        }
-        .start-button-active {
-            background-color: #16a34a !important;
-            border: 2px solid #86efac !important;
-            animation: pulse-once 0.5s;
-        }
-        .token-container {
-            position: relative;
-        }
-        .token-visibility-toggle {
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: none;
-            border: none;
-            color: #9ca3af;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .trade-completed {
-            border: 3px solid #10b981 !important;
-            background-color: #064e3b !important;
-        }
-        .trade-failed {
-            border: 3px solid #ef4444 !important;
-            background-color: #7f1d1d !important;
-        }
-        .tick-current {
-            border: 3px solid #10B981 !important;
-            background-color: #064e3b !important;
-            animation: pulse-once 0.5s infinite;
-        }
-        .instant-tick {
-            animation: pulse-once 0.3s ease-out;
-        }
-        .success-pulse {
-            animation: pulse-once 0.3s ease-out;
-        }
-        .instant-win-detected {
-            animation: pulse-once 0.5s infinite;
-            border: 3px solid #00ff00 !important;
-            box-shadow: 0 0 20px #00ff00 !important;
-        }
-        .account-balance-green {
-            color: #10B981 !important;
-            font-weight: bold !important;
-        }
-        .current-stake-green {
-            color: #10B981 !important;
-            font-weight: bold !important;
-        }
-        .profit-green {
-            color: #10B981 !important;
-            font-weight: bold !important;
-            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
-        }
-        .profit-red {
-            color: #ef4444 !important;
-            font-weight: bold !important;
-            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
-        }
-        .queued-tick {
-            background-color: #1e40af !important;
-            border: 2px solid #3b82f6 !important;
-        }
-        .processing-queued-tick {
-            background-color: #7c2d12 !important;
-            border: 3px solid #f59e0b !important;
-            animation: pulse-once 0.5s infinite;
-        }
-        .executed-tick {
-            background-color: #064e3b !important;
-            border: 2px solid #10b981 !important;
-        }
-        .probability-high { color: #10b981; }
-        .probability-medium { color: #f59e0b; }
-        .probability-low { color: #ef4444; }
-        .auth-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 99999;
-            align-items: center;
-            justify-content: center;
-        }
-        .auth-modal-content {
-            background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 31, 0.98));
-            padding: 40px;
-            border-radius: 24px;
-            max-width: 500px;
-            width: 90%;
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            text-align: center;
-        }
-        .auth-step {
-            display: none;
-        }
-        .auth-step.active {
-            display: block;
-        }
+        .win-glow { animation: win-pulse 1s infinite; border-color: #10B981 !important; }
+        @keyframes loss-pulse { 0% { box-shadow: 0 0 5px #EF4444; } 50% { box-shadow: 0 0 20px #EF4444; } 100% { box-shadow: 0 0 5px #EF4444; } }
+        .loss-glow { animation: loss-pulse 1s infinite; border-color: #EF4444 !important; }
     </style>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
-<body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
+<body class="text-gray-100 min-h-screen pb-12">
+    <nav class="bg-gray-900/50 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 bg-green-500 rounded-lg p-1">
+                        <svg class="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                    </div>
+                    <div class="ml-3">
+                        <span class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-green-400 to-emerald-500">DigitMatchStars Pro™</span>
+                        <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">Disconnected</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button onclick="logout()" class="text-gray-400 hover:text-white transition-colors">
+                        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
 
-    <!-- AUTHENTICATION MODAL (Required) -->
-    <div id="authModal" class="auth-modal">
-        <div class="auth-modal-content">
-            <!-- Token Required Step -->
-            <div id="tokenRequiredStep" class="auth-step active">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center mx-auto mb-6">
-                        <i class="fas fa-lock text-white text-4xl"></i>
-                    </div>
-                    <h2 class="text-3xl font-bold mb-2">🔐 Authentication Required</h2>
-                    <p class="text-gray-400 mb-6">You need a valid Deriv API token to access the trading bot</p>
-                </div>
-                
-                <div class="info-message mb-6">
-                    <div class="flex items-start">
-                        <i class="fas fa-info-circle mt-1 mr-3"></i>
-                        <div>
-                            <strong>How to get your token:</strong><br>
-                            1. Connect via OAuth on our homepage<br>
-                            2. Or use your Deriv API token<br>
-                            3. All trades go through App ID 117144
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mb-6">
-                    <label for="authTokenInput" class="block text-sm font-semibold text-gray-300 mb-2 text-left">
-                        Enter Your Deriv Token
-                    </label>
-                    <input type="password" id="authTokenInput" 
-                           placeholder="Paste your token here..."
-                           class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent">
-                    <p class="text-xs text-gray-500 mt-2 text-left">
-                        This will be saved securely in your browser
-                    </p>
-                </div>
-                
-                <div class="flex flex-col space-y-3">
-                    <button onclick="verifyToken()" id="verifyTokenBtn" class="w-full px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold rounded-lg hover:from-green-700 hover:to-green-800 transition">
-                        <i class="fas fa-check-circle mr-2"></i>
-                        Verify & Start Trading
-                    </button>
-                    
-                    <a href="index.html" class="w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white font-bold rounded-lg hover:from-purple-700 hover:to-purple-800 transition text-center">
-                        <i class="fab fa-deriv mr-2"></i>
-                        Connect via OAuth
-                    </a>
-                    
-                    <button onclick="showStep('manualTokenStep')" class="w-full px-6 py-3 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition">
-                        <i class="fas fa-question-circle mr-2"></i>
-                        How to get token?
-                    </button>
-                </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
+                <p class="text-sm font-medium text-gray-400 mb-1">Account Balance</p>
+                <p id="metricAccountBalance" class="text-2xl font-bold text-white">$0.00</p>
             </div>
-            
-            <!-- Manual Token Step -->
-            <div id="manualTokenStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-20 h-20 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-4">
-                        <i class="fas fa-key text-white text-3xl"></i>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Get Your API Token</h2>
-                    <p class="text-gray-400">Two ways to get your token</p>
-                </div>
-                
-                <div class="space-y-4 mb-6">
-                    <div class="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
-                        <h3 class="font-bold text-purple-400 mb-2">Method 1: OAuth (Recommended)</h3>
-                        <p class="text-sm text-gray-300 mb-3">
-                            Connect via Deriv OAuth - secure and automatic
-                        </p>
-                        <a href="index.html" class="inline-block w-full px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-center">
-                            <i class="fab fa-deriv mr-2"></i>Connect via OAuth
-                        </a>
-                    </div>
-                    
-                    <div class="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                        <h3 class="font-bold text-blue-400 mb-2">Method 2: Manual API Token</h3>
-                        <p class="text-sm text-gray-300">
-                            1. Go to <a href="https://deriv.com" target="_blank" class="text-blue-400 underline">Deriv.com</a><br>
-                            2. Account Settings → API Token<br>
-                            3. Generate new token<br>
-                            4. Paste it here
-                        </p>
-                    </div>
-                </div>
-                
-                <button onclick="showStep('tokenRequiredStep')" class="w-full px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600">
-                    <i class="fas fa-arrow-left mr-2"></i> Back to Token Input
-                </button>
+            <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
+                <p class="text-sm font-medium text-gray-400 mb-1">Total Profit/Loss</p>
+                <p id="metricTotalProfit" class="text-2xl font-bold text-white">$0.00</p>
             </div>
-            
-            <!-- Token Verification Step -->
-            <div id="tokenVerificationStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
-                        <div class="loading-spinner" style="border-top-color: white; width: 40px; height: 40px;"></div>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Verifying Token</h2>
-                    <p class="text-gray-400">Checking token validity with Deriv...</p>
-                </div>
-                
-                <div class="mb-6 p-4 bg-gray-800 rounded-lg">
-                    <p class="text-sm text-gray-300">
-                        <i class="fas fa-shield-alt text-green-400 mr-2"></i>
-                        All trades will be placed through App ID 117144
-                    </p>
-                </div>
+            <div id="stat-wins-card" class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl transition-all duration-300">
+                <p class="text-sm font-medium text-gray-400 mb-1">Wins / Losses</p>
+                <p class="text-2xl font-bold text-white"><span id="metricWins" class="text-green-400">0</span> / <span id="metricLosses" class="text-red-400">0</span></p>
+            </div>
+            <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
+                <p class="text-sm font-medium text-gray-400 mb-1">Current Multiplier</p>
+                <p id="metricMultiplier" class="text-2xl font-bold text-blue-400">1x</p>
             </div>
         </div>
     </div>
 
-    <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
-    <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
-        <div class="flex justify-between items-center mb-4">
-            <h1 class="text-3xl font-extrabold text-green-400 border-b border-gray-700 pb-2">
-                DigitMatchStars Pro™ 
-                <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">
-                    Disconnected
-                </span>
-                <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
-                <span id="queue-status-badge" class="contract-type-badge bg-blue-600 text-white">QUEUE: 0</span>
-                <span id="auth-badge" class="contract-type-badge bg-green-600 text-white">
-                    <i class="fas fa-user-check mr-1"></i>Authenticated
-                </span>
-            </h1>
-            <div class="flex items-center space-x-2">
-                <button id="soundToggle" onclick="toggleSound()" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition">
-                    🔊 Sound ON
-                </button>
-                <button onclick="logout()" class="px-4 py-2 bg-red-600 text-white font-bold rounded-lg shadow hover:bg-red-700 transition">
-                    <i class="fas fa-sign-out-alt mr-2"></i>Logout
-                </button>
-            </div>
-        </div>
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         
-        <!-- TICK QUEUE VISUALIZATION -->
-        <div class="mb-5 p-4 bg-gray-900 rounded-lg border border-green-500/50">
-            <div class="flex justify-between items-center mb-2">
-                <h3 class="text-sm font-bold text-blue-400">🎯 TICK QUEUE</h3>
-                <div class="text-xs text-gray-400">
-                    Queue: <span id="queue-size">0</span> | Processed: <span id="processed-count">0</span>
-                </div>
-            </div>
-            <div id="tick-queue-display" class="flex flex-wrap gap-2 min-h-[60px] p-2 bg-gray-800 rounded">
-                <div class="text-gray-500 italic">No ticks in queue...</div>
-            </div>
-        </div>
-
-        <div class="flex flex-col md:flex-row gap-4 mb-6">
-            <div id="controls-section" class="md:w-2/3 grid grid-cols-2 lg:grid-cols-3 gap-3">
-                <div class="col-span-2 lg:col-span-3 mb-1 token-container">
-                    <label class="block text-xs font-semibold text-gray-300 mb-1">
-                        <i class="fas fa-key text-green-400 mr-1"></i> 
-                        API Token Status
-                    </label>
-                    <div class="flex items-center p-3 bg-gray-700 rounded border border-green-500/50">
-                        <i class="fas fa-check-circle text-green-400 mr-3 text-lg"></i>
-                        <div class="flex-1">
-                            <p class="text-sm font-medium text-white">Connected via OAuth</p>
-                            <p class="text-xs text-gray-400">Token: ••••••••••••••••</p>
-                        </div>
-                        <button onclick="showAuthModal()" class="px-3 py-1 bg-gray-600 text-xs rounded hover:bg-gray-500">
-                            Change
-                        </button>
+        <div class="lg:col-span-4 space-y-6">
+            
+            <section id="auth-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700">
+                <div class="flex items-center mb-6">
+                    <div class="p-2 bg-green-500/10 rounded-lg mr-3">
+                        <svg class="h-5 w-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
                     </div>
+                    <h2 class="text-lg font-bold">Authentication</h2>
                 </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Deriv API Token</label>
+                        <input type="password" id="authTokenInput" placeholder="Enter API Token..." 
+                               class="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition-all placeholder-gray-600">
+                    </div>
+                    <button onclick="verifyToken()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-green-900/20 transition-all flex items-center justify-center">
+                        <span>Verify & Connect</span>
+                    </button>
+                    <p class="text-[10px] text-gray-500 text-center italic mt-2">Required for execution. Tokens are processed locally.</p>
+                </div>
+            </section>
 
-                <div>
-                    <label for="symbol" class="block text-xs font-semibold text-gray-300 mb-1">Symbol</label>
-                    <select id="symbol" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <option value="R_10">V. 10 Index</option>
-                        <option value="R_100">V. 100 Index</option>
-                        <option value="R_25">V. 25 Index</option>
-                        <option value="R_50">V. 50 Index</option>
-                        <option value="R_75">V. 75 Index</option>
-                    </select>
+            <section id="controls-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 opacity-50 cursor-not-allowed pointer-events-none">
+                <div class="flex items-center mb-6">
+                    <div class="p-2 bg-blue-500/10 rounded-lg mr-3">
+                        <svg class="h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </div>
+                    <h2 class="text-lg font-bold">Bot Config</h2>
                 </div>
                 
-                <div>
-                    <label for="predictedDigit" class="block text-xs font-semibold text-gray-300 mb-1">Predicted Digit (0-9)</label>
-                    <input type="number" id="predictedDigit" value="5" min="0" max="9" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm text-center">
-                </div>
-
-                <div>
-                    <label for="contractType" class="block text-xs font-semibold text-gray-300 mb-1">Contract Type</label>
-                    <select id="contractType" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <option value="DIGITMATCH">DIGITMATCH (INSTANT - 792.9% payout)</option>
-                    </select>
-                </div>
-
-                <div>
-                    <label for="baseStake" class="block text-xs font-semibold text-gray-300 mb-1">Base Stake (USD)</label>
-                    <input type="number" id="baseStake" value="1.0" min="0.1" step="0.1" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div>
-                    <label for="multiplier" class="block text-xs font-semibold text-gray-300 mb-1">Martingale Multiplier</label>
-                    <input type="number" id="multiplier" value="1.15" min="1.0" step="0.01" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div>
-                    <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                    <input type="number" id="maxTrades" value="10" min="1" max="100" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-                
-                <div>
-                    <label for="bankrollLimit" class="block text-xs font-semibold text-gray-300 mb-1">Bankroll Limit</label>
-                    <input type="number" id="bankrollLimit" value="25.0" min="1.0" step="0.1" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div class="col-span-2 lg:col-span-3">
-                    <label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
-                    <div class="rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm py-1.5 px-2 text-sm">
-                        <span class="text-green-400 font-bold">⚡ INSTANT TICK EXECUTION:</span> Trade on each tick, stop on win
-                    </div>
-                    <p class="text-xs text-gray-400 mt-1">✅ Bot executes trade on EVERY tick. Stops immediately when digit matches</p>
-                </div>
-            </div>
-
-            <div id="metrics-column" class="md:w-1/3">
-                <div class="grid grid-cols-3 gap-3">
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50 col-span-2">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Current Tick</p>
-                        <p id="metricLiveTick" class="text-xl font-extrabold text-white">---</p>
-                        <p id="metricLastDigit" class="text-lg font-bold text-green-300">Digit: ?</p>
-                        <p id="metricTickRate" class="text-xs font-bold text-blue-400">Ticks/sec: --</p>
-                        <p id="metricProbability" class="text-xs font-bold probability-medium">Probability: 10%</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-purple-500/50">
-                        <p class="text-[10px] font-semibold text-purple-500 uppercase">Account Balance</p>
-                        <p id="metricAccountBalance" class="text-lg font-bold text-white">$---</p>
-                        <p class="text-xs text-gray-300 mt-1">Available</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Trade #</p>
-                        <p id="metricTradeCount" class="text-lg font-bold text-white">0</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-lime-400 uppercase">Net P/L</p>
-                        <p id="metricTotalProfit" class="text-lg font-bold text-gray-300">$0.00</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Current Stake</p>
-                        <p id="metricCurrentStake" class="text-lg font-bold text-white">$0.00</p>
-                    </div>
-                    
-                    <div id="trade-result-container" class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3">
-                        <div class="flex justify-between items-center mb-2">
-                            <p class="text-[10px] font-semibold text-yellow-500 uppercase">⚡ TRADE STATUS</p>
-                            <p id="metricTradeResult" class="text-xs font-bold text-gray-400">READY</p>
-                        </div>
-                        <div class="mb-2">
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
-                            <p id="metricPreviousResult" class="text-sm font-bold text-gray-300">Waiting for ticks...</p>
+                <div class="space-y-5">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Stake ($)</label>
+                            <input type="number" id="baseStake" value="1.00" step="0.5" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 outline-none text-sm">
                         </div>
                         <div>
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
-                            <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Execute on each tick</p>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Target ($)</label>
+                            <input type="number" id="takeProfit" value="10.00" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 outline-none text-sm">
                         </div>
                     </div>
-                    
-                    <div id="queue-status-container" class="bg-gray-900 rounded-lg p-3 shadow-inner border border-blue-500/50 col-span-3 tick-queue-highlight relative">
-                        <div class="flex justify-between items-center mb-2">
-                            <p class="text-[10px] font-semibold text-blue-500 uppercase">🎯 EXECUTION STATS</p>
-                            <p id="metricQueueStatus" class="text-xs font-bold text-green-400">READY</p>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Stop Loss ($)</label>
+                            <input type="number" id="stopLoss" value="20.00" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 outline-none text-sm text-red-400">
                         </div>
-                        
-                        <div class="mb-3 p-2 bg-gray-800 rounded border border-yellow-500/30">
-                            <p class="text-[10px] font-semibold text-yellow-500 uppercase mb-1">Processing Tick:</p>
-                            <div id="processingTickDisplay" class="flex items-center">
-                                <div id="processingTickDigit" class="queue-digit bg-gray-700 text-white mr-2">?</div>
-                                <div class="flex-1">
-                                    <p id="processingTickInfo" class="text-xs text-gray-300">Waiting...</p>
-                                    <p id="processingTickTime" class="text-[10px] text-gray-400">--</p>
-                                </div>
-                            </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Asset</label>
+                            <select id="marketSelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 outline-none text-sm">
+                                <option value="R_100">Volatility 100 Index</option>
+                                <option value="R_75">Volatility 75 Index</option>
+                                <option value="R_50">Volatility 50 Index</option>
+                                <option value="R_25">Volatility 25 Index</option>
+                                <option value="R_10">Volatility 10 Index</option>
+                            </select>
                         </div>
-                        
-                        <div class="mb-2">
-                            <div class="flex justify-between items-center mb-1">
-                                <p class="text-[10px] font-semibold text-blue-500 uppercase">Trades Executed:</p>
-                                <p id="metricExecutedTrades" class="text-xs font-bold text-white">0</p>
-                            </div>
-                            <div class="w-full bg-gray-700 rounded-full h-2.5 mb-2">
-                                <div id="executionBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
-                            </div>
-                            <p class="text-[10px] text-gray-400 text-center">Trade progress</p>
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Trading Strategy</label>
+                        <select id="strategySelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 outline-none text-sm">
+                            <option value="DIGITMATCH">Digit Match (800%+ Payout)</option>
+                            <option value="DIGITDIFF">Digit Diff (Safe 9.9%)</option>
+                        </select>
+                    </div>
+
+                    <div id="digit-selection-area">
+                        <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Target Digit</label>
+                        <div class="grid grid-cols-5 gap-2">
+                            <button onclick="setDigit(0)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="0">0</button>
+                            <button onclick="setDigit(1)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="1">1</button>
+                            <button onclick="setDigit(2)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="2">2</button>
+                            <button onclick="setDigit(3)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="3">3</button>
+                            <button onclick="setDigit(4)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="4">4</button>
+                            <button onclick="setDigit(5)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="5">5</button>
+                            <button onclick="setDigit(6)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="6">6</button>
+                            <button onclick="setDigit(7)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="7">7</button>
+                            <button onclick="setDigit(8)" class="digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold" data-digit="8">8</button>
+                            <button onclick="setDigit(9)" class="digit-btn bg-blue-600 border border-blue-500 p-2 rounded transition text-xs font-bold" data-digit="9">9</button>
                         </div>
-                        
-                        <div class="grid grid-cols-2 gap-1 mt-2">
-                            <div class="text-center">
-                                <p class="text-[8px] text-gray-400 uppercase">Trades Done</p>
-                                <p id="metricTradesDone" class="text-xs font-bold text-green-400">0/10</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-[8px] text-gray-400 uppercase">Trades Left</p>
-                                <p id="metricTradesLeft" class="text-xs font-bold text-blue-400">10</p>
-                            </div>
+                    </div>
+
+                    <button id="mainActionButton" onclick="toggleBot()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 rounded-2xl shadow-xl transition-all uppercase tracking-widest text-lg">
+                        Start Bot
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <div class="lg:col-span-8 space-y-6">
+            
+            <div class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 h-[320px] flex flex-col">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center">
+                        <div class="p-2 bg-purple-500/10 rounded-lg mr-3">
+                            <svg class="h-5 w-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
                         </div>
-                        <p class="text-[9px] text-gray-400 text-center mt-2">
-                            <strong>GOAL:</strong> Win detected within <span id="metricTradesRemaining">10</span> trades
-                        </p>
+                        <h2 class="text-lg font-bold">Tick Stream & Analysis</h2>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <span id="price-display" class="font-mono text-xl text-green-400 font-bold tracking-tighter">0.0000</span>
+                        <div id="last-digit-circle" class="w-12 h-12 rounded-full bg-gray-900 border-2 border-gray-700 flex items-center justify-center text-2xl font-black text-white shadow-inner">-</div>
+                    </div>
+                </div>
+
+                <div class="flex-grow flex items-end justify-between gap-1 pb-4 px-2" id="digit-histogram">
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">0</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">1</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">2</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">3</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">4</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">5</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">6</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">7</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">8</span>
+                    </div>
+                    <div class="flex-1 flex flex-col items-center gap-2">
+                        <div class="w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-500" style="height: 10%"></div>
+                        <span class="text-[10px] font-bold text-gray-500">9</span>
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="flex justify-center mb-5">
-            <button id="toggleButton" onclick="toggleBot()" class="w-full md:w-1/2 px-6 py-3 bg-green-600 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-green-700 transition duration-150">
-                START BOT
-            </button>
-        </div>
 
-        <div id="log-column" class="w-full flex flex-col">
-            <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Trade Log</h2>
-            <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
-                [00:00:00] 🔐 Authentication Required - Enter your Deriv token
+            <div class="bg-gray-800 rounded-3xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col h-[400px]">
+                <div class="p-4 border-b border-gray-700 bg-gray-800/80 flex justify-between items-center sticky top-0">
+                    <div class="flex items-center">
+                        <div class="p-1.5 bg-emerald-500/10 rounded-md mr-3">
+                            <svg class="h-4 w-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7" />
+                            </svg>
+                        </div>
+                        <h3 class="font-bold text-sm uppercase tracking-widest text-gray-300">Transaction Logs</h3>
+                    </div>
+                    <button onclick="clearLogs()" class="text-[10px] font-bold text-gray-500 hover:text-white transition">CLEAR LOGS</button>
+                </div>
+                <div id="log-area" class="flex-grow overflow-y-auto p-4 font-mono text-xs space-y-1 bg-black/20">
+                    <div class="text-gray-500 italic">[SYSTEM] DigitMatchStars Pro™ v4.2.0 initialized. Awaiting API connection...</div>
+                </div>
             </div>
         </div>
-    </div>
-
-    <!-- Font Awesome -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    </main>
 
     <script>
-        // ============================================================================
-        // AUTOMATIC OAuth REDIRECT HANDLER - FOR VERCEL DEPLOYMENT
-        // ============================================================================
-
-        // Check for token passed from main page via localStorage or URL
-        function checkForAutoAuth() {
-            console.log('🔍 Checking for automatic OAuth authentication...');
-            
-            // Method 1: Check for token in localStorage (set by main page)
-            const savedToken = localStorage.getItem('derivToken');
-            const authMethod = localStorage.getItem('auth_method');
-            
-            // Method 2: Check URL parameters (from main page redirect)
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlToken = urlParams.get('token');
-            const oauthRedirect = urlParams.get('oauth_redirect');
-            
-            if (savedToken && authMethod === 'oauth') {
-                console.log('✅ Found OAuth token in localStorage');
-                return savedToken;
-            } else if (urlToken && oauthRedirect === 'true') {
-                console.log('✅ Found OAuth token in URL');
-                localStorage.setItem('derivToken', urlToken);
-                localStorage.setItem('auth_method', 'oauth');
-                
-                // Clean URL
-                window.history.replaceState({}, document.title, window.location.pathname);
-                return urlToken;
-            }
-            
-            return null;
-        }
-
-        // ============================================================================
-        // AUTHENTICATION SYSTEM - REQUIRED
-        // ============================================================================
-        
-        // GLOBAL STATE
-        window.DERIV_TOKEN = '';
-        window.isAuthenticated = false;
+        // =============================================
+        // GLOBAL STATE & SETTINGS
+        // =============================================
+        window.appId = '65435'; 
         window.ws = null;
-        window.req_id = 0;
         window.isBotRunning = false;
-        window.tokenVisible = false;
-        
-        // Audio
-        window.ToneInitialized = false;
-        window.synth = null;
-        window.soundEnabled = true;
-
-        // Trading & Martingale State
-        window.baseStake = 1.0;
-        window.currentStake = 1.0;
-        window.multiplier = 1.15;
-        window.maxTrades = 10;
+        window.selectedDigit = 9;
+        window.startingBalance = 0;
+        window.currentBalance = 0;
+        window.netProfit = 0;
         window.tradeCount = 0;
-        window.martingaleStep = 0;
-        window.accountBalance = 0.0;
-        
-        // PnL Tracking
-        window.startingBalance = 0.0;
-        window.currentBalance = 0.0;
-        window.netProfit = 0.0;
-        window.lastBalanceUpdate = 0;
-
-        // EXECUTION SYSTEM
-        window.lastTick = null;
-        window.waitingForTradeResult = false;
-        window.lastTradeResult = null;
+        window.stats = { wins: 0, losses: 0 };
+        window.digitHistory = [];
+        window.maxHistory = 100;
+        window.activeContracts = new Set();
+        window.pendingProposals = new Set();
+        window.executionLock = false;
+        window.tickSubscriptionSent = false;
         window.nextTradeAllowed = true;
         window.stopAfterWin = false;
-        window.currentlyProcessingTick = null;
-        window.pendingProposals = new Map();
-        window.activeContracts = new Map();
-        window.executionLock = false;
-        
-        // Statistics
-        window.stats = {
-            totalTicks: 0,
-            tradesExecuted: 0,
-            wins: 0,
-            losses: 0,
-            digitMatches: 0,
-            digitNonMatches: 0
-        };
-        
-        // Rate tracking
-        window.lastTickTime = 0;
-        window.tickTimestamps = [];
-        
-        // WebSocket keep-alive
-        window.wsPingInterval = null;
-        window.lastPingTime = Date.now();
-        
-        // Queue for ticks
-        window.tickQueue = [];
-        window.maxQueueSize = 10;
-        
-        // Probability tracking
-        window.digitsHistory = [];
-        window.MAX_HISTORY = 100;
+        window.keepAliveInterval = null;
 
-        // ============================================================================
-        // AUTHENTICATION FUNCTIONS
-        // ============================================================================
-        
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('🔐 Bot loading - Checking authentication...');
-            
-            // FIRST: Check for auto-auth from main page
-            const autoToken = checkForAutoAuth();
-            
-            if (autoToken) {
-                console.log('🚀 Auto-login detected from main page');
-                // Skip auth modal, directly verify token
-                showStep('tokenVerificationStep');
-                verifyToken(autoToken);
-            } else {
-                // If no auto-auth, check for existing token
-                const savedToken = localStorage.getItem('derivToken');
-                const authMethod = localStorage.getItem('auth_method');
-                
-                if (savedToken) {
-                    console.log('🔍 Found saved token, verifying...');
-                    showStep('tokenVerificationStep');
-                    verifyToken(savedToken);
-                } else {
-                    console.log('⚠️ No token found, showing auth modal');
-                    showAuthModal();
-                }
-            }
-        });
-        
-        function verifyToken(token) {
-            if (!token || token.trim() === '') {
-                showError('Please enter a valid token');
-                showStep('tokenRequiredStep');
-                return;
-            }
-            
-            // Show verifying step
-            showStep('tokenVerificationStep');
-            
-            // Try to connect to Deriv API to verify token
-            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
-            
-            testWs.onopen = () => {
-                testWs.send(JSON.stringify({
-                    authorize: token,
-                    req_id: 999999
-                }));
-            };
-            
-            testWs.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
-                    
-                    if (data.error) {
-                        console.error('Token verification failed:', data.error);
-                        showError('Invalid token. Please check and try again.');
-                        testWs.close();
-                        showStep('tokenRequiredStep');
-                    } else if (data.authorize) {
-                        console.log('✅ Token verified successfully');
-                        window.DERIV_TOKEN = token;
-                        window.isAuthenticated = true;
-                        
-                        // Store successful auth
-                        localStorage.setItem('derivToken', token);
-                        localStorage.setItem('last_auth_time', Date.now());
-                        
-                        testWs.close();
-                        
-                        // Show success and load bot
-                        setTimeout(() => {
-                            hideAuthModal();
-                            initializeBot();
-                        }, 1000);
-                    }
-                } catch (e) {
-                    console.error('Token verification error:', e);
-                    showStep('tokenRequiredStep');
-                }
-            };
-            
-            testWs.onerror = () => {
-                console.error('WebSocket error during token verification');
-                showStep('tokenRequiredStep');
-            };
-            
-            // Timeout after 5 seconds
-            setTimeout(() => {
-                if (testWs.readyState === WebSocket.OPEN) {
-                    testWs.close();
-                }
-                if (!window.isAuthenticated) {
-                    showError('Connection timeout. Please try again.');
-                    showStep('tokenRequiredStep');
-                }
-            }, 5000);
-        }
-        
-        function showAuthModal() {
-            document.getElementById('authModal').style.display = 'flex';
-            showStep('tokenRequiredStep');
-        }
-        
-        function hideAuthModal() {
-            document.getElementById('authModal').style.display = 'none';
-        }
-        
-        function showStep(stepId) {
-            // Hide all steps
-            document.querySelectorAll('.auth-step').forEach(step => {
-                step.classList.remove('active');
-            });
-            
-            // Show target step
-            const targetStep = document.getElementById(stepId);
-            if (targetStep) {
-                targetStep.classList.add('active');
-            }
-        }
-        
-        function showError(message) {
-            const notification = document.createElement('div');
-            notification.className = 'fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 bg-red-600 text-white';
-            notification.innerHTML = `
-                <div class="flex items-center">
-                    <span class="mr-2">❌</span>
-                    <span>${message}</span>
-                </div>
-            `;
-            
-            document.body.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.remove();
-            }, 3000);
-        }
-        
-        function logout() {
-            if (window.isBotRunning) {
-                stopBot();
-            }
-            
-            // Clear all auth data
-            localStorage.removeItem('derivToken');
-            localStorage.removeItem('auth_method');
-            localStorage.removeItem('last_auth_time');
-            sessionStorage.clear();
-            
-            window.DERIV_TOKEN = '';
-            window.isAuthenticated = false;
-            
-            // Reset bot interface
-            document.getElementById('botInterface').style.display = 'none';
-            
-            // Show auth modal
-            showAuthModal();
-            
-            log('🔒 Logged out. Authentication required.', 'SYSTEM');
-        }
-        
-        // ============================================================================
-        // BOT INITIALIZATION (After Authentication)
-        // ============================================================================
-        
-        function initializeBot() {
-            console.log('🤖 Initializing trading bot...');
-            
-            // Show bot interface
-            document.getElementById('botInterface').style.display = 'block';
-            
-            // Load settings
-            window.soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
-            updateSoundButton();
-            
-            updateContractTypeDisplay();
-            
-            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
-            window.currentStake = window.baseStake;
-            document.getElementById('metricCurrentStake').textContent = `$${window.currentStake.toFixed(2)}`;
-            
-            // Set up event listeners
-            document.getElementById('contractType').addEventListener('change', updateContractTypeDisplay);
-            
-            // Start periodic updates
-            setInterval(calculateRates, 1000);
-            setInterval(updateStrategyDisplay, 100);
-            setInterval(updateProbability, 2000);
-            
-            // Start queue processor
-            startQueueProcessor();
-            
-            log('✅ Bot initialized. Authentication verified.', 'SYSTEM');
-            log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
-            log('🔐 All trades go through App ID 117144', 'AUTH');
-        }
-        
-        // ============================================================================
-        // BOT FUNCTIONS (Only accessible after auth)
-        // ============================================================================
-        
-        function extractLastDigitBySymbol(price) {
-            const symbol = document.getElementById('symbol').value;
-            let decimalPlaces = 3;
-            
-            if (symbol === 'R_100') {
-                decimalPlaces = 2;
-            }
-            
-            const formattedPrice = price.toFixed(decimalPlaces);
-            return formattedPrice.charAt(formattedPrice.length - 1);
-        }
-        
-        function updateProbability() {
-            if (!window.isBotRunning || window.digitsHistory.length < 10) return;
-            
-            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
-            const frequency = window.digitsHistory.filter(d => d === predictedDigit).length;
-            const probability = (frequency / window.digitsHistory.length) * 100;
-            
-            const probabilityElem = document.getElementById('metricProbability');
-            probabilityElem.textContent = `Probability: ${probability.toFixed(1)}%`;
-            
-            if (probability > 15) {
-                probabilityElem.className = 'text-xs font-bold probability-high';
-            } else if (probability > 8) {
-                probabilityElem.className = 'text-xs font-bold probability-medium';
-            } else {
-                probabilityElem.className = 'text-xs font-bold probability-low';
-            }
-        }
-        
-        function updateStrategyDisplay() {
-            const maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            const tradesLeft = maxTrades - window.tradeCount;
-            const tradesDone = window.tradeCount;
-            
-            document.getElementById('metricTradesDone').textContent = `${tradesDone}/${maxTrades}`;
-            document.getElementById('metricTradesLeft').textContent = tradesLeft;
-            document.getElementById('metricTradesRemaining').textContent = maxTrades;
-            
-            const progressPercent = Math.min(100, (window.tradeCount / maxTrades) * 100);
-            document.getElementById('executionBar').style.width = `${progressPercent}%`;
-            document.getElementById('metricExecutedTrades').textContent = window.tradeCount;
-            
-            document.getElementById('queue-size').textContent = window.tickQueue.length;
-            document.getElementById('processed-count').textContent = window.stats.tradesExecuted;
-            document.getElementById('queue-status-badge').textContent = `QUEUE: ${window.tickQueue.length}`;
-        }
-        
-        function startQueueProcessor() {
-            setInterval(() => {
-                if (!window.isBotRunning || window.stopAfterWin) return;
-                
-                while (window.tickQueue.length > 0 && !window.executionLock && window.nextTradeAllowed) {
-                    const tick = window.tickQueue.shift();
-                    processTickImmediately(tick);
-                }
-            }, 50);
-        }
-        
-        function processTickImmediately(tick) {
-            if (window.stopAfterWin) return;
-            
-            if (checkForImmediateWin(tick)) {
-                return;
-            }
-            
-            if (window.tradeCount >= window.maxTrades) {
-                log(`🛑 Max trades limit reached (${window.maxTrades})`, 'CRITICAL');
-                stopBot();
-                return;
-            }
-            
-            window.executionLock = true;
-            window.nextTradeAllowed = false;
-            
-            try {
-                window.stats.tradesExecuted++;
-                window.tradeCount++;
-                document.getElementById('metricTradeCount').textContent = window.tradeCount;
-                
-                log(`⚡ TRADE #${window.tradeCount}: ${tick.price.toFixed(3)} (Digit ${tick.digit})`, 'INSTANT');
-                playAudioFeedback('EXECUTION');
-                
-                updateProcessingTickDisplay(tick);
-                executeTrade(tick);
-                
-            } catch (error) {
-                log(`❌ Error: ${error}`, 'ERROR');
-                window.executionLock = false;
-                window.nextTradeAllowed = true;
-            }
-        }
-        
-        function updateProcessingTickDisplay(tick) {
-            if (!tick) return;
-            
-            document.getElementById('processingTickDigit').textContent = tick.digit;
-            document.getElementById('processingTickInfo').textContent = `Price: ${tick.price.toFixed(3)}`;
-            document.getElementById('processingTickTime').textContent = new Date(tick.time).toLocaleTimeString();
-            document.getElementById('processingTickDigit').classList.add('instant-tick');
-            
-            document.getElementById('metricPreviousResult').textContent = `Executing trade #${window.tradeCount}`;
-            document.getElementById('metricNextAction').textContent = `Digit: ${tick.digit}`;
-        }
-        
-        function updateQueueDisplay() {
-            const queueDisplay = document.getElementById('tick-queue-display');
-            
-            if (window.tickQueue.length === 0) {
-                queueDisplay.innerHTML = '<div class="text-gray-500 italic">No ticks in queue...</div>';
-                return;
-            }
-            
-            let html = '';
-            const displayTicks = window.tickQueue.slice(0, 8);
-            
-            displayTicks.forEach((tick) => {
-                html += `
-                    <div class="queue-digit queued-tick">
-                        ${tick.digit}
-                        <div class="text-[8px] text-gray-300 mt-[-5px]">${tick.price.toFixed(2)}</div>
-                    </div>
-                `;
-            });
-            
-            if (window.tickQueue.length > 8) {
-                html += `<div class="queue-digit bg-gray-700 text-gray-400">+${window.tickQueue.length - 8}</div>`;
-            }
-            
-            queueDisplay.innerHTML = html;
-        }
-        
-        function addTickToQueue(tick) {
-            window.digitsHistory.push(parseInt(tick.digit));
-            if (window.digitsHistory.length > window.MAX_HISTORY) {
-                window.digitsHistory.shift();
-            }
-            
-            window.tickQueue.push(tick);
-            
-            if (window.tickQueue.length > window.maxQueueSize) {
-                window.tickQueue.shift();
-            }
-            
-            updateQueueDisplay();
-            return true;
-        }
-        
-        function checkForImmediateWin(tick) {
-            if (!window.isBotRunning || window.stopAfterWin) return false;
-            
-            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
-            const tickDigit = parseInt(tick.digit);
-            
-            if (tickDigit === predictedDigit) {
-                log(`🎯 WIN DETECTED! Tick digit ${tickDigit} matches predicted ${predictedDigit}.`, 'IMMEDIATE_WIN');
-                log(`✅ STRATEGY SUCCESSFUL in ${window.tradeCount + 1} trades`, 'STRATEGY');
-                
-                window.lastTradeResult = 'win';
-                window.stopAfterWin = true;
-                window.stats.wins++;
-                window.stats.digitMatches++;
-                window.tradeCount++;
-                
-                const processingDigit = document.getElementById('processingTickDigit');
-                processingDigit.textContent = tickDigit;
-                processingDigit.classList.add('instant-win-detected');
-                
-                const tradeResultContainer = document.getElementById('trade-result-container');
-                tradeResultContainer.classList.add('trade-completed');
-                
-                playAudioFeedback('INSTANT_WIN');
-                updateTradeResultStatus();
-                log(`📊 Waiting for balance update to calculate actual PnL...`, 'INFO');
-                
-                return true;
-            }
-            
-            window.stats.digitNonMatches++;
-            return false;
-        }
-        
-        function executeTrade(tick) {
-            const contractType = document.getElementById('contractType').value;
-            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
-            const symbol = document.getElementById('symbol').value;
-            const stake = window.currentStake;
-            const duration = 1;
-            
-            const proposalRequest = {
-                proposal: 1,
-                amount: stake.toFixed(2),
-                basis: "stake",
-                contract_type: contractType,
-                currency: "USD",
-                duration: duration,
-                duration_unit: "t",
-                symbol: symbol,
-                barrier: predictedDigit.toString(),
-                req_id: getNextReqId()
-            };
+        const synth = new Tone.PolySynth(Tone.Synth).toDestination();
 
-            log(`📊 Trade #${window.tradeCount}: $${stake.toFixed(2)} on digit ${predictedDigit}`, 'TRADE');
-            
-            window.pendingProposals.set(proposalRequest.req_id, {
-                tick: tick,
-                stake: stake,
-                contractType: contractType,
-                predictedDigit: predictedDigit,
-                startTime: Date.now()
-            });
-            
-            sendRequest(proposalRequest);
-        }
-        
-        function updatePnL() {
-            if (window.startingBalance > 0 && window.currentBalance > 0) {
-                window.netProfit = window.currentBalance - window.startingBalance;
-                
-                const profitElem = document.getElementById('metricTotalProfit');
-                profitElem.textContent = `$${window.netProfit.toFixed(2)}`;
-                
-                if (window.netProfit > 0) {
-                    profitElem.className = 'text-lg font-bold profit-green success-pulse';
-                } else if (window.netProfit < 0) {
-                    profitElem.className = 'text-lg font-bold profit-red';
-                } else {
-                    profitElem.className = 'text-lg font-bold text-gray-300';
-                }
-                
-                const now = Date.now();
-                if (now - window.lastBalanceUpdate > 5000) {
-                    log(`📊 PnL Update: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)})`, 'PNL');
-                    window.lastBalanceUpdate = now;
-                }
-            }
-        }
-        
-        function onTradeComplete(isSuccess = true) {
-            window.executionLock = false;
-            window.nextTradeAllowed = true;
-            
-            updateStrategyDisplay();
-            
-            if (!isSuccess) {
-                updateStake('loss');
-            }
-            
-            if (window.stopAfterWin) {
-                log(`✅ WIN DETECTED! Strategy successful.`, 'STRATEGY');
-                setTimeout(() => {
-                    stopBot();
-                }, 100);
-                return;
-            }
-            
-            if (window.tradeCount >= window.maxTrades) {
-                log(`🛑 Max trades reached (${window.maxTrades}). Strategy complete.`, 'CRITICAL');
-                stopBot();
-                return;
-            }
-        }
-        
-        function updateContractTypeDisplay() {
-            const contractType = document.getElementById('contractType').value;
-            let badgeText = contractType;
-            let badgeColor = 'bg-purple-600';
-            
-            if (contractType === 'DIGITMATCH') {
-                badgeText = 'DIGITMATCH (INSTANT)';
-                badgeColor = 'bg-purple-600';
-            }
-            
-            document.getElementById('contract-type-badge').textContent = badgeText;
-            document.getElementById('contract-type-badge').className = `contract-type-badge ${badgeColor} text-white`;
-        }
-        
-        function calculateRates() {
-            const now = Date.now();
-            window.tickTimestamps = window.tickTimestamps.filter(ts => now - ts < 5000);
-            window.tickRate = window.tickTimestamps.length / 5;
-            document.getElementById('metricTickRate').textContent = `Ticks/sec: ${window.tickRate.toFixed(1)}`;
-        }
-        
-        function toggleSound() {
-            window.soundEnabled = !window.soundEnabled;
-            localStorage.setItem('soundEnabled', window.soundEnabled);
-            updateSoundButton();
-            log(`🔊 Sound ${window.soundEnabled ? 'ENABLED' : 'DISABLED'}`, 'INFO');
-        }
-        
-        function updateSoundButton() {
-            const soundToggleButton = document.getElementById('soundToggle');
-            if (soundToggleButton) {
-                soundToggleButton.textContent = window.soundEnabled ? '🔊 Sound ON' : '🔇 Sound OFF';
-                soundToggleButton.className = window.soundEnabled ? 
-                    'px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition' :
-                    'px-4 py-2 bg-gray-600 text-white font-bold rounded-lg shadow hover:bg-gray-700 transition';
-            }
-        }
-        
-        async function initTone() {
-            if (!window.soundEnabled) return;
-            
-            if (typeof Tone === 'undefined') {
-                console.error("Tone.js not loaded");
-                return;
-            }
-            
-            try {
-                await Tone.start();
-                window.synth = new Tone.Synth().toDestination();
-                window.ToneInitialized = true;
-            } catch (e) {
-                console.error("Audio init error:", e);
-            }
-        }
-        
-        function playAudioFeedback(type) {
-            if (!window.soundEnabled || !window.ToneInitialized || !window.synth) return;
-            
-            try {
-                if (type === 'WIN') {
-                    window.synth.triggerAttackRelease("C6", "8n");
-                } else if (type === 'BIG_WIN') {
-                    window.synth.triggerAttackRelease("C6", "8n");
-                    window.synth.triggerAttackRelease("E6", "8n", Tone.now() + 0.1);
-                } else if (type === 'LOSS') {
-                    window.synth.triggerAttackRelease("C3", "16n");
-                } else if (type === 'TICK') {
-                    window.synth.triggerAttackRelease("C5", "32n");
-                } else if (type === 'EXECUTION') {
-                    window.synth.triggerAttackRelease("E5", "32n");
-                } else if (type === 'INSTANT_WIN') {
-                    window.synth.triggerAttackRelease("C6", "8n");
-                    window.synth.triggerAttackRelease("G6", "8n", Tone.now() + 0.1);
-                    window.synth.triggerAttackRelease("C7", "8n", Tone.now() + 0.2);
-                }
-            } catch (e) {
-                console.error("Audio error:", e);
-            }
-        }
-        
-        function log(message, type = 'INFO') {
+        // =============================================
+        // CORE FUNCTIONS
+        // =============================================
+        function log(msg, type = 'INFO') {
             const logArea = document.getElementById('log-area');
-            const timestamp = new Date().toLocaleTimeString('en-US', { 
-                hour12: false, 
-                hour: '2-digit', 
-                minute: '2-digit', 
-                second: '2-digit',
-                fractionalSecondDigits: 3 
-            });
+            const entry = document.createElement('div');
+            const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
             
-            let color = 'text-lime-400';
-            if (type === 'ERROR') color = 'text-red-500 font-bold'; 
-            if (type === 'WARNING') color = 'text-yellow-400';
-            if (type === 'TRADE') color = 'text-green-300';
-            if (type === 'WIN') color = 'text-green-400 font-bold';
-            if (type === 'LOSS') color = 'text-red-400 font-bold';
-            if (type === 'QUEUE') color = 'text-blue-400';
-            if (type === 'TICK') color = 'text-cyan-300';
-            if (type === 'MARTINGALE') color = 'text-purple-400';
-            if (type === 'CONTRACT') color = 'text-pink-400';
-            if (type === 'REAL_TRADE') color = 'text-yellow-300 font-bold';
-            if (type === 'CRITICAL') color = 'text-red-400 font-bold';
-            if (type === 'SYSTEM') color = 'text-white';
-            if (type === 'STRATEGY') color = 'text-green-300 font-bold';
-            if (type === 'INSTANT') color = 'text-green-400 font-bold';
-            if (type === 'PNL') color = 'text-yellow-300 font-bold';
-            if (type === 'AUTH') color = 'text-purple-300 font-bold';
+            let colorClass = 'text-gray-400';
+            if (type === 'WIN') colorClass = 'text-green-400 font-bold';
+            if (type === 'LOSS') colorClass = 'text-red-400 font-bold';
+            if (type === 'TRADE') colorClass = 'text-blue-400';
+            if (type === 'SYSTEM') colorClass = 'text-yellow-500';
+            if (type === 'PNL') colorClass = 'text-purple-400 font-bold';
             
-            logArea.innerHTML += `\n[${timestamp}] <span class="${color}">${message}</span>`;
-            logArea.scrollTop = logArea.scrollHeight;
+            entry.className = `border-l-2 border-transparent pl-2 py-0.5 ${colorClass}`;
+            entry.innerHTML = `<span class="text-[10px] text-gray-600 mr-2">[${now}]</span><span class="font-mono">${msg}</span>`;
+            
+            logArea.prepend(entry);
         }
-        
-        function updateButtonState() {
-            const toggleButton = document.getElementById('toggleButton');
-            if (!toggleButton) return;
-            
-            if (window.isBotRunning) {
-                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
-                toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
-                toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');
-            } else {
-                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">🚀</span> START BOT</span>';
-                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700');
-                toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
-            }
-        }
-        
-        function updateTradeResultStatus() {
-            const tradeResultElem = document.getElementById('metricTradeResult');
-            const previousResultElem = document.getElementById('metricPreviousResult');
-            const nextActionElem = document.getElementById('metricNextAction');
-            const tradeResultContainer = document.getElementById('trade-result-container');
-            
-            if (window.stopAfterWin) {
-                tradeResultElem.textContent = 'WIN';
-                tradeResultElem.className = 'text-xs font-bold text-green-400';
-                previousResultElem.textContent = `✅ WIN - Strategy successful!`;
-                nextActionElem.textContent = 'STOPPING BOT';
-                tradeResultContainer.classList.add('trade-completed');
-                tradeResultContainer.classList.remove('trade-failed');
-            } else if (window.executionLock) {
-                tradeResultElem.textContent = 'TRADING';
-                tradeResultElem.className = 'text-xs font-bold text-yellow-400';
-                previousResultElem.textContent = `Executing trade #${window.tradeCount}`;
-                nextActionElem.textContent = 'Processing...';
-                tradeResultContainer.classList.remove('trade-completed', 'trade-failed');
-            } else {
-                tradeResultElem.textContent = 'READY';
-                tradeResultElem.className = 'text-xs font-bold text-gray-400';
-                previousResultElem.textContent = 'Waiting for ticks...';
-                nextActionElem.textContent = 'Execute on each tick';
-                tradeResultContainer.classList.remove('trade-completed', 'trade-failed');
-            }
-        }
-        
-        function updateStake(winOrLoss) {
-            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
-            window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
 
-            if (winOrLoss === 'win') {
-                window.martingaleStep = 0;
-                window.currentStake = window.baseStake;
-                log(`✅ WIN! Martingale reset. Next stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
-                
-                const stakeElem = document.getElementById('metricCurrentStake');
-                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
-                stakeElem.className = 'text-lg font-bold current-stake-green';
-                
-            } else if (winOrLoss === 'loss') {
-                window.martingaleStep++;
-
-                if (window.martingaleStep >= window.maxTrades) {
-                    log(`🛑 MAX TRADES REACHED (${window.maxTrades}). Stopping bot.`, 'CRITICAL');
-                    stopBot();
-                    return;
+        function setDigit(d) {
+            window.selectedDigit = d;
+            document.querySelectorAll('.digit-btn').forEach(btn => {
+                const bDigit = parseInt(btn.getAttribute('data-digit'));
+                if (bDigit === d) {
+                    btn.className = "digit-btn bg-blue-600 border border-blue-500 p-2 rounded transition text-xs font-bold";
+                } else {
+                    btn.className = "digit-btn bg-gray-900 border border-gray-700 p-2 rounded hover:bg-blue-600 transition text-xs font-bold";
                 }
-                
-                const newStake = window.currentStake * window.multiplier;
-                window.currentStake = parseFloat(newStake.toFixed(2));
-                
-                log(`❌ LOSS. Martingale Step ${window.martingaleStep}. Next stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
-                
-                const stakeElem = document.getElementById('metricCurrentStake');
-                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
-                stakeElem.className = 'text-lg font-bold text-white';
-                
-            } else {
-                window.martingaleStep = 0;
-                window.currentStake = window.baseStake;
-                log(`Starting strategy. Base stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
-                
-                const stakeElem = document.getElementById('metricCurrentStake');
-                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
-                stakeElem.className = 'text-lg font-bold text-white';
-            }
+            });
+            log(`🎯 Target digit set to: ${d}`, 'SYSTEM');
         }
-        
-        // ============================================================================
-        // WEBSOCKET FUNCTIONS
-        // ============================================================================
-        
-        function connectWebSocket() {
-            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                stopBot();
-                return;
-            }
-            
-            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                log('WebSocket already connected', 'WARNING');
-                return;
-            }
-            
-            startWebSocketKeepAlive();
-            
-            window.ws = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
 
+        function verifyToken() {
+            const token = document.getElementById('authTokenInput').value.trim();
+            if (!token) {
+                log('❌ Please enter a valid API token', 'SYSTEM');
+                return;
+            }
+
+            if (window.ws) window.ws.close();
+
+            window.ws = new WebSocket(`wss://ws.derivws.com/stocks/v3?app_id=${window.appId}`);
+            
             window.ws.onopen = () => {
-                log('🔌 WebSocket connected - INSTANT TICK EXECUTION MODE', 'SYSTEM');
-                document.getElementById('status-badge').textContent = 'Connected';
-                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-green-600 text-white shadow-md';
-                sendRequest({ authorize: window.DERIV_TOKEN, req_id: getNextReqId() });
+                log('🌐 Connection established. Authenticating...', 'SYSTEM');
+                window.ws.send(JSON.stringify({ authorize: token }));
+                startWebSocketKeepAlive();
             };
 
             window.ws.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
-                    handleAPIResponse(data);
-                    window.lastPingTime = Date.now();
-                } catch (e) {
-                    console.error('WebSocket parse error:', e);
-                }
+                const data = JSON.parse(msg.data);
+                handleWsMessage(data);
             };
 
+            window.ws.onerror = () => log('❌ WebSocket Connection Error', 'SYSTEM');
             window.ws.onclose = () => {
-                log('🔌 WebSocket disconnected', 'ERROR');
-                document.getElementById('status-badge').textContent = 'Disconnected';
-                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
-                window.ws = null;
-                window.tickSubscriptionSent = false;
-                stopWebSocketKeepAlive();
-                
-                if (window.isBotRunning) {
-                    log('🔄 Reconnecting in 500ms...', 'SYSTEM');
-                    setTimeout(connectWebSocket, 500);
-                }
-            };
-
-            window.ws.onerror = (error) => {
-                log(`❌ WebSocket Error`, 'CRITICAL');
+                log('🔌 Disconnected from Deriv', 'SYSTEM');
+                stopBot();
             };
         }
 
-        function startWebSocketKeepAlive() {
-            stopWebSocketKeepAlive();
-            window.wsPingInterval = setInterval(() => {
-                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                    if (Date.now() - window.lastPingTime > 10000) {
-                        sendRequest({ ping: 1, req_id: getNextReqId() });
-                    }
-                }
-            }, 5000);
-        }
-
-        function stopWebSocketKeepAlive() {
-            if (window.wsPingInterval) {
-                clearInterval(window.wsPingInterval);
-                window.wsPingInterval = null;
-            }
-        }
-
-        function resetAllState() {
-            updateStake('initial');
-            
-            window.startingBalance = 0.0;
-            window.currentBalance = 0.0;
-            window.netProfit = 0.0;
-            window.lastBalanceUpdate = 0;
-            
-            const profitElem = document.getElementById('metricTotalProfit');
-            profitElem.textContent = '$0.00';
-            profitElem.className = 'text-lg font-bold text-gray-300';
-            
-            document.getElementById('metricTradeCount').textContent = '0';
-            
-            const balanceElem = document.getElementById('metricAccountBalance');
-            balanceElem.textContent = '$---';
-            balanceElem.className = 'text-lg font-bold text-white';
-            
-            document.getElementById('metricLiveTick').textContent = '---';
-            document.getElementById('metricLastDigit').textContent = 'Digit: ?';
-            
-            window.stats = {
-                totalTicks: 0,
-                tradesExecuted: 0,
-                wins: 0,
-                losses: 0,
-                digitMatches: 0,
-                digitNonMatches: 0
-            };
-            
-            window.tickQueue = [];
-            window.digitsHistory = [];
-            updateQueueDisplay();
-            
-            window.lastTick = null;
-            window.lastTradeResult = null;
-            window.tradeCount = 0;
-            window.martingaleStep = 0;
-            window.pendingProposals.clear();
-            window.activeContracts.clear();
-            window.tickTimestamps = [];
-            
-            window.executionLock = false;
-            window.waitingForTradeResult = false;
-            window.nextTradeAllowed = true;
-            window.stopAfterWin = false;
-            window.currentlyProcessingTick = null;
-            
-            const logArea = document.getElementById('log-area');
-            logArea.innerHTML = '[00:00:00] 🤖 Starting INSTANT TICK EXECUTION. Trading on EVERY tick!';
-            
-            updateTradeResultStatus();
-            updateStrategyDisplay();
-            
-            log('🔄 ALL STATE RESET: Starting INSTANT TICK EXECUTION strategy', 'SYSTEM');
-        }
-
-        function sendRequest(request) {
-            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                const message = JSON.stringify(request);
-                window.ws.send(message);
-                return request.req_id;
-            }
-            return null;
-        }
-
-        function getNextReqId() {
-            return ++window.req_id;
-        }
-        
-        function handleAPIResponse(data) {
+        function handleWsMessage(data) {
             if (data.error) {
-                log(`API Error: ${data.error.message}`, 'ERROR');
-                if (data.error.code === 'InvalidToken') {
-                    log('❌ Invalid API Token. Please reconnect.', 'CRITICAL');
-                    logout();
-                }
+                log(`🔴 Error: ${data.error.message}`, 'SYSTEM');
                 return;
             }
 
+            // Authentication Response
             if (data.msg_type === 'authorize') {
-                if (data.authorize) {
-                    log(`🔐 Authorized as ${data.authorize.loginid}`, 'SYSTEM');
-                    subscribeToTicks(document.getElementById('symbol').value);
-                    subscribeToBalance();
-                }
-            } else if (data.msg_type === 'tick') {
-                handleTick(data.tick);
-            } else if (data.msg_type === 'proposal') {
-                handleProposalResponse(data.proposal, data.req_id);
-            } else if (data.msg_type === 'buy') {
-                handleBuyResponse(data.buy);
-            } else if (data.msg_type === 'balance') {
-                handleBalanceUpdate(data.balance);
-            } else if (data.msg_type === 'contract_update') {
-                handleContractUpdate(data.contract_update);
-            } else if (data.msg_type === 'ping') {
-                window.lastPingTime = Date.now();
+                window.startingBalance = parseFloat(data.authorize.balance);
+                window.currentBalance = window.startingBalance;
+                updateMetrics();
+                
+                document.getElementById('status-badge').textContent = 'Connected: ' + data.authorize.loginid;
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-green-600 text-white shadow-md';
+                
+                // Unlock Trading UI
+                const controls = document.getElementById('controls-section');
+                controls.classList.remove('opacity-50', 'cursor-not-allowed', 'pointer-events-none');
+                log(`✅ Authenticated: ${data.authorize.email}`, 'SYSTEM');
+                
+                // Subscribe to balance
+                window.ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
             }
-        }
-        
-        function subscribeToBalance() {
-            sendRequest({
-                balance: 1,
-                subscribe: 1,
-                req_id: getNextReqId()
-            });
-            log('Subscribed to balance updates', 'SYSTEM');
+
+            // Balance Update
+            if (data.msg_type === 'balance') {
+                window.currentBalance = parseFloat(data.balance.balance);
+                window.netProfit = window.currentBalance - window.startingBalance;
+                updateMetrics();
+            }
+
+            // Tick Stream
+            if (data.msg_type === 'tick') {
+                const tick = data.tick;
+                const priceStr = tick.quote.toFixed(tick.pip_size || 4);
+                const lastDigit = parseInt(priceStr.slice(-1));
+                
+                document.getElementById('price-display').textContent = priceStr;
+                const circle = document.getElementById('last-digit-circle');
+                circle.textContent = lastDigit;
+                circle.classList.add('tick-flash');
+                setTimeout(() => circle.classList.remove('tick-flash'), 100);
+
+                updateHistogram(lastDigit);
+                checkStrategy(lastDigit);
+            }
+
+            // Proposal Received
+            if (data.msg_type === 'proposal') {
+                const proposalId = data.proposal.id;
+                if (!window.pendingProposals.has(proposalId)) {
+                    window.pendingProposals.add(proposalId);
+                    window.ws.send(JSON.stringify({ buy: proposalId, price: data.proposal.ask_price }));
+                }
+            }
+
+            // Buy Response
+            if (data.msg_type === 'buy') {
+                const contractId = data.buy.contract_id;
+                window.activeContracts.add(contractId);
+                log(`🚀 Trade Placed (ID: ${contractId})`, 'TRADE');
+            }
+
+            // Contract Settlement (Proposal Open Contract)
+            if (data.msg_type === 'proposal_open_contract') {
+                const contract = data.proposal_open_contract;
+                if (contract.is_sold) {
+                    processTradeResult(contract);
+                }
+            }
         }
 
-        function handleBalanceUpdate(balanceData) {
-            const newBalance = parseFloat(balanceData.balance);
-            
-            if (window.startingBalance === 0) {
-                window.startingBalance = newBalance;
-                log(`💰 Starting Balance: $${window.startingBalance.toFixed(2)}`, 'PNL');
+        function checkStrategy(lastDigit) {
+            if (!window.isBotRunning || window.executionLock || !window.nextTradeAllowed) return;
+
+            const strategy = document.getElementById('strategySelect').value;
+            const shouldTrade = (strategy === 'DIGITMATCH' && lastDigit === window.selectedDigit) ||
+                              (strategy === 'DIGITDIFF' && lastDigit !== window.selectedDigit);
+
+            if (shouldTrade) {
+                executeTrade();
             }
+        }
+
+        function executeTrade() {
+            if (window.executionLock) return;
+            window.executionLock = true;
+
+            const stake = parseFloat(document.getElementById('baseStake').value);
+            const market = document.getElementById('marketSelect').value;
+            const strategy = document.getElementById('strategySelect').value;
+            const contractType = strategy === 'DIGITMATCH' ? 'DIGITMATCH' : 'DIGITDIFF';
+
+            window.ws.send(JSON.stringify({
+                proposal: 1,
+                amount: stake.toString(),
+                basis: "stake",
+                contract_type: contractType,
+                currency: "USD",
+                duration: 1,
+                duration_unit: "t",
+                barrier: window.selectedDigit.toString(),
+                symbol: market,
+                subscribe: 1
+            }));
+
+            // Lock for 3 seconds to avoid double trigger
+            setTimeout(() => { window.executionLock = false; }, 3000);
+        }
+
+        function processTradeResult(contract) {
+            const profit = parseFloat(contract.profit);
+            const id = contract.contract_id;
             
-            window.currentBalance = newBalance;
+            if (!window.activeContracts.has(id)) return;
+            window.activeContracts.delete(id);
+
+            window.tradeCount++;
+            const resultMsg = `Trade #${window.tradeCount} Result: ${profit >= 0 ? 'WIN' : 'LOSS'} ($${profit.toFixed(2)})`;
             
-            const balanceElem = document.getElementById('metricAccountBalance');
-            balanceElem.textContent = `$${window.currentBalance.toFixed(2)}`;
-            
-            updatePnL();
-            
-            if (window.netProfit > 0) {
-                balanceElem.className = 'text-lg font-bold account-balance-green';
-            } else if (window.netProfit < 0) {
-                balanceElem.className = 'text-lg font-bold text-red-400';
-            } else if (window.currentBalance > 50) {
-                balanceElem.className = 'text-lg font-bold text-green-400';
-            } else if (window.currentBalance > 25) {
-                balanceElem.className = 'text-lg font-bold text-yellow-400';
+            if (profit >= 0) {
+                window.stats.wins++;
+                log(resultMsg, 'WIN');
+                flashCard('stat-wins-card', 'win-glow');
+                synth.triggerAttackRelease(["C4", "E4", "G4"], "8n");
+                
+                if (window.stopAfterWin) {
+                    stopBot();
+                    log('🛑 Target reached. Stopping bot.', 'SYSTEM');
+                }
             } else {
-                balanceElem.className = 'text-lg font-bold text-red-400';
+                window.stats.losses++;
+                log(resultMsg, 'LOSS');
+                flashCard('stat-wins-card', 'loss-glow');
+                synth.triggerAttackRelease(["G3", "Eb3", "C3"], "4n");
             }
-            
-            const bankrollLimit = parseFloat(document.getElementById('bankrollLimit').value) || 25.0;
-            if (window.currentStake > window.currentBalance || window.currentBalance <= bankrollLimit) {
-                log(`🛑 Bankroll Limit Reached. Stopping bot.`, 'CRITICAL');
+
+            updateMetrics();
+            checkRiskManagement();
+        }
+
+        function checkRiskManagement() {
+            const tp = parseFloat(document.getElementById('takeProfit').value);
+            const sl = parseFloat(document.getElementById('stopLoss').value);
+
+            if (window.netProfit >= tp) {
+                log(`🎯 TAKE PROFIT REACHED! Total: $${window.netProfit.toFixed(2)}`, 'PNL');
+                stopBot();
+            } else if (window.netProfit <= -sl) {
+                log(`⛔ STOP LOSS TRIGGERED! Total: $${window.netProfit.toFixed(2)}`, 'PNL');
                 stopBot();
             }
         }
-        
-        function handleContractUpdate(contractUpdate) {
-            if (contractUpdate.status === 'sold') {
-                const profit = parseFloat(contractUpdate.profit);
-                const contractId = contractUpdate.contract_id;
-                
-                if (profit > 0) {
-                    log(`✅ Contract ${contractId} WON: $${profit.toFixed(2)}`, 'WIN');
-                } else if (profit < 0) {
-                    log(`❌ Contract ${contractId} LOST: $${Math.abs(profit).toFixed(2)}`, 'LOSS');
-                }
-                
-                if (profit > 0 && window.stopAfterWin) {
-                    log(`🏆 Winning contract settled!`, 'STRATEGY');
-                }
-            }
-        }
 
-        function subscribeToTicks(symbol) {
-            if (window.tickSubscriptionSent) return;
+        function updateHistogram(digit) {
+            window.digitHistory.push(digit);
+            if (window.digitHistory.length > window.maxHistory) window.digitHistory.shift();
+
+            const counts = new Array(10).fill(0);
+            window.digitHistory.forEach(d => counts[d]++);
+
+            const maxCount = Math.max(...counts, 1);
+            const bars = document.querySelectorAll('#digit-histogram > div > div');
             
-            sendRequest({
-                ticks: symbol,
-                subscribe: 1,
-                req_id: getNextReqId()
+            counts.forEach((count, i) => {
+                const height = (count / maxCount) * 100;
+                bars[i].style.height = `${Math.max(height, 5)}%`;
+                bars[i].className = (i === window.selectedDigit) 
+                    ? 'w-full bg-blue-500 rounded-t-md min-h-[4px] transition-all duration-300' 
+                    : 'w-full bg-gray-700 rounded-t-md min-h-[4px] transition-all duration-300';
             });
-            window.tickSubscriptionSent = true;
-            log(`✅ Subscribed to ticks for ${symbol}`, 'SYSTEM');
         }
 
-        function handleTick(tick) {
-            if (!window.isBotRunning) return;
-            
-            const price = parseFloat(tick.quote);
-            const digit = extractLastDigitBySymbol(price);
-            const time = parseInt(tick.epoch) * 1000;
-            const tickData = { digit: digit, price: price, time: time };
-            
-            window.lastTick = tickData;
-            
-            const displayPrice = price.toFixed(3);
-            document.getElementById('metricLiveTick').textContent = displayPrice;
-            document.getElementById('metricLastDigit').textContent = `Digit: ${digit}`;
-            document.getElementById('metricLiveTick').classList.add('tick-flash');
-            setTimeout(() => document.getElementById('metricLiveTick').classList.remove('tick-flash'), 50);
-            
-            window.tickTimestamps.push(Date.now());
-            window.stats.totalTicks++;
-            
-            addTickToQueue(tickData);
-            
-            playAudioFeedback('TICK');
-            
-            if (window.stats.totalTicks <= 5) {
-                const symbol = document.getElementById('symbol').value;
-                log(`🎯 Tick ${window.stats.totalTicks}: ${displayPrice} (Digit ${digit}) Symbol: ${symbol}`, 'TICK');
-            }
-        }
-        
-        function handleProposalResponse(proposal, req_id) {
-            if (!proposal || !proposal.id) {
-                log(`❌ Proposal request failed`, 'ERROR');
-                onTradeComplete(false);
-                return;
-            }
-
-            const pending = window.pendingProposals.get(req_id);
-            if (!pending) {
-                log(`❌ No pending proposal found`, 'ERROR');
-                onTradeComplete(false);
-                return;
-            }
-
-            window.pendingProposals.delete(req_id);
-            
-            executeBuy(proposal.id, proposal.ask_price, pending);
-        }
-
-        function executeBuy(proposal_id, ask_price, pending) {
-            const buyRequest = {
-                buy: proposal_id,
-                price: ask_price,
-                req_id: getNextReqId()
-            };
-            
-            log(`✅ Buying contract for $${pending.stake.toFixed(2)}`, 'TRADE');
-            
-            window.pendingProposals.set(buyRequest.req_id, {
-                ...pending,
-                proposal_id: proposal_id,
-                buyStartTime: Date.now()
-            });
-            
-            sendRequest(buyRequest);
-        }
-
-        function handleBuyResponse(buyData) {
-            if (buyData.contract_id) {
-                const buyTime = Date.now() - (window.pendingProposals.get(buyData.req_id)?.buyStartTime || Date.now());
-                log(`✅ Trade executed in ${buyTime}ms`, 'INSTANT');
-                
-                updateStake('loss');
-                
-                onTradeComplete(true);
-                
-            } else {
-                log(`❌ Trade execution failed`, 'ERROR');
-                onTradeComplete(false);
-            }
-        }
-        
         function toggleBot() {
-            if (!window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
-                return;
-            }
-            
             if (window.isBotRunning) {
                 stopBot();
             } else {
@@ -1587,25 +515,21 @@
         }
 
         function startBot() {
-            if (window.isBotRunning) return;
-            
-            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+                log('🔴 Connect to API first!', 'SYSTEM');
                 return;
             }
             
-            resetAllState();
-            
             window.isBotRunning = true;
             updateButtonState();
-            log('🚀 INSTANT TICK EXECUTION Bot started. Trading on EVERY tick!', 'STRATEGY');
+            log('▶️ Bot started. Analyzing market...', 'SYSTEM');
 
-            updateStake('initial');
-            
-            initTone();
-            connectWebSocket();
-            
+            if (!window.tickSubscriptionSent) {
+                const market = document.getElementById('marketSelect').value;
+                window.ws.send(JSON.stringify({ ticks: market, subscribe: 1 }));
+                window.tickSubscriptionSent = true;
+            }
+
             const controls = document.querySelectorAll('#controls-section input, #controls-section select');
             controls.forEach(control => {
                 control.disabled = true;
@@ -1614,17 +538,13 @@
         }
 
         function stopBot() {
-            if (!window.isBotRunning) return;
-            
             window.isBotRunning = false;
             window.nextTradeAllowed = false;
-            window.stopAfterWin = false;
             updateButtonState();
             log('⏹️ Bot stopped', 'SYSTEM');
             
-            log(`📊 FINAL PnL: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)} - Starting: $${window.startingBalance.toFixed(2)})`, 'PNL');
-            log(`📈 Performance: ${window.stats.wins} wins, ${window.stats.losses} losses, ${window.tradeCount} total trades`, 'STATS');
-
+            log(`📊 FINAL PnL: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)})`, 'PNL');
+            
             stopWebSocketKeepAlive();
             
             if (window.ws) {
@@ -1644,9 +564,79 @@
             
             document.getElementById('status-badge').textContent = 'Disconnected';
             document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
-            updateTradeResultStatus();
         }
-        
+
+        function updateButtonState() {
+            const btn = document.getElementById('mainActionButton');
+            if (window.isBotRunning) {
+                btn.textContent = 'Stop Bot';
+                btn.className = 'w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-2xl shadow-xl transition-all uppercase tracking-widest text-lg';
+            } else {
+                btn.textContent = 'Start Bot';
+                btn.className = 'w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 rounded-2xl shadow-xl transition-all uppercase tracking-widest text-lg';
+            }
+        }
+
+        function updateMetrics() {
+            document.getElementById('metricAccountBalance').textContent = `$${window.currentBalance.toFixed(2)}`;
+            const profitEl = document.getElementById('metricTotalProfit');
+            profitEl.textContent = `$${window.netProfit.toFixed(2)}`;
+            profitEl.className = window.netProfit >= 0 ? 'text-2xl font-bold text-green-400' : 'text-2xl font-bold text-red-400';
+            
+            document.getElementById('metricWins').textContent = window.stats.wins;
+            document.getElementById('metricLosses').textContent = window.stats.losses;
+        }
+
+        function flashCard(id, className) {
+            const el = document.getElementById(id);
+            el.classList.add(className);
+            setTimeout(() => el.classList.remove(className), 2000);
+        }
+
+        function clearLogs() {
+            document.getElementById('log-area').innerHTML = '<div class="text-gray-500 italic">[SYSTEM] Logs cleared.</div>';
+        }
+
+        function startWebSocketKeepAlive() {
+            stopWebSocketKeepAlive();
+            window.keepAliveInterval = setInterval(() => {
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    window.ws.send(JSON.stringify({ ping: 1 }));
+                }
+            }, 30000);
+        }
+
+        function stopWebSocketKeepAlive() {
+            if (window.keepAliveInterval) {
+                clearInterval(window.keepAliveInterval);
+                window.keepAliveInterval = null;
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('derivToken');
+            window.location.href = 'index.html';
+        }
+
+        // =============================================
+        // AUTO-AUTHENTICATION HANDLER (NEW)
+        // =============================================
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedToken = localStorage.getItem('derivToken');
+            
+            if (savedToken) {
+                log('🔐 Saved session found. Auto-connecting...', 'SYSTEM');
+                
+                // 1. Fill the input field for visual feedback
+                const tokenInput = document.getElementById('authTokenInput');
+                if (tokenInput) tokenInput.value = savedToken;
+                
+                // 2. Delay slightly to allow the UI to load, then verify
+                setTimeout(() => {
+                    verifyToken();
+                }, 500);
+            }
+        });
     </script>
 </body>
 </html>
