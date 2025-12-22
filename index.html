@@ -1,3 +1,5 @@
+[file name]: index.html
+[file content begin]
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -659,27 +661,56 @@
         }
 
         // =============================================
-        // OAuth RESPONSE HANDLER
+        // OAuth RESPONSE HANDLER - UPDATED FOR QUERY PARAMS
         // =============================================
         function checkOAuthResponse() {
-            // Get hash parameters from URL
-            const hash = window.location.hash.substring(1);
-            if (!hash) return;
+            console.log('🔍 Checking for OAuth response...');
+            console.log('Full URL:', window.location.href);
+            console.log('Search:', window.location.search);
+            console.log('Hash:', window.location.hash);
             
-            const params = new URLSearchParams(hash);
-            const accessToken = params.get('access_token');
-            const state = params.get('state');
-            const tokenType = params.get('token_type');
-            const accountId = params.get('account_id');
+            // Check BOTH query parameters AND hash parameters
+            let accessToken = null;
+            let state = null;
+            let tokenType = null;
+            let accountId = null;
             
-            console.log('OAuth response detected:', { 
-                hasToken: !!accessToken, 
-                state: state,
-                tokenType: tokenType,
-                accountId: accountId 
-            });
+            // First, check query parameters (what Deriv is actually returning)
+            const searchParams = new URLSearchParams(window.location.search);
+            const token1 = searchParams.get('token1');
+            const token2 = searchParams.get('token2');
+            const stateParam = searchParams.get('state');
+            
+            console.log('Query params - token1:', token1 ? 'yes' : 'no', 'token2:', token2 ? 'yes' : 'no', 'state:', stateParam);
+            
+            // Use token1 (main account token) if available
+            if (token1) {
+                accessToken = token1;
+                state = stateParam;
+                tokenType = 'Bearer';
+                accountId = searchParams.get('acct1');
+                
+                console.log('✅ Found token in query parameters (token1)');
+            }
+            // Also check hash parameters (for compatibility)
+            else if (window.location.hash) {
+                const hashParams = new URLSearchParams(window.location.hash.substring(1));
+                accessToken = hashParams.get('access_token');
+                state = hashParams.get('state');
+                tokenType = hashParams.get('token_type');
+                accountId = hashParams.get('account_id');
+                
+                console.log('✅ Found token in hash parameters');
+            }
             
             if (accessToken) {
+                console.log('🎯 OAuth response detected:', { 
+                    hasToken: !!accessToken, 
+                    state: state,
+                    tokenType: tokenType,
+                    accountId: accountId 
+                });
+                
                 // Verify state parameter for security
                 const storedState = sessionStorage.getItem('oauth_state');
                 if (state && state !== storedState) {
@@ -698,14 +729,21 @@
                 handleOAuthSuccess({
                     access_token: accessToken,
                     token_type: tokenType || 'Bearer',
-                    expires_in: params.get('expires_in') || '3600',
+                    expires_in: '3600',
                     account_id: accountId,
                     state: state
                 });
                 
-                // Clean URL (remove hash)
-                window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+                // Clean URL (remove all parameters)
+                cleanUrl();
+            } else {
+                console.log('⚠️ No OAuth token found in URL');
             }
+        }
+        
+        function cleanUrl() {
+            // Remove all query parameters and hash from URL
+            window.history.replaceState({}, document.title, window.location.pathname);
         }
 
         // =============================================
