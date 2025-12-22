@@ -548,23 +548,21 @@
 
     <script>
         // =============================================
-        // CONFIGURATION
+        // CONFIGURATION FOR VERCEL
         // =============================================
         const CONFIG = {
             APP_ID: 117144,
-            // FIXED: Use current page for redirect
-            REDIRECT_URI: window.location.href.split('#')[0].split('?')[0],
-            BOT_PAGE: "/bot-obfuscated.html"
+            // Use current page URL for Vercel
+            REDIRECT_URI: window.location.origin + window.location.pathname,
+            // Point to bot.html (Vercel will route it)
+            BOT_PAGE: "/bot.html"
         };
 
         // =============================================
-        // INITIALIZATION - CHECK FOR EXISTING AUTH
+        // INITIALIZATION
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('✅ DigitMatchStars Pro - Trading Platform Loaded');
-            
-            // Check if user is already authenticated
-            checkExistingAuth();
+            console.log('✅ DigitMatchStars Pro - Vercel Version Loaded');
             
             // Check for OAuth response from Deriv
             checkOAuthResponse();
@@ -579,17 +577,6 @@
                 if (e.key === 'Escape') closeModal();
             });
         });
-
-        // Check if user is already authenticated
-        function checkExistingAuth() {
-            const token = sessionStorage.getItem('deriv_access_token');
-            const isConnected = localStorage.getItem('connected_with_derivmatchstars');
-            
-            if (token && isConnected === 'true') {
-                console.log('User already authenticated, opening bot...');
-                openBot();
-            }
-        }
 
         // =============================================
         // MODAL FUNCTIONS
@@ -617,41 +604,49 @@
         // OAuth FUNCTIONS
         // =============================================
         function startOAuth() {
-            const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
-            if (oauthBtn) {
-                oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting to Deriv...';
-                oauthBtn.disabled = true;
-            }
-            
-            // Generate secure state parameter
-            const state = 'derivmatchstars_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            sessionStorage.setItem('oauth_state', state);
-            sessionStorage.setItem('oauth_redirect', 'true');
-            
-            // Build OAuth URL
-            const params = new URLSearchParams({
-                app_id: CONFIG.APP_ID.toString(),
-                response_type: 'token',
-                redirect_uri: CONFIG.REDIRECT_URI,
-                scope: 'read,trade,trading_information,admin',
-                brand: 'deriv',
-                language: 'en',
-                state: state,
-                date_first_contact: new Date().toISOString().split('T')[0]
-            });
-            
-            const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
-            
-            console.log('Starting OAuth flow:', {
-                appId: CONFIG.APP_ID,
-                redirectUri: CONFIG.REDIRECT_URI,
-                state: state
-            });
-            
-            // Redirect to Deriv OAuth
-            setTimeout(() => {
+            try {
+                const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
+                if (oauthBtn) {
+                    oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting to Deriv...';
+                    oauthBtn.disabled = true;
+                }
+                
+                const state = 'dmpro_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                sessionStorage.setItem('oauth_state', state);
+                sessionStorage.setItem('oauth_redirect', 'true');
+                
+                // Log for debugging
+                console.log('Starting OAuth with redirect:', CONFIG.REDIRECT_URI);
+                
+                const params = new URLSearchParams({
+                    app_id: CONFIG.APP_ID.toString(),
+                    response_type: 'token',
+                    redirect_uri: CONFIG.REDIRECT_URI,
+                    scope: 'read,trade,trading_information',
+                    brand: 'deriv',
+                    language: 'en',
+                    state: state,
+                    date_first_contact: new Date().toISOString().split('T')[0]
+                });
+                
+                const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
+                
+                console.log('OAuth URL generated');
+                
+                // Redirect immediately
                 window.location.href = oauthUrl;
-            }, 500);
+                
+            } catch (error) {
+                console.error('OAuth error:', error);
+                showError('Connection error. Please try again.');
+                
+                // Reset button
+                const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
+                if (oauthBtn) {
+                    oauthBtn.innerHTML = '<i class="fab fa-deriv mr-3"></i>Authorize with Deriv';
+                    oauthBtn.disabled = false;
+                }
+            }
         }
 
         function createAccount() {
@@ -664,7 +659,7 @@
         }
 
         // =============================================
-        // OAuth RESPONSE HANDLER - MOST IMPORTANT
+        // OAuth RESPONSE HANDLER
         // =============================================
         function checkOAuthResponse() {
             // Get hash parameters from URL
@@ -723,9 +718,12 @@
                 sessionStorage.setItem('deriv_account_id', oauthData.account_id);
             }
             
+            // IMPORTANT: Store in localStorage for bot page to access
+            localStorage.setItem('derivToken', oauthData.access_token);
+            localStorage.setItem('auth_method', 'oauth');
+            
             // Store connection status
             localStorage.setItem('connected_with_derivmatchstars', 'true');
-            localStorage.setItem('auth_method', 'oauth');
             localStorage.setItem('app_id_used', CONFIG.APP_ID.toString());
             localStorage.setItem('last_connection', new Date().toISOString());
             
@@ -738,31 +736,17 @@
             // Close auth modal if open
             closeModal();
             
-            // Open bot after short delay
+            // Open bot with token in URL for immediate access
             setTimeout(() => {
-                openBot();
+                const token = oauthData.access_token;
+                const botUrl = CONFIG.BOT_PAGE + `?token=${encodeURIComponent(token)}&oauth_redirect=true`;
+                window.location.href = botUrl;
             }, 1500);
         }
 
         // =============================================
         // BOT OPENING FUNCTIONS
         // =============================================
-        function openBot() {
-            console.log('Opening bot page:', CONFIG.BOT_PAGE);
-            
-            // Show loading overlay
-            showBotOpeningOverlay();
-            
-            // Prepare bot URL with authentication token
-            const token = sessionStorage.getItem('deriv_access_token');
-            const botUrl = CONFIG.BOT_PAGE + (token ? `#token=${encodeURIComponent(token)}` : '');
-            
-            // Redirect to bot page
-            setTimeout(() => {
-                window.location.href = botUrl;
-            }, 2000);
-        }
-
         function showBotOpeningOverlay() {
             document.getElementById('botRedirectOverlay').style.display = 'flex';
         }
