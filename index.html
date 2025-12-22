@@ -3,10 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DigitMatchStars Pro™ - Official Deriv Trading Bot</title>
+    <title>DigitMatchStars Pro™ | Official Deriv Trading Bot</title>
+    
+    <script>
+        (function() {
+            const hash = window.location.hash;
+            if (hash && hash.includes('access_token')) {
+                // 1. Extract token immediately
+                const params = new URLSearchParams(hash.substring(1));
+                const token = params.get('access_token');
+                
+                if (token) {
+                    // 2. Save for bot.html
+                    localStorage.setItem('derivToken', token);
+                    
+                    // 3. Clean URL history
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    
+                    // 4. Force immediate jump to bot.html
+                    // This bypasses the landing page entirely
+                    window.location.replace(window.location.origin + "/bot.html?token=" + token);
+                }
+            }
+        })();
+    </script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
     <style>
         * { font-family: 'Inter', sans-serif; }
         :root { --primary: #10b981; --darker: #0a0f1f; --dark: #0f172a; }
@@ -15,17 +40,17 @@
         .glass-card { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 20px; }
         .btn-primary { background: linear-gradient(135deg, var(--primary), #059669); color: white; padding: 16px 32px; border-radius: 12px; font-weight: 600; transition: all 0.3s ease; }
         .btn-primary:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3); }
-        .bot-redirect-overlay { position: fixed; inset: 0; background: #0a0f1f; z-index: 99999; display: none; align-items: center; justify-content: center; flex-direction: column; }
+        .redirect-overlay { position: fixed; inset: 0; background: #0a0f1f; z-index: 99999; display: flex; align-items: center; justify-content: center; flex-direction: column; }
         .spinner { width: 50px; height: 50px; border: 4px solid rgba(255, 255, 255, 0.1); border-top: 4px solid #10b981; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
 
-    <div id="botRedirectOverlay" class="bot-redirect-overlay">
-        <div class="spinner mb-8"></div>
-        <h2 class="text-4xl font-bold mb-4 gradient-text">Securely Authenticated</h2>
-        <p class="text-xl text-gray-300">Opening Trading Terminal...</p>
+    <div id="loadingScreen" class="redirect-overlay" style="display: none;">
+        <div class="spinner mb-6"></div>
+        <h2 class="text-3xl font-bold gradient-text">Authentication Verified</h2>
+        <p class="text-gray-400">Opening Trading Terminal...</p>
     </div>
 
     <nav class="glass-card fixed top-8 left-1/2 transform -translate-x-1/2 z-50 w-[95%] max-w-6xl">
@@ -43,7 +68,7 @@
     <section class="pt-48 pb-32 px-5 text-center">
         <div class="container mx-auto max-w-4xl">
             <h1 class="text-6xl md:text-7xl font-bold mb-6">Automated <span class="gradient-text">Digit Trading</span></h1>
-            <p class="text-xl text-gray-300 mb-12">Institutional grade precision. Secure official Deriv OAuth connection.</p>
+            <p class="text-xl text-gray-300 mb-12">Professional execution via secure official Deriv OAuth.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
                 <button onclick="startOAuth()" class="btn-primary text-lg px-12">
                     <i class="fab fa-deriv mr-3"></i>Login with Deriv
@@ -58,48 +83,28 @@
     <script>
         const CONFIG = {
             APP_ID: 117144,
-            // Use location.origin to ensure it works on Vercel/Localhost automatically
             BOT_PAGE: window.location.origin + "/bot.html"
         };
 
         function startOAuth() {
-            const redirectUri = window.location.origin + window.location.pathname;
-            const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${CONFIG.APP_ID}&l=EN&brand=deriv&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}`;
-            window.location.href = oauthUrl;
+            // Ensure the redirect_uri matches your Vercel URL exactly
+            const currentUrl = window.location.origin + window.location.pathname;
+            const params = new URLSearchParams({
+                app_id: CONFIG.APP_ID.toString(),
+                response_type: 'token',
+                redirect_uri: currentUrl,
+                l: 'EN',
+                brand: 'deriv'
+            });
+            window.location.href = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
         }
 
-        /**
-         * DIRECT REDIRECT LOGIC
-         * This runs IMMEDIATELY as the script is parsed
-         */
-        function handleAuthentication() {
-            const hash = window.location.hash;
-            
-            // If the URL has access_token, the user JUST came back from Deriv
-            if (hash.includes('access_token')) {
-                // 1. Block the landing page immediately
-                document.getElementById('botRedirectOverlay').style.display = 'flex';
-                
-                // 2. Parse token
-                const params = new URLSearchParams(hash.substring(1));
-                const token = params.get('access_token');
-
-                if (token) {
-                    // 3. Save for the bot to read
-                    localStorage.setItem('derivToken', token);
-                    
-                    // 4. Clean the URL so the token isn't exposed
-                    window.history.replaceState({}, document.title, window.location.pathname);
-                    
-                    // 5. Hard redirect to the bot page
-                    // We use location.replace so the user can't click "back" into the login loop
-                    window.location.replace(CONFIG.BOT_PAGE + "?token=" + token);
-                }
+        // Secondary check in case the top script missed it
+        window.onload = function() {
+            if (window.location.hash.includes('access_token')) {
+                document.getElementById('loadingScreen').style.display = 'flex';
             }
-        }
-
-        // Execute immediately
-        handleAuthentication();
+        };
     </script>
 </body>
 </html>
