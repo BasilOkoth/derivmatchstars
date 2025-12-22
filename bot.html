@@ -13,8 +13,10 @@
         body { font-family: 'Inter', sans-serif; background-color: #111827; }
         @keyframes pulse-once { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.03); opacity: 0.9; } 100% { transform: scale(1); opacity: 1; } }
         .tick-flash { animation: pulse-once 0.1s ease-out; }
-        .win-glow { animation: win-pulse 1s infinite; border-color: #10B981 !important; }
         @keyframes win-pulse { 0% { box-shadow: 0 0 5px #10B981; } 50% { box-shadow: 0 0 20px #10B981; } 100% { box-shadow: 0 0 5px #10B981; } }
+        .win-glow { animation: win-pulse 1s infinite; border-color: #10B981 !important; }
+        @keyframes loss-pulse { 0% { box-shadow: 0 0 5px #EF4444; } 50% { box-shadow: 0 0 20px #EF4444; } 100% { box-shadow: 0 0 5px #EF4444; } }
+        .loss-glow { animation: loss-pulse 1s infinite; border-color: #EF4444 !important; }
     </style>
 </head>
 <body class="text-gray-100 min-h-screen pb-12">
@@ -32,9 +34,9 @@
                         <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">Disconnected</span>
                     </div>
                 </div>
-                <button onclick="logout()" class="text-gray-400 hover:text-white transition-colors">
-                    <i class="fas fa-sign-out-alt"></i> Logout
-                </button>
+                <div class="flex items-center space-x-4">
+                    <button onclick="logout()" class="text-gray-400 hover:text-white transition-colors">Logout</button>
+                </div>
             </div>
         </div>
     </nav>
@@ -42,159 +44,150 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
-                <p class="text-sm font-medium text-gray-400 mb-1">Balance</p>
+                <p class="text-sm font-medium text-gray-400 mb-1">Account Balance</p>
                 <p id="metricAccountBalance" class="text-2xl font-bold text-white">$0.00</p>
             </div>
             <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
-                <p class="text-sm font-medium text-gray-400 mb-1">Total P/L</p>
+                <p class="text-sm font-medium text-gray-400 mb-1">Total Profit/Loss</p>
                 <p id="metricTotalProfit" class="text-2xl font-bold text-white">$0.00</p>
             </div>
             <div id="stat-wins-card" class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
-                <p class="text-sm font-medium text-gray-400 mb-1">W / L</p>
+                <p class="text-sm font-medium text-gray-400 mb-1">Wins / Losses</p>
                 <p class="text-2xl font-bold text-white"><span id="metricWins" class="text-green-400">0</span> / <span id="metricLosses" class="text-red-400">0</span></p>
             </div>
             <div class="bg-gray-800/50 rounded-2xl p-4 border border-gray-700 shadow-xl">
-                <p class="text-sm font-medium text-gray-400 mb-1">Price</p>
-                <p id="price-display" class="text-2xl font-bold text-blue-400">0.0000</p>
+                <p class="text-sm font-medium text-gray-400 mb-1">Current Multiplier</p>
+                <p id="metricMultiplier" class="text-2xl font-bold text-blue-400">1x</p>
             </div>
         </div>
     </div>
 
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div class="lg:col-span-4 space-y-6">
-            <section id="controls-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700">
+            <section id="auth-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700">
+                <h2 class="text-lg font-bold mb-4">Authentication</h2>
+                <input type="password" id="authTokenInput" placeholder="Enter API Token..." 
+                       class="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 outline-none mb-4">
+                <button onclick="verifyToken()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl">Verify & Connect</button>
+            </section>
+
+            <section id="controls-section" class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 opacity-50 cursor-not-allowed pointer-events-none">
                 <h2 class="text-lg font-bold mb-4">Bot Config</h2>
                 <div class="space-y-4">
                     <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Stake</label>
-                            <input type="number" id="baseStake" value="1.00" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Target ($)</label>
-                            <input type="number" id="takeProfit" value="10.00" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none">
-                        </div>
+                        <input type="number" id="baseStake" value="1.00" class="bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm" placeholder="Stake">
+                        <input type="number" id="takeProfit" value="10.00" class="bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm" placeholder="Target">
                     </div>
-                    <select id="marketSelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-                        <option value="R_100">Volatility 100 Index</option>
-                        <option value="R_75">Volatility 75 Index</option>
+                    <select id="strategySelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-sm">
+                        <option value="DIGITMATCH">Digit Match</option>
+                        <option value="DIGITDIFF">Digit Diff</option>
                     </select>
-                    <select id="strategySelect" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-                        <option value="DIGITMATCH">Digit Match (800%+ Payout)</option>
-                        <option value="DIGITDIFF">Digit Diff (Safe 9.9%)</option>
-                    </select>
-                    <button id="mainActionButton" onclick="toggleBot()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 rounded-2xl uppercase tracking-widest">
-                        Start Bot
-                    </button>
+                    <button id="mainActionButton" onclick="toggleBot()" class="w-full bg-blue-600 font-bold py-4 rounded-2xl uppercase">Start Bot</button>
                 </div>
             </section>
         </div>
 
-        <div class="lg:col-span-8">
-            <div class="bg-gray-800 rounded-3xl shadow-2xl border border-gray-700 overflow-hidden flex flex-col h-[400px]">
-                <div class="p-4 border-b border-gray-700 bg-gray-800/80 flex justify-between items-center">
-                    <h3 class="font-bold text-sm uppercase tracking-widest text-gray-300">Transaction Logs</h3>
+        <div class="lg:col-span-8 space-y-6">
+            <div class="bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-700 h-[320px] flex flex-col">
+                <div class="flex justify-between mb-6">
+                    <h2 class="text-lg font-bold">Analysis</h2>
+                    <div class="flex items-center space-x-4">
+                        <span id="price-display" class="font-mono text-xl text-green-400">0.0000</span>
+                        <div id="last-digit-circle" class="w-12 h-12 rounded-full bg-gray-900 flex items-center justify-center text-2xl font-black">-</div>
+                    </div>
                 </div>
-                <div id="log-area" class="flex-grow overflow-y-auto p-4 font-mono text-xs space-y-1 bg-black/20">
-                    <div class="text-yellow-500 italic">[SYSTEM] Initializing secure connection...</div>
-                </div>
+                <div class="flex-grow flex items-end justify-between gap-1" id="digit-histogram">
+                    </div>
+            </div>
+            <div id="log-area" class="bg-black/20 rounded-3xl p-4 h-[400px] overflow-y-auto font-mono text-xs">
+                <div class="text-gray-500 italic">[SYSTEM] Initialized. Awaiting connection...</div>
             </div>
         </div>
     </main>
 
     <script>
-        // CONFIG - MUST MATCH INDEX.HTML
-        window.appId = '117144'; 
+        // GLOBAL STATE
+        window.appId = '65435'; 
         window.ws = null;
         window.isBotRunning = false;
-        window.activeToken = null;
+        window.selectedDigit = 9;
         window.startingBalance = 0;
         window.currentBalance = 0;
         window.netProfit = 0;
         window.stats = { wins: 0, losses: 0 };
-        window.activeContracts = new Set();
-        window.executionLock = false;
+        window.digitHistory = [];
+        const synth = new Tone.PolySynth(Tone.Synth).toDestination();
 
         function log(msg, type = 'INFO') {
             const logArea = document.getElementById('log-area');
             const entry = document.createElement('div');
-            const now = new Date().toLocaleTimeString();
-            entry.innerHTML = `<span class="text-gray-600 mr-2">[${now}]</span> <span>${msg}</span>`;
-            if (type === 'WIN') entry.className = 'text-green-400 font-bold';
-            if (type === 'LOSS') entry.className = 'text-red-400 font-bold';
+            entry.innerHTML = `<span class="text-gray-600">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
             logArea.prepend(entry);
         }
 
-        // AUTO-AUTH LOGIC
-        window.addEventListener('load', () => {
-            const urlParams = new URLSearchParams(window.location.search);
-            const token = urlParams.get('token') || localStorage.getItem('derivToken');
+        function verifyToken() {
+            const token = document.getElementById('authTokenInput').value.trim();
+            if (!token) return log('❌ Enter token', 'SYSTEM');
             
-            if (token) {
-                window.activeToken = token;
-                connect(token);
-            } else {
-                log('❌ No token found. Redirecting to login...', 'ERROR');
-                setTimeout(() => window.location.href = 'index.html', 2000);
-            }
-        });
-
-        function connect(token) {
+            if (window.ws) window.ws.close();
             window.ws = new WebSocket(`wss://ws.derivws.com/stocks/v3?app_id=${window.appId}`);
             
-            window.ws.onopen = () => {
-                window.ws.send(JSON.stringify({ authorize: token }));
-            };
+            window.ws.onopen = () => window.ws.send(JSON.stringify({ authorize: token }));
+            window.ws.onmessage = (msg) => handleWsMessage(JSON.parse(msg.data));
+        }
 
-            window.ws.onmessage = (msg) => {
-                const data = JSON.parse(msg.data);
-                if (data.error) {
-                    log('❌ Auth Error: ' + data.error.message);
-                    return;
-                }
+        function handleWsMessage(data) {
+            if (data.msg_type === 'authorize') {
+                window.startingBalance = parseFloat(data.authorize.balance);
+                document.getElementById('status-badge').textContent = 'Connected';
+                document.getElementById('status-badge').className = 'bg-green-600 px-3 py-1 rounded-full text-sm';
+                document.getElementById('controls-section').classList.remove('opacity-50', 'pointer-events-none');
+                log(`✅ Welcome ${data.authorize.loginid}`);
+                window.ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
+            }
+            if (data.msg_type === 'tick') {
+                const digit = parseInt(data.tick.quote.toFixed(data.tick.pip_size).slice(-1));
+                document.getElementById('price-display').textContent = data.tick.quote;
+                document.getElementById('last-digit-circle').textContent = digit;
+                updateHistogram(digit);
+            }
+        }
 
-                if (data.msg_type === 'authorize') {
-                    window.startingBalance = parseFloat(data.authorize.balance);
-                    document.getElementById('status-badge').textContent = 'Connected';
-                    document.getElementById('status-badge').className = 'ml-3 px-3 py-1 rounded-full bg-green-600 text-white';
-                    log('✅ Securely Authenticated', 'SUCCESS');
-                    window.ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
-                }
-
-                if (data.msg_type === 'balance') {
-                    window.currentBalance = parseFloat(data.balance.balance);
-                    window.netProfit = window.currentBalance - window.startingBalance;
-                    document.getElementById('metricAccountBalance').textContent = `$${window.currentBalance.toFixed(2)}`;
-                    document.getElementById('metricTotalProfit').textContent = `$${window.netProfit.toFixed(2)}`;
-                }
-                
-                // Tick stream for UI
-                if (data.msg_type === 'tick') {
-                    document.getElementById('price-display').textContent = data.tick.quote;
-                }
-            };
+        function updateHistogram(digit) {
+            window.digitHistory.push(digit);
+            if (window.digitHistory.length > 100) window.digitHistory.shift();
+            // Histogram rendering logic...
         }
 
         function toggleBot() {
-            if (!window.isBotRunning) {
-                window.isBotRunning = true;
-                document.getElementById('mainActionButton').textContent = 'Stop Bot';
-                document.getElementById('mainActionButton').className = 'w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-2xl';
-                log('▶️ Trading Started');
-                // Basic tick subscription
-                window.ws.send(JSON.stringify({ ticks: document.getElementById('marketSelect').value, subscribe: 1 }));
-            } else {
-                window.isBotRunning = false;
-                document.getElementById('mainActionButton').textContent = 'Start Bot';
-                document.getElementById('mainActionButton').className = 'w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 rounded-2xl';
-                log('⏹️ Trading Stopped');
+            window.isBotRunning = !window.isBotRunning;
+            document.getElementById('mainActionButton').textContent = window.isBotRunning ? 'Stop Bot' : 'Start Bot';
+            if (window.isBotRunning) {
+                window.ws.send(JSON.stringify({ ticks: 'R_100', subscribe: 1 }));
             }
         }
 
         function logout() {
             localStorage.removeItem('derivToken');
-            window.location.href = 'index.html';
+            window.location.reload();
         }
+
+        // ENHANCED AUTO-AUTHENTICATION (URL HANDLER)
+        window.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tokenFromUrl = urlParams.get('token1') || urlParams.get('token2');
+
+            if (tokenFromUrl) {
+                localStorage.setItem('derivToken', tokenFromUrl);
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+
+            const savedToken = localStorage.getItem('derivToken');
+            if (savedToken) {
+                document.getElementById('authTokenInput').value = savedToken;
+                setTimeout(verifyToken, 500);
+            }
+        });
     </script>
 </body>
 </html>
