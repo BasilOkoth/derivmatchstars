@@ -156,6 +156,25 @@
                 margin: 10px;
             }
         }
+
+        /* Auto-redirect notification */
+        .auto-redirect-notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
+            z-index: 10000;
+            animation: slideIn 0.3s ease;
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -488,7 +507,7 @@
                 
                 <div class="success-message mb-6">
                     <div class="flex items-start">
-                        <i class="fas fa-check-circle mt=1 mr-3"></i>
+                        <i class="fas fa-check-circle mt-1 mr-3"></i>
                         <div>
                             <strong>Great!</strong> You've created your Deriv account. 
                             Now connect via OAuth to start trading.
@@ -549,6 +568,9 @@
             document.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') closeModal();
             });
+            
+            // Check if user is already authenticated
+            checkExistingAuth();
         });
 
         // =============================================
@@ -605,16 +627,22 @@
             
             console.log('🔗 Redirecting to Deriv OAuth:', oauthUrl);
             
+            // Show redirect notification
+            showAutoRedirectNotification('Redirecting to Deriv for authorization...');
+            
             // REAL REDIRECT - User will see Deriv's official login page
             setTimeout(() => {
                 window.location.href = oauthUrl;
-            }, 300);
+            }, 800);
         }
 
         function createAccount() {
             // Hidden affiliate link for account creation
             const affiliateLink = "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/";
             localStorage.setItem('via_new_account_flow', 'true');
+            
+            // Show notification
+            showNotification('Opening Deriv account creation page...', 'info');
             
             // Open in new tab
             window.open(affiliateLink, '_blank');
@@ -641,7 +669,7 @@
                 const storedState = localStorage.getItem('oauth_state');
                 if (state && state !== storedState) {
                     console.error('❌ Security Error: State mismatch');
-                    showError('Security error. Please try again.');
+                    showNotification('Security error. Please try again.', 'error');
                     return;
                 }
                 
@@ -671,13 +699,18 @@
             localStorage.setItem('auto_open_bot', 'true');
             
             // Show success message
-            showSuccessMessage('✅ Successfully connected to Deriv! Redirecting to trading bot...');
+            showAutoRedirectNotification('✅ Successfully connected to Deriv! Redirecting to trading bot...');
             
-            // Close modal
+            // Close modal if open
             closeModal();
             
             // Redirect to bot WITH token in URL
-            const botUrl = "bot.html?token=" + encodeURIComponent(oauthData.access_token) + "&oauth_redirect=1&auto_open=1";
+            const botUrl = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(oauthData.access_token) + 
+                          "&oauth_redirect=1&auto_open=1&account_id=" + (oauthData.account_id || '');
+            
+            console.log('🔄 Redirecting to bot:', botUrl);
+            
+            // Delay to show success message before redirect
             setTimeout(() => {
                 window.location.href = botUrl;
             }, 1500);
@@ -690,32 +723,59 @@
             return 'state_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         }
 
-        function showSuccessMessage(message) {
-            // Create and show success notification
+        function checkExistingAuth() {
+            // Check if user already has a token
+            const existingToken = localStorage.getItem('derivToken');
+            if (existingToken && window.location.pathname.includes('index.html')) {
+                console.log('🔑 Existing auth detected');
+                // Optionally auto-redirect to bot
+                const shouldAutoRedirect = localStorage.getItem('auto_redirect') === 'true';
+                if (shouldAutoRedirect) {
+                    setTimeout(() => {
+                        window.location.href = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(existingToken);
+                    }, 1000);
+                }
+            }
+        }
+
+        function showAutoRedirectNotification(message) {
+            // Create and show auto-redirect notification
             const notification = document.createElement('div');
-            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-4 rounded-xl shadow-2xl z-9999';
+            notification.className = 'auto-redirect-notification';
             notification.innerHTML = `
                 <div class="flex items-center">
-                    <i class="fas fa-check-circle text-xl mr-3"></i>
-                    <span>${message}</span>
+                    <div class="loading-spinner"></div>
+                    <span class="ml-2">${message}</span>
                 </div>
             `;
             
             document.body.appendChild(notification);
             
-            // Remove after 5 seconds
+            // Remove after 5 seconds or when redirect happens
             setTimeout(() => {
-                notification.remove();
+                if (notification.parentNode) {
+                    notification.remove();
+                }
             }, 5000);
         }
 
-        function showError(message) {
-            // Create and show error notification
+        function showNotification(message, type = 'success') {
+            // Create and show notification
             const notification = document.createElement('div');
-            notification.className = 'fixed top-6 right-6 bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-4 rounded-xl shadow-2xl z-9999';
+            notification.className = `fixed top-6 right-6 text-white px-6 py-4 rounded-xl shadow-2xl z-9999`;
+            
+            // Set background based on type
+            if (type === 'success') {
+                notification.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+            } else if (type === 'error') {
+                notification.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
+            } else if (type === 'info') {
+                notification.style.background = 'linear-gradient(135deg, #3b82f6, #1d4ed8)';
+            }
+            
             notification.innerHTML = `
                 <div class="flex items-center">
-                    <i class="fas fa-exclamation-circle text-xl mr-3"></i>
+                    <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'} text-xl mr-3"></i>
                     <span>${message}</span>
                 </div>
             `;
@@ -724,7 +784,9 @@
             
             // Remove after 5 seconds
             setTimeout(() => {
-                notification.remove();
+                if (notification.parentNode) {
+                    notification.remove();
+                }
             }, 5000);
         }
     </script>
