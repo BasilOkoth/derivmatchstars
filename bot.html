@@ -161,7 +161,7 @@
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
-    <!-- AUTO-START OVERLAY -->
+    <!-- AUTO-START OVERLAY (Shows during auto-authentication) -->
     <div id="autoStartOverlay" class="auto-start-overlay">
         <div class="text-center">
             <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
@@ -174,7 +174,7 @@
         </div>
     </div>
 
-    <!-- AUTHENTICATION MODAL -->
+    <!-- AUTHENTICATION MODAL (Required) -->
     <div id="authModal" class="auth-modal">
         <div class="auth-modal-content">
             <!-- Token Required Step -->
@@ -286,7 +286,7 @@
         </div>
     </div>
 
-    <!-- MAIN BOT INTERFACE -->
+    <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
     <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
         <div class="flex justify-between items-center mb-4">
             <h1 class="text-3xl font-extrabold text-green-400 border-b border-gray-700 pb-2">
@@ -505,47 +505,46 @@
 
     <script>
         // ============================================================================
-        // AUTOMATIC OAuth REDIRECT HANDLER - UPDATED
+        // AUTOMATIC OAuth REDIRECT HANDLER - FOR VERCEL DEPLOYMENT
         // ============================================================================
 
-        // Check for token passed from main page via URL
+        // Check for token passed from main page via localStorage or URL
         function checkForAutoAuth() {
             console.log('🔍 Checking for automatic OAuth authentication...');
             
-            // Method 1: Check URL parameters (from index.html redirect)
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlToken = urlParams.get('token');
-            const oauthRedirect = urlParams.get('oauth_redirect');
-            
-            if (urlToken && oauthRedirect) {
-                console.log('✅ Found OAuth token in URL from main page');
-                
-                // Clean URL
-                window.history.replaceState({}, document.title, window.location.pathname);
-                
-                // Store token in localStorage
-                localStorage.setItem('derivToken', urlToken);
-                localStorage.setItem('auth_method', 'oauth');
-                localStorage.setItem('auto_open_bot', 'true');
-                
-                return {
-                    token: urlToken,
-                    autoStart: true,
-                    source: 'url'
-                };
-            }
-            
-            // Method 2: Check localStorage
+            // Method 1: Check for token in localStorage (set by main page)
             const savedToken = localStorage.getItem('derivToken');
             const authMethod = localStorage.getItem('auth_method');
             const autoOpenFlag = localStorage.getItem('auto_open_bot');
             
-            if (savedToken && authMethod === 'oauth') {
-                console.log('✅ Found saved OAuth token in localStorage');
+            // Method 2: Check URL parameters (from main page redirect)
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlToken = urlParams.get('token');
+            const oauthRedirect = urlParams.get('oauth_redirect');
+            const autoOpen = urlParams.get('auto_open');
+            
+            // Clean URL if we have parameters
+            if (urlToken || oauthRedirect || autoOpen) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+            
+            if ((savedToken && authMethod === 'oauth') || urlToken) {
+                const token = urlToken || savedToken;
+                console.log('✅ Found OAuth token for auto-authentication');
+                
+                // Store token if from URL
+                if (urlToken) {
+                    localStorage.setItem('derivToken', urlToken);
+                    localStorage.setItem('auth_method', 'oauth');
+                }
+                
+                // Clear auto-open flag after use
+                localStorage.removeItem('auto_open_bot');
+                
                 return {
-                    token: savedToken,
-                    autoStart: autoOpenFlag === 'true',
-                    source: 'localStorage'
+                    token: token,
+                    autoStart: (autoOpenFlag === 'true' || autoOpen === '1'),
+                    source: urlToken ? 'url' : 'localStorage'
                 };
             }
             
@@ -553,7 +552,7 @@
         }
 
         // ============================================================================
-        // AUTHENTICATION SYSTEM - UPDATED
+        // AUTHENTICATION SYSTEM - REQUIRED
         // ============================================================================
         
         // GLOBAL STATE
@@ -623,7 +622,7 @@
         window.MAX_HISTORY = 100;
 
         // ============================================================================
-        // AUTHENTICATION FUNCTIONS - UPDATED
+        // AUTHENTICATION FUNCTIONS
         // ============================================================================
         
         document.addEventListener('DOMContentLoaded', function() {
@@ -659,9 +658,6 @@
             }
         });
         
-        // ============================================================================
-        // SIMPLIFIED TOKEN VERIFICATION - ACCEPTS OAuth TOKENS
-        // ============================================================================
         function verifyToken(token, autoStart = false) {
             if (!token || token.trim() === '') {
                 showError('Please enter a valid token');
@@ -672,37 +668,78 @@
             // Show verifying step
             showStep('tokenVerificationStep');
             
-            // Simple validation - OAuth tokens are already validated by Deriv
-            if (token.length > 10) {
-                console.log('✅ Token accepted for OAuth');
-                window.DERIV_TOKEN = token;
-                window.isAuthenticated = true;
-                
-                // Store token
-                localStorage.setItem('derivToken', token);
-                localStorage.setItem('last_auth_time', Date.now());
-                
-                // Hide auto-start overlay
-                document.getElementById('autoStartOverlay').style.display = 'none';
-                
-                // Load bot
-                setTimeout(() => {
-                    hideAuthModal();
-                    initializeBot();
+            // Try to connect to Deriv API to verify token
+            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
+            
+            testWs.onopen = () => {
+                testWs.send(JSON.stringify({
+                    authorize: token,
+                    req_id: 999999
+                }));
+            };
+            
+            testWs.onmessage = (msg) => {
+                try {
+                    const data = JSON.parse(msg.data);
                     
-                    // Auto-start if requested
-                    if (autoStart) {
-                        console.log('🚀 Auto-starting bot after OAuth authentication');
+                    if (data.error) {
+                        console.error('Token verification failed:', data.error);
+                        showError('Invalid token. Please check and try again.');
+                        testWs.close();
+                        showStep('tokenRequiredStep');
+                        document.getElementById('autoStartOverlay').style.display = 'none';
+                    } else if (data.authorize) {
+                        console.log('✅ Token verified successfully');
+                        window.DERIV_TOKEN = token;
+                        window.isAuthenticated = true;
+                        
+                        // Store successful auth
+                        localStorage.setItem('derivToken', token);
+                        localStorage.setItem('last_auth_time', Date.now());
+                        
+                        testWs.close();
+                        
+                        // Hide auto-start overlay
+                        document.getElementById('autoStartOverlay').style.display = 'none';
+                        
+                        // Show success and load bot
                         setTimeout(() => {
-                            startBot();
+                            hideAuthModal();
+                            initializeBot();
+                            
+                            // AUTO-START BOT if flag is set
+                            if (autoStart) {
+                                console.log('🚀 Auto-starting bot after authentication');
+                                setTimeout(() => {
+                                    startBot();
+                                }, 1000);
+                            }
                         }, 1000);
                     }
-                }, 1000);
-            } else {
-                showError('Invalid token format');
+                } catch (e) {
+                    console.error('Token verification error:', e);
+                    showStep('tokenRequiredStep');
+                    document.getElementById('autoStartOverlay').style.display = 'none';
+                }
+            };
+            
+            testWs.onerror = () => {
+                console.error('WebSocket error during token verification');
                 showStep('tokenRequiredStep');
                 document.getElementById('autoStartOverlay').style.display = 'none';
-            }
+            };
+            
+            // Timeout after 5 seconds
+            setTimeout(() => {
+                if (testWs.readyState === WebSocket.OPEN) {
+                    testWs.close();
+                }
+                if (!window.isAuthenticated) {
+                    showError('Connection timeout. Please try again.');
+                    showStep('tokenRequiredStep');
+                    document.getElementById('autoStartOverlay').style.display = 'none';
+                }
+            }, 5000);
         }
         
         function showAuthModal() {
@@ -812,7 +849,7 @@
         }
         
         // ============================================================================
-        // REST OF BOT FUNCTIONS (Same as before, included in your original bot.html)
+        // BOT FUNCTIONS (Only accessible after auth)
         // ============================================================================
         
         function extractLastDigitBySymbol(price) {
