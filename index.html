@@ -176,6 +176,82 @@
             to { transform: translateX(0); opacity: 1; }
         }
     </style>
+    
+    <!-- 🚨 CRITICAL: Token detection script runs IMMEDIATELY -->
+    <script>
+        // =============================================
+        // 🚨 IMMEDIATE TOKEN DETECTION - RUNS ON PAGE LOAD
+        // =============================================
+        (function() {
+            console.log("🔍 IMMEDIATE TOKEN SCANNER ACTIVATED");
+            
+            // Get current URL
+            const currentUrl = window.location.href;
+            console.log("📊 Current URL:", currentUrl);
+            
+            // Parse URL for parameters
+            const url = new URL(currentUrl);
+            const searchParams = new URLSearchParams(url.search);
+            const hashParams = new URLSearchParams(url.hash.substring(1));
+            
+            // Check ALL possible token parameters
+            let token = null;
+            let account = null;
+            
+            // Check search parameters (?token1=...&token2=...)
+            for (const [key, value] of searchParams) {
+                console.log(`📌 Search Param: ${key}=${value.substring(0, 15)}...`);
+                if (key.includes('token') && value && value.length > 20) {
+                    token = value;
+                    console.log(`✅ Found token in search: ${key}`);
+                }
+                if (key.includes('acct') && value) {
+                    account = value;
+                }
+            }
+            
+            // Check hash parameters (#access_token=...)
+            for (const [key, value] of hashParams) {
+                console.log(`📌 Hash Param: ${key}=${value.substring(0, 15)}...`);
+                if (key.includes('token') && value && value.length > 20) {
+                    token = value;
+                    console.log(`✅ Found token in hash: ${key}`);
+                }
+                if (key.includes('account') && value) {
+                    account = value;
+                }
+            }
+            
+            // If token found, IMMEDIATELY redirect to bot
+            if (token) {
+                console.log("🎉 TOKEN DETECTED! Length:", token.length);
+                console.log("🏦 Account:", account);
+                
+                // Store token in localStorage
+                localStorage.setItem('derivToken', token);
+                if (account) {
+                    localStorage.setItem('derivAccount', account);
+                }
+                localStorage.setItem('lastAuth', Date.now().toString());
+                
+                // Clean URL (remove tokens from address bar for security)
+                const cleanUrl = window.location.origin + window.location.pathname;
+                window.history.replaceState({}, document.title, cleanUrl);
+                
+                // Redirect to bot-obfuscated.html
+                const botUrl = `bot-obfuscated.html?token=${encodeURIComponent(token)}&account=${encodeURIComponent(account || '')}&auto_redirect=1&t=${Date.now()}`;
+                console.log("🔄 IMMEDIATE REDIRECT to:", botUrl);
+                
+                // Use replace() so user can't go back
+                window.location.replace(botUrl);
+                
+                // Stop all other JavaScript execution
+                throw new Error("Redirecting to bot...");
+            } else {
+                console.log("❌ No tokens found in URL");
+            }
+        })();
+    </script>
 </head>
 <body>
     <!-- Navigation -->
@@ -538,51 +614,59 @@
         </div>
     </div>
 
+    <!-- Main JavaScript -->
     <script>
         // =============================================
-        // CONFIGURATION - FIXED FOR PRODUCTION
+        // CONFIGURATION
         // =============================================
         const CONFIG = {
             APP_ID: 117144,
             REDIRECT_URI: window.location.origin + window.location.pathname,
-            // CRITICAL FIX: Point to obfuscated bot file
-            BOT_PAGE: "bot-obfuscated.html"  // ← CHANGED FROM "bot.html"
+            BOT_PAGE: "bot-obfuscated.html"
         };
 
         // =============================================
         // INITIALIZATION
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('✅ DigitMatchStars Pro - Trading Platform Loaded');
-            console.log('🔗 Bot page configured:', CONFIG.BOT_PAGE);
+            console.log('✅ DigitMatchStars Pro - Landing Page Loaded');
             
-            // Check for OAuth response from Deriv
-            checkOAuthResponse();
+            // Check if we have a token from earlier redirect
+            const hasToken = localStorage.getItem('derivToken');
+            if (hasToken) {
+                console.log('🔑 Existing token found in localStorage');
+            }
             
-            // Close modal on outside click
-            document.getElementById('authModal').addEventListener('click', function(e) {
-                if (e.target === this) closeModal();
-            });
+            // Setup modal event listeners
+            const authModal = document.getElementById('authModal');
+            if (authModal) {
+                authModal.addEventListener('click', function(e) {
+                    if (e.target === this) closeModal();
+                });
+            }
             
-            // Close on escape
+            // Close on escape key
             document.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') closeModal();
             });
-            
-            // Check if user is already authenticated
-            checkExistingAuth();
         });
 
         // =============================================
         // MODAL FUNCTIONS
         // =============================================
         function openModal() {
-            document.getElementById('authModal').style.display = 'flex';
-            showStep('choiceStep');
+            const modal = document.getElementById('authModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                showStep('choiceStep');
+            }
         }
 
         function closeModal() {
-            document.getElementById('authModal').style.display = 'none';
+            const modal = document.getElementById('authModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
         }
 
         function showStep(stepId) {
@@ -599,20 +683,22 @@
         }
 
         // =============================================
-        // OAuth FUNCTIONS - PRODUCTION READY
+        // OAuth FUNCTIONS
         // =============================================
         function startOAuth() {
+            console.log('🚀 Starting OAuth flow...');
+            
             const oauthBtn = document.getElementById('oauthBtn') || document.querySelector('#oauthAfterSignupStep button');
             if (oauthBtn) {
                 oauthBtn.innerHTML = '<div class="loading-spinner"></div> Redirecting to Deriv...';
                 oauthBtn.disabled = true;
             }
             
-            // Generate state for CSRF protection
-            const state = generateState();
+            // Generate random state for security
+            const state = 'state_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             localStorage.setItem('oauth_state', state);
             
-            // Construct REAL OAuth URL for Deriv
+            // Build OAuth URL
             const params = new URLSearchParams({
                 app_id: CONFIG.APP_ID.toString(),
                 response_type: 'token',
@@ -625,146 +711,37 @@
             
             const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
             
-            console.log('🔗 Redirecting to Deriv OAuth:', oauthUrl);
-            console.log('🎯 Will redirect to:', CONFIG.BOT_PAGE);
+            console.log('🔗 Redirecting to:', oauthUrl);
             
-            // Show redirect notification
-            showAutoRedirectNotification('Redirecting to Deriv for authorization...');
+            // Show notification
+            showAutoRedirectNotification('Redirecting to Deriv for secure authorization...');
             
-            // REAL REDIRECT - User will see Deriv's official login page
+            // Redirect after short delay
             setTimeout(() => {
                 window.location.href = oauthUrl;
             }, 800);
         }
 
         function createAccount() {
-            // Hidden affiliate link for account creation
-            const affiliateLink = "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/";
-            localStorage.setItem('via_new_account_flow', 'true');
+            console.log('📝 Opening account creation...');
             
-            // Show notification
-            showNotification('Opening Deriv account creation page...', 'info');
+            const affiliateLink = "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/";
+            
+            showNotification('Opening Deriv registration page...', 'info');
             
             // Open in new tab
             window.open(affiliateLink, '_blank');
             
-            // Show OAuth step after a delay
+            // Show OAuth step
             setTimeout(() => {
                 showStep('oauthAfterSignupStep');
             }, 500);
         }
 
-        function checkOAuthResponse() {
-            // Check if Deriv redirected back with OAuth token
-            const hash = window.location.hash.substring(1);
-            if (!hash) return;
-            
-            const params = new URLSearchParams(hash);
-            const accessToken = params.get('access_token');
-            const state = params.get('state');
-            
-            if (accessToken) {
-                console.log('✅ OAuth Response Received from Deriv');
-                console.log('🔑 Token length:', accessToken.length);
-                
-                // Validate state for CSRF protection
-                const storedState = localStorage.getItem('oauth_state');
-                if (state && state !== storedState) {
-                    console.error('❌ Security Error: State mismatch');
-                    showNotification('Security error. Please try again.', 'error');
-                    return;
-                }
-                
-                // Process successful OAuth
-                handleOAuthSuccess({
-                    access_token: accessToken,
-                    token_type: params.get('token_type') || 'Bearer',
-                    expires_in: params.get('expires_in') || '3600',
-                    account_id: params.get('account_id')
-                });
-                
-                // Clean URL - remove OAuth parameters
-                window.history.replaceState({}, document.title, window.location.pathname);
-                localStorage.removeItem('oauth_state');
-            }
-        }
-
-        // =============================================
-        // OAuth SUCCESS - PASS TOKEN TO BOT-OBFUSCATED.HTML
-        // =============================================
-        function handleOAuthSuccess(oauthData) {
-            console.log('✅ OAuth Successfully Completed');
-            console.log('🎯 Redirecting to:', CONFIG.BOT_PAGE);
-            
-            // Store token for bot-obfuscated.html
-            localStorage.setItem('derivToken', oauthData.access_token);
-            localStorage.setItem('auth_method', 'oauth');
-            localStorage.setItem('auto_open_bot', 'true');
-            localStorage.setItem('last_auth_time', Date.now());
-            
-            // Show success message
-            showAutoRedirectNotification('✅ Successfully connected to Deriv! Redirecting to trading bot...');
-            
-            // Close modal if open
-            closeModal();
-            
-            // TEST: Check if bot-obfuscated.html exists
-            fetch(CONFIG.BOT_PAGE)
-                .then(response => {
-                    if (response.ok) {
-                        console.log('✅ bot-obfuscated.html accessible');
-                        proceedWithRedirect(oauthData);
-                    } else {
-                        console.error('❌ bot-obfuscated.html not found');
-                        // Try bot.html as fallback
-                        CONFIG.BOT_PAGE = 'bot.html';
-                        proceedWithRedirect(oauthData);
-                    }
-                })
-                .catch(error => {
-                    console.error('❌ Cannot access bot file:', error);
-                    showNotification('Error: Bot file not found. Please check deployment.', 'error');
-                });
-        }
-        
-        function proceedWithRedirect(oauthData) {
-            // Redirect to bot-obfuscated.html WITH token in URL
-            const botUrl = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(oauthData.access_token) + 
-                          "&oauth_redirect=1&auto_open=1&account_id=" + (oauthData.account_id || '') +
-                          "&timestamp=" + Date.now();
-            
-            console.log('🔄 Final redirect to:', botUrl);
-            
-            // Delay to show success message before redirect
-            setTimeout(() => {
-                window.location.href = botUrl;
-            }, 1500);
-        }
-
         // =============================================
         // HELPER FUNCTIONS
         // =============================================
-        function generateState() {
-            return 'state_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        }
-
-        function checkExistingAuth() {
-            // Check if user already has a token
-            const existingToken = localStorage.getItem('derivToken');
-            if (existingToken && window.location.pathname.includes('index.html')) {
-                console.log('🔑 Existing auth detected');
-                // Optionally auto-redirect to bot
-                const shouldAutoRedirect = localStorage.getItem('auto_redirect') === 'true';
-                if (shouldAutoRedirect) {
-                    setTimeout(() => {
-                        window.location.href = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(existingToken);
-                    }, 1000);
-                }
-            }
-        }
-
         function showAutoRedirectNotification(message) {
-            // Create and show auto-redirect notification
             const notification = document.createElement('div');
             notification.className = 'auto-redirect-notification';
             notification.innerHTML = `
@@ -776,7 +753,6 @@
             
             document.body.appendChild(notification);
             
-            // Remove after 5 seconds or when redirect happens
             setTimeout(() => {
                 if (notification.parentNode) {
                     notification.remove();
@@ -785,11 +761,9 @@
         }
 
         function showNotification(message, type = 'success') {
-            // Create and show notification
             const notification = document.createElement('div');
             notification.className = `fixed top-6 right-6 text-white px-6 py-4 rounded-xl shadow-2xl z-9999`;
             
-            // Set background based on type
             if (type === 'success') {
                 notification.style.background = 'linear-gradient(135deg, #10b981, #059669)';
             } else if (type === 'error') {
@@ -807,7 +781,6 @@
             
             document.body.appendChild(notification);
             
-            // Remove after 5 seconds
             setTimeout(() => {
                 if (notification.parentNode) {
                     notification.remove();
