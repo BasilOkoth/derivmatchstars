@@ -253,7 +253,7 @@
                 }
             }
             
-            // If token found, IMMEDIATELY redirect to bot-obfuscated.html
+            // If token found, IMMEDIATELY redirect to bot
             if (token) {
                 console.log("🎉 TOKEN DETECTED! Length:", token.length);
                 console.log("🏦 Account:", account);
@@ -271,7 +271,7 @@
                 const cleanUrl = window.location.origin + window.location.pathname;
                 window.history.replaceState({}, document.title, cleanUrl);
                 
-                // ✅ CRITICAL FIX: Redirect to bot-obfuscated.html
+                // Redirect to bot-obfuscated.html with AUTO-OPEN parameter
                 const botUrl = `bot-obfuscated.html?oauth_redirect=1&auto_open=1&t=${Date.now()}`;
                 console.log("🔄 IMMEDIATE REDIRECT to:", botUrl);
                 
@@ -296,7 +296,7 @@
                     loadingOverlay.querySelector('p.text-xl').textContent = 'Found existing session...';
                     loadingOverlay.querySelector('p.text-gray-400').textContent = 'Redirecting to trading bot';
                     
-                    // ✅ Redirect to bot-obfuscated.html
+                    // Redirect to bot
                     setTimeout(() => {
                         window.location.href = `bot-obfuscated.html?auto_reconnect=1&t=${Date.now()}`;
                     }, 1000);
@@ -683,7 +683,7 @@
         const CONFIG = {
             APP_ID: 117144,
             REDIRECT_URI: window.location.origin + window.location.pathname,
-            BOT_PAGE: "bot-obfuscated.html"  // ✅ This is correct - redirects to bot-obfuscated.html
+            BOT_PAGE: "bot-obfuscated.html"
         };
 
         // =============================================
