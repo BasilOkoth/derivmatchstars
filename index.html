@@ -544,10 +544,9 @@
         // =============================================
         const CONFIG = {
             APP_ID: 117144,
-            // FIXED: Use origin + pathname instead of full href
             REDIRECT_URI: window.location.origin + window.location.pathname,
-            // FIXED: Use bot.html (not /bot)
-            BOT_PAGE: "bot.html"
+            // CRITICAL FIX: Point to obfuscated bot file
+            BOT_PAGE: "bot-obfuscated.html"  // ← CHANGED FROM "bot.html"
         };
 
         // =============================================
@@ -555,6 +554,7 @@
         // =============================================
         document.addEventListener('DOMContentLoaded', function() {
             console.log('✅ DigitMatchStars Pro - Trading Platform Loaded');
+            console.log('🔗 Bot page configured:', CONFIG.BOT_PAGE);
             
             // Check for OAuth response from Deriv
             checkOAuthResponse();
@@ -626,6 +626,7 @@
             const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
             
             console.log('🔗 Redirecting to Deriv OAuth:', oauthUrl);
+            console.log('🎯 Will redirect to:', CONFIG.BOT_PAGE);
             
             // Show redirect notification
             showAutoRedirectNotification('Redirecting to Deriv for authorization...');
@@ -664,6 +665,7 @@
             
             if (accessToken) {
                 console.log('✅ OAuth Response Received from Deriv');
+                console.log('🔑 Token length:', accessToken.length);
                 
                 // Validate state for CSRF protection
                 const storedState = localStorage.getItem('oauth_state');
@@ -688,15 +690,17 @@
         }
 
         // =============================================
-        // OAuth SUCCESS - PASS TOKEN TO BOT.HTML
+        // OAuth SUCCESS - PASS TOKEN TO BOT-OBFUSCATED.HTML
         // =============================================
         function handleOAuthSuccess(oauthData) {
             console.log('✅ OAuth Successfully Completed');
+            console.log('🎯 Redirecting to:', CONFIG.BOT_PAGE);
             
-            // Store token for bot.html
+            // Store token for bot-obfuscated.html
             localStorage.setItem('derivToken', oauthData.access_token);
             localStorage.setItem('auth_method', 'oauth');
             localStorage.setItem('auto_open_bot', 'true');
+            localStorage.setItem('last_auth_time', Date.now());
             
             // Show success message
             showAutoRedirectNotification('✅ Successfully connected to Deriv! Redirecting to trading bot...');
@@ -704,11 +708,32 @@
             // Close modal if open
             closeModal();
             
-            // Redirect to bot WITH token in URL
+            // TEST: Check if bot-obfuscated.html exists
+            fetch(CONFIG.BOT_PAGE)
+                .then(response => {
+                    if (response.ok) {
+                        console.log('✅ bot-obfuscated.html accessible');
+                        proceedWithRedirect(oauthData);
+                    } else {
+                        console.error('❌ bot-obfuscated.html not found');
+                        // Try bot.html as fallback
+                        CONFIG.BOT_PAGE = 'bot.html';
+                        proceedWithRedirect(oauthData);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Cannot access bot file:', error);
+                    showNotification('Error: Bot file not found. Please check deployment.', 'error');
+                });
+        }
+        
+        function proceedWithRedirect(oauthData) {
+            // Redirect to bot-obfuscated.html WITH token in URL
             const botUrl = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(oauthData.access_token) + 
-                          "&oauth_redirect=1&auto_open=1&account_id=" + (oauthData.account_id || '');
+                          "&oauth_redirect=1&auto_open=1&account_id=" + (oauthData.account_id || '') +
+                          "&timestamp=" + Date.now();
             
-            console.log('🔄 Redirecting to bot:', botUrl);
+            console.log('🔄 Final redirect to:', botUrl);
             
             // Delay to show success message before redirect
             setTimeout(() => {
