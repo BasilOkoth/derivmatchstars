@@ -116,32 +116,18 @@
         .probability-high { color: #10b981; }
         .probability-medium { color: #f59e0b; }
         .probability-low { color: #ef4444; }
-        .auth-modal {
-            display: none;
+        .auto-start-overlay {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 99999;
+            background: rgba(10, 15, 31, 0.98);
+            z-index: 999999;
+            display: flex;
             align-items: center;
             justify-content: center;
-        }
-        .auth-modal-content {
-            background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 31, 0.98));
-            padding: 40px;
-            border-radius: 24px;
-            max-width: 500px;
-            width: 90%;
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            text-align: center;
-        }
-        .auth-step {
-            display: none;
-        }
-        .auth-step.active {
-            display: block;
+            flex-direction: column;
         }
         .loading-spinner {
             display: inline-block;
@@ -156,139 +142,76 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .error-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 15, 31, 0.98);
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            text-align: center;
+            padding: 20px;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
-    <!-- AUTHENTICATION MODAL (Only shows if not authenticated via OAuth) -->
-    <div id="authModal" class="auth-modal">
-        <div class="auth-modal-content">
-            <!-- Token Required Step -->
-            <div id="tokenRequiredStep" class="auth-step active">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center mx-auto mb-6">
-                        <i class="fas fa-lock text-white text-4xl"></i>
-                    </div>
-                    <h2 class="text-3xl font-bold mb-2">🔐 Authentication Required</h2>
-                    <p class="text-gray-400 mb-6">You need a valid Deriv API token to access the trading bot</p>
-                </div>
-                
-                <div class="info-message mb-6">
-                    <div class="flex items-start">
-                        <i class="fas fa-info-circle mt-1 mr-3"></i>
-                        <div>
-                            <strong>How to get your token:</strong><br>
-                            1. Connect via OAuth on our homepage<br>
-                            2. Or use your Deriv API token<br>
-                            3. All trades go through App ID 117144
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mb-6">
-                    <label for="authTokenInput" class="block text-sm font-semibold text-gray-300 mb-2 text-left">
-                        Enter Your Deriv Token
-                    </label>
-                    <input type="password" id="authTokenInput" 
-                           placeholder="Paste your token here..."
-                           class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent">
-                    <p class="text-xs text-gray-500 mt-2 text-left">
-                        This will be saved securely in your browser
-                    </p>
-                </div>
-                
-                <div class="flex flex-col space-y-3">
-                    <button onclick="verifyManualToken()" id="verifyTokenBtn" class="w-full px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold rounded-lg hover:from-green-700 hover:to-green-800 transition">
-                        <i class="fas fa-check-circle mr-2"></i>
-                        Verify & Start Trading
-                    </button>
-                    
-                    <a href="index.html" class="w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white font-bold rounded-lg hover:from-purple-700 hover:to-purple-800 transition text-center">
-                        <i class="fab fa-deriv mr-2"></i>
-                        Connect via OAuth
-                    </a>
-                    
-                    <button onclick="showStep('manualTokenStep')" class="w-full px-6 py-3 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition">
-                        <i class="fas fa-question-circle mr-2"></i>
-                        How to get token?
-                    </button>
-                </div>
+    <!-- AUTO-START OVERLAY (Shows during auto-authentication) -->
+    <div id="autoStartOverlay" class="auto-start-overlay">
+        <div class="text-center">
+            <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
+                <i class="fas fa-robot text-white text-5xl"></i>
             </div>
-            
-            <!-- Manual Token Step -->
-            <div id="manualTokenStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-20 h-20 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-4">
-                        <i class="fas fa-key text-white text-3xl"></i>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Get Your API Token</h2>
-                    <p class="text-gray-400">Two ways to get your token</p>
-                </div>
-                
-                <div class="space-y-4 mb-6">
-                    <div class="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
-                        <h3 class="font-bold text-purple-400 mb-2">Method 1: OAuth (Recommended)</h3>
-                        <p class="text-sm text-gray-300 mb-3">
-                            Connect via Deriv OAuth - secure and automatic
-                        </p>
-                        <a href="index.html" class="inline-block w-full px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-center">
-                            <i class="fab fa-deriv mr-2"></i>Connect via OAuth
-                        </a>
-                    </div>
-                    
-                    <div class="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                        <h3 class="font-bold text-blue-400 mb-2">Method 2: Manual API Token</h3>
-                        <p class="text-sm text-gray-300">
-                            1. Go to <a href="https://deriv.com" target="_blank" class="text-blue-400 underline">Deriv.com</a><br>
-                            2. Account Settings → API Token<br>
-                            3. Generate new token<br>
-                            4. Paste it here
-                        </p>
-                    </div>
-                </div>
-                
-                <button onclick="showStep('tokenRequiredStep')" class="w-full px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600">
-                    <i class="fas fa-arrow-left mr-2"></i> Back to Token Input
+            <h2 class="text-4xl font-bold mb-4" style="background: linear-gradient(135deg, #10b981, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">DigitMatchStars Pro™</h2>
+            <p class="text-xl text-gray-300 mb-8" id="autoStartMessage">Loading trading bot...</p>
+            <div class="loading-spinner mx-auto mb-4"></div>
+            <p class="text-gray-400 mt-6" id="autoStartSubMessage">Checking authentication...</p>
+        </div>
+    </div>
+
+    <!-- ERROR OVERLAY (Shows when authentication fails) -->
+    <div id="errorOverlay" class="error-overlay" style="display: none;">
+        <div class="text-center max-w-md">
+            <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-red-500 to-red-700 flex items-center justify-center mx-auto mb-6">
+                <i class="fas fa-exclamation-triangle text-white text-4xl"></i>
+            </div>
+            <h2 class="text-3xl font-bold mb-4 text-red-400">Authentication Required</h2>
+            <p class="text-gray-300 mb-6" id="errorMessage">You need to authenticate via OAuth to access the trading bot.</p>
+            <div class="space-y-3">
+                <a href="index.html" class="inline-block w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white font-bold rounded-lg hover:from-purple-700 hover:to-purple-800 transition text-center">
+                    <i class="fab fa-deriv mr-2"></i>
+                    Connect via OAuth
+                </a>
+                <button onclick="window.location.reload()" class="w-full px-6 py-3 bg-gray-700 text-white font-bold rounded-lg hover:bg-gray-600 transition">
+                    <i class="fas fa-redo mr-2"></i>
+                    Retry
                 </button>
-            </div>
-            
-            <!-- Token Verification Step -->
-            <div id="tokenVerificationStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
-                        <div class="loading-spinner"></div>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Verifying Token</h2>
-                    <p class="text-gray-400">Checking token validity with Deriv...</p>
-                </div>
-                
-                <div class="mb-6 p-4 bg-gray-800 rounded-lg">
-                    <p class="text-sm text-gray-300">
-                        <i class="fas fa-shield-alt text-green-400 mr-2"></i>
-                        All trades will be placed through App ID 117144
-                    </p>
-                </div>
             </div>
         </div>
     </div>
 
     <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
     <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
-        <div class="flex justify-between items-center mb-4">
-            <h1 class="text-3xl font-extrabold text-green-400 border-b border-gray-700 pb-2">
-                DigitMatchStars Pro™ 
-                <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">
-                    Disconnected
-                </span>
-                <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
-                <span id="queue-status-badge" class="contract-type-badge bg-blue-600 text-white">QUEUE: 0</span>
-                <span id="auth-badge" class="contract-type-badge bg-green-600 text-white">
-                    <i class="fas fa-user-check mr-1"></i>Authenticated
-                </span>
-            </h1>
-            <div class="flex items-center space-x-2">
-                <button id="soundToggle" onclick="toggleSound()" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition">
+        <!-- Bot interface content (same as before) -->
+        <div class="flex justify-between items-center mb-8">
+            <div>
+                <h1 class="text-3xl font-bold flex items-center">
+                    <i class="fas fa-robot text-green-400 mr-3"></i>
+                    DigitMatchStars Pro™
+                    <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">
+                        Disconnected
+                    </span>
+                </h1>
+                <p class="text-gray-400 mt-1">Instant tick execution bot</p>
+            </div>
+            <div class="flex space-x-3">
+                <button onclick="toggleSound()" id="soundToggle" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition">
                     🔊 Sound ON
                 </button>
                 <button onclick="logout()" class="px-4 py-2 bg-red-600 text-white font-bold rounded-lg shadow hover:bg-red-700 transition">
@@ -296,193 +219,202 @@
                 </button>
             </div>
         </div>
-        
-        <!-- TICK QUEUE VISUALIZATION -->
-        <div class="mb-5 p-4 bg-gray-900 rounded-lg border border-green-500/50">
-            <div class="flex justify-between items-center mb-2">
-                <h3 class="text-sm font-bold text-blue-400">🎯 TICK QUEUE</h3>
-                <div class="text-xs text-gray-400">
-                    Queue: <span id="queue-size">0</span> | Processed: <span id="processed-count">0</span>
-                </div>
-            </div>
-            <div id="tick-queue-display" class="flex flex-wrap gap-2 min-h-[60px] p-2 bg-gray-800 rounded">
-                <div class="text-gray-500 italic">No ticks in queue...</div>
-            </div>
-        </div>
 
-        <div class="flex flex-col md:flex-row gap-4 mb-6">
-            <div id="controls-section" class="md:w-2/3 grid grid-cols-2 lg:grid-cols-3 gap-3">
-                <div class="col-span-2 lg:col-span-3 mb-1 token-container">
-                    <label class="block text-xs font-semibold text-gray-300 mb-1">
-                        <i class="fas fa-key text-green-400 mr-1"></i> 
-                        API Token Status
-                    </label>
-                    <div class="flex items-center p-3 bg-gray-700 rounded border border-green-500/50">
-                        <i class="fas fa-check-circle text-green-400 mr-3 text-lg"></i>
-                        <div class="flex-1">
-                            <p class="text-sm font-medium text-white">Connected via OAuth</p>
-                            <p class="text-xs text-gray-400">Token: ••••••••••••••••</p>
-                        </div>
-                        <button onclick="showAuthModal()" class="px-3 py-1 bg-gray-600 text-xs rounded hover:bg-gray-500">
-                            Change
-                        </button>
-                    </div>
-                </div>
-
-                <div>
-                    <label for="symbol" class="block text-xs font-semibold text-gray-300 mb-1">Symbol</label>
-                    <select id="symbol" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <option value="R_10">V. 10 Index</option>
-                        <option value="R_100">V. 100 Index</option>
-                        <option value="R_25">V. 25 Index</option>
-                        <option value="R_50">V. 50 Index</option>
-                        <option value="R_75">V. 75 Index</option>
-                    </select>
-                </div>
-                
-                <div>
-                    <label for="predictedDigit" class="block text-xs font-semibold text-gray-300 mb-1">Predicted Digit (0-9)</label>
-                    <input type="number" id="predictedDigit" value="5" min="0" max="9" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm text-center">
-                </div>
-
-                <div>
-                    <label for="contractType" class="block text-xs font-semibold text-gray-300 mb-1">Contract Type</label>
-                    <select id="contractType" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <option value="DIGITMATCH">DIGITMATCH (INSTANT - 792.9% payout)</option>
-                    </select>
-                </div>
-
-                <div>
-                    <label for="baseStake" class="block text-xs font-semibold text-gray-300 mb-1">Base Stake (USD)</label>
-                    <input type="number" id="baseStake" value="1.0" min="0.1" step="0.1" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div>
-                    <label for="multiplier" class="block text-xs font-semibold text-gray-300 mb-1">Martingale Multiplier</label>
-                    <input type="number" id="multiplier" value="1.15" min="1.0" step="0.01" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div>
-                    <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                    <input type="number" id="maxTrades" value="10" min="1" max="100" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-                
-                <div>
-                    <label for="bankrollLimit" class="block text-xs font-semibold text-gray-300 mb-1">Bankroll Limit</label>
-                    <input type="number" id="bankrollLimit" value="25.0" min="1.0" step="0.1" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                </div>
-
-                <div class="col-span-2 lg:col-span-3">
-                    <label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
-                    <div class="rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm py-1.5 px-2 text-sm">
-                        <span class="text-green-400 font-bold">⚡ INSTANT TICK EXECUTION:</span> Trade on each tick, stop on win
-                    </div>
-                    <p class="text-xs text-gray-400 mt-1">✅ Bot executes trade on EVERY tick. Stops immediately when digit matches</p>
-                </div>
-            </div>
-
-            <div id="metrics-column" class="md:w-1/3">
-                <div class="grid grid-cols-3 gap-3">
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50 col-span-2">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Current Tick</p>
-                        <p id="metricLiveTick" class="text-xl font-extrabold text-white">---</p>
-                        <p id="metricLastDigit" class="text-lg font-bold text-green-300">Digit: ?</p>
-                        <p id="metricTickRate" class="text-xs font-bold text-blue-400">Ticks/sec: --</p>
-                        <p id="metricProbability" class="text-xs font-bold probability-medium">Probability: 10%</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-purple-500/50">
-                        <p class="text-[10px] font-semibold text-purple-500 uppercase">Account Balance</p>
+        <!-- Stats and Metrics -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-gray-400 text-sm">Account Balance</p>
                         <p id="metricAccountBalance" class="text-lg font-bold text-white">$---</p>
-                        <p class="text-xs text-gray-300 mt-1">Available</p>
                     </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Trade #</p>
-                        <p id="metricTradeCount" class="text-lg font-bold text-white">0</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-lime-400 uppercase">Net P/L</p>
+                    <i class="fas fa-wallet text-green-400 text-2xl"></i>
+                </div>
+            </div>
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-gray-400 text-sm">Total Profit/Loss</p>
                         <p id="metricTotalProfit" class="text-lg font-bold text-gray-300">$0.00</p>
                     </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Current Stake</p>
-                        <p id="metricCurrentStake" class="text-lg font-bold text-white">$0.00</p>
+                    <i class="fas fa-chart-line text-blue-400 text-2xl"></i>
+                </div>
+            </div>
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-gray-400 text-sm">Current Stake</p>
+                        <p id="metricCurrentStake" class="text-lg font-bold text-white">$1.00</p>
                     </div>
-                    
-                    <div id="trade-result-container" class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3">
-                        <div class="flex justify-between items-center mb-2">
-                            <p class="text-[10px] font-semibold text-yellow-500 uppercase">⚡ TRADE STATUS</p>
-                            <p id="metricTradeResult" class="text-xs font-bold text-gray-400">READY</p>
-                        </div>
-                        <div class="mb-2">
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
-                            <p id="metricPreviousResult" class="text-sm font-bold text-gray-300">Waiting for ticks...</p>
-                        </div>
-                        <div>
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
-                            <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Execute on each tick</p>
-                        </div>
-                    </div>
-                    
-                    <div id="queue-status-container" class="bg-gray-900 rounded-lg p-3 shadow-inner border border-blue-500/50 col-span-3 tick-queue-highlight relative">
-                        <div class="flex justify-between items-center mb-2">
-                            <p class="text-[10px] font-semibold text-blue-500 uppercase">🎯 EXECUTION STATS</p>
-                            <p id="metricQueueStatus" class="text-xs font-bold text-green-400">READY</p>
-                        </div>
-                        
-                        <div class="mb-3 p-2 bg-gray-800 rounded border border-yellow-500/30">
-                            <p class="text-[10px] font-semibold text-yellow-500 uppercase mb-1">Processing Tick:</p>
-                            <div id="processingTickDisplay" class="flex items-center">
-                                <div id="processingTickDigit" class="queue-digit bg-gray-700 text-white mr-2">?</div>
-                                <div class="flex-1">
-                                    <p id="processingTickInfo" class="text-xs text-gray-300">Waiting...</p>
-                                    <p id="processingTickTime" class="text-[10px] text-gray-400">--</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="mb-2">
-                            <div class="flex justify-between items-center mb-1">
-                                <p class="text-[10px] font-semibold text-blue-500 uppercase">Trades Executed:</p>
-                                <p id="metricExecutedTrades" class="text-xs font-bold text-white">0</p>
-                            </div>
-                            <div class="w-full bg-gray-700 rounded-full h-2.5 mb-2">
-                                <div id="executionBar" class="bg-green-600 h-2.5 rounded-full" style="width: 0%"></div>
-                            </div>
-                            <p class="text-[10px] text-gray-400 text-center">Trade progress</p>
-                        </div>
-                        
-                        <div class="grid grid-cols-2 gap-1 mt-2">
-                            <div class="text-center">
-                                <p class="text-[8px] text-gray-400 uppercase">Trades Done</p>
-                                <p id="metricTradesDone" class="text-xs font-bold text-green-400">0/10</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-[8px] text-gray-400 uppercase">Trades Left</p>
-                                <p id="metricTradesLeft" class="text-xs font-bold text-blue-400">10</p>
-                            </div>
-                        </div>
-                        <p class="text-[9px] text-gray-400 text-center mt-2">
-                            <strong>GOAL:</strong> Win detected within <span id="metricTradesRemaining">10</span> trades
-                        </p>
-                    </div>
+                    <i class="fas fa-coins text-yellow-400 text-2xl"></i>
                 </div>
             </div>
         </div>
-        
-        <div class="flex justify-center mb-5">
-            <button id="toggleButton" onclick="toggleBot()" class="w-full md:w-1/2 px-6 py-3 bg-green-600 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-green-700 transition duration-150">
-                START BOT
-            </button>
+
+        <!-- Trading Controls -->
+        <div class="bg-gray-900 p-6 rounded-xl mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="text-lg font-bold mb-4">📊 Trading Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Symbol</label>
+                            <select id="symbol" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                                <option value="R_100">Volatility 100 Index</option>
+                                <option value="R_50">Volatility 50 Index</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Contract Type</label>
+                            <select id="contractType" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                                <option value="DIGITMATCH">DIGITMATCH</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Predicted Digit (0-9)</label>
+                            <input type="number" id="predictedDigit" min="0" max="9" value="5" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h3 class="text-lg font-bold mb-4">🎯 Strategy Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Base Stake ($)</label>
+                            <input type="number" id="baseStake" min="0.5" step="0.5" value="1.0" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Martingale Multiplier</label>
+                            <input type="number" id="multiplier" min="1.1" step="0.05" value="1.15" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Max Trades in Sequence</label>
+                            <input type="number" id="maxTrades" min="1" max="20" value="10" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Bankroll Limit ($)</label>
+                            <input type="number" id="bankrollLimit" min="10" step="5" value="25.0" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Main Control Button -->
+            <div class="mt-8 text-center">
+                <button onclick="toggleBot()" id="toggleButton" class="px-10 py-4 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition text-xl start-button-active">
+                    <span class="flex items-center justify-center">
+                        <span class="mr-2">🚀</span> START BOT
+                    </span>
+                </button>
+            </div>
         </div>
 
-        <div id="log-column" class="w-full flex flex-col">
-            <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Trade Log</h2>
-            <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
-                [00:00:00] 🔐 Authentication Required - Enter your Deriv token
+        <!-- Live Data Display -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <p class="text-gray-400 text-sm mb-1">Live Tick Price</p>
+                <p id="metricLiveTick" class="text-2xl font-bold text-green-400">---</p>
+                <p id="metricLastDigit" class="text-sm text-gray-300 mt-1">Digit: ?</p>
+            </div>
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <p class="text-gray-400 text-sm mb-1">Trade Count</p>
+                <p id="metricTradeCount" class="text-2xl font-bold text-white">0</p>
+                <p id="metricProbability" class="text-xs font-bold text-gray-400 mt-1">Probability: 0%</p>
+            </div>
+            <div class="bg-gray-900 p-4 rounded-xl">
+                <p class="text-gray-400 text-sm mb-1">Tick Rate</p>
+                <p id="metricTickRate" class="text-2xl font-bold text-blue-400">0.0/sec</p>
+                <p id="metricQueueStatus" class="text-xs text-gray-400 mt-1">Queue: 0</p>
+            </div>
+        </div>
+
+        <!-- Queue Display -->
+        <div class="bg-gray-900 p-4 rounded-xl mb-6">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-bold">🔄 Tick Queue</h3>
+                <span id="queue-status-badge" class="px-3 py-1 bg-blue-600 text-white text-xs rounded-full">QUEUE: 0</span>
+            </div>
+            <div class="flex flex-wrap gap-2 mb-3" id="tick-queue-display">
+                <div class="text-gray-500 italic">No ticks in queue...</div>
+            </div>
+            <div class="text-xs text-gray-400 flex justify-between">
+                <span>Queue Size: <span id="queue-size">0</span></span>
+                <span>Processed: <span id="processed-count">0</span></span>
+            </div>
+        </div>
+
+        <!-- Trade Execution Status -->
+        <div id="trade-result-container" class="bg-gray-900 p-6 rounded-xl mb-6">
+            <div class="flex items-center mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gray-800 flex items-center justify-center mr-4">
+                    <span id="processingTickDigit" class="text-2xl font-bold text-white">?</span>
+                </div>
+                <div>
+                    <p id="metricPreviousResult" class="text-gray-300">Waiting for ticks...</p>
+                    <p id="metricNextAction" class="text-sm text-gray-400">Execute on each tick</p>
+                </div>
+                <div class="ml-auto">
+                    <span id="metricTradeResult" class="px-3 py-1 bg-gray-700 text-gray-300 text-xs font-bold rounded-full">READY</span>
+                </div>
+            </div>
+            <div class="text-xs text-gray-500 grid grid-cols-3 gap-2">
+                <div>
+                    <p class="font-medium">Tick Info</p>
+                    <p id="processingTickInfo" class="text-gray-300">Price: ---</p>
+                </div>
+                <div>
+                    <p class="font-medium">Time</p>
+                    <p id="processingTickTime" class="text-gray-300">--:--:--</p>
+                </div>
+                <div>
+                    <p class="font-medium">Progress</p>
+                    <div class="w-full bg-gray-800 rounded-full h-2 mt-1">
+                        <div id="executionBar" class="bg-green-500 h-2 rounded-full" style="width: 0%"></div>
+                    </div>
+                    <p class="text-gray-300 mt-1"><span id="metricExecutedTrades">0</span> trades executed</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Strategy Progress -->
+        <div class="bg-gray-900 p-4 rounded-xl mb-6">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-bold">📈 Strategy Progress</h3>
+                <span class="px-3 py-1 bg-purple-600 text-white text-xs rounded-full">
+                    Trades: <span id="metricTradesDone">0/10</span>
+                </span>
+            </div>
+            <div class="mb-2">
+                <div class="flex justify-between text-sm text-gray-400 mb-1">
+                    <span>Trades Left: <span id="metricTradesLeft">10</span></span>
+                    <span>Max Trades: <span id="metricTradesRemaining">10</span></span>
+                </div>
+                <div class="w-full bg-gray-800 rounded-full h-3">
+                    <div class="bg-gradient-to-r from-green-500 to-blue-500 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="text-xs text-gray-500 grid grid-cols-2 gap-4 mt-3">
+                <div>
+                    <p class="font-medium">Contract Type</p>
+                    <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH (INSTANT)</span>
+                </div>
+                <div>
+                    <p class="font-medium">Stop After Win</p>
+                    <span class="text-green-400 font-bold">ENABLED</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Area -->
+        <div class="bg-gray-900 p-4 rounded-xl">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-bold">📋 System Log</h3>
+                <button onclick="document.getElementById('log-area').innerHTML = '[00:00:00] 🤖 Log cleared'" class="text-xs text-gray-400 hover:text-white">
+                    <i class="fas fa-trash mr-1"></i>Clear
+                </button>
+            </div>
+            <div id="log-area" class="h-64 overflow-y-auto bg-gray-800 p-3 rounded-lg font-mono text-sm">
+                [00:00:00] 🤖 Starting INSTANT TICK EXECUTION. Trading on EVERY tick!
             </div>
         </div>
     </div>
@@ -492,7 +424,7 @@
 
     <script>
         // ============================================================================
-        // SEAMLESS AUTHENTICATION SYSTEM
+        // SIMPLIFIED AUTHENTICATION - NO TOKEN PROMPTS
         // ============================================================================
         
         // GLOBAL STATE
@@ -502,6 +434,7 @@
         window.req_id = 0;
         window.isBotRunning = false;
         window.tokenVisible = false;
+        window.autoStartEnabled = false;
         
         // Audio
         window.ToneInitialized = false;
@@ -561,128 +494,96 @@
         window.MAX_HISTORY = 100;
 
         // ============================================================================
-        // AUTHENTICATION FUNCTIONS - FIXED FOR SEAMLESS OAuth
+        // SIMPLIFIED AUTHENTICATION - DIRECT ACCESS AFTER OAuth
         // ============================================================================
         
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('🔐 Bot loading - Checking authentication...');
+            console.log('🔐 Bot loading - Checking for OAuth token...');
             
-            // Check for auto-auth from OAuth
-            checkForAutoAuth();
-        });
-        
-        function checkForAutoAuth() {
-            console.log('🔍 Checking for automatic OAuth authentication...');
+            // Update loading message
+            document.getElementById('autoStartMessage').textContent = 'Checking authentication...';
+            document.getElementById('autoStartSubMessage').textContent = 'Looking for OAuth session...';
             
-            // Check for OAuth token in localStorage
-            const savedToken = localStorage.getItem('derivToken');
-            const authMethod = localStorage.getItem('auth_method');
-            const autoOpen = localStorage.getItem('auto_open_bot') === 'true';
-            
-            // Check URL parameters
+
+            // Also capture token if OAuth returned directly to this page (in URL hash)
+            try {
+                const hash = window.location.hash || '';
+                if (hash.includes('access_token=')) {
+                    const hp = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
+                    const t = hp.get('access_token');
+                    const acct = hp.get('account') || hp.get('acct1');
+                    if (t) {
+                        localStorage.setItem('derivToken', t);
+                        if (acct) localStorage.setItem('derivAccount', acct);
+                        localStorage.setItem('auth_method', 'oauth');
+                    }
+                    // Clean the hash to avoid leaking token
+                    window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+                }
+            } catch (e) {
+                console.warn('Could not parse OAuth hash', e);
+            }
+
+            // Check URL parameters first (from OAuth redirect)
             const urlParams = new URLSearchParams(window.location.search);
-            const oauthSuccess = urlParams.get('oauth_success');
-            const autoReconnect = urlParams.get('auto_reconnect');
-            
-            console.log('Auth state:', {
-                hasToken: !!savedToken,
-                authMethod: authMethod,
-                autoOpen: autoOpen,
-                oauthSuccess: oauthSuccess
-            });
+            const oauthRedirect = urlParams.get('oauth_redirect');
+            const autoOpen = urlParams.get('auto_open');
             
             // Clean URL if we have parameters
-            if (oauthSuccess || autoReconnect) {
+            if (oauthRedirect || autoOpen) {
                 window.history.replaceState({}, document.title, window.location.pathname);
             }
             
-            if (savedToken && authMethod === 'oauth') {
-                console.log('✅ Found valid OAuth session, auto-login...');
-                
-                // Skip auth modal, directly initialize bot
-                window.DERIV_TOKEN = savedToken;
-                window.isAuthenticated = true;
-                
-                // Clear auto-open flag
-                localStorage.removeItem('auto_open_bot');
-                
-                // Hide auth modal and show bot
-                setTimeout(() => {
-                    hideAuthModal();
-                    initializeBot();
-                    
-                    // Auto-start if coming from OAuth redirect
-                    if (oauthSuccess) {
-                        console.log('🔁 Auto-starting bot after OAuth...');
-                        setTimeout(() => {
-                            if (!window.isBotRunning) {
-                                startBot();
-                            }
-                        }, 1500);
-                    }
-                }, 500);
-                
-            } else if (savedToken && !authMethod) {
-                // Old token without auth method, try to verify
-                console.log('🔍 Found saved token (no auth method), verifying...');
-                showStep('tokenVerificationStep');
-                verifyToken(savedToken);
-            } else {
-                // No token found, show auth modal
-                console.log('⚠️ No token found, showing auth modal');
-                showAuthModal();
-            }
-        }
-        
-        function showAuthModal() {
-            document.getElementById('authModal').style.display = 'flex';
-            showStep('tokenRequiredStep');
-        }
-        
-        function hideAuthModal() {
-            document.getElementById('authModal').style.display = 'none';
-            document.getElementById('botInterface').style.display = 'block';
-        }
-        
-        function showStep(stepId) {
-            // Hide all steps
-            document.querySelectorAll('.auth-step').forEach(step => {
-                step.classList.remove('active');
+            // Check localStorage for OAuth token
+            const savedToken = localStorage.getItem('derivToken');
+            const authMethod = localStorage.getItem('auth_method');
+            
+            console.log('🔍 Auth check:', {
+                savedToken: !!savedToken,
+                authMethod: authMethod,
+                oauthRedirect: oauthRedirect
             });
             
-            // Show target step
-            const targetStep = document.getElementById(stepId);
-            if (targetStep) {
-                targetStep.classList.add('active');
-            }
-        }
-        
-        function verifyManualToken() {
-            const tokenInput = document.getElementById('authTokenInput');
-            const token = tokenInput.value.trim();
-            
-            if (!token) {
-                showError('Please enter a token');
-                return;
+            // Set auto-start flag if it exists
+            if (autoOpen === '1' || localStorage.getItem('auto_open_bot') === 'true') {
+                window.autoStartEnabled = true;
+                localStorage.removeItem('auto_open_bot'); // Clear flag after use
             }
             
-            verifyToken(token);
-        }
+            // If we have a token from OAuth, verify it immediately
+            if (savedToken && (authMethod === 'oauth' || oauthRedirect === '1')) {
+                console.log('✅ Found OAuth token, verifying...');
+                document.getElementById('autoStartMessage').textContent = 'Verifying OAuth session...';
+                document.getElementById('autoStartSubMessage').textContent = 'Connecting to Deriv API...';
+                
+                // Verify token immediately
+                setTimeout(() => {
+                    verifyTokenAndInitialize(savedToken);
+                }, 500);
+                
+            } else {
+                // No token found - show error
+                console.log('❌ No OAuth token found');
+                showAuthenticationError();
+            }
+        });
         
-        function verifyToken(token) {
+        // Verify token and initialize bot
+        function verifyTokenAndInitialize(token) {
             if (!token || token.trim() === '') {
-                showError('Please enter a valid token');
-                showStep('tokenRequiredStep');
+                showAuthenticationError('Invalid token');
                 return;
             }
             
-            // Show verifying step
-            showStep('tokenVerificationStep');
+            // Update loading message
+            document.getElementById('autoStartMessage').textContent = 'Verifying token...';
+            document.getElementById('autoStartSubMessage').textContent = 'Authenticating with Deriv...';
             
-            // Try to connect to Deriv API to verify token
+            // Try to connect to Deriv API
             const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
             
             testWs.onopen = () => {
+                console.log('🔗 Test WebSocket connected');
                 testWs.send(JSON.stringify({
                     authorize: token,
                     req_id: 999999
@@ -695,9 +596,8 @@
                     
                     if (data.error) {
                         console.error('Token verification failed:', data.error);
-                        showError('Invalid token. Please check and try again.');
+                        showAuthenticationError('Invalid token. Please reconnect via OAuth.');
                         testWs.close();
-                        showStep('tokenRequiredStep');
                     } else if (data.authorize) {
                         console.log('✅ Token verified successfully');
                         window.DERIV_TOKEN = token;
@@ -705,57 +605,59 @@
                         
                         // Store successful auth
                         localStorage.setItem('derivToken', token);
+                        localStorage.setItem('auth_method', 'oauth');
                         localStorage.setItem('last_auth_time', Date.now());
-                        localStorage.setItem('auth_method', 'manual');
                         
                         testWs.close();
                         
-                        // Show success and load bot
-                        setTimeout(() => {
-                            hideAuthModal();
-                            initializeBot();
-                        }, 1000);
+                        // Hide loading overlay, show bot
+                        document.getElementById('autoStartOverlay').style.display = 'none';
+                        document.getElementById('botInterface').style.display = 'block';
+                        
+                        // Initialize bot
+                        initializeBot();
+                        
+                        // Auto-start if flag is set
+                        if (window.autoStartEnabled) {
+                            console.log('🚀 Auto-start: Starting bot automatically');
+                            setTimeout(() => {
+                                if (!window.isBotRunning) {
+                                    startBot();
+                                }
+                            }, 1000);
+                        }
                     }
                 } catch (e) {
                     console.error('Token verification error:', e);
-                    showError('Verification error. Please try again.');
-                    showStep('tokenRequiredStep');
+                    showAuthenticationError('Authentication error. Please try again.');
                 }
             };
             
             testWs.onerror = () => {
                 console.error('WebSocket error during token verification');
-                showError('Connection error. Please check your internet.');
-                showStep('tokenRequiredStep');
+                showAuthenticationError('Connection error. Please check your internet.');
             };
             
-            // Timeout after 5 seconds
+            // Timeout
             setTimeout(() => {
                 if (testWs.readyState === WebSocket.OPEN) {
                     testWs.close();
                 }
                 if (!window.isAuthenticated) {
-                    showError('Connection timeout. Please try again.');
-                    showStep('tokenRequiredStep');
+                    showAuthenticationError('Connection timeout. Please try again.');
                 }
             }, 5000);
         }
         
-        function showError(message) {
-            const notification = document.createElement('div');
-            notification.className = 'fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 bg-red-600 text-white';
-            notification.innerHTML = `
-                <div class="flex items-center">
-                    <span class="mr-2">❌</span>
-                    <span>${message}</span>
-                </div>
-            `;
+        function showAuthenticationError(message = 'Authentication required. Please connect via OAuth first.') {
+            console.log('❌ Showing authentication error:', message);
             
-            document.body.appendChild(notification);
+            // Hide loading overlay
+            document.getElementById('autoStartOverlay').style.display = 'none';
             
-            setTimeout(() => {
-                notification.remove();
-            }, 3000);
+            // Show error overlay
+            document.getElementById('errorMessage').textContent = message;
+            document.getElementById('errorOverlay').style.display = 'flex';
         }
         
         function logout() {
@@ -772,14 +674,18 @@
             
             window.DERIV_TOKEN = '';
             window.isAuthenticated = false;
+            window.autoStartEnabled = false;
             
-            // Reset bot interface
+            // Hide bot, show error overlay
             document.getElementById('botInterface').style.display = 'none';
+            document.getElementById('errorOverlay').style.display = 'flex';
             
-            // Show auth modal
-            showAuthModal();
+            console.log('🔒 Logged out. Redirecting to homepage...');
             
-            log('🔒 Logged out. Authentication required.', 'SYSTEM');
+            // Redirect to homepage after delay
+            setTimeout(() => {
+                window.location.href = 'index.html';
+            }, 2000);
         }
         
         // ============================================================================
@@ -788,9 +694,6 @@
         
         function initializeBot() {
             console.log('🤖 Initializing trading bot...');
-            
-            // Show bot interface
-            document.getElementById('botInterface').style.display = 'block';
             
             // Load settings
             window.soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
@@ -813,7 +716,7 @@
             // Start queue processor
             startQueueProcessor();
             
-            log('✅ Bot initialized. Authentication verified.', 'SYSTEM');
+            log('✅ Bot initialized. OAuth session verified.', 'SYSTEM');
             log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
             log('🔐 All trades go through App ID 117144', 'AUTH');
         }
@@ -1257,7 +1160,7 @@
                 
             } else if (winOrLoss === 'loss') {
                 window.martingaleStep++;
-
+                
                 if (window.martingaleStep >= window.maxTrades) {
                     log(`🛑 MAX TRADES REACHED (${window.maxTrades}). Stopping bot.`, 'CRITICAL');
                     stopBot();
@@ -1290,8 +1193,9 @@
         
         function connectWebSocket() {
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
+                log('❌ Authentication required.', 'CRITICAL');
                 stopBot();
+                showAuthenticationError();
                 return;
             }
             
@@ -1614,8 +1518,8 @@
         
         function toggleBot() {
             if (!window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
+                log('❌ Authentication required.', 'CRITICAL');
+                showAuthenticationError();
                 return;
             }
             
@@ -1630,8 +1534,8 @@
             if (window.isBotRunning) return;
             
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
+                log('❌ Authentication required.', 'CRITICAL');
+                showAuthenticationError();
                 return;
             }
             
