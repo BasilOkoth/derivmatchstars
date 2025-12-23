@@ -51,11 +51,6 @@
             transition: all 0.3s ease;
         }
         
-        .btn-primary:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
-        }
-        
         .btn-oAuth {
             background: linear-gradient(135deg, #8b5cf6, #7c3aed);
             color: white;
@@ -90,11 +85,20 @@
         
         .auth-step { display: none; }
         .auth-step.active { display: block; }
-        
+
         .info-message {
             background: rgba(59, 130, 246, 0.1);
             border: 1px solid rgba(59, 130, 246, 0.3);
             color: #3b82f6;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .success-message {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #10b981;
             padding: 16px;
             border-radius: 12px;
             margin-bottom: 20px;
@@ -109,50 +113,29 @@
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
-        
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        
-        .badge-success {
-            background: rgba(16, 185, 129, 0.1);
-            color: #10b981;
-            border: 1px solid rgba(16, 185, 129, 0.2);
-            padding: 4px 12px;
-            border-radius: 20px;
-        }
     </style>
     
     <script>
         (function() {
-            const urlParams = new URLSearchParams(window.location.search);
+            const url = new URL(window.location.href);
+            const searchParams = new URLSearchParams(url.search);
+            const hashParams = new URLSearchParams(url.hash.substring(1));
             
-            // Check for multi-account tokens returned by Deriv (token1, token2, etc.)
-            if (urlParams.has('token1')) {
-                const accounts = [];
-                let i = 1;
-                
-                while (urlParams.has(`acct${i}`)) {
-                    accounts.push({
-                        account: urlParams.get(`acct${i}`),
-                        token: urlParams.get(`token1`), // Note: token1 is often reused for all accts in this step
-                        currency: urlParams.get(`cur${i}`)
-                    });
-                    i++;
-                }
-
-                // Save critical session data to localStorage
-                localStorage.setItem('derivToken', urlParams.get('token1'));
-                localStorage.setItem('derivAccounts', JSON.stringify(accounts));
-                localStorage.setItem('lastAuth', Date.now().toString());
+            let token = searchParams.get('token1') || hashParams.get('access_token');
+            let account = searchParams.get('acct1') || hashParams.get('account');
+            
+            if (token) {
+                localStorage.setItem('derivToken', token);
+                if (account) localStorage.setItem('derivAccount', account);
                 localStorage.setItem('auto_open_bot', 'true');
                 
-                // Redirect immediately to the trading environment
                 window.location.replace('bot-obfuscated.html?oauth_redirect=1&auto_open=1');
-                throw new Error("Redirecting to bot...");
+                throw new Error("Redirecting...");
             }
 
-            // Auto-reconnect for users with existing tokens
             const savedToken = localStorage.getItem('derivToken');
-            if (savedToken && !urlParams.has('logout')) {
+            if (savedToken && !searchParams.has('logout')) {
                 setTimeout(() => {
                     window.location.href = 'bot-obfuscated.html?auto_reconnect=1';
                 }, 1000);
@@ -161,63 +144,78 @@
     </script>
 </head>
 <body>
-    <nav class="glass-card fixed top-8 left-1/2 transform -translate-x-1/2 z-50 w-[95%] max-w-6xl">
-        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
-            <div class="flex items-center space-x-4">
-                <div class="w-12 h-12 rounded-full bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center">
-                    <i class="fas fa-robot text-white text-xl"></i>
-                </div>
-                <div>
-                    <span class="text-2xl font-bold gradient-text">DigitMatchStars Pro™</span>
-                    <div class="mt-1"><span class="badge-success text-xs">Official Deriv Bot</span></div>
-                </div>
+    <nav class="glass-card fixed top-8 left-1/2 transform -translate-x-1/2 z-50 w-[95%] max-w-6xl px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center space-x-4">
+            <div class="w-12 h-12 rounded-full bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center">
+                <i class="fas fa-robot text-white text-xl"></i>
             </div>
-            <button onclick="openModal()" class="btn-primary"><i class="fas fa-rocket mr-2"></i>Start Trading</button>
+            <span class="text-2xl font-bold gradient-text">DigitMatchStars Pro™</span>
         </div>
+        <button onclick="openModal()" class="btn-primary">Start Trading</button>
     </nav>
 
-    <section class="pt-48 pb-32 px-5 text-center">
-        <h1 class="text-6xl md:text-7xl font-bold mb-6">
-            <span class="gradient-text">Professional</span><br>Trading Bot Platform
-        </h1>
-        <p class="text-xl text-gray-300 mb-8 max-w-2xl mx-auto">
-            Connect your Deriv account via secure OAuth. All trades are executed through the official application interface.
-        </p>
-        <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">
-            <i class="fab fa-deriv mr-3"></i>Connect via OAuth
-        </button>
+    <section class="pt-48 pb-20 text-center px-5">
+        <h1 class="text-6xl md:text-7xl font-bold mb-6"><span class="gradient-text">Professional</span><br>Trading Bot</h1>
+        <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">Connect via OAuth</button>
     </section>
 
     <div id="authModal" class="modal">
         <div class="modal-content">
-            <button onclick="closeModal()" class="float-right text-2xl text-white">&times;</button>
-            <div id="choiceStep" class="auth-step active text-center">
-                <h2 class="text-3xl font-bold mb-6">Connect to Pro</h2>
+            <button onclick="closeModal()" class="float-right text-white text-2xl">&times;</button>
+            
+            <div id="choiceStep" class="auth-step active">
+                <h2 class="text-3xl font-bold mb-6 text-center">Connect</h2>
                 <div class="space-y-4">
-                    <div class="glass-card p-6 cursor-pointer hover:border-emerald-500" onclick="startOAuth()">
-                        <h3 class="font-bold text-lg">Connect via OAuth</h3>
-                        <p class="text-sm text-gray-400">For existing Deriv accounts</p>
+                    <div class="glass-card p-6 cursor-pointer hover:border-purple-500" onclick="startOAuth()">
+                        <h3 class="font-bold">Connect via OAuth</h3>
+                        <p class="text-sm text-gray-400">For existing accounts</p>
+                    </div>
+                    <div class="glass-card p-6 cursor-pointer hover:border-green-500" onclick="showStep('newAccountStep')">
+                        <h3 class="font-bold">Need an Account?</h3>
+                        <p class="text-sm text-gray-400">Sign up using affiliate link</p>
                     </div>
                 </div>
+            </div>
+            
+            <div id="newAccountStep" class="auth-step">
+                <h2 class="text-3xl font-bold mb-6 text-center">Create Account</h2>
+                <div class="info-message">1. Sign up on Deriv<br>2. Return here to connect.</div>
+                <button onclick="createAccount()" class="btn-primary w-full mb-4">Create Account</button>
+                <button onclick="showStep('oauthAfterSignupStep')" class="btn-oAuth w-full">I have an account now</button>
+            </div>
+
+            <div id="oauthAfterSignupStep" class="auth-step">
+                <h2 class="text-3xl font-bold mb-6 text-center">Final Step</h2>
+                <div class="success-message">Account ready? Connect now.</div>
+                <button onclick="startOAuth()" class="btn-oAuth w-full">Connect via OAuth</button>
             </div>
         </div>
     </div>
 
     <script>
-        const CONFIG = { APP_ID: 117144, BOT_PAGE: "bot-obfuscated.html" };
+        const CONFIG = {
+            APP_ID: 117144,
+            REDIRECT_URI: window.location.origin + window.location.pathname,
+            AFFILIATE_URL: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/"
+        };
 
-        function openModal() { document.getElementById('authModal').style.display = 'flex'; }
+        function openModal() { document.getElementById('authModal').style.display = 'flex'; showStep('choiceStep'); }
         function closeModal() { document.getElementById('authModal').style.display = 'none'; }
+        function showStep(id) { document.querySelectorAll('.auth-step').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
 
         function startOAuth() {
-            const state = 'state_' + Date.now();
             const params = new URLSearchParams({
-                app_id: CONFIG.APP_ID.toString(),
+                app_id: CONFIG.APP_ID,
                 response_type: 'token',
-                redirect_uri: window.location.origin + window.location.pathname,
+                redirect_uri: CONFIG.REDIRECT_URI,
                 scope: 'read,trade,trading_information'
             });
             window.location.href = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
+        }
+
+        function createAccount() {
+            window.open(CONFIG.AFFILIATE_URL, '_blank');
+            showStep('oauthAfterSignupStep');
         }
     </script>
 </body>
