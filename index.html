@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DigitMatchStars Pro™</title>
+    <title>DigitMatchStars Pro™ - Trading Terminal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background: #0a0f1f; color: white; font-family: sans-serif; }
-        .btn { padding: 15px 30px; border-radius: 10px; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        .btn-green { background: #10b981; }
-        .btn-purple { background: #8b5cf6; }
-        .glass { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 40px; }
-    </style>
+        body { background: #0a0f1f; color: white; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; }
+        .btn-primary { background: linear-gradient(135deg, #10b981, #059669); color: white; transition: 0.3s; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(16, 185, 129, 0.2); }
+    </script>
 
     <script>
         const CONFIG = {
@@ -20,64 +19,77 @@
             BOT_PAGE: "bot-obfuscated.html"
         };
 
-        // 🛡️ EMERGENCY DEBUGGER & REDIRECTOR
+        // 🛡️ THE FIX: Improved Token Snatcher for Query Parameters
         (function() {
-            console.log("Checking for Deriv Token...");
-            const currentHash = window.location.hash;
+            // Check both Hash (#) and Search (?) parameters
+            const urlParams = new URLSearchParams(window.location.search || window.location.hash.substring(1));
             
-            if (currentHash && currentHash.includes('access_token=')) {
-                console.log("Token detected in URL!");
-                const params = new URLSearchParams(currentHash.substring(1));
-                const token = params.get('access_token');
-                
-                if (token) {
-                    localStorage.setItem('derivToken', token);
-                    console.log("Token saved to Storage. Redirecting now...");
-                    // Using replace ensures the user can't click "back" into a loop
-                    window.location.replace(CONFIG.BOT_PAGE + "?token=" + token);
-                }
-            } else {
-                console.log("No token found in URL. Staying on landing page.");
+            // Deriv uses token1 for Real and token2 for Virtual
+            const token = urlParams.get('token1') || urlParams.get('token2') || urlParams.get('access_token');
+            const account = urlParams.get('acct1') || urlParams.get('acct2');
+
+            if (token) {
+                console.log("Success! Token found:", token);
+                localStorage.setItem('derivToken', token);
+                if (account) localStorage.setItem('derivAccount', account);
+
+                // Immediate redirect to the obfuscated bot
+                window.location.replace(`${CONFIG.BOT_PAGE}?token=${token}&acct=${account}`);
             }
         })();
 
         function startOAuth() {
             const redirectUri = window.location.origin + window.location.pathname;
-            console.log("Starting OAuth with Redirect URI:", redirectUri);
             const authUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${CONFIG.APP_ID}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}`;
             window.location.href = authUrl;
         }
 
         function openAffiliate() {
             window.open(CONFIG.AFFILIATE_LINK, '_blank');
-            document.getElementById('choice-ui').style.display = 'none';
-            document.getElementById('confirm-ui').style.display = 'block';
+            document.getElementById('main-ui').classList.add('hidden');
+            document.getElementById('confirm-ui').classList.remove('hidden');
         }
     </script>
 </head>
-<body class="flex items-center justify-center min-height-screen py-20">
+<body class="min-h-screen flex items-center justify-center p-6">
 
-    <div class="glass max-w-md w-full text-center">
-        <div id="choice-ui">
-            <h1 class="text-3xl font-bold mb-2 text-green-400">DigitMatchStars Pro</h1>
-            <p class="text-gray-400 mb-8">Select your account status to continue</p>
+    <div class="glass max-w-md w-full p-10 text-center">
+        <div id="main-ui">
+            <h1 class="text-4xl font-black mb-2 bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
+                DigitMatchStars
+            </h1>
+            <p class="text-gray-400 mb-10">Official Trading Interface</p>
             
-            <div class="flex flex-col gap-4">
-                <button onclick="openAffiliate()" class="btn btn-green">
-                    NEW USER (Create Account)
+            <div class="space-y-4">
+                <button onclick="openAffiliate()" class="w-full p-4 rounded-xl border border-white/10 hover:bg-white/5 flex items-center transition-all">
+                    <div class="w-12 h-12 bg-green-500/20 text-green-400 rounded-lg flex items-center justify-center mr-4">
+                        <i class="fas fa-user-plus"></i>
+                    </div>
+                    <div class="text-left">
+                        <p class="font-bold">New Trader</p>
+                        <p class="text-xs text-gray-500">Sign up via Partner Link</p>
+                    </div>
                 </button>
-                <button onclick="startOAuth()" class="btn btn-purple">
-                    EXISTING USER (Login)
+
+                <button onclick="startOAuth()" class="w-full btn-primary p-5 rounded-xl font-bold flex items-center justify-center">
+                    <i class="fab fa-deriv mr-3 text-xl"></i>
+                    Login with Deriv
                 </button>
             </div>
         </div>
 
-        <div id="confirm-ui" style="display:none;">
-            <h2 class="text-2xl font-bold mb-4">Account Created?</h2>
-            <p class="text-gray-400 mb-6">If you finished your registration on Deriv, click below to connect the bot.</p>
-            <button onclick="startOAuth()" class="btn btn-purple w-full">CONNECT BOT</button>
+        <div id="confirm-ui" class="hidden">
+            <div class="w-16 h-16 bg-green-500/20 text-green-400 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            </div>
+            <h2 class="text-2xl font-bold mb-4">Registration Started</h2>
+            <p class="text-gray-400 mb-8 text-sm">Once you finish your account setup on Deriv, return here and click the button below to start the bot.</p>
+            <button onclick="startOAuth()" class="w-full btn-primary p-4 rounded-xl font-bold">
+                CONNECT NOW
+            </button>
         </div>
     </div>
 
+    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
 </body>
 </html>
