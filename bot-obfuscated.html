@@ -504,26 +504,6 @@
             document.getElementById('autoStartMessage').textContent = 'Checking authentication...';
             document.getElementById('autoStartSubMessage').textContent = 'Looking for OAuth session...';
             
-
-            // Also capture token if OAuth returned directly to this page (in URL hash)
-            try {
-                const hash = window.location.hash || '';
-                if (hash.includes('access_token=')) {
-                    const hp = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
-                    const t = hp.get('access_token');
-                    const acct = hp.get('account') || hp.get('acct1');
-                    if (t) {
-                        localStorage.setItem('derivToken', t);
-                        if (acct) localStorage.setItem('derivAccount', acct);
-                        localStorage.setItem('auth_method', 'oauth');
-                    }
-                    // Clean the hash to avoid leaking token
-                    window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-                }
-            } catch (e) {
-                console.warn('Could not parse OAuth hash', e);
-            }
-
             // Check URL parameters first (from OAuth redirect)
             const urlParams = new URLSearchParams(window.location.search);
             const oauthRedirect = urlParams.get('oauth_redirect');
@@ -580,73 +560,76 @@
             document.getElementById('autoStartSubMessage').textContent = 'Authenticating with Deriv...';
             
             // Try to connect to Deriv API
-            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
-            
-            testWs.onopen = () => {
-                console.log('🔗 Test WebSocket connected');
-                testWs.send(JSON.stringify({
-                    authorize: token,
-                    req_id: 999999
-                }));
-            };
-            
-            testWs.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
-                    
-                    if (data.error) {
-                        console.error('Token verification failed:', data.error);
-                        showAuthenticationError('Invalid token. Please reconnect via OAuth.');
-                        testWs.close();
-                    } else if (data.authorize) {
-                        console.log('✅ Token verified successfully');
-                        window.DERIV_TOKEN = token;
-                        window.isAuthenticated = true;
-                        
-                        // Store successful auth
-                        localStorage.setItem('derivToken', token);
-                        localStorage.setItem('auth_method', 'oauth');
-                        localStorage.setItem('last_auth_time', Date.now());
-                        
-                        testWs.close();
-                        
-                        // Hide loading overlay, show bot
-                        document.getElementById('autoStartOverlay').style.display = 'none';
-                        document.getElementById('botInterface').style.display = 'block';
-                        
-                        // Initialize bot
-                        initializeBot();
-                        
-                        // Auto-start if flag is set
-                        if (window.autoStartEnabled) {
-                            console.log('🚀 Auto-start: Starting bot automatically');
-                            setTimeout(() => {
-                                if (!window.isBotRunning) {
-                                    startBot();
-                                }
-                            }, 1000);
+            // Try to connect to Deriv API (with endpoint fallback)
+            const wsUrls = [
+                'wss://ws.derivws.com/websockets/v3?app_id=1089',
+                'wss://ws.binaryws.com/websockets/v3?app_id=1089'
+            ];
+            let wsIndex = 0;
+            let testWs;
+
+            const tryConnect = () => {
+                const url = wsUrls[wsIndex++];
+                console.log('🔄 Trying WebSocket endpoint:', url);
+                testWs = new WebSocket(url);
+
+                testWs.onopen = () => {
+                    console.log('🔗 Test WebSocket connected:', url);
+                    // Remember the working endpoint for the main bot connection
+                    try { localStorage.setItem('deriv_ws_url', url); } catch (e) {}
+                    testWs.send(JSON.stringify({
+                        authorize: token
+                    }));
+                };
+
+                testWs.onmessage = (msg) => {
+                    try {
+                        const data = JSON.parse(msg.data);
+                        if (data.error) {
+                            console.error('❌ Token verification error:', data.error);
+                            showAuthenticationError('Authentication failed. Please reconnect via OAuth.');
+                            testWs.close();
+                            return;
                         }
+                        if (data.msg_type === 'authorize') {
+                            console.log('✅ Token verified for account:', data.authorize?.loginid);
+                            window.isAuthenticated = true;
+                            window.authorizedAccount = data.authorize;
+                            try { localStorage.setItem('derivAccount', data.authorize?.loginid || ''); } catch (e) {}
+                            testWs.close();
+                            initializeBotAfterAuth();
+                        }
+                    } catch (e) {
+                        console.error('Token verification parse error', e);
                     }
-                } catch (e) {
-                    console.error('Token verification error:', e);
-                    showAuthenticationError('Authentication error. Please try again.');
-                }
+                };
+
+                testWs.onerror = () => {
+                    console.error('WebSocket error during token verification on', url);
+                    // Try next endpoint
+                    if (wsIndex < wsUrls.length) {
+                        try { testWs.close(); } catch (e) {}
+                        tryConnect();
+                    } else {
+                        showAuthenticationError('Connection error. Please check your internet.');
+                    }
+                };
+
+                // Timeout (longer + fallback)
+                setTimeout(() => {
+                    if (window.isAuthenticated) return;
+                    if (testWs && testWs.readyState === WebSocket.OPEN) {
+                        try { testWs.close(); } catch (e) {}
+                    }
+                    if (wsIndex < wsUrls.length) {
+                        tryConnect();
+                    } else if (!window.isAuthenticated) {
+                        showAuthenticationError('Connection timeout. Please try again.');
+                    }
+                }, 15000);
             };
-            
-            testWs.onerror = () => {
-                console.error('WebSocket error during token verification');
-                showAuthenticationError('Connection error. Please check your internet.');
-            };
-            
-            // Timeout
-            setTimeout(() => {
-                if (testWs.readyState === WebSocket.OPEN) {
-                    testWs.close();
-                }
-                if (!window.isAuthenticated) {
-                    showAuthenticationError('Connection timeout. Please try again.');
-                }
-            }, 5000);
+
+            tryConnect();
         }
         
         function showAuthenticationError(message = 'Authentication required. Please connect via OAuth first.') {
@@ -1206,7 +1189,9 @@
             
             startWebSocketKeepAlive();
             
-            window.ws = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
+            const wsUrl = (function(){ try { return localStorage.getItem('deriv_ws_url'); } catch(e){ return null; } })() || 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+
+            window.ws = new WebSocket(wsUrl);
 
             window.ws.onopen = () => {
                 log('🔌 WebSocket connected - INSTANT TICK EXECUTION MODE', 'SYSTEM');
