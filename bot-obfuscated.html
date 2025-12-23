@@ -562,8 +562,8 @@
             // Try to connect to Deriv API
             // Try to connect to Deriv API (with endpoint fallback)
             const wsUrls = [
-                'wss://ws.derivws.com/websockets/v3?app_id=1089',
-                'wss://ws.binaryws.com/websockets/v3?app_id=1089'
+                'wss://ws.derivws.com/websockets/v3?app_id=117144',
+                'wss://ws.binaryws.com/websockets/v3?app_id=117144'
             ];
             let wsIndex = 0;
             let testWs;
@@ -1189,7 +1189,7 @@
             
             startWebSocketKeepAlive();
             
-            const wsUrl = (function(){ try { return localStorage.getItem('deriv_ws_url'); } catch(e){ return null; } })() || 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+            const wsUrl = (function(){ try { return localStorage.getItem('deriv_ws_url'); } catch(e){ return null; } })() || 'wss://ws.derivws.com/websockets/v3?app_id=117144';
 
             window.ws = new WebSocket(wsUrl);
 
