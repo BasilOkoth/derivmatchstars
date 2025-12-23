@@ -175,21 +175,6 @@
             from { transform: translateX(100%); opacity: 0; }
             to { transform: translateX(0); opacity: 1; }
         }
-        
-        /* Loading overlay */
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(10, 15, 31, 0.95);
-            z-index: 99999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-        }
     </style>
     
     <!-- 🚨 CRITICAL: Token detection script runs IMMEDIATELY -->
@@ -199,22 +184,6 @@
         // =============================================
         (function() {
             console.log("🔍 IMMEDIATE TOKEN SCANNER ACTIVATED");
-            
-            // Show loading overlay immediately
-            const loadingOverlay = document.createElement('div');
-            loadingOverlay.className = 'loading-overlay';
-            loadingOverlay.innerHTML = `
-                <div class="text-center">
-                    <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
-                        <i class="fas fa-robot text-white text-5xl"></i>
-                    </div>
-                    <h2 class="text-4xl font-bold mb-4" style="background: linear-gradient(135deg, #10b981, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">DigitMatchStars Pro™</h2>
-                    <p class="text-xl text-gray-300 mb-8">Checking authentication...</p>
-                    <div class="loading-spinner mx-auto mb-4" style="width: 40px; height: 40px; border-width: 4px;"></div>
-                    <p class="text-gray-400 mt-6">Checking for existing session...</p>
-                </div>
-            `;
-            document.body.appendChild(loadingOverlay);
             
             // Get current URL
             const currentUrl = window.location.href;
@@ -265,7 +234,7 @@
                 }
                 localStorage.setItem('lastAuth', Date.now().toString());
                 localStorage.setItem('auth_method', 'oauth');
-                localStorage.setItem('auto_open_bot', 'true');
+                localStorage.setItem('auto_open_bot', 'true'); // CRITICAL: Set auto-open flag
                 
                 // Clean URL (remove tokens from address bar for security)
                 const cleanUrl = window.location.origin + window.location.pathname;
@@ -275,46 +244,18 @@
                 const botUrl = `bot-obfuscated.html?oauth_redirect=1&auto_open=1&t=${Date.now()}`;
                 console.log("🔄 IMMEDIATE REDIRECT to:", botUrl);
                 
-                // Update loading message
-                loadingOverlay.querySelector('p.text-xl').textContent = 'Redirecting to trading bot...';
-                loadingOverlay.querySelector('p.text-gray-400').textContent = 'Authentication successful!';
-                
                 // Use replace() so user can't go back
-                setTimeout(() => {
-                    window.location.replace(botUrl);
-                }, 1000);
+                window.location.replace(botUrl);
                 
+                // Stop all other JavaScript execution
+                throw new Error("Redirecting to bot...");
             } else {
                 console.log("❌ No tokens found in URL");
-                
-                // Check if we already have a token in localStorage
-                const savedToken = localStorage.getItem('derivToken');
-                if (savedToken) {
-                    console.log("🔑 Found saved token, redirecting to bot...");
-                    
-                    // Update loading message
-                    loadingOverlay.querySelector('p.text-xl').textContent = 'Found existing session...';
-                    loadingOverlay.querySelector('p.text-gray-400').textContent = 'Redirecting to trading bot';
-                    
-                    // Redirect to bot
-                    setTimeout(() => {
-                        window.location.href = `bot-obfuscated.html?auto_reconnect=1&t=${Date.now()}`;
-                    }, 1000);
-                    
-                } else {
-                    console.log("👋 No existing session, showing landing page");
-                    // Hide loading overlay and show normal page
-                    setTimeout(() => {
-                        loadingOverlay.style.display = 'none';
-                    }, 500);
-                }
             }
         })();
     </script>
 </head>
 <body>
-    <!-- Loading overlay will be added by script -->
-
     <!-- Navigation -->
     <nav class="glass-card fixed top-8 left-1/2 transform -translate-x-1/2 z-50 w-[95%] max-w-6xl">
         <div class="container mx-auto px-6 py-4">
@@ -692,6 +633,16 @@
         document.addEventListener('DOMContentLoaded', function() {
             console.log('✅ DigitMatchStars Pro - Landing Page Loaded');
             
+            // Check if we have a token from earlier redirect
+            const hasToken = localStorage.getItem('derivToken');
+            if (hasToken) {
+                console.log('🔑 Existing token found in localStorage');
+                // Auto-redirect to bot if token exists
+                setTimeout(() => {
+                    window.location.href = CONFIG.BOT_PAGE + '?auto_reconnect=1';
+                }, 1000);
+            }
+            
             // Setup modal event listeners
             const authModal = document.getElementById('authModal');
             if (authModal) {
@@ -845,3 +796,4 @@
     </script>
 </body>
 </html>
+[file content end]
