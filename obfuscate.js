@@ -215,4 +215,8 @@ console.log('   1. Test locally: Open index.html → Connect via OAuth');
 console.log('   2. Deploy: npx vercel --prod');
 console.log('   3. Access bot at: https://digitmatchstars-two.vercel.app/bot');
 console.log('\n📘 Deployment guide saved as: DEPLOYMENT_GUIDE.txt');
+<<<<<<< HEAD
 console.log('\n' + '='.repeat(50));
+=======
+console.log('\n' + '='.repeat(50));
+>>>>>>> 54eae53956b8856b022936ca4fa132104b56da53

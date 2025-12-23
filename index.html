@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< HEAD
     <title>DigitMatchStars Pro™ - Official Deriv Trading Bot | 98.7% Win Rate</title>
     <meta name="description" content="Official Deriv trading bot with instant tick execution. 98.7% verified win rate. Connect via OAuth.">
     
@@ -813,7 +814,110 @@
                     notification.remove();
                 }
             }, 5000);
+=======
+    <title>DigitMatchStars Pro™ - Trading Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body { background: #0a0f1f; color: white; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; }
+        .btn-primary { background: linear-gradient(135deg, #10b981, #059669); color: white; transition: 0.3s; cursor: pointer; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(16, 185, 129, 0.2); }
+        .gradient-text { background: linear-gradient(135deg, #10b981, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .loading-spinner { width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #10b981; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+
+    <script>
+        const CONFIG = {
+            APP_ID: 117144,
+            AFFILIATE_LINK: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/",
+            BOT_PAGE: "bot-obfuscated.html"
+        };
+
+        // 🛡️ UNIVERSAL TOKEN SNATCHER
+        // This runs the millisecond the page starts loading
+        (function() {
+            // 1. Combine both Search (?) and Hash (#) into one parameter set
+            const searchParams = new URLSearchParams(window.location.search);
+            const hashParams = new URLSearchParams(window.location.hash.substring(1));
+            
+            // 2. Look for tokens in every possible place Deriv might put them
+            const token = searchParams.get('token1') || 
+                          hashParams.get('access_token') || 
+                          searchParams.get('access_token') || 
+                          searchParams.get('token2');
+
+            const account = searchParams.get('acct1') || 
+                            searchParams.get('acct2') || 
+                            hashParams.get('account_id');
+
+            if (token) {
+                console.log("✅ Token detected from Deriv!");
+                localStorage.setItem('derivToken', token);
+                if (account) localStorage.setItem('derivAccount', account);
+
+                // 3. Force immediate jump to the secure bot page
+                const redirectUrl = CONFIG.BOT_PAGE + "?token=" + encodeURIComponent(token) + "&acct=" + encodeURIComponent(account || '');
+                window.location.replace(redirectUrl);
+            }
+        })();
+
+        function startOAuth() {
+            const redirectUri = window.location.origin + window.location.pathname;
+            const authUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${CONFIG.APP_ID}&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}`;
+            window.location.href = authUrl;
+        }
+
+        function openAffiliate() {
+            window.open(CONFIG.AFFILIATE_LINK, '_blank');
+            document.getElementById('main-ui').classList.add('hidden');
+            document.getElementById('confirm-ui').classList.remove('hidden');
+>>>>>>> 54eae53956b8856b022936ca4fa132104b56da53
         }
     </script>
+</head>
+<body class="min-h-screen flex items-center justify-center p-6">
+
+    <div class="glass max-w-md w-full p-10 text-center">
+        <div id="main-ui">
+            <div class="w-20 h-20 bg-green-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <i class="fas fa-robot text-4xl text-green-400"></i>
+            </div>
+            <h1 class="text-4xl font-black mb-2 gradient-text">DigitMatchStars</h1>
+            <p class="text-gray-400 mb-10">Pro Trading Algorithm</p>
+            
+            <div class="space-y-4">
+                <button onclick="openAffiliate()" class="w-full p-5 rounded-xl border border-white/10 hover:bg-white/5 flex items-center transition-all group">
+                    <div class="w-12 h-12 bg-white/5 group-hover:bg-green-500/20 text-gray-400 group-hover:text-green-400 rounded-lg flex items-center justify-center mr-4 transition-all">
+                        <i class="fas fa-user-plus"></i>
+                    </div>
+                    <div class="text-left">
+                        <p class="font-bold">Register Account</p>
+                        <p class="text-xs text-gray-500">Sign up via Partner Link</p>
+                    </div>
+                </button>
+
+                <button onclick="startOAuth()" class="w-full btn-primary p-5 rounded-xl font-bold flex items-center justify-center text-lg">
+                    <i class="fab fa-deriv mr-3 text-2xl"></i>
+                    Login & Connect
+                </button>
+            </div>
+        </div>
+
+        <div id="confirm-ui" class="hidden">
+            <div class="w-20 h-20 bg-blue-500/20 text-blue-400 rounded-full flex items-center justify-center mx-auto mb-6">
+                <i class="fas fa-check text-3xl"></i>
+            </div>
+            <h2 class="text-2xl font-bold mb-4">Registration Opened</h2>
+            <p class="text-gray-400 mb-8 text-sm">After you complete your registration on the Deriv page, come back here and click "Connect Now" to link your account.</p>
+            <button onclick="startOAuth()" class="w-full btn-primary p-5 rounded-xl font-bold">
+                CONNECT NOW
+            </button>
+            <button onclick="location.reload()" class="mt-4 text-gray-500 text-sm hover:text-white">Back to start</button>
+        </div>
+    </div>
+
 </body>
 </html>
