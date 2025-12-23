@@ -3,134 +3,143 @@ const fs = require('fs');
 const path = require('path');
 
 console.log('='.repeat(50));
-console.log('🛡️ DIGITMATCH PRO - BOT OBFUSCATION v3.0');
+console.log('🛡️ DIGITMATCH PRO - BOT OBFUSCATION v3.0 FIXED');
 console.log('='.repeat(50));
 
-// ✅ CRITICAL: Use correct project path
-const PROJECT_PATH = process.cwd(); // Uses current directory (D:\IRELAND\derivmatchstars3)
+const PROJECT_PATH = process.cwd();
 console.log(`📁 Project path: ${PROJECT_PATH}`);
 
-// Read the bot.html file
 const botHtmlPath = path.join(PROJECT_PATH, 'bot.html');
-
-// ✅ Check if file exists
 if (!fs.existsSync(botHtmlPath)) {
     console.error(`❌ ERROR: bot.html not found at: ${botHtmlPath}`);
-    console.error('   Make sure you are in the correct project directory:');
-    console.error('   D:\\IRELAND\\derivmatchstars3');
     process.exit(1);
 }
 
 const botHtml = fs.readFileSync(botHtmlPath, 'utf8');
 console.log(`📄 Read bot.html (${botHtml.length} characters)`);
 
-// ✅ FIX: Extract ALL JavaScript from bot.html (multiple script tags)
-let modifiedHtml = botHtml;
-let scriptCount = 0;
+// ✅ FIX 1: Remove ALL script tags with src="#" BEFORE processing
+console.log('\n🔍 Removing broken script tags with src="#"...');
+let cleanedHtml = botHtml
+    .replace(/<script\s+src=["']#["'][^>]*><\/script>/gi, '')
+    .replace(/<link\s+href=["']#["'][^>]*>/gi, '');
 
-// Find all <script> tags
+// ✅ FIX 2: Add proper external resources
+console.log('📦 Adding proper external resources...');
+cleanedHtml = cleanedHtml.replace('</title>', `</title>
+    <!-- External Resources -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+    <style>`);
+
+// ✅ FIX 3: Extract and obfuscate JavaScript
+let modifiedHtml = cleanedHtml;
+let scriptCount = 0;
 const scriptRegex = /<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
 let match;
 
-while ((match = scriptRegex.exec(botHtml)) !== null) {
+while ((match = scriptRegex.exec(cleanedHtml)) !== null) {
     scriptCount++;
     const fullTag = match[0];
     const scriptContent = match[1].trim();
     
-    if (scriptContent && !fullTag.includes('src=') && scriptContent.length > 50) {
-        console.log(`\n🔍 Processing script block #${scriptCount} (${scriptContent.length} chars)...`);
+    // Skip external scripts (with src attribute) and empty scripts
+    if (fullTag.includes('src=') || scriptContent.length < 10) {
+        continue;
+    }
+    
+    console.log(`\n🔍 Processing script block #${scriptCount} (${scriptContent.length} chars)...`);
+    
+    try {
+        // Fix URLs before obfuscation
+        let fixedScript = scriptContent
+            .replace(/https?:\/\/[a-zA-Z0-9\-\.]+vercel\.app\/api/g, '/api')
+            .replace(/bot\.html/g, 'bot-obfuscated.html');
         
-        try {
-            // ✅ CRITICAL: Fix hardcoded deployment URLs BEFORE obfuscation
-            let fixedScript = scriptContent
-                // Replace hardcoded deployment URLs
-                .replace(/https?:\/\/[a-zA-Z0-9\-\.]+vercel\.app\/api/g, '/api')
-                .replace(/cpt1::[a-zA-Z0-9\-_]+/g, 'current-deployment')
-                // Fix for your specific error URL
-                .replace(/derivmatchstarsbot\.vercel\.app/g, '')
-                .replace(/prj_IuqBDVT2Ik158PBnw1hGh2DCGBeE/g, 'digitmatchstars')
-                // Ensure bot-obfuscated.html reference is preserved
-                .replace(/bot\.html/g, 'bot-obfuscated.html');
-            
-            // Obfuscate the JavaScript
-            const obfuscationResult = JavaScriptObfuscator.obfuscate(fixedScript, {
-                compact: true,
-                controlFlowFlattening: true,
-                controlFlowFlatteningThreshold: 0.75,
-                numbersToExpressions: true,
-                simplify: true,
-                stringArray: true,
-                stringArrayEncoding: ['base64'],
-                stringArrayThreshold: 0.75,
-                deadCodeInjection: true,
-                deadCodeInjectionThreshold: 0.4,
-                debugProtection: true,
-                debugProtectionInterval: 4000,
-                disableConsoleOutput: false,
-                // ✅ IMPORTANT: Lock to YOUR current domains
-                domainLock: [
-                    'digitmatchstars-two.vercel.app',
-                    'derivmatchstarsbot.vercel.app',
-                    'digitmatchstars-3v85stluc-basil-okoths-projects-bdf9d53b.vercel.app',
-                    'localhost'
-                ],
-                renameGlobals: false,
-                rotateStringArray: true,
-                selfDefending: true,
-                sourceMap: false,
-                sourceMapMode: 'separate',
-                stringArrayWrappersCount: 1,
-                stringArrayWrappersChainedCalls: true,
-                stringArrayWrappersParametersMaxCount: 2,
-                stringArrayWrappersType: 'variable',
-                stringArrayIndexShift: true,
-                target: 'browser',
-                transformObjectKeys: true,
-                unicodeEscapeSequence: false,
-                // Preserve important variable names
-                reservedNames: [
-                    'apiToken', 'affiliateCode', 'initBot', 'startTrading',
-                    'API_URL', 'BASE_URL', 'fetch', 'localStorage',
-                    'document', 'window', 'console', 'alert',
-                    'DERIV_TOKEN', 'isAuthenticated', 'checkForAutoAuth'
-                ]
-            });
+        // Obfuscate JavaScript
+        const obfuscationResult = JavaScriptObfuscator.obfuscate(fixedScript, {
+            compact: true,
+            controlFlowFlattening: true,
+            controlFlowFlatteningThreshold: 0.75,
+            numbersToExpressions: true,
+            simplify: true,
+            stringArray: true,
+            stringArrayEncoding: ['base64'],
+            stringArrayThreshold: 0.75,
+            deadCodeInjection: true,
+            deadCodeInjectionThreshold: 0.4,
+            debugProtection: true,
+            debugProtectionInterval: 4000,
+            disableConsoleOutput: false,
+            domainLock: [
+                'digitmatchstars-two.vercel.app',
+                'derivmatchstarsbot.vercel.app',
+                'digitmatchstars-3v85stluc-basil-okoths-projects-bdf9d53b.vercel.app',
+                'localhost',
+                '127.0.0.1'
+            ],
+            renameGlobals: false,
+            rotateStringArray: true,
+            selfDefending: true,
+            sourceMap: false,
+            sourceMapMode: 'separate',
+            stringArrayWrappersCount: 1,
+            stringArrayWrappersChainedCalls: true,
+            stringArrayWrappersParametersMaxCount: 2,
+            stringArrayWrappersType: 'variable',
+            stringArrayIndexShift: true,
+            target: 'browser',
+            transformObjectKeys: true,
+            unicodeEscapeSequence: false,
+            // ✅ CRITICAL: Prevent obfuscator from breaking HTML strings
+            reservedStrings: [
+                'script', 'src', 'href', 'style', 'div', 'class',
+                'id', 'type', 'text/javascript', 'text/css',
+                '<', '>', '/', '"', "'", '=', ' ', '\n'
+            ],
+            reservedNames: [
+                'apiToken', 'API_URL', 'CURRENT_DOMAIN', 'fetch',
+                'document', 'window', 'localStorage', 'sessionStorage',
+                'console', 'alert', 'setTimeout', 'setInterval',
+                'DERIV_TOKEN', 'isAuthenticated', 'checkForAutoAuth',
+                'WebSocket', 'JSON', 'XMLHttpRequest', 'FormData'
+            ],
+            // ✅ IMPORTANT: Don't obfuscate string literals that might be HTML
+            stringArray: false  // Disable string array to prevent HTML corruption
+        });
 
-            const obfuscatedScript = obfuscationResult.getObfuscatedCode();
-            console.log(`   ✅ Obfuscated (${obfuscatedScript.length} chars)`);
-            
-            // Replace in the HTML
-            modifiedHtml = modifiedHtml.replace(fullTag, `<script>\n${obfuscatedScript}\n</script>`);
-            
-        } catch (error) {
-            console.error(`   ⚠️ Failed to obfuscate script #${scriptCount}: ${error.message}`);
-        }
+        const obfuscatedScript = obfuscationResult.getObfuscatedCode();
+        
+        // ✅ FIX 4: Sanitize obfuscated code to prevent syntax errors
+        let sanitizedScript = obfuscatedScript
+            // Ensure proper string escaping
+            .replace(/\\'/g, "'")
+            .replace(/\\"/g, '"')
+            // Fix potential unclosed strings
+            .replace(/([^\\])'(?=[^']*$)/g, "$1\\'")
+            .replace(/([^\\])"(?=[^"]*$)/g, '$1\\"');
+        
+        console.log(`   ✅ Obfuscated (${sanitizedScript.length} chars)`);
+        
+        // Replace in HTML
+        modifiedHtml = modifiedHtml.replace(fullTag, `<script>\n${sanitizedScript}\n</script>`);
+        
+    } catch (error) {
+        console.error(`   ⚠️ Failed to obfuscate script #${scriptCount}: ${error.message}`);
+        console.error(`   Keeping original script for this block`);
     }
 }
 
 console.log(`\n📊 Processed ${scriptCount} script blocks`);
 
-if (scriptCount === 0) {
-    console.error('❌ ERROR: No <script> tags found in bot.html');
-    process.exit(1);
-}
-
-// ✅ ADDITIONAL: Fix HTML-level URLs
-console.log('\n🔗 Fixing HTML-level URLs...');
+// ✅ FIX 5: Ensure no broken script tags remain
 modifiedHtml = modifiedHtml
-    // Fix form actions
-    .replace(/action="https?:\/\/[^"]+"/g, 'action="/api"')
-    // Fix iframe/src attributes
-    .replace(/(src|href)="https?:\/\/[^"]+"/g, '$1="#"')
-    // Remove any hardcoded deployment references
-    .replace(/https?:\/\/cpt1-[a-zA-Z0-9\-]+\.vercel\.app/g, '/')
-    // Ensure index.html redirects to bot-obfuscated.html
-    .replace(/index\.html\?token=/g, 'bot-obfuscated.html?token=');
+    .replace(/<script\s+src\s*=\s*["']#["'][^>]*>/gi, '')
+    .replace(/<link\s+href\s*=\s*["']#["'][^>]*>/gi, '');
 
-// ✅ CRITICAL: Ensure bot uses relative API paths
-console.log('🔄 Ensuring relative API paths...');
+// ✅ FIX 6: Add API configuration if missing
 if (!modifiedHtml.includes('API_URL') && !modifiedHtml.includes('apiUrl')) {
-    // Add API_URL definition if missing
     const headEnd = modifiedHtml.indexOf('</head>');
     if (headEnd !== -1) {
         modifiedHtml = modifiedHtml.substring(0, headEnd) + 
@@ -140,83 +149,40 @@ if (!modifiedHtml.includes('API_URL') && !modifiedHtml.includes('apiUrl')) {
     }
 }
 
-// Save obfuscated version
+// ✅ FIX 7: Save with proper encoding
 const outputPath = path.join(PROJECT_PATH, 'bot-obfuscated.html');
 fs.writeFileSync(outputPath, modifiedHtml, 'utf8');
 
-// ✅ Create backup of original bot.html (the redirect file)
-const backupPath = path.join(PROJECT_PATH, `bot-redirect-original-backup-${Date.now()}.html`);
+// Create backup
+const backupPath = path.join(PROJECT_PATH, `bot-original-backup-${Date.now()}.html`);
 fs.writeFileSync(backupPath, botHtml, 'utf8');
 
 console.log('\n' + '='.repeat(50));
 console.log('✅ OBFUSCATION COMPLETE!');
 console.log('='.repeat(50));
-console.log(`📄 Original redirect file: ${botHtmlPath}`);
-console.log(`🔒 Obfuscated bot: ${outputPath}`);
+console.log(`📄 Output: ${outputPath}`);
 console.log(`💾 Backup: ${backupPath}`);
-console.log(`📏 Size increase: ${Math.round((modifiedHtml.length / botHtml.length) * 100)}%`);
-console.log(`🛡️ Script blocks protected: ${scriptCount}`);
 
-// ✅ Verify the file will work with Vercel
+// Verification
 console.log('\n🔍 VERIFICATION:');
-const hasBotHtml = fs.existsSync(outputPath);
-const hasApiReference = modifiedHtml.includes('/api') || modifiedHtml.includes('API_URL');
-const noHardcodedUrls = !modifiedHtml.includes('cpt1::') && !modifiedHtml.includes('derivmatchstarsbot.vercel.app/api');
-const usesObfuscated = modifiedHtml.includes('bot-obfuscated.html') || !modifiedHtml.includes('bot.html');
+const verificationChecks = [
+    { name: 'No src="#" script tags', test: !modifiedHtml.includes('src="#"') },
+    { name: 'Has proper external resources', test: modifiedHtml.includes('fontawesome.com') },
+    { name: 'Uses bot-obfuscated.html', test: modifiedHtml.includes('bot-obfuscated.html') },
+    { name: 'Has API_URL definition', test: modifiedHtml.includes('API_URL') },
+    { name: 'Valid HTML structure', test: modifiedHtml.startsWith('<!DOCTYPE html>') }
+];
 
-console.log(`   ✅ bot-obfuscated.html created: ${hasBotHtml ? 'YES' : 'NO'}`);
-console.log(`   ✅ Uses relative API paths: ${hasApiReference ? 'YES' : 'NO'}`);
-console.log(`   ✅ No hardcoded deployment URLs: ${noHardcodedUrls ? 'YES' : 'NO'}`);
-console.log(`   ✅ Points to obfuscated version: ${usesObfuscated ? 'YES' : 'NO'}`);
+verificationChecks.forEach(check => {
+    console.log(`   ${check.test ? '✅' : '❌'} ${check.name}`);
+});
 
-if (!usesObfuscated) {
-    console.log('   ⚠️ WARNING: May still reference bot.html instead of bot-obfuscated.html');
+if (!verificationChecks[4].test) {
+    console.error('\n⚠️ WARNING: HTML structure may be corrupted!');
 }
 
-// ✅ Create README for deployment
-const readmeContent = `
-DEPLOYMENT GUIDE - DigitMatchStars Pro™
-========================================
-
-FILES:
-1. index.html           - Landing page with OAuth
-2. bot.html             - Redirect to obfuscated version
-3. bot-obfuscated.html  - Obfuscated trading bot (MAIN)
-4. backend/             - Backend API
-
-URL STRUCTURE:
-- https://your-domain.com/              → index.html
-- https://your-domain.com/bot           → bot.html → bot-obfuscated.html
-- https://your-domain.com/bot.html      → bot-obfuscated.html
-- https://your-domain.com/bot-obfuscated.html → Direct access
-
-OAUTH FLOW:
-1. User clicks "Connect via OAuth" on index.html
-2. Redirects to Deriv OAuth
-3. Returns to index.html with token
-4. Redirects to bot-obfuscated.html?token=XXX
-5. bot-obfuscated.html authenticates and loads bot
-
-TO UPDATE:
-1. Edit bot.html (redirect file)
-2. Run: node obfuscate.js
-3. Deploy all files
-
-TESTING:
-1. Open index.html locally
-2. Click "Connect via OAuth"
-3. Should redirect to bot-obfuscated.html
-`;
-
-fs.writeFileSync(path.join(PROJECT_PATH, 'DEPLOYMENT_GUIDE.txt'), readmeContent);
-
 console.log('\n🚀 NEXT STEPS:');
-console.log('   1. Test locally: Open index.html → Connect via OAuth');
-console.log('   2. Deploy: npx vercel --prod');
-console.log('   3. Access bot at: https://digitmatchstars-two.vercel.app/bot');
-console.log('\n📘 Deployment guide saved as: DEPLOYMENT_GUIDE.txt');
-<<<<<<< HEAD
+console.log('   1. Test: Open bot-obfuscated.html directly in browser');
+console.log('   2. Check DevTools Console for errors');
+console.log('   3. Deploy: npx vercel --prod');
 console.log('\n' + '='.repeat(50));
-=======
-console.log('\n' + '='.repeat(50));
->>>>>>> 54eae53956b8856b022936ca4fa132104b56da53
