@@ -118,24 +118,39 @@
     
     <script>
         (function() {
-            const url = new URL(window.location.href);
-            const searchParams = new URLSearchParams(url.search);
-            const hashParams = new URLSearchParams(url.hash.substring(1));
+            // Extract OAuth token from URL hash (Deriv returns token in hash)
+            const hashParams = new URLSearchParams(window.location.hash.substring(1));
+            const token = hashParams.get('access_token');
+            const account = hashParams.get('account');
             
-            let token = searchParams.get('token1') || hashParams.get('access_token');
-            let account = searchParams.get('acct1') || hashParams.get('account');
+            console.log('🔐 OAuth callback received:', { 
+                token: token ? '***' + token.slice(-10) : 'none', 
+                account: account 
+            });
             
             if (token) {
+                // Store token and mark for auto-bot
                 localStorage.setItem('derivToken', token);
-                if (account) localStorage.setItem('derivAccount', account);
+                localStorage.setItem('derivAccount', account || '');
+                localStorage.setItem('auth_method', 'oauth');
+                localStorage.setItem('auth_time', Date.now());
                 localStorage.setItem('auto_open_bot', 'true');
                 
-                window.location.replace('bot-obfuscated.html?oauth_redirect=1&auto_open=1');
-                throw new Error("Redirecting...");
+                // Clear URL hash to hide token
+                window.history.replaceState({}, document.title, window.location.pathname);
+                
+                // Redirect IMMEDIATELY to bot
+                console.log('🚀 Redirecting to bot...');
+                window.location.href = 'bot-obfuscated.html?oauth_success=1';
+                return;
             }
 
+            // If already logged in, auto-redirect
             const savedToken = localStorage.getItem('derivToken');
-            if (savedToken && !searchParams.has('logout')) {
+            const authMethod = localStorage.getItem('auth_method');
+            
+            if (savedToken && authMethod === 'oauth' && !window.location.search.includes('logout')) {
+                console.log('🔁 Already authenticated, redirecting...');
                 setTimeout(() => {
                     window.location.href = 'bot-obfuscated.html?auto_reconnect=1';
                 }, 1000);
@@ -194,14 +209,22 @@
 
     <script>
         const CONFIG = {
-            APP_ID: 117144,
+            APP_ID: 117144,  // YOUR APP ID HERE
             REDIRECT_URI: window.location.origin + window.location.pathname,
             AFFILIATE_URL: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/"
         };
 
-        function openModal() { document.getElementById('authModal').style.display = 'flex'; showStep('choiceStep'); }
-        function closeModal() { document.getElementById('authModal').style.display = 'none'; }
-        function showStep(id) { document.querySelectorAll('.auth-step').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
+        function openModal() { 
+            document.getElementById('authModal').style.display = 'flex'; 
+            showStep('choiceStep'); 
+        }
+        function closeModal() { 
+            document.getElementById('authModal').style.display = 'none'; 
+        }
+        function showStep(id) { 
+            document.querySelectorAll('.auth-step').forEach(s => s.classList.remove('active')); 
+            document.getElementById(id).classList.add('active'); 
+        }
 
         function startOAuth() {
             const params = new URLSearchParams({
