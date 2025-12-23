@@ -1,0 +1,32 @@
+
+DEPLOYMENT GUIDE - DigitMatchStars Pro™
+========================================
+
+FILES:
+1. index.html           - Landing page with OAuth
+2. bot.html             - Redirect to obfuscated version
+3. bot-obfuscated.html  - Obfuscated trading bot (MAIN)
+4. backend/             - Backend API
+
+URL STRUCTURE:
+- https://your-domain.com/              → index.html
+- https://your-domain.com/bot           → bot.html → bot-obfuscated.html
+- https://your-domain.com/bot.html      → bot-obfuscated.html
+- https://your-domain.com/bot-obfuscated.html → Direct access
+
+OAUTH FLOW:
+1. User clicks "Connect via OAuth" on index.html
+2. Redirects to Deriv OAuth
+3. Returns to index.html with token
+4. Redirects to bot-obfuscated.html?token=XXX
+5. bot-obfuscated.html authenticates and loads bot
+
+TO UPDATE:
+1. Edit bot.html (redirect file)
+2. Run: node obfuscate.js
+3. Deploy all files
+
+TESTING:
+1. Open index.html locally
+2. Click "Connect via OAuth"
+3. Should redirect to bot-obfuscated.html

@@ -1,44 +1,50 @@
 @echo off
-echo 🔒 Creating obfuscated bot...
+TITLE DigitMatch Pro - Bot Obfuscation Tool
+SETLOCAL
+
+:: Force the script to use the folder where the .bat is located
+CD /D "%~dp0"
+
+echo ==================================================
+echo   DIGITMATCH PRO - AUTOMATED OBFUSCATION
+echo ==================================================
+echo Current Directory: %CD%
 echo.
 
-cd /d "D:\IRELAND\derivmatchstars2"
-
-:: Install obfuscator if not installed
-if not exist "backend\node_modules\javascript-obfuscator" (
-  echo Installing javascript-obfuscator...
-  cd backend
-  npm install javascript-obfuscator
-  cd ..
+:: Check if Node.js is installed
+where node >nul 2>nul
+IF %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Node.js is not installed. Please install it from https://nodejs.org/
+    pause
+    exit /b
 )
 
-:: Run obfuscation
-node -e "
-const path = require('path');
-const fs = require('fs');
-const backendPath = path.join(__dirname, 'backend');
-const obfuscatorPath = path.join(backendPath, 'node_modules', 'javascript-obfuscator');
-const JavaScriptObfuscator = require(obfuscatorPath);
+:: Ensure a package.json exists so npm doesn't wander to D:\ root
+IF NOT EXIST "package.json" (
+    echo [INFO] Creating local package configuration...
+    call npm init -y >nul
+)
 
-const html = fs.readFileSync('bot.html', 'utf8');
-const start = html.indexOf('<script>') + 8;
-const end = html.lastIndexOf('</script>');
-const js = html.substring(start, end);
+:: Install the specific missing module LOCALLY
+IF NOT EXIST "node_modules\javascript-obfuscator" (
+    echo [INFO] Installing javascript-obfuscator locally...
+    call npm install javascript-obfuscator --save-dev
+)
 
-const obfuscated = JavaScriptObfuscator.obfuscate(js, {
-    compact: true,
-    controlFlowFlattening: true,
-    stringArray: true,
-    stringArrayEncoding: ['base64']
-}).getObfuscatedCode();
+:: Execute the obfuscation script
+echo.
+echo [RUNNING] node obfuscate.js...
+node obfuscate.js
 
-const result = html.substring(0, start) + obfuscated + html.substring(end);
-fs.writeFileSync('bot-obfuscated.html', result);
-
-console.log('✅ bot-obfuscated.html created!');
-"
+:: Check result
+IF %ERRORLEVEL% EQU 0 (
+    echo.
+    echo [SUCCESS] Obfuscation complete!
+) ELSE (
+    echo.
+    echo [FAILED] The script crashed. Check if 'obfuscate.js' is in:
+    echo %CD%
+)
 
 echo.
-echo 🛡️ Obfuscation complete!
-echo 📁 File: bot-obfuscated.html
 pause

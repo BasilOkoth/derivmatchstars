@@ -1,0 +1,23 @@
+{
+  "name": "derivmatchstars3",
+  "version": "1.0.0",
+  "main": "obfuscate.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BasilOkoth/derivmatchstars.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/BasilOkoth/derivmatchstars/issues"
+  },
+  "homepage": "https://github.com/BasilOkoth/derivmatchstars#readme",
+  "description": "",
+  "devDependencies": {
+    "javascript-obfuscator": "^5.1.0"
+  }
+}

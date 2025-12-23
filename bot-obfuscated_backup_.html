@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>DigitMatchStars Pro™ - Secure Trading Bot | INSTANT TICK EXECUTION</title>
+    <title>Martingale Bot - INSTANT TICK EXECUTION</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -116,209 +116,24 @@
         .probability-high { color: #10b981; }
         .probability-medium { color: #f59e0b; }
         .probability-low { color: #ef4444; }
-        .auth-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 99999;
-            align-items: center;
-            justify-content: center;
-        }
-        .auth-modal-content {
-            background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 31, 0.98));
-            padding: 40px;
-            border-radius: 24px;
-            max-width: 500px;
-            width: 90%;
-            border: 2px solid rgba(16, 185, 129, 0.3);
-            text-align: center;
-        }
-        .auth-step {
-            display: none;
-        }
-        .auth-step.active {
-            display: block;
-        }
-        .auto-start-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(10, 15, 31, 0.98);
-            z-index: 999999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-        }
-        .loading-spinner {
-            display: inline-block;
-            width: 40px;
-            height: 40px;
-            border: 4px solid rgba(255, 255, 255, 0.1);
-            border-top: 4px solid white;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
-    <!-- AUTO-START OVERLAY (Shows during auto-authentication) -->
-    <div id="autoStartOverlay" class="auto-start-overlay">
-        <div class="text-center">
-            <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
-                <i class="fas fa-robot text-white text-5xl"></i>
-            </div>
-            <h2 class="text-4xl font-bold mb-4 gradient-text">DigitMatchStars Pro™</h2>
-            <p class="text-xl text-gray-300 mb-8">Auto-starting trading bot...</p>
-            <div class="loading-spinner mx-auto mb-4"></div>
-            <p class="text-gray-400 mt-6">Authenticating and connecting to Deriv</p>
-        </div>
-    </div>
-
-    <!-- AUTHENTICATION MODAL (Required) -->
-    <div id="authModal" class="auth-modal">
-        <div class="auth-modal-content">
-            <!-- Token Required Step -->
-            <div id="tokenRequiredStep" class="auth-step active">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center mx-auto mb-6">
-                        <i class="fas fa-lock text-white text-4xl"></i>
-                    </div>
-                    <h2 class="text-3xl font-bold mb-2">🔐 Authentication Required</h2>
-                    <p class="text-gray-400 mb-6">You need a valid Deriv API token to access the trading bot</p>
-                </div>
-                
-                <div class="info-message mb-6">
-                    <div class="flex items-start">
-                        <i class="fas fa-info-circle mt-1 mr-3"></i>
-                        <div>
-                            <strong>How to get your token:</strong><br>
-                            1. Connect via OAuth on our homepage<br>
-                            2. Or use your Deriv API token<br>
-                            3. All trades go through App ID 117144
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mb-6">
-                    <label for="authTokenInput" class="block text-sm font-semibold text-gray-300 mb-2 text-left">
-                        Enter Your Deriv Token
-                    </label>
-                    <input type="password" id="authTokenInput" 
-                           placeholder="Paste your token here..."
-                           class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent">
-                    <p class="text-xs text-gray-500 mt-2 text-left">
-                        This will be saved securely in your browser
-                    </p>
-                </div>
-                
-                <div class="flex flex-col space-y-3">
-                    <button onclick="verifyToken()" id="verifyTokenBtn" class="w-full px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold rounded-lg hover:from-green-700 hover:to-green-800 transition">
-                        <i class="fas fa-check-circle mr-2"></i>
-                        Verify & Start Trading
-                    </button>
-                    
-                    <a href="index.html" class="w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white font-bold rounded-lg hover:from-purple-700 hover:to-purple-800 transition text-center">
-                        <i class="fab fa-deriv mr-2"></i>
-                        Connect via OAuth
-                    </a>
-                    
-                    <button onclick="showStep('manualTokenStep')" class="w-full px-6 py-3 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition">
-                        <i class="fas fa-question-circle mr-2"></i>
-                        How to get token?
-                    </button>
-                </div>
-            </div>
-            
-            <!-- Manual Token Step -->
-            <div id="manualTokenStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-20 h-20 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-4">
-                        <i class="fas fa-key text-white text-3xl"></i>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Get Your API Token</h2>
-                    <p class="text-gray-400">Two ways to get your token</p>
-                </div>
-                
-                <div class="space-y-4 mb-6">
-                    <div class="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
-                        <h3 class="font-bold text-purple-400 mb-2">Method 1: OAuth (Recommended)</h3>
-                        <p class="text-sm text-gray-300 mb-3">
-                            Connect via Deriv OAuth - secure and automatic
-                        </p>
-                        <a href="index.html" class="inline-block w-full px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-center">
-                            <i class="fab fa-deriv mr-2"></i>Connect via OAuth
-                        </a>
-                    </div>
-                    
-                    <div class="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                        <h3 class="font-bold text-blue-400 mb-2">Method 2: Manual API Token</h3>
-                        <p class="text-sm text-gray-300">
-                            1. Go to <a href="https://deriv.com" target="_blank" class="text-blue-400 underline">Deriv.com</a><br>
-                            2. Account Settings → API Token<br>
-                            3. Generate new token<br>
-                            4. Paste it here
-                        </p>
-                    </div>
-                </div>
-                
-                <button onclick="showStep('tokenRequiredStep')" class="w-full px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600">
-                    <i class="fas fa-arrow-left mr-2"></i> Back to Token Input
-                </button>
-            </div>
-            
-            <!-- Token Verification Step -->
-            <div id="tokenVerificationStep" class="auth-step">
-                <div class="text-center mb-8">
-                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
-                        <div class="loading-spinner"></div>
-                    </div>
-                    <h2 class="text-2xl font-bold mb-2">Verifying Token</h2>
-                    <p class="text-gray-400">Checking token validity with Deriv...</p>
-                </div>
-                
-                <div class="mb-6 p-4 bg-gray-800 rounded-lg">
-                    <p class="text-sm text-gray-300">
-                        <i class="fas fa-shield-alt text-green-400 mr-2"></i>
-                        All trades will be placed through App ID 117144
-                    </p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
-    <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
+    <div class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
         <div class="flex justify-between items-center mb-4">
             <h1 class="text-3xl font-extrabold text-green-400 border-b border-gray-700 pb-2">
-                DigitMatchStars Pro™ 
+                Deriv DigitMartchStar Bot 
                 <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md">
-                    Disconnected
+                    DMS Disconnected
                 </span>
                 <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
                 <span id="queue-status-badge" class="contract-type-badge bg-blue-600 text-white">QUEUE: 0</span>
-                <span id="auth-badge" class="contract-type-badge bg-green-600 text-white">
-                    <i class="fas fa-user-check mr-1"></i>Authenticated
-                </span>
             </h1>
             <div class="flex items-center space-x-2">
                 <button id="soundToggle" onclick="toggleSound()" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition">
                     🔊 Sound ON
-                </button>
-                <button onclick="logout()" class="px-4 py-2 bg-red-600 text-white font-bold rounded-lg shadow hover:bg-red-700 transition">
-                    <i class="fas fa-sign-out-alt mr-2"></i>Logout
                 </button>
             </div>
         </div>
@@ -339,20 +154,11 @@
         <div class="flex flex-col md:flex-row gap-4 mb-6">
             <div id="controls-section" class="md:w-2/3 grid grid-cols-2 lg:grid-cols-3 gap-3">
                 <div class="col-span-2 lg:col-span-3 mb-1 token-container">
-                    <label class="block text-xs font-semibold text-gray-300 mb-1">
-                        <i class="fas fa-key text-green-400 mr-1"></i> 
-                        API Token Status
-                    </label>
-                    <div class="flex items-center p-3 bg-gray-700 rounded border border-green-500/50">
-                        <i class="fas fa-check-circle text-green-400 mr-3 text-lg"></i>
-                        <div class="flex-1">
-                            <p class="text-sm font-medium text-white">Connected via OAuth</p>
-                            <p class="text-xs text-gray-400">Token: ••••••••••••••••</p>
-                        </div>
-                        <button onclick="showAuthModal()" class="px-3 py-1 bg-gray-600 text-xs rounded hover:bg-gray-500">
-                            Change
-                        </button>
-                    </div>
+                    <label for="derivToken" class="block text-xs font-semibold text-gray-300 mb-1">API Token (Mandatory)</label>
+                    <input type="password" id="derivToken" placeholder="Enter your Deriv token here" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm pr-10">
+                    <button type="button" id="tokenVisibilityToggle" class="token-visibility-toggle" onclick="toggleTokenVisibility()">
+                        👁️
+                    </button>
                 </div>
 
                 <div>
@@ -508,95 +314,78 @@
         <div id="log-column" class="w-full flex flex-col">
             <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Trade Log</h2>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
-                [00:00:00] 🔐 Authentication Required - Enter your Deriv token
+                [00:00:00] 🤖 Waiting for configuration and start signal...
             </div>
         </div>
     </div>
 
-    <!-- Font Awesome -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
-
     <script>
         // ============================================================================
-        // AUTOMATIC OAuth REDIRECT HANDLER - FIXED VERSION
+        // FIXED AUTHENTICATION CHECK - Simple and Flexible
         // ============================================================================
-
-        // Check for token passed from main page via localStorage or URL
-        function checkForAutoAuth() {
-            console.log('🔍 Checking for automatic OAuth authentication...');
+        (function checkAuth() {
+            console.log('🔍 Bot: Checking authentication...');
             
-            // FIRST: Check URL parameters (from main page redirect)
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlToken = urlParams.get('token');
-            const oauthRedirect = urlParams.get('oauth_redirect');
-            const autoOpen = urlParams.get('auto_open');
+            // Get all possible tokens
+            const derivToken = localStorage.getItem('derivToken');
+            const verificationToken = localStorage.getItem('verificationToken');
+            const affiliateVerified = localStorage.getItem('affiliateVerified');
             
-            // SECOND: Check for token in localStorage (set by main page)
-            const savedToken = localStorage.getItem('derivToken');
-            const authMethod = localStorage.getItem('auth_method');
-            const autoOpenFlag = localStorage.getItem('auto_open_bot');
-            
-            console.log('🔍 Bot: Auth check results:', {
-                urlToken: !!urlToken,
-                oauthRedirect: oauthRedirect,
-                autoOpen: autoOpen,
-                savedToken: !!savedToken,
-                authMethod: authMethod,
-                autoOpenFlag: autoOpenFlag
+            console.log('🔍 Bot: Token status:', {
+                derivToken: !!derivToken,
+                verificationToken: !!verificationToken,
+                affiliateVerified: affiliateVerified
             });
             
-            // Clean URL if we have parameters
-            if (urlToken || oauthRedirect || autoOpen) {
-                window.history.replaceState({}, document.title, window.location.pathname);
+            // If we have a derivToken, allow access (even if other tokens are missing)
+            if (derivToken) {
+                console.log('✅ Bot: API token found, allowing access');
+                
+                // Auto-fill the token input field after page loads
+                setTimeout(() => {
+                    const tokenInput = document.getElementById('derivToken');
+                    if (tokenInput && tokenInput.value === '') {
+                        tokenInput.value = derivToken;
+                        console.log('✅ Auto-filled API token from localStorage');
+                    }
+                }, 500);
+                
+                return; // Allow access
             }
             
-            // PRIORITY 1: URL token from OAuth redirect
-            if (urlToken && oauthRedirect === '1') {
-                console.log('✅ Found OAuth token in URL (direct redirect)');
-                
-                // Store token from URL
-                localStorage.setItem('derivToken', urlToken);
-                localStorage.setItem('auth_method', 'oauth');
-                localStorage.setItem('last_auth_time', Date.now());
-                localStorage.setItem('auto_open_bot', 'true');
-                
-                return {
-                    token: urlToken,
-                    autoStart: (autoOpen === '1' || autoOpenFlag === 'true'),
-                    source: 'url_oauth'
-                };
+            // If we have verification token but no derivToken (edge case)
+            if (verificationToken && affiliateVerified === 'true') {
+                console.log('✅ Bot: Verified user, allowing access');
+                return; // Allow access
             }
             
-            // PRIORITY 2: LocalStorage token with OAuth method
-            if (savedToken && authMethod === 'oauth') {
-                console.log('✅ Found OAuth token in localStorage');
-                
-                // Clear auto-open flag after use
-                localStorage.removeItem('auto_open_bot');
-                
-                return {
-                    token: savedToken,
-                    autoStart: (autoOpenFlag === 'true'),
-                    source: 'localStorage_oauth'
-                };
-            }
+            // If NO tokens at all - show warning but don't redirect immediately
+            console.log('⚠️ Bot: No API token found. Manual mode enabled.');
             
-            console.log('⚠️ No OAuth token found for auto-authentication');
-            return null;
-        }
-
-        // ============================================================================
-        // AUTHENTICATION SYSTEM - REQUIRED
-        // ============================================================================
+            // Show a non-blocking notification
+            setTimeout(() => {
+                const notification = document.createElement('div');
+                notification.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-yellow-600 text-white rounded-lg shadow-lg z-50';
+                notification.innerHTML = `
+                    <div class="flex items-center">
+                        <span class="mr-2">⚠️</span>
+                        <span>Please enter your Deriv API token to start trading</span>
+                    </div>
+                `;
+                document.body.appendChild(notification);
+                
+                setTimeout(() => {
+                    notification.remove();
+                }, 5000);
+            }, 1000);
+        })();
         
         // GLOBAL STATE
-        window.DERIV_TOKEN = '';
-        window.isAuthenticated = false;
+        window.DERIV_TOKEN = localStorage.getItem('derivToken') || '';
         window.ws = null;
         window.req_id = 0;
         window.isBotRunning = false;
         window.tokenVisible = false;
-        window.autoStartEnabled = false;
         
         // Audio
         window.ToneInitialized = false;
@@ -612,13 +401,13 @@
         window.martingaleStep = 0;
         window.accountBalance = 0.0;
         
-        // PnL Tracking
+        // CORRECTED PnL Tracking - Based on balance changes
         window.startingBalance = 0.0;
         window.currentBalance = 0.0;
         window.netProfit = 0.0;
         window.lastBalanceUpdate = 0;
 
-        // EXECUTION SYSTEM
+        // SIMPLIFIED EXECUTION SYSTEM
         window.lastTick = null;
         window.waitingForTradeResult = false;
         window.lastTradeResult = null;
@@ -627,6 +416,8 @@
         window.currentlyProcessingTick = null;
         window.pendingProposals = new Map();
         window.activeContracts = new Map();
+        
+        // Simplified execution tracking
         window.executionLock = false;
         
         // Statistics
@@ -654,213 +445,53 @@
         // Probability tracking
         window.digitsHistory = [];
         window.MAX_HISTORY = 100;
+        
+        // --- DOM Elements ---
+        const toggleButton = document.getElementById('toggleButton');
+        const statusBadge = document.getElementById('status-badge');
+        const soundToggleButton = document.getElementById('soundToggle');
+        const contractTypeBadge = document.getElementById('contract-type-badge');
+        const queueStatusBadge = document.getElementById('queue-status-badge');
+        const contractTypeSelect = document.getElementById('contractType');
+        const tokenInput = document.getElementById('derivToken');
+        const tokenVisibilityToggle = document.getElementById('tokenVisibilityToggle');
+        const maxTradesInput = document.getElementById('maxTrades');
+        const predictedDigitInput = document.getElementById('predictedDigit');
 
-        // ============================================================================
-        // AUTHENTICATION FUNCTIONS
-        // ============================================================================
-        
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('🔐 Bot loading - Checking authentication...');
+        // BEST SOLUTION: Always extract the last digit based on known decimal places for each symbol
+        function extractLastDigitBySymbol(price) {
+            const symbol = document.getElementById('symbol').value;
             
-            // FIRST: Check for auto-auth from main page
-            const autoAuth = checkForAutoAuth();
+            // Determine how many decimal places each symbol has
+            let decimalPlaces = 3; // Default for most V. indices
             
-            if (autoAuth) {
-                console.log('🚀 Auto-login detected from main page');
-                console.log('Auto-start flag:', autoAuth.autoStart);
-                
-                // Show auto-start overlay immediately
-                document.getElementById('autoStartOverlay').style.display = 'flex';
-                
-                // Skip auth modal, directly verify token with auto-start
-                showStep('tokenVerificationStep');
-                window.autoStartEnabled = autoAuth.autoStart;
-                
-                // Wait a moment for UI to update, then verify
-                setTimeout(() => {
-                    verifyToken(autoAuth.token, autoAuth.autoStart);
-                }, 500);
-                
-            } else {
-                // If no auto-auth, check for existing token
-                const savedToken = localStorage.getItem('derivToken');
-                const authMethod = localStorage.getItem('auth_method');
-                
-                if (savedToken) {
-                    console.log('🔍 Found saved token, verifying...');
-                    showAuthModal();
-                    showStep('tokenVerificationStep');
-                    verifyToken(savedToken, false);
-                } else {
-                    console.log('⚠️ No token found, showing auth modal');
-                    showAuthModal();
-                }
-            }
-        });
-        
-        function verifyToken(token, autoStart = false) {
-            if (!token || token.trim() === '') {
-                showError('Please enter a valid token');
-                showStep('tokenRequiredStep');
-                return;
+            if (symbol === 'R_100') {
+                decimalPlaces = 2; // V.100 Index has 2 decimal places
             }
             
-            // Update auto-start overlay message if auto-starting
-            if (autoStart) {
-                const overlayText = document.querySelector('#autoStartOverlay p.text-gray-400');
-                if (overlayText) {
-                    overlayText.textContent = 'Auto-starting trading bot after authentication...';
-                }
+            // Format to the correct number of decimal places
+            const formattedPrice = price.toFixed(decimalPlaces);
+            
+            // Get the last character
+            return formattedPrice.charAt(formattedPrice.length - 1);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🤖 Bot page loaded successfully');
+            
+            // Auto-fill token from localStorage if available
+            const savedToken = localStorage.getItem('derivToken');
+            if (savedToken && tokenInput.value === '') {
+                tokenInput.value = savedToken;
+                window.DERIV_TOKEN = savedToken;
+                console.log('✅ Auto-filled API token on page load');
             }
             
-            // Show verifying step
-            showStep('tokenVerificationStep');
-            
-            // Try to connect to Deriv API to verify token
-            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
-            
-            testWs.onopen = () => {
-                testWs.send(JSON.stringify({
-                    authorize: token,
-                    req_id: 999999
-                }));
-            };
-            
-            testWs.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
-                    
-                    if (data.error) {
-                        console.error('Token verification failed:', data.error);
-                        showError('Invalid token. Please check and try again.');
-                        testWs.close();
-                        showStep('tokenRequiredStep');
-                        document.getElementById('autoStartOverlay').style.display = 'none';
-                    } else if (data.authorize) {
-                        console.log('✅ Token verified successfully');
-                        window.DERIV_TOKEN = token;
-                        window.isAuthenticated = true;
-                        
-                        // Store successful auth
-                        localStorage.setItem('derivToken', token);
-                        localStorage.setItem('last_auth_time', Date.now());
-                        
-                        testWs.close();
-                        
-                        // Hide auto-start overlay
-                        document.getElementById('autoStartOverlay').style.display = 'none';
-                        
-                        // Show success and load bot
-                        setTimeout(() => {
-                            hideAuthModal();
-                            initializeBot();
-                        }, 1000);
-                    }
-                } catch (e) {
-                    console.error('Token verification error:', e);
-                    showStep('tokenRequiredStep');
-                    document.getElementById('autoStartOverlay').style.display = 'none';
-                }
-            };
-            
-            testWs.onerror = () => {
-                console.error('WebSocket error during token verification');
-                showStep('tokenRequiredStep');
-                document.getElementById('autoStartOverlay').style.display = 'none';
-            };
-            
-            // Timeout after 5 seconds
-            setTimeout(() => {
-                if (testWs.readyState === WebSocket.OPEN) {
-                    testWs.close();
-                }
-                if (!window.isAuthenticated) {
-                    showError('Connection timeout. Please try again.');
-                    showStep('tokenRequiredStep');
-                    document.getElementById('autoStartOverlay').style.display = 'none';
-                }
-            }, 5000);
-        }
-        
-        function showAuthModal() {
-            document.getElementById('authModal').style.display = 'flex';
-            showStep('tokenRequiredStep');
-        }
-        
-        function hideAuthModal() {
-            document.getElementById('authModal').style.display = 'none';
-        }
-        
-        function showStep(stepId) {
-            // Hide all steps
-            document.querySelectorAll('.auth-step').forEach(step => {
-                step.classList.remove('active');
-            });
-            
-            // Show target step
-            const targetStep = document.getElementById(stepId);
-            if (targetStep) {
-                targetStep.classList.add('active');
-            }
-        }
-        
-        function showError(message) {
-            const notification = document.createElement('div');
-            notification.className = 'fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 bg-red-600 text-white';
-            notification.innerHTML = `
-                <div class="flex items-center">
-                    <span class="mr-2">❌</span>
-                    <span>${message}</span>
-                </div>
-            `;
-            
-            document.body.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.remove();
-            }, 3000);
-        }
-        
-        function logout() {
-            if (window.isBotRunning) {
-                stopBot();
-            }
-            
-            // Clear all auth data
-            localStorage.removeItem('derivToken');
-            localStorage.removeItem('auth_method');
-            localStorage.removeItem('last_auth_time');
-            localStorage.removeItem('auto_open_bot');
-            sessionStorage.clear();
-            
-            window.DERIV_TOKEN = '';
-            window.isAuthenticated = false;
-            window.autoStartEnabled = false;
-            
-            // Reset bot interface
-            document.getElementById('botInterface').style.display = 'none';
-            document.getElementById('autoStartOverlay').style.display = 'none';
-            
-            // Show auth modal
-            showAuthModal();
-            
-            log('🔒 Logged out. Authentication required.', 'SYSTEM');
-        }
-        
-        // ============================================================================
-        // BOT INITIALIZATION (After Authentication)
-        // ============================================================================
-        
-        function initializeBot() {
-            console.log('🤖 Initializing trading bot...');
-            
-            // Show bot interface
-            document.getElementById('botInterface').style.display = 'block';
-            
-            // Load settings
+            // Load saved settings
             window.soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
             updateSoundButton();
             
+            // Initialize displays
             updateContractTypeDisplay();
             
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
@@ -868,60 +499,34 @@
             document.getElementById('metricCurrentStake').textContent = `$${window.currentStake.toFixed(2)}`;
             
             // Set up event listeners
-            document.getElementById('contractType').addEventListener('change', updateContractTypeDisplay);
+            contractTypeSelect.addEventListener('change', updateContractTypeDisplay);
             
             // Start periodic updates
             setInterval(calculateRates, 1000);
             setInterval(updateStrategyDisplay, 100);
             setInterval(updateProbability, 2000);
             
+            log('🤖 Bot initialized. Strategy: Trade on each tick, stop on win!', 'SYSTEM');
+            log('🎯 NEW: Instant tick execution - Trade on EVERY tick', 'INSTANT');
+            log('✅ FIXED: Digit extraction now correctly handles 2 and 3 decimal places', 'SYSTEM');
+            
             // Start queue processor
             startQueueProcessor();
-            
-            log('✅ Bot initialized. Authentication verified.', 'SYSTEM');
-            log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
-            log('🔐 All trades go through App ID 117144', 'AUTH');
-            
-            // CRITICAL: Auto-start bot if flag is set
-            if (window.autoStartEnabled) {
-                console.log('🚀 Auto-start: Starting bot automatically');
-                log('🚀 Auto-start: Bot will start trading automatically', 'SYSTEM');
-                
-                // Wait 1 second for UI to fully initialize, then start
-                setTimeout(() => {
-                    if (!window.isBotRunning) {
-                        startBot();
-                    }
-                }, 1000);
-            }
-        }
-        
-        // ============================================================================
-        // BOT FUNCTIONS (Only accessible after auth)
-        // ============================================================================
-        
-        function extractLastDigitBySymbol(price) {
-            const symbol = document.getElementById('symbol').value;
-            let decimalPlaces = 3;
-            
-            if (symbol === 'R_100') {
-                decimalPlaces = 2;
-            }
-            
-            const formattedPrice = price.toFixed(decimalPlaces);
-            return formattedPrice.charAt(formattedPrice.length - 1);
-        }
+        });
         
         function updateProbability() {
             if (!window.isBotRunning || window.digitsHistory.length < 10) return;
             
             const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
+            
+            // Calculate frequency of predicted digit in history
             const frequency = window.digitsHistory.filter(d => d === predictedDigit).length;
             const probability = (frequency / window.digitsHistory.length) * 100;
             
             const probabilityElem = document.getElementById('metricProbability');
             probabilityElem.textContent = `Probability: ${probability.toFixed(1)}%`;
             
+            // Color coding based on probability
             if (probability > 15) {
                 probabilityElem.className = 'text-xs font-bold probability-high';
             } else if (probability > 8) {
@@ -932,7 +537,7 @@
         }
         
         function updateStrategyDisplay() {
-            const maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            const maxTrades = parseInt(maxTradesInput.value) || 10;
             const tradesLeft = maxTrades - window.tradeCount;
             const tradesDone = window.tradeCount;
             
@@ -940,39 +545,45 @@
             document.getElementById('metricTradesLeft').textContent = tradesLeft;
             document.getElementById('metricTradesRemaining').textContent = maxTrades;
             
+            // Update execution progress
             const progressPercent = Math.min(100, (window.tradeCount / maxTrades) * 100);
             document.getElementById('executionBar').style.width = `${progressPercent}%`;
             document.getElementById('metricExecutedTrades').textContent = window.tradeCount;
             
+            // Update queue display
             document.getElementById('queue-size').textContent = window.tickQueue.length;
             document.getElementById('processed-count').textContent = window.stats.tradesExecuted;
-            document.getElementById('queue-status-badge').textContent = `QUEUE: ${window.tickQueue.length}`;
+            queueStatusBadge.textContent = `QUEUE: ${window.tickQueue.length}`;
         }
         
         function startQueueProcessor() {
             setInterval(() => {
                 if (!window.isBotRunning || window.stopAfterWin) return;
                 
+                // Process queued ticks
                 while (window.tickQueue.length > 0 && !window.executionLock && window.nextTradeAllowed) {
                     const tick = window.tickQueue.shift();
                     processTickImmediately(tick);
                 }
-            }, 50);
+            }, 50); // Process every 50ms
         }
         
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
             
+            // Check for win first
             if (checkForImmediateWin(tick)) {
                 return;
             }
             
+            // Check max trades
             if (window.tradeCount >= window.maxTrades) {
                 log(`🛑 Max trades limit reached (${window.maxTrades})`, 'CRITICAL');
                 stopBot();
                 return;
             }
             
+            // Execute trade
             window.executionLock = true;
             window.nextTradeAllowed = false;
             
@@ -984,11 +595,14 @@
                 log(`⚡ TRADE #${window.tradeCount}: ${tick.price.toFixed(3)} (Digit ${tick.digit})`, 'INSTANT');
                 playAudioFeedback('EXECUTION');
                 
+                // Update display
                 updateProcessingTickDisplay(tick);
+                
+                // Execute trade immediately
                 executeTrade(tick);
                 
             } catch (error) {
-                log(`❌ Error: ${error}`, 'ERROR');
+                log(`❌ Error in processTickImmediately: ${error}`, 'ERROR');
                 window.executionLock = false;
                 window.nextTradeAllowed = true;
             }
@@ -1015,9 +629,11 @@
             }
             
             let html = '';
+            
+            // Show up to 8 ticks in the queue display
             const displayTicks = window.tickQueue.slice(0, 8);
             
-            displayTicks.forEach((tick) => {
+            displayTicks.forEach((tick, index) => {
                 html += `
                     <div class="queue-digit queued-tick">
                         ${tick.digit}
@@ -1034,15 +650,18 @@
         }
         
         function addTickToQueue(tick) {
+            // Add to history for probability calculation
             window.digitsHistory.push(parseInt(tick.digit));
             if (window.digitsHistory.length > window.MAX_HISTORY) {
                 window.digitsHistory.shift();
             }
             
+            // Add new tick to queue
             window.tickQueue.push(tick);
             
+            // Keep queue size manageable
             if (window.tickQueue.length > window.maxQueueSize) {
-                window.tickQueue.shift();
+                window.tickQueue.shift(); // Remove oldest tick
             }
             
             updateQueueDisplay();
@@ -1059,12 +678,14 @@
                 log(`🎯 WIN DETECTED! Tick digit ${tickDigit} matches predicted ${predictedDigit}.`, 'IMMEDIATE_WIN');
                 log(`✅ STRATEGY SUCCESSFUL in ${window.tradeCount + 1} trades`, 'STRATEGY');
                 
+                // Mark as win immediately
                 window.lastTradeResult = 'win';
                 window.stopAfterWin = true;
                 window.stats.wins++;
                 window.stats.digitMatches++;
                 window.tradeCount++;
                 
+                // Visual feedback
                 const processingDigit = document.getElementById('processingTickDigit');
                 processingDigit.textContent = tickDigit;
                 processingDigit.classList.add('instant-win-detected');
@@ -1073,7 +694,11 @@
                 tradeResultContainer.classList.add('trade-completed');
                 
                 playAudioFeedback('INSTANT_WIN');
+                
+                // Update trade result status
                 updateTradeResultStatus();
+                
+                // We won't update PnL here - wait for actual balance update
                 log(`📊 Waiting for balance update to calculate actual PnL...`, 'INFO');
                 
                 return true;
@@ -1088,6 +713,8 @@
             const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
             const symbol = document.getElementById('symbol').value;
             const stake = window.currentStake;
+
+            // Use duration 1 for fastest possible resolution
             const duration = 1;
             
             const proposalRequest = {
@@ -1105,6 +732,7 @@
 
             log(`📊 Trade #${window.tradeCount}: $${stake.toFixed(2)} on digit ${predictedDigit}`, 'TRADE');
             
+            // Store pending proposal
             window.pendingProposals.set(proposalRequest.req_id, {
                 tick: tick,
                 stake: stake,
@@ -1113,16 +741,20 @@
                 startTime: Date.now()
             });
             
+            // Send request
             sendRequest(proposalRequest);
         }
         
         function updatePnL() {
+            // Calculate net profit/loss based on balance changes
+            // PnL = Current Balance - Starting Balance
             if (window.startingBalance > 0 && window.currentBalance > 0) {
                 window.netProfit = window.currentBalance - window.startingBalance;
                 
                 const profitElem = document.getElementById('metricTotalProfit');
                 profitElem.textContent = `$${window.netProfit.toFixed(2)}`;
                 
+                // Color coding based on profit/loss
                 if (window.netProfit > 0) {
                     profitElem.className = 'text-lg font-bold profit-green success-pulse';
                 } else if (window.netProfit < 0) {
@@ -1131,8 +763,9 @@
                     profitElem.className = 'text-lg font-bold text-gray-300';
                 }
                 
+                // Log PnL update if balance changed significantly
                 const now = Date.now();
-                if (now - window.lastBalanceUpdate > 5000) {
+                if (now - window.lastBalanceUpdate > 5000) { // Log every 5 seconds max
                     log(`📊 PnL Update: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)})`, 'PNL');
                     window.lastBalanceUpdate = now;
                 }
@@ -1140,15 +773,19 @@
         }
         
         function onTradeComplete(isSuccess = true) {
+            // Reset execution state
             window.executionLock = false;
             window.nextTradeAllowed = true;
             
+            // Update strategy display
             updateStrategyDisplay();
             
+            // If trade failed, treat as loss
             if (!isSuccess) {
                 updateStake('loss');
             }
             
+            // Check if we should stop after win
             if (window.stopAfterWin) {
                 log(`✅ WIN DETECTED! Strategy successful.`, 'STRATEGY');
                 setTimeout(() => {
@@ -1157,15 +794,30 @@
                 return;
             }
             
+            // Check max trades
             if (window.tradeCount >= window.maxTrades) {
                 log(`🛑 Max trades reached (${window.maxTrades}). Strategy complete.`, 'CRITICAL');
                 stopBot();
                 return;
             }
         }
-        
+
+        function toggleTokenVisibility() {
+            window.tokenVisible = !window.tokenVisible;
+            const tokenInput = document.getElementById('derivToken');
+            const toggleButton = document.getElementById('tokenVisibilityToggle');
+            
+            if (window.tokenVisible) {
+                tokenInput.type = 'text';
+                toggleButton.textContent = '🙈';
+            } else {
+                tokenInput.type = 'password';
+                toggleButton.textContent = '👁️';
+            }
+        }
+
         function updateContractTypeDisplay() {
-            const contractType = document.getElementById('contractType').value;
+            const contractType = contractTypeSelect.value;
             let badgeText = contractType;
             let badgeColor = 'bg-purple-600';
             
@@ -1174,26 +826,25 @@
                 badgeColor = 'bg-purple-600';
             }
             
-            document.getElementById('contract-type-badge').textContent = badgeText;
-            document.getElementById('contract-type-badge').className = `contract-type-badge ${badgeColor} text-white`;
+            contractTypeBadge.textContent = badgeText;
+            contractTypeBadge.className = `contract-type-badge ${badgeColor} text-white`;
         }
-        
+
         function calculateRates() {
             const now = Date.now();
             window.tickTimestamps = window.tickTimestamps.filter(ts => now - ts < 5000);
             window.tickRate = window.tickTimestamps.length / 5;
             document.getElementById('metricTickRate').textContent = `Ticks/sec: ${window.tickRate.toFixed(1)}`;
         }
-        
+
         function toggleSound() {
             window.soundEnabled = !window.soundEnabled;
             localStorage.setItem('soundEnabled', window.soundEnabled);
             updateSoundButton();
             log(`🔊 Sound ${window.soundEnabled ? 'ENABLED' : 'DISABLED'}`, 'INFO');
         }
-        
+
         function updateSoundButton() {
-            const soundToggleButton = document.getElementById('soundToggle');
             if (soundToggleButton) {
                 soundToggleButton.textContent = window.soundEnabled ? '🔊 Sound ON' : '🔇 Sound OFF';
                 soundToggleButton.className = window.soundEnabled ? 
@@ -1201,7 +852,7 @@
                     'px-4 py-2 bg-gray-600 text-white font-bold rounded-lg shadow hover:bg-gray-700 transition';
             }
         }
-        
+
         async function initTone() {
             if (!window.soundEnabled) return;
             
@@ -1218,7 +869,7 @@
                 console.error("Audio init error:", e);
             }
         }
-        
+
         function playAudioFeedback(type) {
             if (!window.soundEnabled || !window.ToneInitialized || !window.synth) return;
             
@@ -1243,7 +894,7 @@
                 console.error("Audio error:", e);
             }
         }
-        
+
         function log(message, type = 'INFO') {
             const logArea = document.getElementById('log-area');
             const timestamp = new Date().toLocaleTimeString('en-US', { 
@@ -1270,14 +921,12 @@
             if (type === 'STRATEGY') color = 'text-green-300 font-bold';
             if (type === 'INSTANT') color = 'text-green-400 font-bold';
             if (type === 'PNL') color = 'text-yellow-300 font-bold';
-            if (type === 'AUTH') color = 'text-purple-300 font-bold';
             
             logArea.innerHTML += `\n[${timestamp}] <span class="${color}">${message}</span>`;
             logArea.scrollTop = logArea.scrollHeight;
         }
-        
+
         function updateButtonState() {
-            const toggleButton = document.getElementById('toggleButton');
             if (!toggleButton) return;
             
             if (window.isBotRunning) {
@@ -1290,7 +939,7 @@
                 toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
             }
         }
-        
+
         function updateTradeResultStatus() {
             const tradeResultElem = document.getElementById('metricTradeResult');
             const previousResultElem = document.getElementById('metricPreviousResult');
@@ -1319,10 +968,12 @@
             }
         }
         
+        // --- Core Martingale Logic ---
+
         function updateStake(winOrLoss) {
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxTrades = parseInt(maxTradesInput.value) || 10;
 
             if (winOrLoss === 'win') {
                 window.martingaleStep = 0;
@@ -1335,7 +986,7 @@
                 
             } else if (winOrLoss === 'loss') {
                 window.martingaleStep++;
-                
+
                 if (window.martingaleStep >= window.maxTrades) {
                     log(`🛑 MAX TRADES REACHED (${window.maxTrades}). Stopping bot.`, 'CRITICAL');
                     stopBot();
@@ -1362,21 +1013,22 @@
             }
         }
         
-        // ============================================================================
-        // WEBSOCKET FUNCTIONS
-        // ============================================================================
-        
+        // --- WebSocket Handlers ---
+
         function connectWebSocket() {
-            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                stopBot();
-                return;
-            }
-            
             if (window.ws && window.ws.readyState === WebSocket.OPEN) {
                 log('WebSocket already connected', 'WARNING');
                 return;
             }
+
+            window.DERIV_TOKEN = tokenInput.value.trim();
+            if (!window.DERIV_TOKEN) {
+                log('❌ API Token is mandatory', 'CRITICAL');
+                showNotification('Please enter your Deriv API Token', 'error');
+                stopBot();
+                return;
+            }
+            localStorage.setItem('derivToken', window.DERIV_TOKEN);
             
             startWebSocketKeepAlive();
             
@@ -1384,8 +1036,8 @@
 
             window.ws.onopen = () => {
                 log('🔌 WebSocket connected - INSTANT TICK EXECUTION MODE', 'SYSTEM');
-                document.getElementById('status-badge').textContent = 'Connected';
-                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-green-600 text-white shadow-md';
+                statusBadge.textContent = 'Connected';
+                statusBadge.className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-green-600 text-white shadow-md';
                 sendRequest({ authorize: window.DERIV_TOKEN, req_id: getNextReqId() });
             };
 
@@ -1401,8 +1053,8 @@
 
             window.ws.onclose = () => {
                 log('🔌 WebSocket disconnected', 'ERROR');
-                document.getElementById('status-badge').textContent = 'Disconnected';
-                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
+                statusBadge.textContent = 'Disconnected';
+                statusBadge.className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
                 window.ws = null;
                 window.tickSubscriptionSent = false;
                 stopWebSocketKeepAlive();
@@ -1439,6 +1091,7 @@
         function resetAllState() {
             updateStake('initial');
             
+            // Reset PnL data
             window.startingBalance = 0.0;
             window.currentBalance = 0.0;
             window.netProfit = 0.0;
@@ -1466,6 +1119,7 @@
                 digitNonMatches: 0
             };
             
+            // Clear queue and history
             window.tickQueue = [];
             window.digitsHistory = [];
             updateQueueDisplay();
@@ -1477,7 +1131,9 @@
             window.pendingProposals.clear();
             window.activeContracts.clear();
             window.tickTimestamps = [];
+            window.lastTenDigits = [];
             
+            // Reset execution state
             window.executionLock = false;
             window.waitingForTradeResult = false;
             window.nextTradeAllowed = true;
@@ -1510,8 +1166,8 @@
             if (data.error) {
                 log(`API Error: ${data.error.message}`, 'ERROR');
                 if (data.error.code === 'InvalidToken') {
-                    log('❌ Invalid API Token. Please reconnect.', 'CRITICAL');
-                    logout();
+                    log('❌ Invalid API Token. Please check your token.', 'CRITICAL');
+                    stopBot();
                 }
                 return;
             }
@@ -1549,18 +1205,22 @@
         function handleBalanceUpdate(balanceData) {
             const newBalance = parseFloat(balanceData.balance);
             
+            // Set starting balance on first update
             if (window.startingBalance === 0) {
                 window.startingBalance = newBalance;
                 log(`💰 Starting Balance: $${window.startingBalance.toFixed(2)}`, 'PNL');
             }
             
+            // Update current balance
             window.currentBalance = newBalance;
             
             const balanceElem = document.getElementById('metricAccountBalance');
             balanceElem.textContent = `$${window.currentBalance.toFixed(2)}`;
             
+            // Update PnL based on balance change
             updatePnL();
             
+            // Set color based on PnL
             if (window.netProfit > 0) {
                 balanceElem.className = 'text-lg font-bold account-balance-green';
             } else if (window.netProfit < 0) {
@@ -1573,6 +1233,7 @@
                 balanceElem.className = 'text-lg font-bold text-red-400';
             }
             
+            // Check bankroll limit
             const bankrollLimit = parseFloat(document.getElementById('bankrollLimit').value) || 25.0;
             if (window.currentStake > window.currentBalance || window.currentBalance <= bankrollLimit) {
                 log(`🛑 Bankroll Limit Reached. Stopping bot.`, 'CRITICAL');
@@ -1581,6 +1242,7 @@
         }
         
         function handleContractUpdate(contractUpdate) {
+            // Just log contract updates but don't calculate PnL here
             if (contractUpdate.status === 'sold') {
                 const profit = parseFloat(contractUpdate.profit);
                 const contractId = contractUpdate.contract_id;
@@ -1591,6 +1253,7 @@
                     log(`❌ Contract ${contractId} LOST: $${Math.abs(profit).toFixed(2)}`, 'LOSS');
                 }
                 
+                // If this was the winning contract and we're waiting for it
                 if (profit > 0 && window.stopAfterWin) {
                     log(`🏆 Winning contract settled!`, 'STRATEGY');
                 }
@@ -1613,12 +1276,18 @@
             if (!window.isBotRunning) return;
             
             const price = parseFloat(tick.quote);
+            
+            // FIXED: Use the CORRECTED digit extraction function
+            // Always use 3 decimal places for display consistency
             const digit = extractLastDigitBySymbol(price);
+            
             const time = parseInt(tick.epoch) * 1000;
             const tickData = { digit: digit, price: price, time: time };
             
+            // Store tick data
             window.lastTick = tickData;
             
+            // Update live tick display - always show 3 decimal places for consistency
             const displayPrice = price.toFixed(3);
             document.getElementById('metricLiveTick').textContent = displayPrice;
             document.getElementById('metricLastDigit').textContent = `Digit: ${digit}`;
@@ -1628,10 +1297,12 @@
             window.tickTimestamps.push(Date.now());
             window.stats.totalTicks++;
             
+            // Add tick to queue
             addTickToQueue(tickData);
             
             playAudioFeedback('TICK');
             
+            // Log first few ticks with debug info
             if (window.stats.totalTicks <= 5) {
                 const symbol = document.getElementById('symbol').value;
                 log(`🎯 Tick ${window.stats.totalTicks}: ${displayPrice} (Digit ${digit}) Symbol: ${symbol}`, 'TICK');
@@ -1654,6 +1325,7 @@
 
             window.pendingProposals.delete(req_id);
             
+            // Execute buy immediately
             executeBuy(proposal.id, proposal.ask_price, pending);
         }
 
@@ -1680,8 +1352,10 @@
                 const buyTime = Date.now() - (window.pendingProposals.get(buyData.req_id)?.buyStartTime || Date.now());
                 log(`✅ Trade executed in ${buyTime}ms`, 'INSTANT');
                 
+                // Update martingale for loss (since we only detect wins from tick)
                 updateStake('loss');
                 
+                // Complete trade and continue
                 onTradeComplete(true);
                 
             } else {
@@ -1689,14 +1363,29 @@
                 onTradeComplete(false);
             }
         }
-        
-        function toggleBot() {
-            if (!window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
-                return;
-            }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 ${
+                type === 'error' ? 'bg-red-600 text-white' :
+                type === 'success' ? 'bg-green-600 text-white' :
+                'bg-blue-600 text-white'
+            }`;
+            notification.innerHTML = `
+                <div class="flex items-center">
+                    <span class="mr-2">${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'}</span>
+                    <span>${message}</span>
+                </div>
+            `;
             
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+
+        function toggleBot() {
             if (window.isBotRunning) {
                 stopBot();
             } else {
@@ -1706,12 +1395,15 @@
 
         function startBot() {
             if (window.isBotRunning) return;
-            
-            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
-                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
-                showAuthModal();
+
+            window.DERIV_TOKEN = tokenInput.value.trim();
+            if (!window.DERIV_TOKEN) {
+                log('❌ API Token is mandatory', 'CRITICAL');
+                showNotification('Please enter your Deriv API Token', 'error');
                 return;
             }
+            
+            localStorage.setItem('derivToken', window.DERIV_TOKEN);
             
             resetAllState();
             
@@ -1726,8 +1418,10 @@
             
             const controls = document.querySelectorAll('#controls-section input, #controls-section select');
             controls.forEach(control => {
-                control.disabled = true;
-                control.classList.add('opacity-50', 'cursor-not-allowed');
+                if (control.id !== 'derivToken') {
+                    control.disabled = true;
+                    control.classList.add('opacity-50', 'cursor-not-allowed');
+                }
             });
         }
 
@@ -1740,6 +1434,7 @@
             updateButtonState();
             log('⏹️ Bot stopped', 'SYSTEM');
             
+            // Final PnL calculation
             log(`📊 FINAL PnL: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)} - Starting: $${window.startingBalance.toFixed(2)})`, 'PNL');
             log(`📈 Performance: ${window.stats.wins} wins, ${window.stats.losses} losses, ${window.tradeCount} total trades`, 'STATS');
 
