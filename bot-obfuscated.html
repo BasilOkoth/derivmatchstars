@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>DigitMatchStars Pro™ - Secure Trading Bot | INSTANT TICK EXECUTION</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        #log-area::-webkit-scrollbar { width: 4px; }
+        #log-area::-webkit-scrollbar-thumb { background: #4ade80; border-radius: 2px; }
+        #log-area::-webkit-scrollbar-track { background: #374151; }
+        body { font-family: 'Inter', sans-serif; background-color: #111827; }
+        @keyframes pulse-once { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.03); opacity: 0.9; } 100% { transform: scale(1); opacity: 1; } }
+        .tick-flash { animation: pulse-once 0.1s ease-out; }
+        .queue-indicator { animation: pulse-once 0.3s ease-out; }
+        @keyframes win-pulse { 0% { box-shadow: 0 0 5px #10B981; } 50% { box-shadow: 0 0 20px #10B981; } 100% { box-shadow: 0 0 5px #10B981; } }
+        .win-detected { animation: win-pulse 0.5s infinite; }
+        .queue-digit { 
+            width: 32px; 
+            height: 32px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            border-radius: 50%; 
+            font-weight: bold; 
+            margin: 0 2px;
+        }
+        .contract-type-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-left: 5px;
+        }
+        .stop-button-active {
+            background-color: #dc2626 !important;
+            border: 2px solid #fca5a5 !important;
+            animation: pulse-once 0.5s infinite;
+        }
+        .start-button-active {
+            background-color: #16a34a !important;
+            border: 2px solid #86efac !important;
+            animation: pulse-once 0.5s;
+        }
+        .token-container {
+            position: relative;
+        }
+        .token-visibility-toggle {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #9ca3af;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .trade-completed {
+            border: 3px solid #10b981 !important;
+            background-color: #064e3b !important;
+        }
+        .trade-failed {
+            border: 3px solid #ef4444 !important;
+            background-color: #7f1d1d !important;
+        }
+        .tick-current {
+            border: 3px solid #10B981 !important;
+            background-color: #064e3b !important;
+            animation: pulse-once 0.5s infinite;
+        }
+        .instant-tick {
+            animation: pulse-once 0.3s ease-out;
+        }
+        .success-pulse {
+            animation: pulse-once 0.3s ease-out;
+        }
+        .instant-win-detected {
+            animation: pulse-once 0.5s infinite;
+            border: 3px solid #00ff00 !important;
+            box-shadow: 0 0 20px #00ff00 !important;
+        }
+        .account-balance-green {
+            color: #10B981 !important;
+            font-weight: bold !important;
+        }
+        .current-stake-green {
+            color: #10B981 !important;
+            font-weight: bold !important;
+        }
+        .profit-green {
+            color: #10B981 !important;
+            font-weight: bold !important;
+            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+        .profit-red {
+            color: #ef4444 !important;
+            font-weight: bold !important;
+            text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+        }
+        .queued-tick {
+            background-color: #1e40af !important;
+            border: 2px solid #3b82f6 !important;
+        }
+        .processing-queued-tick {
+            background-color: #7c2d12 !important;
+            border: 3px solid #f59e0b !important;
+            animation: pulse-once 0.5s infinite;
+        }
+        .executed-tick {
+            background-color: #064e3b !important;
+            border: 2px solid #10b981 !important;
+        }
+        .probability-high { color: #10b981; }
+        .probability-medium { color: #f59e0b; }
+        .probability-low { color: #ef4444; }
+        .auth-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+        }
+        .auth-modal-content {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 31, 0.98));
+            padding: 40px;
+            border-radius: 24px;
+            max-width: 500px;
+            width: 90%;
+            border: 2px solid rgba(16, 185, 129, 0.3);
+            text-align: center;
+        }
+        .auth-step {
+            display: none;
+        }
+        .auth-step.active {
+            display: block;
+        }
+        .auto-start-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 15, 31, 0.98);
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
+
+    <!-- AUTO-START OVERLAY (Shows during auto-authentication) -->
+    <div id="autoStartOverlay" class="auto-start-overlay">
+        <div class="text-center">
+            <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
+                <i class="fas fa-robot text-white text-5xl"></i>
+            </div>
+            <h2 class="text-4xl font-bold mb-4 gradient-text">DigitMatchStars Pro™</h2>
+            <p class="text-xl text-gray-300 mb-8">Auto-starting trading bot...</p>
+            <div class="loading-spinner mx-auto mb-4"></div>
+            <p class="text-gray-400 mt-6">Authenticating and connecting to Deriv</p>
+        </div>
+    </div>
+
+    <!-- AUTHENTICATION MODAL (Required) -->
+    <div id="authModal" class="auth-modal">
+        <div class="auth-modal-content">
+            <!-- Token Required Step -->
+            <div id="tokenRequiredStep" class="auth-step active">
+                <div class="text-center mb-8">
+                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center mx-auto mb-6">
+                        <i class="fas fa-lock text-white text-4xl"></i>
+                    </div>
+                    <h2 class="text-3xl font-bold mb-2">🔐 Authentication Required</h2>
+                    <p class="text-gray-400 mb-6">You need a valid Deriv API token to access the trading bot</p>
+                </div>
+                
+                <div class="info-message mb-6">
+                    <div class="flex items-start">
+                        <i class="fas fa-info-circle mt-1 mr-3"></i>
+                        <div>
+                            <strong>How to get your token:</strong><br>
+                            1. Connect via OAuth on our homepage<br>
+                            2. Or use your Deriv API token<br>
+                            3. All trades go through App ID 117144
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-6">
+                    <label for="authTokenInput" class="block text-sm font-semibold text-gray-300 mb-2 text-left">
+                        Enter Your Deriv Token
+                    </label>
+                    <input type="password" id="authTokenInput" 
+                           placeholder="Paste your token here..."
+                           class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent">
+                    <p class="text-xs text-gray-500 mt-2 text-left">
+                        This will be saved securely in your browser
+                    </p>
+                </div>
+                
+                <div class="flex flex-col space-y-3">
+                    <button onclick="verifyToken()" id="verifyTokenBtn" class="w-full px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 text-white font-bold rounded-lg hover:from-green-700 hover:to-green-800 transition">
+                        <i class="fas fa-check-circle mr-2"></i>
+                        Verify & Start Trading
+                    </button>
+                    
+                    <a href="index.html" class="w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 text-white font-bold rounded-lg hover:from-purple-700 hover:to-purple-800 transition text-center">
+                        <i class="fab fa-deriv mr-2"></i>
+                        Connect via OAuth
+                    </a>
+                    
+                    <button onclick="showStep('manualTokenStep')" class="w-full px-6 py-3 bg-gray-700 text-gray-300 font-bold rounded-lg hover:bg-gray-600 transition">
+                        <i class="fas fa-question-circle mr-2"></i>
+                        How to get token?
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Manual Token Step -->
+            <div id="manualTokenStep" class="auth-step">
+                <div class="text-center mb-8">
+                    <div class="w-20 h-20 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-700 flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-key text-white text-3xl"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold mb-2">Get Your API Token</h2>
+                    <p class="text-gray-400">Two ways to get your token</p>
+                </div>
+                
+                <div class="space-y-4 mb-6">
+                    <div class="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+                        <h3 class="font-bold text-purple-400 mb-2">Method 1: OAuth (Recommended)</h3>
+                        <p class="text-sm text-gray-300 mb-3">
+                            Connect via Deriv OAuth - secure and automatic
+                        </p>
+                        <a href="index.html" class="inline-block w-full px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-center">
+                            <i class="fab fa-deriv mr-2"></i>Connect via OAuth
+                        </a>
+                    </div>
+                    
+                    <div class="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                        <h3 class="font-bold text-blue-400 mb-2">Method 2: Manual API Token</h3>
+                        <p class="text-sm text-gray-300">
+                            1. Go to <a href="https://deriv.com" target="_blank" class="text-blue-400 underline">Deriv.com</a><br>
+                            2. Account Settings → API Token<br>
+                            3. Generate new token<br>
+                            4. Paste it here
+                        </p>
+                    </div>
+                </div>
+                
+                <button onclick="showStep('tokenRequiredStep')" class="w-full px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600">
+                    <i class="fas fa-arrow-left mr-2"></i> Back to Token Input
+                </button>
+            </div>
+            
+            <!-- Token Verification Step -->
+            <div id="tokenVerificationStep" class="auth-step">
+                <div class="text-center mb-8">
+                    <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-green-500 to-green-700 flex items-center justify-center mx-auto mb-6">
+                        <div class="loading-spinner"></div>
+                    </div>
+                    <h2 class="text-2xl font-bold mb-2">Verifying Token</h2>
+                    <p class="text-gray-400">Checking token validity with Deriv...</p>
+                </div>
+                
+                <div class="mb-6 p-4 bg-gray-800 rounded-lg">
+                    <p class="text-sm text-gray-300">
+                        <i class="fas fa-shield-alt text-green-400 mr-2"></i>
+                        All trades will be placed through App ID 117144
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
+    <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
+        <!-- ... (rest of the HTML structure remains exactly the same) ... -->
+    </div>
+
+    <!-- Font Awesome -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+
+    <script>
+        // ============================================================================
+        // AUTOMATIC OAuth REDIRECT HANDLER - CRITICAL FIX
+        // ============================================================================
+
+        function checkForAutoAuth() {
+            console.log('🔍 Checking for automatic OAuth authentication...');
+            
+            // FIRST: Check URL parameters (from main page redirect)
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlToken = urlParams.get('token');
+            const oauthRedirect = urlParams.get('oauth_redirect');
+            const autoOpen = urlParams.get('auto_open');
+            
+            // SECOND: Check for token in localStorage (set by main page)
+            const savedToken = localStorage.getItem('derivToken');
+            const authMethod = localStorage.getItem('auth_method');
+            const autoOpenFlag = localStorage.getItem('auto_open_bot');
+            
+            console.log('🔍 Bot: Auth check results:', {
+                urlToken: !!urlToken,
+                oauthRedirect: oauthRedirect,
+                autoOpen: autoOpen,
+                savedToken: !!savedToken,
+                authMethod: authMethod,
+                autoOpenFlag: autoOpenFlag
+            });
+            
+            // Clean URL if we have parameters
+            if (urlToken || oauthRedirect || autoOpen) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+            
+            // PRIORITY 1: URL token from OAuth redirect
+            if (urlToken && oauthRedirect === '1') {
+                console.log('✅ Found OAuth token in URL (direct redirect)');
+                
+                // Store token from URL
+                localStorage.setItem('derivToken', urlToken);
+                localStorage.setItem('auth_method', 'oauth');
+                localStorage.setItem('last_auth_time', Date.now());
+                localStorage.setItem('auto_open_bot', 'true');
+                
+                return {
+                    token: urlToken,
+                    autoStart: (autoOpen === '1' || autoOpenFlag === 'true'),
+                    source: 'url_oauth'
+                };
+            }
+            
+            // PRIORITY 2: LocalStorage token with OAuth method
+            if (savedToken && authMethod === 'oauth') {
+                console.log('✅ Found OAuth token in localStorage');
+                
+                // Clear auto-open flag after use
+                localStorage.removeItem('auto_open_bot');
+                
+                return {
+                    token: savedToken,
+                    autoStart: (autoOpenFlag === 'true'),
+                    source: 'localStorage_oauth'
+                };
+            }
+            
+            console.log('⚠️ No OAuth token found for auto-authentication');
+            return null;
+        }
+
+        // ============================================================================
+        // AUTHENTICATION SYSTEM - CRITICAL FIX
+        // ============================================================================
+        
+        // GLOBAL STATE
+        window.DERIV_TOKEN = '';
+        window.isAuthenticated = false;
+        window.ws = null;
+        window.req_id = 0;
+        window.isBotRunning = false;
+        window.tokenVisible = false;
+        window.autoStartEnabled = false;
+        
+        // Audio
+        window.ToneInitialized = false;
+        window.synth = null;
+        window.soundEnabled = true;
+
+        // Trading & Martingale State
+        window.baseStake = 1.0;
+        window.currentStake = 1.0;
+        window.multiplier = 1.15;
+        window.maxTrades = 10;
+        window.tradeCount = 0;
+        window.martingaleStep = 0;
+        window.accountBalance = 0.0;
+        
+        // PnL Tracking
+        window.startingBalance = 0.0;
+        window.currentBalance = 0.0;
+        window.netProfit = 0.0;
+        window.lastBalanceUpdate = 0;
+
+        // EXECUTION SYSTEM
+        window.lastTick = null;
+        window.waitingForTradeResult = false;
+        window.lastTradeResult = null;
+        window.nextTradeAllowed = true;
+        window.stopAfterWin = false;
+        window.currentlyProcessingTick = null;
+        window.pendingProposals = new Map();
+        window.activeContracts = new Map();
+        window.executionLock = false;
+        
+        // Statistics
+        window.stats = {
+            totalTicks: 0,
+            tradesExecuted: 0,
+            wins: 0,
+            losses: 0,
+            digitMatches: 0,
+            digitNonMatches: 0
+        };
+        
+        // Rate tracking
+        window.lastTickTime = 0;
+        window.tickTimestamps = [];
+        
+        // WebSocket keep-alive
+        window.wsPingInterval = null;
+        window.lastPingTime = Date.now();
+        
+        // Queue for ticks
+        window.tickQueue = [];
+        window.maxQueueSize = 10;
+        
+        // Probability tracking
+        window.digitsHistory = [];
+        window.MAX_HISTORY = 100;
+
+        // ============================================================================
+        // AUTHENTICATION FUNCTIONS - CRITICAL FIX
+        // ============================================================================
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🔐 Bot loading - Checking authentication...');
+            
+            // FIRST: Check for auto-auth from main page
+            const autoAuth = checkForAutoAuth();
+            
+            if (autoAuth) {
+                console.log('🚀 Auto-login detected from main page');
+                console.log('Auto-start flag:', autoAuth.autoStart);
+                
+                // Show auto-start overlay immediately
+                document.getElementById('autoStartOverlay').style.display = 'flex';
+                
+                // Skip auth modal, directly verify token with auto-start
+                window.autoStartEnabled = autoAuth.autoStart;
+                
+                // Wait a moment for UI to update, then verify
+                setTimeout(() => {
+                    verifyTokenAndInitialize(autoAuth.token, autoAuth.autoStart);
+                }, 500);
+                
+            } else {
+                // If no auto-auth, check for existing token
+                const savedToken = localStorage.getItem('derivToken');
+                const authMethod = localStorage.getItem('auth_method');
+                
+                if (savedToken) {
+                    console.log('🔍 Found saved token, verifying...');
+                    document.getElementById('autoStartOverlay').style.display = 'flex';
+                    verifyTokenAndInitialize(savedToken, false);
+                } else {
+                    console.log('⚠️ No token found, showing auth modal');
+                    showAuthModal();
+                }
+            }
+        });
+        
+        // NEW FUNCTION: Verify token and initialize bot in one step
+        function verifyTokenAndInitialize(token, autoStart = false) {
+            if (!token || token.trim() === '') {
+                showError('Please enter a valid token');
+                showStep('tokenRequiredStep');
+                return;
+            }
+            
+            // Update auto-start overlay message if auto-starting
+            if (autoStart) {
+                const overlayText = document.querySelector('#autoStartOverlay p.text-gray-400');
+                if (overlayText) {
+                    overlayText.textContent = 'Auto-starting trading bot after authentication...';
+                }
+            }
+            
+            // Try to connect to Deriv API to verify token
+            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
+            
+            testWs.onopen = () => {
+                testWs.send(JSON.stringify({
+                    authorize: token,
+                    req_id: 999999
+                }));
+            };
+            
+            testWs.onmessage = (msg) => {
+                try {
+                    const data = JSON.parse(msg.data);
+                    
+                    if (data.error) {
+                        console.error('Token verification failed:', data.error);
+                        showError('Invalid token. Please check and try again.');
+                        testWs.close();
+                        document.getElementById('autoStartOverlay').style.display = 'none';
+                        showAuthModal();
+                    } else if (data.authorize) {
+                        console.log('✅ Token verified successfully');
+                        window.DERIV_TOKEN = token;
+                        window.isAuthenticated = true;
+                        
+                        // Store successful auth
+                        localStorage.setItem('derivToken', token);
+                        localStorage.setItem('last_auth_time', Date.now());
+                        
+                        testWs.close();
+                        
+                        // CRITICAL: Hide all auth elements, show bot immediately
+                        document.getElementById('autoStartOverlay').style.display = 'none';
+                        document.getElementById('authModal').style.display = 'none';
+                        
+                        // Initialize bot immediately
+                        initializeBot();
+                        
+                        // Auto-start if flag is set
+                        if (autoStart) {
+                            console.log('🚀 Auto-start: Starting bot automatically');
+                            setTimeout(() => {
+                                if (!window.isBotRunning) {
+                                    startBot();
+                                }
+                            }, 1000);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Token verification error:', e);
+                    document.getElementById('autoStartOverlay').style.display = 'none';
+                    showAuthModal();
+                }
+            };
+            
+            testWs.onerror = () => {
+                console.error('WebSocket error during token verification');
+                document.getElementById('autoStartOverlay').style.display = 'none';
+                showAuthModal();
+            };
+            
+            // Timeout after 5 seconds
+            setTimeout(() => {
+                if (testWs.readyState === WebSocket.OPEN) {
+                    testWs.close();
+                }
+                if (!window.isAuthenticated) {
+                    showError('Connection timeout. Please try again.');
+                    document.getElementById('autoStartOverlay').style.display = 'none';
+                    showAuthModal();
+                }
+            }, 5000);
+        }
+        
+        function verifyToken() {
+            const tokenInput = document.getElementById('authTokenInput');
+            if (!tokenInput) return;
+            
+            const token = tokenInput.value.trim();
+            verifyTokenAndInitialize(token, false);
+        }
+        
+        function showAuthModal() {
+            document.getElementById('authModal').style.display = 'flex';
+            showStep('tokenRequiredStep');
+        }
+        
+        function hideAuthModal() {
+            document.getElementById('authModal').style.display = 'none';
+        }
+        
+        function showStep(stepId) {
+            // Hide all steps
+            document.querySelectorAll('.auth-step').forEach(step => {
+                step.classList.remove('active');
+            });
+            
+            // Show target step
+            const targetStep = document.getElementById(stepId);
+            if (targetStep) {
+                targetStep.classList.add('active');
+            }
+        }
+        
+        function showError(message) {
+            const notification = document.createElement('div');
+            notification.className = 'fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 bg-red-600 text-white';
+            notification.innerHTML = `
+                <div class="flex items-center">
+                    <span class="mr-2">❌</span>
+                    <span>${message}</span>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+        
+        function logout() {
+            if (window.isBotRunning) {
+                stopBot();
+            }
+            
+            // Clear all auth data
+            localStorage.removeItem('derivToken');
+            localStorage.removeItem('auth_method');
+            localStorage.removeItem('last_auth_time');
+            localStorage.removeItem('auto_open_bot');
+            sessionStorage.clear();
+            
+            window.DERIV_TOKEN = '';
+            window.isAuthenticated = false;
+            window.autoStartEnabled = false;
+            
+            // Reset bot interface
+            document.getElementById('botInterface').style.display = 'none';
+            document.getElementById('autoStartOverlay').style.display = 'none';
+            
+            // Show auth modal
+            showAuthModal();
+            
+            log('🔒 Logged out. Authentication required.', 'SYSTEM');
+        }
+        
+        // ============================================================================
+        // BOT INITIALIZATION (After Authentication)
+        // ============================================================================
+        
+        function initializeBot() {
+            console.log('🤖 Initializing trading bot...');
+            
+            // Show bot interface
+            document.getElementById('botInterface').style.display = 'block';
+            
+            // Load settings
+            window.soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+            updateSoundButton();
+            
+            updateContractTypeDisplay();
+            
+            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
+            window.currentStake = window.baseStake;
+            document.getElementById('metricCurrentStake').textContent = `$${window.currentStake.toFixed(2)}`;
+            
+            // Set up event listeners
+            document.getElementById('contractType').addEventListener('change', updateContractTypeDisplay);
+            
+            // Start periodic updates
+            setInterval(calculateRates, 1000);
+            setInterval(updateStrategyDisplay, 100);
+            setInterval(updateProbability, 2000);
+            
+            // Start queue processor
+            startQueueProcessor();
+            
+            log('✅ Bot initialized. Authentication verified.', 'SYSTEM');
+            log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
+            log('🔐 All trades go through App ID 117144', 'AUTH');
+        }
+        
+        // ============================================================================
+        // BOT FUNCTIONS (Only accessible after auth)
+        // ============================================================================
+        
+        function extractLastDigitBySymbol(price) {
+            const symbol = document.getElementById('symbol').value;
+            let decimalPlaces = 3;
+            
+            if (symbol === 'R_100') {
+                decimalPlaces = 2;
+            }
+            
+            const formattedPrice = price.toFixed(decimalPlaces);
+            return formattedPrice.charAt(formattedPrice.length - 1);
+        }
+        
+        function updateProbability() {
+            if (!window.isBotRunning || window.digitsHistory.length < 10) return;
+            
+            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
+            const frequency = window.digitsHistory.filter(d => d === predictedDigit).length;
+            const probability = (frequency / window.digitsHistory.length) * 100;
+            
+            const probabilityElem = document.getElementById('metricProbability');
+            probabilityElem.textContent = `Probability: ${probability.toFixed(1)}%`;
+            
+            if (probability > 15) {
+                probabilityElem.className = 'text-xs font-bold probability-high';
+            } else if (probability > 8) {
+                probabilityElem.className = 'text-xs font-bold probability-medium';
+            } else {
+                probabilityElem.className = 'text-xs font-bold probability-low';
+            }
+        }
+        
+        function updateStrategyDisplay() {
+            const maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            const tradesLeft = maxTrades - window.tradeCount;
+            const tradesDone = window.tradeCount;
+            
+            document.getElementById('metricTradesDone').textContent = `${tradesDone}/${maxTrades}`;
+            document.getElementById('metricTradesLeft').textContent = tradesLeft;
+            document.getElementById('metricTradesRemaining').textContent = maxTrades;
+            
+            const progressPercent = Math.min(100, (window.tradeCount / maxTrades) * 100);
+            document.getElementById('executionBar').style.width = `${progressPercent}%`;
+            document.getElementById('metricExecutedTrades').textContent = window.tradeCount;
+            
+            document.getElementById('queue-size').textContent = window.tickQueue.length;
+            document.getElementById('processed-count').textContent = window.stats.tradesExecuted;
+            document.getElementById('queue-status-badge').textContent = `QUEUE: ${window.tickQueue.length}`;
+        }
+        
+        function startQueueProcessor() {
+            setInterval(() => {
+                if (!window.isBotRunning || window.stopAfterWin) return;
+                
+                while (window.tickQueue.length > 0 && !window.executionLock && window.nextTradeAllowed) {
+                    const tick = window.tickQueue.shift();
+                    processTickImmediately(tick);
+                }
+            }, 50);
+        }
+        
+        function processTickImmediately(tick) {
+            if (window.stopAfterWin) return;
+            
+            if (checkForImmediateWin(tick)) {
+                return;
+            }
+            
+            if (window.tradeCount >= window.maxTrades) {
+                log(`🛑 Max trades limit reached (${window.maxTrades})`, 'CRITICAL');
+                stopBot();
+                return;
+            }
+            
+            window.executionLock = true;
+            window.nextTradeAllowed = false;
+            
+            try {
+                window.stats.tradesExecuted++;
+                window.tradeCount++;
+                document.getElementById('metricTradeCount').textContent = window.tradeCount;
+                
+                log(`⚡ TRADE #${window.tradeCount}: ${tick.price.toFixed(3)} (Digit ${tick.digit})`, 'INSTANT');
+                playAudioFeedback('EXECUTION');
+                
+                updateProcessingTickDisplay(tick);
+                executeTrade(tick);
+                
+            } catch (error) {
+                log(`❌ Error: ${error}`, 'ERROR');
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+            }
+        }
+        
+        function updateProcessingTickDisplay(tick) {
+            if (!tick) return;
+            
+            document.getElementById('processingTickDigit').textContent = tick.digit;
+            document.getElementById('processingTickInfo').textContent = `Price: ${tick.price.toFixed(3)}`;
+            document.getElementById('processingTickTime').textContent = new Date(tick.time).toLocaleTimeString();
+            document.getElementById('processingTickDigit').classList.add('instant-tick');
+            
+            document.getElementById('metricPreviousResult').textContent = `Executing trade #${window.tradeCount}`;
+            document.getElementById('metricNextAction').textContent = `Digit: ${tick.digit}`;
+        }
+        
+        function updateQueueDisplay() {
+            const queueDisplay = document.getElementById('tick-queue-display');
+            
+            if (window.tickQueue.length === 0) {
+                queueDisplay.innerHTML = '<div class="text-gray-500 italic">No ticks in queue...</div>';
+                return;
+            }
+            
+            let html = '';
+            const displayTicks = window.tickQueue.slice(0, 8);
+            
+            displayTicks.forEach((tick) => {
+                html += `
+                    <div class="queue-digit queued-tick">
+                        ${tick.digit}
+                        <div class="text-[8px] text-gray-300 mt-[-5px]">${tick.price.toFixed(2)}</div>
+                    </div>
+                `;
+            });
+            
+            if (window.tickQueue.length > 8) {
+                html += `<div class="queue-digit bg-gray-700 text-gray-400">+${window.tickQueue.length - 8}</div>`;
+            }
+            
+            queueDisplay.innerHTML = html;
+        }
+        
+        function addTickToQueue(tick) {
+            window.digitsHistory.push(parseInt(tick.digit));
+            if (window.digitsHistory.length > window.MAX_HISTORY) {
+                window.digitsHistory.shift();
+            }
+            
+            window.tickQueue.push(tick);
+            
+            if (window.tickQueue.length > window.maxQueueSize) {
+                window.tickQueue.shift();
+            }
+            
+            updateQueueDisplay();
+            return true;
+        }
+        
+        function checkForImmediateWin(tick) {
+            if (!window.isBotRunning || window.stopAfterWin) return false;
+            
+            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
+            const tickDigit = parseInt(tick.digit);
+            
+            if (tickDigit === predictedDigit) {
+                log(`🎯 WIN DETECTED! Tick digit ${tickDigit} matches predicted ${predictedDigit}.`, 'IMMEDIATE_WIN');
+                log(`✅ STRATEGY SUCCESSFUL in ${window.tradeCount + 1} trades`, 'STRATEGY');
+                
+                window.lastTradeResult = 'win';
+                window.stopAfterWin = true;
+                window.stats.wins++;
+                window.stats.digitMatches++;
+                window.tradeCount++;
+                
+                const processingDigit = document.getElementById('processingTickDigit');
+                processingDigit.textContent = tickDigit;
+                processingDigit.classList.add('instant-win-detected');
+                
+                const tradeResultContainer = document.getElementById('trade-result-container');
+                tradeResultContainer.classList.add('trade-completed');
+                
+                playAudioFeedback('INSTANT_WIN');
+                updateTradeResultStatus();
+                log(`📊 Waiting for balance update to calculate actual PnL...`, 'INFO');
+                
+                return true;
+            }
+            
+            window.stats.digitNonMatches++;
+            return false;
+        }
+        
+        function executeTrade(tick) {
+            const contractType = document.getElementById('contractType').value;
+            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
+            const symbol = document.getElementById('symbol').value;
+            const stake = window.currentStake;
+            const duration = 1;
+            
+            const proposalRequest = {
+                proposal: 1,
+                amount: stake.toFixed(2),
+                basis: "stake",
+                contract_type: contractType,
+                currency: "USD",
+                duration: duration,
+                duration_unit: "t",
+                symbol: symbol,
+                barrier: predictedDigit.toString(),
+                req_id: getNextReqId()
+            };
+
+            log(`📊 Trade #${window.tradeCount}: $${stake.toFixed(2)} on digit ${predictedDigit}`, 'TRADE');
+            
+            window.pendingProposals.set(proposalRequest.req_id, {
+                tick: tick,
+                stake: stake,
+                contractType: contractType,
+                predictedDigit: predictedDigit,
+                startTime: Date.now()
+            });
+            
+            sendRequest(proposalRequest);
+        }
+        
+        function updatePnL() {
+            if (window.startingBalance > 0 && window.currentBalance > 0) {
+                window.netProfit = window.currentBalance - window.startingBalance;
+                
+                const profitElem = document.getElementById('metricTotalProfit');
+                profitElem.textContent = `$${window.netProfit.toFixed(2)}`;
+                
+                if (window.netProfit > 0) {
+                    profitElem.className = 'text-lg font-bold profit-green success-pulse';
+                } else if (window.netProfit < 0) {
+                    profitElem.className = 'text-lg font-bold profit-red';
+                } else {
+                    profitElem.className = 'text-lg font-bold text-gray-300';
+                }
+                
+                const now = Date.now();
+                if (now - window.lastBalanceUpdate > 5000) {
+                    log(`📊 PnL Update: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)})`, 'PNL');
+                    window.lastBalanceUpdate = now;
+                }
+            }
+        }
+        
+        function onTradeComplete(isSuccess = true) {
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
+            
+            updateStrategyDisplay();
+            
+            if (!isSuccess) {
+                updateStake('loss');
+            }
+            
+            if (window.stopAfterWin) {
+                log(`✅ WIN DETECTED! Strategy successful.`, 'STRATEGY');
+                setTimeout(() => {
+                    stopBot();
+                }, 100);
+                return;
+            }
+            
+            if (window.tradeCount >= window.maxTrades) {
+                log(`🛑 Max trades reached (${window.maxTrades}). Strategy complete.`, 'CRITICAL');
+                stopBot();
+                return;
+            }
+        }
+        
+        function updateContractTypeDisplay() {
+            const contractType = document.getElementById('contractType').value;
+            let badgeText = contractType;
+            let badgeColor = 'bg-purple-600';
+            
+            if (contractType === 'DIGITMATCH') {
+                badgeText = 'DIGITMATCH (INSTANT)';
+                badgeColor = 'bg-purple-600';
+            }
+            
+            document.getElementById('contract-type-badge').textContent = badgeText;
+            document.getElementById('contract-type-badge').className = `contract-type-badge ${badgeColor} text-white`;
+        }
+        
+        function calculateRates() {
+            const now = Date.now();
+            window.tickTimestamps = window.tickTimestamps.filter(ts => now - ts < 5000);
+            window.tickRate = window.tickTimestamps.length / 5;
+            document.getElementById('metricTickRate').textContent = `Ticks/sec: ${window.tickRate.toFixed(1)}`;
+        }
+        
+        function toggleSound() {
+            window.soundEnabled = !window.soundEnabled;
+            localStorage.setItem('soundEnabled', window.soundEnabled);
+            updateSoundButton();
+            log(`🔊 Sound ${window.soundEnabled ? 'ENABLED' : 'DISABLED'}`, 'INFO');
+        }
+        
+        function updateSoundButton() {
+            const soundToggleButton = document.getElementById('soundToggle');
+            if (soundToggleButton) {
+                soundToggleButton.textContent = window.soundEnabled ? '🔊 Sound ON' : '🔇 Sound OFF';
+                soundToggleButton.className = window.soundEnabled ? 
+                    'px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition' :
+                    'px-4 py-2 bg-gray-600 text-white font-bold rounded-lg shadow hover:bg-gray-700 transition';
+            }
+        }
+        
+        async function initTone() {
+            if (!window.soundEnabled) return;
+            
+            if (typeof Tone === 'undefined') {
+                console.error("Tone.js not loaded");
+                return;
+            }
+            
+            try {
+                await Tone.start();
+                window.synth = new Tone.Synth().toDestination();
+                window.ToneInitialized = true;
+            } catch (e) {
+                console.error("Audio init error:", e);
+            }
+        }
+        
+        function playAudioFeedback(type) {
+            if (!window.soundEnabled || !window.ToneInitialized || !window.synth) return;
+            
+            try {
+                if (type === 'WIN') {
+                    window.synth.triggerAttackRelease("C6", "8n");
+                } else if (type === 'BIG_WIN') {
+                    window.synth.triggerAttackRelease("C6", "8n");
+                    window.synth.triggerAttackRelease("E6", "8n", Tone.now() + 0.1);
+                } else if (type === 'LOSS') {
+                    window.synth.triggerAttackRelease("C3", "16n");
+                } else if (type === 'TICK') {
+                    window.synth.triggerAttackRelease("C5", "32n");
+                } else if (type === 'EXECUTION') {
+                    window.synth.triggerAttackRelease("E5", "32n");
+                } else if (type === 'INSTANT_WIN') {
+                    window.synth.triggerAttackRelease("C6", "8n");
+                    window.synth.triggerAttackRelease("G6", "8n", Tone.now() + 0.1);
+                    window.synth.triggerAttackRelease("C7", "8n", Tone.now() + 0.2);
+                }
+            } catch (e) {
+                console.error("Audio error:", e);
+            }
+        }
+        
+        function log(message, type = 'INFO') {
+            const logArea = document.getElementById('log-area');
+            const timestamp = new Date().toLocaleTimeString('en-US', { 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit',
+                fractionalSecondDigits: 3 
+            });
+            
+            let color = 'text-lime-400';
+            if (type === 'ERROR') color = 'text-red-500 font-bold'; 
+            if (type === 'WARNING') color = 'text-yellow-400';
+            if (type === 'TRADE') color = 'text-green-300';
+            if (type === 'WIN') color = 'text-green-400 font-bold';
+            if (type === 'LOSS') color = 'text-red-400 font-bold';
+            if (type === 'QUEUE') color = 'text-blue-400';
+            if (type === 'TICK') color = 'text-cyan-300';
+            if (type === 'MARTINGALE') color = 'text-purple-400';
+            if (type === 'CONTRACT') color = 'text-pink-400';
+            if (type === 'REAL_TRADE') color = 'text-yellow-300 font-bold';
+            if (type === 'CRITICAL') color = 'text-red-400 font-bold';
+            if (type === 'SYSTEM') color = 'text-white';
+            if (type === 'STRATEGY') color = 'text-green-300 font-bold';
+            if (type === 'INSTANT') color = 'text-green-400 font-bold';
+            if (type === 'PNL') color = 'text-yellow-300 font-bold';
+            if (type === 'AUTH') color = 'text-purple-300 font-bold';
+            
+            logArea.innerHTML += `\n[${timestamp}] <span class="${color}">${message}</span>`;
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+        
+        function updateButtonState() {
+            const toggleButton = document.getElementById('toggleButton');
+            if (!toggleButton) return;
+            
+            if (window.isBotRunning) {
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
+                toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
+                toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');
+            } else {
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">🚀</span> START BOT</span>';
+                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700');
+                toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
+            }
+        }
+        
+        function updateTradeResultStatus() {
+            const tradeResultElem = document.getElementById('metricTradeResult');
+            const previousResultElem = document.getElementById('metricPreviousResult');
+            const nextActionElem = document.getElementById('metricNextAction');
+            const tradeResultContainer = document.getElementById('trade-result-container');
+            
+            if (window.stopAfterWin) {
+                tradeResultElem.textContent = 'WIN';
+                tradeResultElem.className = 'text-xs font-bold text-green-400';
+                previousResultElem.textContent = `✅ WIN - Strategy successful!`;
+                nextActionElem.textContent = 'STOPPING BOT';
+                tradeResultContainer.classList.add('trade-completed');
+                tradeResultContainer.classList.remove('trade-failed');
+            } else if (window.executionLock) {
+                tradeResultElem.textContent = 'TRADING';
+                tradeResultElem.className = 'text-xs font-bold text-yellow-400';
+                previousResultElem.textContent = `Executing trade #${window.tradeCount}`;
+                nextActionElem.textContent = 'Processing...';
+                tradeResultContainer.classList.remove('trade-completed', 'trade-failed');
+            } else {
+                tradeResultElem.textContent = 'READY';
+                tradeResultElem.className = 'text-xs font-bold text-gray-400';
+                previousResultElem.textContent = 'Waiting for ticks...';
+                nextActionElem.textContent = 'Execute on each tick';
+                tradeResultContainer.classList.remove('trade-completed', 'trade-failed');
+            }
+        }
+        
+        function updateStake(winOrLoss) {
+            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
+            window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
+            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+
+            if (winOrLoss === 'win') {
+                window.martingaleStep = 0;
+                window.currentStake = window.baseStake;
+                log(`✅ WIN! Martingale reset. Next stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
+                
+                const stakeElem = document.getElementById('metricCurrentStake');
+                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+                stakeElem.className = 'text-lg font-bold current-stake-green';
+                
+            } else if (winOrLoss === 'loss') {
+                window.martingaleStep++;
+                
+                if (window.martingaleStep >= window.maxTrades) {
+                    log(`🛑 MAX TRADES REACHED (${window.maxTrades}). Stopping bot.`, 'CRITICAL');
+                    stopBot();
+                    return;
+                }
+                
+                const newStake = window.currentStake * window.multiplier;
+                window.currentStake = parseFloat(newStake.toFixed(2));
+                
+                log(`❌ LOSS. Martingale Step ${window.martingaleStep}. Next stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
+                
+                const stakeElem = document.getElementById('metricCurrentStake');
+                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+                stakeElem.className = 'text-lg font-bold text-white';
+                
+            } else {
+                window.martingaleStep = 0;
+                window.currentStake = window.baseStake;
+                log(`Starting strategy. Base stake: $${window.currentStake.toFixed(2)}`, 'MARTINGALE');
+                
+                const stakeElem = document.getElementById('metricCurrentStake');
+                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+                stakeElem.className = 'text-lg font-bold text-white';
+            }
+        }
+        
+        // ============================================================================
+        // WEBSOCKET FUNCTIONS
+        // ============================================================================
+        
+        function connectWebSocket() {
+            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
+                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
+                stopBot();
+                return;
+            }
+            
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                log('WebSocket already connected', 'WARNING');
+                return;
+            }
+            
+            startWebSocketKeepAlive();
+            
+            window.ws = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
+
+            window.ws.onopen = () => {
+                log('🔌 WebSocket connected - INSTANT TICK EXECUTION MODE', 'SYSTEM');
+                document.getElementById('status-badge').textContent = 'Connected';
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-green-600 text-white shadow-md';
+                sendRequest({ authorize: window.DERIV_TOKEN, req_id: getNextReqId() });
+            };
+
+            window.ws.onmessage = (msg) => {
+                try {
+                    const data = JSON.parse(msg.data);
+                    handleAPIResponse(data);
+                    window.lastPingTime = Date.now();
+                } catch (e) {
+                    console.error('WebSocket parse error:', e);
+                }
+            };
+
+            window.ws.onclose = () => {
+                log('🔌 WebSocket disconnected', 'ERROR');
+                document.getElementById('status-badge').textContent = 'Disconnected';
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
+                window.ws = null;
+                window.tickSubscriptionSent = false;
+                stopWebSocketKeepAlive();
+                
+                if (window.isBotRunning) {
+                    log('🔄 Reconnecting in 500ms...', 'SYSTEM');
+                    setTimeout(connectWebSocket, 500);
+                }
+            };
+
+            window.ws.onerror = (error) => {
+                log(`❌ WebSocket Error`, 'CRITICAL');
+            };
+        }
+
+        function startWebSocketKeepAlive() {
+            stopWebSocketKeepAlive();
+            window.wsPingInterval = setInterval(() => {
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    if (Date.now() - window.lastPingTime > 10000) {
+                        sendRequest({ ping: 1, req_id: getNextReqId() });
+                    }
+                }
+            }, 5000);
+        }
+
+        function stopWebSocketKeepAlive() {
+            if (window.wsPingInterval) {
+                clearInterval(window.wsPingInterval);
+                window.wsPingInterval = null;
+            }
+        }
+
+        function resetAllState() {
+            updateStake('initial');
+            
+            window.startingBalance = 0.0;
+            window.currentBalance = 0.0;
+            window.netProfit = 0.0;
+            window.lastBalanceUpdate = 0;
+            
+            const profitElem = document.getElementById('metricTotalProfit');
+            profitElem.textContent = '$0.00';
+            profitElem.className = 'text-lg font-bold text-gray-300';
+            
+            document.getElementById('metricTradeCount').textContent = '0';
+            
+            const balanceElem = document.getElementById('metricAccountBalance');
+            balanceElem.textContent = '$---';
+            balanceElem.className = 'text-lg font-bold text-white';
+            
+            document.getElementById('metricLiveTick').textContent = '---';
+            document.getElementById('metricLastDigit').textContent = 'Digit: ?';
+            
+            window.stats = {
+                totalTicks: 0,
+                tradesExecuted: 0,
+                wins: 0,
+                losses: 0,
+                digitMatches: 0,
+                digitNonMatches: 0
+            };
+            
+            window.tickQueue = [];
+            window.digitsHistory = [];
+            updateQueueDisplay();
+            
+            window.lastTick = null;
+            window.lastTradeResult = null;
+            window.tradeCount = 0;
+            window.martingaleStep = 0;
+            window.pendingProposals.clear();
+            window.activeContracts.clear();
+            window.tickTimestamps = [];
+            
+            window.executionLock = false;
+            window.waitingForTradeResult = false;
+            window.nextTradeAllowed = true;
+            window.stopAfterWin = false;
+            window.currentlyProcessingTick = null;
+            
+            const logArea = document.getElementById('log-area');
+            logArea.innerHTML = '[00:00:00] 🤖 Starting INSTANT TICK EXECUTION. Trading on EVERY tick!';
+            
+            updateTradeResultStatus();
+            updateStrategyDisplay();
+            
+            log('🔄 ALL STATE RESET: Starting INSTANT TICK EXECUTION strategy', 'SYSTEM');
+        }
+
+        function sendRequest(request) {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                const message = JSON.stringify(request);
+                window.ws.send(message);
+                return request.req_id;
+            }
+            return null;
+        }
+
+        function getNextReqId() {
+            return ++window.req_id;
+        }
+        
+        function handleAPIResponse(data) {
+            if (data.error) {
+                log(`API Error: ${data.error.message}`, 'ERROR');
+                if (data.error.code === 'InvalidToken') {
+                    log('❌ Invalid API Token. Please reconnect.', 'CRITICAL');
+                    logout();
+                }
+                return;
+            }
+
+            if (data.msg_type === 'authorize') {
+                if (data.authorize) {
+                    log(`🔐 Authorized as ${data.authorize.loginid}`, 'SYSTEM');
+                    subscribeToTicks(document.getElementById('symbol').value);
+                    subscribeToBalance();
+                }
+            } else if (data.msg_type === 'tick') {
+                handleTick(data.tick);
+            } else if (data.msg_type === 'proposal') {
+                handleProposalResponse(data.proposal, data.req_id);
+            } else if (data.msg_type === 'buy') {
+                handleBuyResponse(data.buy);
+            } else if (data.msg_type === 'balance') {
+                handleBalanceUpdate(data.balance);
+            } else if (data.msg_type === 'contract_update') {
+                handleContractUpdate(data.contract_update);
+            } else if (data.msg_type === 'ping') {
+                window.lastPingTime = Date.now();
+            }
+        }
+        
+        function subscribeToBalance() {
+            sendRequest({
+                balance: 1,
+                subscribe: 1,
+                req_id: getNextReqId()
+            });
+            log('Subscribed to balance updates', 'SYSTEM');
+        }
+
+        function handleBalanceUpdate(balanceData) {
+            const newBalance = parseFloat(balanceData.balance);
+            
+            if (window.startingBalance === 0) {
+                window.startingBalance = newBalance;
+                log(`💰 Starting Balance: $${window.startingBalance.toFixed(2)}`, 'PNL');
+            }
+            
+            window.currentBalance = newBalance;
+            
+            const balanceElem = document.getElementById('metricAccountBalance');
+            balanceElem.textContent = `$${window.currentBalance.toFixed(2)}`;
+            
+            updatePnL();
+            
+            if (window.netProfit > 0) {
+                balanceElem.className = 'text-lg font-bold account-balance-green';
+            } else if (window.netProfit < 0) {
+                balanceElem.className = 'text-lg font-bold text-red-400';
+            } else if (window.currentBalance > 50) {
+                balanceElem.className = 'text-lg font-bold text-green-400';
+            } else if (window.currentBalance > 25) {
+                balanceElem.className = 'text-lg font-bold text-yellow-400';
+            } else {
+                balanceElem.className = 'text-lg font-bold text-red-400';
+            }
+            
+            const bankrollLimit = parseFloat(document.getElementById('bankrollLimit').value) || 25.0;
+            if (window.currentStake > window.currentBalance || window.currentBalance <= bankrollLimit) {
+                log(`🛑 Bankroll Limit Reached. Stopping bot.`, 'CRITICAL');
+                stopBot();
+            }
+        }
+        
+        function handleContractUpdate(contractUpdate) {
+            if (contractUpdate.status === 'sold') {
+                const profit = parseFloat(contractUpdate.profit);
+                const contractId = contractUpdate.contract_id;
+                
+                if (profit > 0) {
+                    log(`✅ Contract ${contractId} WON: $${profit.toFixed(2)}`, 'WIN');
+                } else if (profit < 0) {
+                    log(`❌ Contract ${contractId} LOST: $${Math.abs(profit).toFixed(2)}`, 'LOSS');
+                }
+                
+                if (profit > 0 && window.stopAfterWin) {
+                    log(`🏆 Winning contract settled!`, 'STRATEGY');
+                }
+            }
+        }
+
+        function subscribeToTicks(symbol) {
+            if (window.tickSubscriptionSent) return;
+            
+            sendRequest({
+                ticks: symbol,
+                subscribe: 1,
+                req_id: getNextReqId()
+            });
+            window.tickSubscriptionSent = true;
+            log(`✅ Subscribed to ticks for ${symbol}`, 'SYSTEM');
+        }
+
+        function handleTick(tick) {
+            if (!window.isBotRunning) return;
+            
+            const price = parseFloat(tick.quote);
+            const digit = extractLastDigitBySymbol(price);
+            const time = parseInt(tick.epoch) * 1000;
+            const tickData = { digit: digit, price: price, time: time };
+            
+            window.lastTick = tickData;
+            
+            const displayPrice = price.toFixed(3);
+            document.getElementById('metricLiveTick').textContent = displayPrice;
+            document.getElementById('metricLastDigit').textContent = `Digit: ${digit}`;
+            document.getElementById('metricLiveTick').classList.add('tick-flash');
+            setTimeout(() => document.getElementById('metricLiveTick').classList.remove('tick-flash'), 50);
+            
+            window.tickTimestamps.push(Date.now());
+            window.stats.totalTicks++;
+            
+            addTickToQueue(tickData);
+            
+            playAudioFeedback('TICK');
+            
+            if (window.stats.totalTicks <= 5) {
+                const symbol = document.getElementById('symbol').value;
+                log(`🎯 Tick ${window.stats.totalTicks}: ${displayPrice} (Digit ${digit}) Symbol: ${symbol}`, 'TICK');
+            }
+        }
+        
+        function handleProposalResponse(proposal, req_id) {
+            if (!proposal || !proposal.id) {
+                log(`❌ Proposal request failed`, 'ERROR');
+                onTradeComplete(false);
+                return;
+            }
+
+            const pending = window.pendingProposals.get(req_id);
+            if (!pending) {
+                log(`❌ No pending proposal found`, 'ERROR');
+                onTradeComplete(false);
+                return;
+            }
+
+            window.pendingProposals.delete(req_id);
+            
+            executeBuy(proposal.id, proposal.ask_price, pending);
+        }
+
+        function executeBuy(proposal_id, ask_price, pending) {
+            const buyRequest = {
+                buy: proposal_id,
+                price: ask_price,
+                req_id: getNextReqId()
+            };
+            
+            log(`✅ Buying contract for $${pending.stake.toFixed(2)}`, 'TRADE');
+            
+            window.pendingProposals.set(buyRequest.req_id, {
+                ...pending,
+                proposal_id: proposal_id,
+                buyStartTime: Date.now()
+            });
+            
+            sendRequest(buyRequest);
+        }
+
+        function handleBuyResponse(buyData) {
+            if (buyData.contract_id) {
+                const buyTime = Date.now() - (window.pendingProposals.get(buyData.req_id)?.buyStartTime || Date.now());
+                log(`✅ Trade executed in ${buyTime}ms`, 'INSTANT');
+                
+                updateStake('loss');
+                
+                onTradeComplete(true);
+                
+            } else {
+                log(`❌ Trade execution failed`, 'ERROR');
+                onTradeComplete(false);
+            }
+        }
+        
+        function toggleBot() {
+            if (!window.isAuthenticated) {
+                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
+                showAuthModal();
+                return;
+            }
+            
+            if (window.isBotRunning) {
+                stopBot();
+            } else {
+                startBot();
+            }
+        }
+
+        function startBot() {
+            if (window.isBotRunning) return;
+            
+            if (!window.DERIV_TOKEN || !window.isAuthenticated) {
+                log('❌ Authentication required. Please enter your token.', 'CRITICAL');
+                showAuthModal();
+                return;
+            }
+            
+            resetAllState();
+            
+            window.isBotRunning = true;
+            updateButtonState();
+            log('🚀 INSTANT TICK EXECUTION Bot started. Trading on EVERY tick!', 'STRATEGY');
+
+            updateStake('initial');
+            
+            initTone();
+            connectWebSocket();
+            
+            const controls = document.querySelectorAll('#controls-section input, #controls-section select');
+            controls.forEach(control => {
+                control.disabled = true;
+                control.classList.add('opacity-50', 'cursor-not-allowed');
+            });
+        }
+
+        function stopBot() {
+            if (!window.isBotRunning) return;
+            
+            window.isBotRunning = false;
+            window.nextTradeAllowed = false;
+            window.stopAfterWin = false;
+            updateButtonState();
+            log('⏹️ Bot stopped', 'SYSTEM');
+            
+            log(`📊 FINAL PnL: $${window.netProfit.toFixed(2)} (Balance: $${window.currentBalance.toFixed(2)} - Starting: $${window.startingBalance.toFixed(2)})`, 'PNL');
+            log(`📈 Performance: ${window.stats.wins} wins, ${window.stats.losses} losses, ${window.tradeCount} total trades`, 'STATS');
+
+            stopWebSocketKeepAlive();
+            
+            if (window.ws) {
+                window.ws.close();
+                window.ws = null;
+            }
+            window.tickSubscriptionSent = false;
+            window.pendingProposals.clear();
+            window.activeContracts.clear();
+            window.executionLock = false;
+            
+            const controls = document.querySelectorAll('#controls-section input, #controls-section select');
+            controls.forEach(control => {
+                control.disabled = false;
+                control.classList.remove('opacity-50', 'cursor-not-allowed');
+            });
+            
+            document.getElementById('status-badge').textContent = 'Disconnected';
+            document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
+            updateTradeResultStatus();
+        }
+        
+    </script>
+</body>
+</html>
