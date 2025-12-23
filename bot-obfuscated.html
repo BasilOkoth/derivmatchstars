@@ -162,7 +162,7 @@
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
-    <!-- AUTO-START OVERLAY (Shows during auto-authentication) -->
+    <!-- AUTO-START OVERLAY -->
     <div id="autoStartOverlay" class="auto-start-overlay">
         <div class="text-center">
             <div class="w-32 h-32 rounded-3xl bg-gradient-to-r from-green-500 via-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-8 animate-pulse">
@@ -175,7 +175,7 @@
         </div>
     </div>
 
-    <!-- ERROR OVERLAY (Shows when authentication fails) -->
+    <!-- ERROR OVERLAY -->
     <div id="errorOverlay" class="error-overlay" style="display: none;">
         <div class="text-center max-w-md">
             <div class="w-24 h-24 rounded-2xl bg-gradient-to-r from-red-500 to-red-700 flex items-center justify-center mx-auto mb-6">
@@ -196,9 +196,9 @@
         </div>
     </div>
 
-    <!-- MAIN BOT INTERFACE (Hidden until authenticated) -->
+    <!-- MAIN BOT INTERFACE -->
     <div id="botInterface" class="w-full max-w-5xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6" style="display: none;">
-        <!-- Bot interface content (same as before) -->
+        <!-- Header -->
         <div class="flex justify-between items-center mb-8">
             <div>
                 <h1 class="text-3xl font-bold flex items-center">
@@ -424,7 +424,7 @@
 
     <script>
         // ============================================================================
-        // SIMPLIFIED AUTHENTICATION - NO TOKEN PROMPTS
+        // SEAMLESS AUTHENTICATION - NO TOKEN PROMPTS
         // ============================================================================
         
         // GLOBAL STATE
@@ -433,15 +433,13 @@
         window.ws = null;
         window.req_id = 0;
         window.isBotRunning = false;
-        window.tokenVisible = false;
-        window.autoStartEnabled = false;
         
         // Audio
         window.ToneInitialized = false;
         window.synth = null;
         window.soundEnabled = true;
 
-        // Trading & Martingale State
+        // Trading State
         window.baseStake = 1.0;
         window.currentStake = 1.0;
         window.multiplier = 1.15;
@@ -456,7 +454,7 @@
         window.netProfit = 0.0;
         window.lastBalanceUpdate = 0;
 
-        // EXECUTION SYSTEM
+        // Execution System
         window.lastTick = null;
         window.waitingForTradeResult = false;
         window.lastTradeResult = null;
@@ -492,150 +490,74 @@
         // Probability tracking
         window.digitsHistory = [];
         window.MAX_HISTORY = 100;
+        
+        // App ID - MUST MATCH YOUR DERIV APP
+        window.APP_ID = 117144;
 
         // ============================================================================
-        // SIMPLIFIED AUTHENTICATION - DIRECT ACCESS AFTER OAuth
+        // AUTHENTICATION - COMPLETELY SEAMLESS
         // ============================================================================
         
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('🔐 Bot loading - Checking for OAuth token...');
+            console.log('🚀 Bot loading - Seamless authentication check...');
             
-            // Update loading message
+            // Show loading overlay
+            document.getElementById('autoStartOverlay').style.display = 'flex';
             document.getElementById('autoStartMessage').textContent = 'Checking authentication...';
-            document.getElementById('autoStartSubMessage').textContent = 'Looking for OAuth session...';
+            document.getElementById('autoStartSubMessage').textContent = 'Verifying OAuth session...';
             
-            // Check URL parameters first (from OAuth redirect)
-            const urlParams = new URLSearchParams(window.location.search);
-            const oauthRedirect = urlParams.get('oauth_redirect');
-            const autoOpen = urlParams.get('auto_open');
-            
-            // Clean URL if we have parameters
-            if (oauthRedirect || autoOpen) {
-                window.history.replaceState({}, document.title, window.location.pathname);
-            }
-            
-            // Check localStorage for OAuth token
-            const savedToken = localStorage.getItem('derivToken');
+            // Check for OAuth token
+            const token = localStorage.getItem('derivToken');
             const authMethod = localStorage.getItem('auth_method');
             
-            console.log('🔍 Auth check:', {
-                savedToken: !!savedToken,
-                authMethod: authMethod,
-                oauthRedirect: oauthRedirect
+            console.log('Auth check:', { 
+                hasToken: !!token, 
+                authMethod: authMethod
             });
             
-            // Set auto-start flag if it exists
-            if (autoOpen === '1' || localStorage.getItem('auto_open_bot') === 'true') {
-                window.autoStartEnabled = true;
-                localStorage.removeItem('auto_open_bot'); // Clear flag after use
-            }
-            
-            // If we have a token from OAuth, verify it immediately
-            if (savedToken && (authMethod === 'oauth' || oauthRedirect === '1')) {
-                console.log('✅ Found OAuth token, verifying...');
-                document.getElementById('autoStartMessage').textContent = 'Verifying OAuth session...';
-                document.getElementById('autoStartSubMessage').textContent = 'Connecting to Deriv API...';
+            if (token && authMethod === 'oauth') {
+                // Seamless authentication - NO prompts
+                console.log('✅ Authenticated via OAuth, initializing bot...');
                 
-                // Verify token immediately
+                window.DERIV_TOKEN = token;
+                window.isAuthenticated = true;
+                
+                // Clean URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+                
+                // Hide loading, show bot
                 setTimeout(() => {
-                    verifyTokenAndInitialize(savedToken);
+                    document.getElementById('autoStartOverlay').style.display = 'none';
+                    document.getElementById('botInterface').style.display = 'block';
+                    
+                    // Initialize bot
+                    initializeBot();
+                    
+                    // Auto-start if flag exists
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const shouldAutoStart = urlParams.has('auto_start') || 
+                                          localStorage.getItem('auto_open_bot') === 'true';
+                    
+                    if (shouldAutoStart) {
+                        localStorage.removeItem('auto_open_bot');
+                        console.log('🔁 Auto-starting bot...');
+                        setTimeout(() => {
+                            if (!window.isBotRunning) {
+                                startBot();
+                            }
+                        }, 1000);
+                    }
                 }, 500);
                 
             } else {
-                // No token found - show error
-                console.log('❌ No OAuth token found');
-                showAuthenticationError();
+                // No valid token - show error
+                console.log('❌ No valid OAuth session found');
+                showAuthError('Please connect via OAuth first.');
             }
         });
         
-        // Verify token and initialize bot
-        function verifyTokenAndInitialize(token) {
-            if (!token || token.trim() === '') {
-                showAuthenticationError('Invalid token');
-                return;
-            }
-            
-            // Update loading message
-            document.getElementById('autoStartMessage').textContent = 'Verifying token...';
-            document.getElementById('autoStartSubMessage').textContent = 'Authenticating with Deriv...';
-            
-            // Try to connect to Deriv API
-            const testWs = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
-            
-            testWs.onopen = () => {
-                console.log('🔗 Test WebSocket connected');
-                testWs.send(JSON.stringify({
-                    authorize: token,
-                    req_id: 999999
-                }));
-            };
-            
-            testWs.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
-                    
-                    if (data.error) {
-                        console.error('Token verification failed:', data.error);
-                        showAuthenticationError('Invalid token. Please reconnect via OAuth.');
-                        testWs.close();
-                    } else if (data.authorize) {
-                        console.log('✅ Token verified successfully');
-                        window.DERIV_TOKEN = token;
-                        window.isAuthenticated = true;
-                        
-                        // Store successful auth
-                        localStorage.setItem('derivToken', token);
-                        localStorage.setItem('auth_method', 'oauth');
-                        localStorage.setItem('last_auth_time', Date.now());
-                        
-                        testWs.close();
-                        
-                        // Hide loading overlay, show bot
-                        document.getElementById('autoStartOverlay').style.display = 'none';
-                        document.getElementById('botInterface').style.display = 'block';
-                        
-                        // Initialize bot
-                        initializeBot();
-                        
-                        // Auto-start if flag is set
-                        if (window.autoStartEnabled) {
-                            console.log('🚀 Auto-start: Starting bot automatically');
-                            setTimeout(() => {
-                                if (!window.isBotRunning) {
-                                    startBot();
-                                }
-                            }, 1000);
-                        }
-                    }
-                } catch (e) {
-                    console.error('Token verification error:', e);
-                    showAuthenticationError('Authentication error. Please try again.');
-                }
-            };
-            
-            testWs.onerror = () => {
-                console.error('WebSocket error during token verification');
-                showAuthenticationError('Connection error. Please check your internet.');
-            };
-            
-            // Timeout
-            setTimeout(() => {
-                if (testWs.readyState === WebSocket.OPEN) {
-                    testWs.close();
-                }
-                if (!window.isAuthenticated) {
-                    showAuthenticationError('Connection timeout. Please try again.');
-                }
-            }, 5000);
-        }
-        
-        function showAuthenticationError(message = 'Authentication required. Please connect via OAuth first.') {
-            console.log('❌ Showing authentication error:', message);
-            
-            // Hide loading overlay
+        function showAuthError(message) {
             document.getElementById('autoStartOverlay').style.display = 'none';
-            
-            // Show error overlay
             document.getElementById('errorMessage').textContent = message;
             document.getElementById('errorOverlay').style.display = 'flex';
         }
@@ -647,29 +569,20 @@
             
             // Clear all auth data
             localStorage.removeItem('derivToken');
+            localStorage.removeItem('derivAccount');
             localStorage.removeItem('auth_method');
-            localStorage.removeItem('last_auth_time');
+            localStorage.removeItem('auth_time');
             localStorage.removeItem('auto_open_bot');
-            sessionStorage.clear();
             
             window.DERIV_TOKEN = '';
             window.isAuthenticated = false;
-            window.autoStartEnabled = false;
             
-            // Hide bot, show error overlay
-            document.getElementById('botInterface').style.display = 'none';
-            document.getElementById('errorOverlay').style.display = 'flex';
-            
-            console.log('🔒 Logged out. Redirecting to homepage...');
-            
-            // Redirect to homepage after delay
-            setTimeout(() => {
-                window.location.href = 'index.html';
-            }, 2000);
+            // Redirect to OAuth page
+            window.location.href = 'index.html?logout=1';
         }
         
         // ============================================================================
-        // BOT INITIALIZATION (After Authentication)
+        // BOT INITIALIZATION
         // ============================================================================
         
         function initializeBot() {
@@ -687,6 +600,10 @@
             
             // Set up event listeners
             document.getElementById('contractType').addEventListener('change', updateContractTypeDisplay);
+            document.getElementById('baseStake').addEventListener('input', updateStakeFromInput);
+            document.getElementById('multiplier').addEventListener('input', updateMultiplierFromInput);
+            document.getElementById('maxTrades').addEventListener('input', updateMaxTradesFromInput);
+            document.getElementById('predictedDigit').addEventListener('input', updatePredictedDigit);
             
             // Start periodic updates
             setInterval(calculateRates, 1000);
@@ -698,12 +615,26 @@
             
             log('✅ Bot initialized. OAuth session verified.', 'SYSTEM');
             log('🎯 Strategy: Instant tick execution - Trade on EVERY tick', 'STRATEGY');
-            log('🔐 All trades go through App ID 117144', 'AUTH');
+            log('🔐 Connected to Deriv API', 'AUTH');
         }
         
-        // ============================================================================
-        // BOT FUNCTIONS (Only accessible after auth)
-        // ============================================================================
+        function updateStakeFromInput() {
+            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
+            window.currentStake = window.baseStake;
+            document.getElementById('metricCurrentStake').textContent = `$${window.currentStake.toFixed(2)}`;
+        }
+        
+        function updateMultiplierFromInput() {
+            window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
+        }
+        
+        function updateMaxTradesFromInput() {
+            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+        }
+        
+        function updatePredictedDigit() {
+            // Just update display, no state change needed
+        }
         
         function extractLastDigitBySymbol(price) {
             const symbol = document.getElementById('symbol').value;
@@ -1174,8 +1105,7 @@
         function connectWebSocket() {
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
                 log('❌ Authentication required.', 'CRITICAL');
-                stopBot();
-                showAuthenticationError();
+                showAuthError();
                 return;
             }
             
@@ -1186,7 +1116,8 @@
             
             startWebSocketKeepAlive();
             
-            window.ws = new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=1089');
+            // Use YOUR App ID here
+            window.ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${window.APP_ID}`);
 
             window.ws.onopen = () => {
                 log('🔌 WebSocket connected - INSTANT TICK EXECUTION MODE', 'SYSTEM');
@@ -1499,7 +1430,7 @@
         function toggleBot() {
             if (!window.isAuthenticated) {
                 log('❌ Authentication required.', 'CRITICAL');
-                showAuthenticationError();
+                showAuthError();
                 return;
             }
             
@@ -1515,7 +1446,7 @@
             
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
                 log('❌ Authentication required.', 'CRITICAL');
-                showAuthenticationError();
+                showAuthError();
                 return;
             }
             
@@ -1570,7 +1501,6 @@
             document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-red-600 text-white shadow-md';
             updateTradeResultStatus();
         }
-        
     </script>
 </body>
 </html>
