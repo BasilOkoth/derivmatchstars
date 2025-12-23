@@ -559,7 +559,6 @@
             document.getElementById('autoStartMessage').textContent = 'Verifying token...';
             document.getElementById('autoStartSubMessage').textContent = 'Authenticating with Deriv...';
             
-            // Try to connect to Deriv API
             // Try to connect to Deriv API (with endpoint fallback)
             const wsUrls = [
                 'wss://ws.derivws.com/websockets/v3?app_id=117144',
@@ -593,11 +592,30 @@
                         }
                         if (data.msg_type === 'authorize') {
                             console.log('✅ Token verified for account:', data.authorize?.loginid);
+
+                            // 🔑 CRITICAL FIX: store OAuth token for trading
+                            window.DERIV_TOKEN = token;
+
                             window.isAuthenticated = true;
                             window.authorizedAccount = data.authorize;
-                            try { localStorage.setItem('derivAccount', data.authorize?.loginid || ''); } catch (e) {}
+
+                            try {
+                                localStorage.setItem('derivAccount', data.authorize?.loginid || '');
+                            } catch (e) {}
+
                             testWs.close();
-                            initializeBotAfterAuth();
+
+                            // 🔓 Unlock UI
+                            document.getElementById('autoStartOverlay').style.display = 'none';
+                            document.getElementById('botInterface').style.display = 'block';
+
+                            // 🤖 Initialize bot correctly
+                            initializeBot();
+
+                            // 🚀 Auto-start bot if requested
+                            if (window.autoStartEnabled) {
+                                setTimeout(startBot, 300);
+                            }
                         }
                     } catch (e) {
                         console.error('Token verification parse error', e);
