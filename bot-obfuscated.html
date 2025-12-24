@@ -155,6 +155,12 @@
             text-align: center;
             padding: 20px;
         }
+        .account-mode-selected {
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+            transform: scale(1.05);
+        }
+        .demo-account { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+        .real-account { background: linear-gradient(135deg, #10b981, #047857); }
 
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
@@ -169,7 +175,22 @@
             </div>
             <h2 class="text-4xl font-bold mb-4" style="background: linear-gradient(135deg, #10b981, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">DigitMatchStars Pro™</h2>
             <p class="text-xl text-gray-300 mb-8" id="autoStartMessage">Loading trading bot...</p>
-            <div class="loading-spinner mx-auto mb-4"></div>
+            
+            <!-- ACCOUNT SELECTION BUTTONS -->
+            <div id="accountSelection" class="mb-8 hidden">
+                <p class="text-gray-300 mb-4">Select account type:</p>
+                <div class="flex gap-4 justify-center">
+                    <button onclick="selectAccountMode('DEMO')" class="px-6 py-3 demo-account text-white font-bold rounded-lg hover:opacity-90 transition account-mode-btn">
+                        <i class="fas fa-vr-cardboard mr-2"></i> DEMO Account
+                    </button>
+                    <button onclick="selectAccountMode('REAL')" class="px-6 py-3 real-account text-white font-bold rounded-lg hover:opacity-90 transition account-mode-btn">
+                        <i class="fas fa-coins mr-2"></i> REAL Account
+                    </button>
+                </div>
+                <p class="text-gray-400 text-sm mt-3">This selection will be saved for future sessions</p>
+            </div>
+            
+            <div id="loadingSpinner" class="loading-spinner mx-auto mb-4"></div>
             <p class="text-gray-400 mt-6" id="autoStartSubMessage">Checking authentication...</p>
         </div>
     </div>
@@ -208,8 +229,15 @@
                 <span id="queue-status-badge" class="contract-type-badge bg-blue-600 text-white">QUEUE: 0</span>
             </h1>
             <div class="flex items-center space-x-2">
+                <!-- ACCOUNT MODE DISPLAY -->
+                <div id="accountModeDisplay" class="hidden">
+                    <span id="currentAccountMode" class="px-3 py-1 text-sm font-bold rounded-lg"></span>
+                </div>
                 <button id="soundToggle" onclick="toggleSound()" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow hover:bg-blue-700 transition">
                     🔊 Sound ON
+                </button>
+                <button id="logoutButton" onclick="logout()" class="px-4 py-2 bg-gray-700 text-white font-bold rounded-lg shadow hover:bg-gray-600 transition">
+                    <i class="fas fa-sign-out-alt mr-1"></i> Logout
                 </button>
             </div>
         </div>
@@ -395,6 +423,85 @@
         // ============================================================================
         
         // ============================================================================
+        // 🔐 STRICT ACCOUNT SELECTION (NO AUTO SWITCH)
+        // ============================================================================
+        function getSelectedDerivTokenStrict() {
+            const selectedMode = localStorage.getItem('selectedAccountMode'); // DEMO or REAL
+
+            if (!selectedMode) return null;
+
+            if (selectedMode === 'DEMO') {
+                return localStorage.getItem('derivTokenDemo');
+            }
+
+            if (selectedMode === 'REAL') {
+                return localStorage.getItem('derivTokenReal');
+            }
+
+            return null;
+        }
+
+        function selectAccountMode(mode) {
+            // Save selection
+            localStorage.setItem('selectedAccountMode', mode);
+            
+            // Update UI
+            const buttons = document.querySelectorAll('.account-mode-btn');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes(mode)) {
+                    btn.classList.add('account-mode-selected');
+                } else {
+                    btn.classList.remove('account-mode-selected');
+                }
+            });
+            
+            // Show loading
+            document.getElementById('loadingSpinner').style.display = 'inline-block';
+            document.getElementById('accountSelection').style.display = 'none';
+            document.getElementById('autoStartMessage').textContent = `Loading ${mode} account...`;
+            document.getElementById('autoStartSubMessage').textContent = 'Verifying authentication...';
+            
+            // Get token and verify
+            const token = getSelectedDerivTokenStrict();
+            if (token) {
+                verifyTokenAndInitialize(token);
+            } else {
+                showAuthenticationError(`No ${mode} token found. Please connect via OAuth.`);
+            }
+        }
+
+        function showAccountSelection() {
+            const selectionDiv = document.getElementById('accountSelection');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            const message = document.getElementById('autoStartMessage');
+            const subMessage = document.getElementById('autoStartSubMessage');
+            
+            if (selectionDiv) {
+                // Check if we have both tokens
+                const hasDemoToken = !!localStorage.getItem('derivTokenDemo');
+                const hasRealToken = !!localStorage.getItem('derivTokenReal');
+                
+                if (hasDemoToken || hasRealToken) {
+                    selectionDiv.style.display = 'block';
+                    if (loadingSpinner) loadingSpinner.style.display = 'none';
+                    if (message) message.textContent = 'Select account type:';
+                    if (subMessage) subMessage.textContent = 'Choose DEMO or REAL account to continue';
+                    
+                    // Highlight previously selected mode if any
+                    const selectedMode = localStorage.getItem('selectedAccountMode');
+                    if (selectedMode) {
+                        const buttons = document.querySelectorAll('.account-mode-btn');
+                        buttons.forEach(btn => {
+                            if (btn.textContent.includes(selectedMode)) {
+                                btn.classList.add('account-mode-selected');
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // ============================================================================
         // OAuth-FIRST AUTHENTICATION (no token prompt)
         // Uses token saved by index.html after OAuth (localStorage.derivToken)
         // ============================================================================
@@ -419,19 +526,37 @@
                 try { window.history.replaceState({}, document.title, window.location.pathname); } catch(e) {}
             }
 
-            const savedToken = localStorage.getItem('derivToken');
-            const authMethod = localStorage.getItem('auth_method');
+            // Check if we need account selection
+            const hasDemoToken = !!localStorage.getItem('derivTokenDemo');
+            const hasRealToken = !!localStorage.getItem('derivTokenReal');
+            const selectedMode = localStorage.getItem('selectedAccountMode');
+            
+            console.log('🔍 Auth check:', { 
+                hasDemoToken, 
+                hasRealToken, 
+                selectedMode,
+                oauthRedirect 
+            });
 
-            console.log('🔍 Auth check:', { savedToken: !!savedToken, authMethod, oauthRedirect });
-
-            if (savedToken && (authMethod === 'oauth' || oauthRedirect === '1')) {
-                console.log('✅ Found OAuth token, verifying...');
-                if (msgEl) msgEl.textContent = 'Verifying OAuth session...';
-                if (subEl) subEl.textContent = 'Connecting to Deriv API...';
-                setTimeout(() => verifyTokenAndInitialize(savedToken), 300);
-            } else {
-                showAuthenticationError('Authentication required. Please connect via OAuth first.');
+            // If we have both tokens but no selection, show selection screen
+            if ((hasDemoToken || hasRealToken) && !selectedMode) {
+                setTimeout(showAccountSelection, 500);
+                return;
             }
+
+            // If we have a selected mode, get that token
+            if (selectedMode) {
+                const token = getSelectedDerivTokenStrict();
+                if (token) {
+                    console.log(`✅ Found ${selectedMode} token, verifying...`);
+                    if (msgEl) msgEl.textContent = `Verifying ${selectedMode} account...`;
+                    if (subEl) subEl.textContent = 'Connecting to Deriv API...';
+                    setTimeout(() => verifyTokenAndInitialize(token), 300);
+                    return;
+                }
+            }
+
+            showAuthenticationError('Authentication required. Please connect via OAuth first.');
         });
 
         function showAuthenticationError(message) {
@@ -482,10 +607,34 @@
                             return showAuthenticationError('Authentication failed. Please reconnect via OAuth.');
                         }
                         if (data.msg_type === 'authorize') {
+                            // 🔐 STRICT ACCOUNT TYPE CHECK
+                            const loginid = data.authorize.loginid;
+                            const isDemoAccount = loginid.startsWith('VRTC');
+                            const selectedMode = localStorage.getItem('selectedAccountMode');
+
+                            if (!selectedMode) {
+                                try { testWs.close(); } catch(e) {}
+                                showAuthenticationError('Please select DEMO or REAL before trading.');
+                                return;
+                            }
+
+                            if (
+                                (selectedMode === 'DEMO' && !isDemoAccount) ||
+                                (selectedMode === 'REAL' && isDemoAccount)
+                            ) {
+                                try { testWs.close(); } catch(e) {}
+                                showAuthenticationError(
+                                    'Account type mismatch. Please select the correct DEMO or REAL account.'
+                                );
+                                return;
+                            }
+
+                            // ✅ MATCH — SAFE TO CONTINUE
                             verified = true;
                             window.isAuthenticated = true;
                             window.authorizedAccount = data.authorize || null;
-                            window.DERIV_TOKEN = token;
+                            window.DERIV_TOKEN = getSelectedDerivTokenStrict();
+                            
                             try { localStorage.setItem('derivAccount', data.authorize?.loginid || ''); } catch(e) {}
                             try { testWs.close(); } catch(e) {}
                             initializeBotAfterAuth();
@@ -530,6 +679,20 @@
             if (err) err.style.display = 'none';
             if (bot) bot.style.display = 'block';
 
+            // Show account mode in UI
+            const selectedMode = localStorage.getItem('selectedAccountMode');
+            if (selectedMode) {
+                const modeDisplay = document.getElementById('accountModeDisplay');
+                const currentModeSpan = document.getElementById('currentAccountMode');
+                if (modeDisplay && currentModeSpan) {
+                    modeDisplay.style.display = 'block';
+                    currentModeSpan.textContent = selectedMode === 'DEMO' ? '📊 DEMO' : '💰 REAL';
+                    currentModeSpan.className = selectedMode === 'DEMO' 
+                        ? 'px-3 py-1 text-sm font-bold rounded-lg demo-account text-white'
+                        : 'px-3 py-1 text-sm font-bold rounded-lg real-account text-white';
+                }
+            }
+
             // Now initialize the bot UI + logic
             try { initializeBot(); } catch (e) { console.error(e); }
         }
@@ -537,7 +700,11 @@
         function logout() {
             try { if (window.isBotRunning) stopBot(); } catch(e) {}
 
+            // Clear all auth data
             localStorage.removeItem('derivToken');
+            localStorage.removeItem('derivTokenDemo');
+            localStorage.removeItem('derivTokenReal');
+            localStorage.removeItem('selectedAccountMode');
             localStorage.removeItem('auth_method');
             localStorage.removeItem('last_auth_time');
             localStorage.removeItem('auto_open_bot');
@@ -552,7 +719,7 @@
 
 
         // GLOBAL STATE
-        window.DERIV_TOKEN = localStorage.getItem('derivToken') || '';
+        window.DERIV_TOKEN = getSelectedDerivTokenStrict();
         window.ws = null;
         window.req_id = 0;
         window.isBotRunning = false;
@@ -674,9 +841,7 @@
             
             // Start queue processor
             startQueueProcessor();
-        
-}
-
+        }
         
         function updateProbability() {
             if (!window.isBotRunning || window.digitsHistory.length < 10) return;
@@ -1167,6 +1332,13 @@
         // --- WebSocket Handlers ---
 
         function connectWebSocket() {
+            const selectedMode = localStorage.getItem('selectedAccountMode');
+            if (!selectedMode) {
+                showAuthenticationError('Please select DEMO or REAL before trading.');
+                return;
+            }
+
+            window.DERIV_TOKEN = getSelectedDerivTokenStrict();
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
                 log('❌ Authentication required. Please connect via OAuth.', 'CRITICAL');
                 stopBot();
@@ -1545,6 +1717,12 @@
 
         function startBot() {
             if (window.isBotRunning) return;
+
+            const selectedMode = localStorage.getItem('selectedAccountMode');
+            if (!selectedMode) {
+                showAuthenticationError('Please select DEMO or REAL before trading.');
+                return;
+            }
 
             if (!window.DERIV_TOKEN || !window.isAuthenticated) {
                 log('❌ Authentication required. Please connect via OAuth.', 'CRITICAL');
