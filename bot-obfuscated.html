@@ -426,15 +426,14 @@
         // 🔐 STRICT ACCOUNT SELECTION (NO AUTO SWITCH)
         // ============================================================================
         function getSelectedDerivTokenStrict() {
-            const selectedMode = localStorage.getItem('selectedAccountMode'); // DEMO or REAL
+            const selectedMode = localStorage.getItem('selectedAccountMode');
 
             if (!selectedMode) return null;
 
+            // 🔐 STRICT - NO FALLBACK TO GENERIC TOKEN
             if (selectedMode === 'DEMO') {
                 return localStorage.getItem('derivTokenDemo');
-            }
-
-            if (selectedMode === 'REAL') {
+            } else if (selectedMode === 'REAL') {
                 return localStorage.getItem('derivTokenReal');
             }
 
@@ -445,24 +444,22 @@
             // Save selection
             localStorage.setItem('selectedAccountMode', mode);
             
-            // Get token (generic OAuth token)
-            const token =
-                mode === 'DEMO'
-                    ? (localStorage.getItem('derivTokenDemo') || localStorage.getItem('derivToken'))
-                    : (localStorage.getItem('derivTokenReal') || localStorage.getItem('derivToken'));
-
+            let token = null;
+            
+            // 🔐 STRICT TOKEN SEPARATION - NO FALLBACK
+            if (mode === 'DEMO') {
+                token = localStorage.getItem('derivTokenDemo');
+            } else if (mode === 'REAL') {
+                token = localStorage.getItem('derivTokenReal');
+            }
+            
             if (!token) {
-                showAuthenticationError('No OAuth token found. Please authenticate again.');
+                showAuthenticationError(
+                    `No ${mode} account token found. Please connect via OAuth using a ${mode} account.`
+                );
                 return;
             }
-
-            // Save token under correct key
-            if (mode === 'DEMO') {
-                localStorage.setItem('derivTokenDemo', token);
-            } else {
-                localStorage.setItem('derivTokenReal', token);
-            }
-
+            
             // ✅ ONLY NOW verify token
             verifyTokenAndInitialize(token);
         }
