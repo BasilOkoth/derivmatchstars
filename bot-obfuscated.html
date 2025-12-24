@@ -538,13 +538,13 @@
                 oauthRedirect 
             });
 
-            // If we have both tokens but no selection, show selection screen
+            // If token exists but user has NOT selected DEMO/REAL → show selection ONLY
             if ((hasDemoToken || hasRealToken) && !selectedMode) {
-                setTimeout(showAccountSelection, 500);
-                return;
+                setTimeout(showAccountSelection, 300);
+                return; // ⛔ DO NOT show auth error
             }
 
-            // If we have a selected mode, get that token
+            // If selected mode exists → verify token
             if (selectedMode) {
                 const token = getSelectedDerivTokenStrict();
                 if (token) {
@@ -556,6 +556,7 @@
                 }
             }
 
+            // ONLY reach here if NO token exists at all
             showAuthenticationError('Authentication required. Please connect via OAuth first.');
         });
 
