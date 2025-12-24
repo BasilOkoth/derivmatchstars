@@ -445,29 +445,26 @@
             // Save selection
             localStorage.setItem('selectedAccountMode', mode);
             
-            // Update UI
-            const buttons = document.querySelectorAll('.account-mode-btn');
-            buttons.forEach(btn => {
-                if (btn.textContent.includes(mode)) {
-                    btn.classList.add('account-mode-selected');
-                } else {
-                    btn.classList.remove('account-mode-selected');
-                }
-            });
-            
-            // Show loading
-            document.getElementById('loadingSpinner').style.display = 'inline-block';
-            document.getElementById('accountSelection').style.display = 'none';
-            document.getElementById('autoStartMessage').textContent = `Loading ${mode} account...`;
-            document.getElementById('autoStartSubMessage').textContent = 'Verifying authentication...';
-            
-            // Get token and verify
-            const token = getSelectedDerivTokenStrict();
-            if (token) {
-                verifyTokenAndInitialize(token);
-            } else {
-                showAuthenticationError(`No ${mode} token found. Please connect via OAuth.`);
+            // Get token (generic OAuth token)
+            const token =
+                mode === 'DEMO'
+                    ? (localStorage.getItem('derivTokenDemo') || localStorage.getItem('derivToken'))
+                    : (localStorage.getItem('derivTokenReal') || localStorage.getItem('derivToken'));
+
+            if (!token) {
+                showAuthenticationError('No OAuth token found. Please authenticate again.');
+                return;
             }
+
+            // Save token under correct key
+            if (mode === 'DEMO') {
+                localStorage.setItem('derivTokenDemo', token);
+            } else {
+                localStorage.setItem('derivTokenReal', token);
+            }
+
+            // ✅ ONLY NOW verify token
+            verifyTokenAndInitialize(token);
         }
 
         function showAccountSelection() {
@@ -477,26 +474,20 @@
             const subMessage = document.getElementById('autoStartSubMessage');
             
             if (selectionDiv) {
-                // Check if we have both tokens
-                const hasDemoToken = !!localStorage.getItem('derivTokenDemo');
-                const hasRealToken = !!localStorage.getItem('derivTokenReal');
+                selectionDiv.style.display = 'block';
+                if (loadingSpinner) loadingSpinner.style.display = 'none';
+                if (message) message.textContent = 'Select account type:';
+                if (subMessage) subMessage.textContent = 'Choose DEMO or REAL account to continue';
                 
-                if (hasDemoToken || hasRealToken) {
-                    selectionDiv.style.display = 'block';
-                    if (loadingSpinner) loadingSpinner.style.display = 'none';
-                    if (message) message.textContent = 'Select account type:';
-                    if (subMessage) subMessage.textContent = 'Choose DEMO or REAL account to continue';
-                    
-                    // Highlight previously selected mode if any
-                    const selectedMode = localStorage.getItem('selectedAccountMode');
-                    if (selectedMode) {
-                        const buttons = document.querySelectorAll('.account-mode-btn');
-                        buttons.forEach(btn => {
-                            if (btn.textContent.includes(selectedMode)) {
-                                btn.classList.add('account-mode-selected');
-                            }
-                        });
-                    }
+                // Highlight previously selected mode if any
+                const selectedMode = localStorage.getItem('selectedAccountMode');
+                if (selectedMode) {
+                    const buttons = document.querySelectorAll('.account-mode-btn');
+                    buttons.forEach(btn => {
+                        if (btn.textContent.includes(selectedMode)) {
+                            btn.classList.add('account-mode-selected');
+                        }
+                    });
                 }
             }
         }
@@ -508,55 +499,18 @@
         window.isAuthenticated = false;
         window.authorizedAccount = null;
 
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('🔐 Bot loading - Checking for OAuth token...');
-
-            // Update overlay message
-            const msgEl = document.getElementById('autoStartMessage');
-            const subEl = document.getElementById('autoStartSubMessage');
-            if (msgEl) msgEl.textContent = 'Checking authentication...';
-            if (subEl) subEl.textContent = 'Looking for OAuth session...';
-
-            const urlParams = new URLSearchParams(window.location.search);
-            const oauthRedirect = urlParams.get('oauth_redirect');
-            const autoOpen = urlParams.get('auto_open');
-
-            // Clean URL if redirected with params
-            if (oauthRedirect || autoOpen) {
-                try { window.history.replaceState({}, document.title, window.location.pathname); } catch(e) {}
-            }
-
-            // Check if we need account selection
+        document.addEventListener('DOMContentLoaded', () => {
+            const hasGenericToken = !!localStorage.getItem('derivToken');
             const hasDemoToken = !!localStorage.getItem('derivTokenDemo');
             const hasRealToken = !!localStorage.getItem('derivTokenReal');
-            const selectedMode = localStorage.getItem('selectedAccountMode');
-            
-            console.log('🔍 Auth check:', { 
-                hasDemoToken, 
-                hasRealToken, 
-                selectedMode,
-                oauthRedirect 
-            });
 
-            // If token exists but user has NOT selected DEMO/REAL → show selection ONLY
-            if ((hasDemoToken || hasRealToken) && !selectedMode) {
-                setTimeout(showAccountSelection, 300);
-                return; // ⛔ DO NOT show auth error
+            // Case 1: OAuth token exists but user has not selected account
+            if (hasGenericToken || hasDemoToken || hasRealToken) {
+                showAccountSelection();
+                return; // ⛔ STOP here, wait for user choice
             }
 
-            // If selected mode exists → verify token
-            if (selectedMode) {
-                const token = getSelectedDerivTokenStrict();
-                if (token) {
-                    console.log(`✅ Found ${selectedMode} token, verifying...`);
-                    if (msgEl) msgEl.textContent = `Verifying ${selectedMode} account...`;
-                    if (subEl) subEl.textContent = 'Connecting to Deriv API...';
-                    setTimeout(() => verifyTokenAndInitialize(token), 300);
-                    return;
-                }
-            }
-
-            // ONLY reach here if NO token exists at all
+            // Case 2: No token at all → real auth error
             showAuthenticationError('Authentication required. Please connect via OAuth first.');
         });
 
