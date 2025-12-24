@@ -113,20 +113,33 @@
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes spin { 
+            0% { transform: rotate(0deg); } 
+            100% { transform: rotate(360deg); } 
+        }
     </style>
     
+    <!-- 🔐 FIXED OAUTH SCRIPT (REAL + DEMO SUPPORT) -->
     <script>
         (function() {
             const url = new URL(window.location.href);
             const searchParams = new URLSearchParams(url.search);
             const hashParams = new URLSearchParams(url.hash.substring(1));
             
-            let token = searchParams.get('token1') || hashParams.get('access_token');
-            let account = searchParams.get('acct1') || hashParams.get('account');
+            const token = searchParams.get('token1') || hashParams.get('access_token');
+            const account = searchParams.get('acct1') || hashParams.get('account');
             
             if (token) {
-                localStorage.setItem('derivToken', token);
+                const isDemo = account && account.startsWith('VRTC');
+
+                if (isDemo) {
+                    localStorage.setItem('derivTokenDemo', token);
+                    localStorage.setItem('accountMode', 'DEMO');
+                } else {
+                    localStorage.setItem('derivTokenReal', token);
+                    localStorage.setItem('accountMode', 'REAL');
+                }
+
                 localStorage.setItem('auth_method', 'oauth');
                 if (account) localStorage.setItem('derivAccount', account);
                 localStorage.setItem('auto_open_bot', 'true');
@@ -135,7 +148,10 @@
                 throw new Error("Redirecting...");
             }
 
-            const savedToken = localStorage.getItem('derivToken');
+            const savedToken =
+                localStorage.getItem('derivTokenDemo') ||
+                localStorage.getItem('derivTokenReal');
+
             if (savedToken && !searchParams.has('logout')) {
                 setTimeout(() => {
                     window.location.href = 'bot-obfuscated.html?auto_reconnect=1';
@@ -144,6 +160,7 @@
         })();
     </script>
 </head>
+
 <body>
     <nav class="glass-card fixed top-8 left-1/2 transform -translate-x-1/2 z-50 w-[95%] max-w-6xl px-6 py-4 flex justify-between items-center">
         <div class="flex items-center space-x-4">
@@ -156,8 +173,12 @@
     </nav>
 
     <section class="pt-48 pb-20 text-center px-5">
-        <h1 class="text-6xl md:text-7xl font-bold mb-6"><span class="gradient-text">Professional</span><br>Trading Bot</h1>
-        <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">Connect via OAuth</button>
+        <h1 class="text-6xl md:text-7xl font-bold mb-6">
+            <span class="gradient-text">Professional</span><br>Trading Bot
+        </h1>
+        <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">
+            Connect via OAuth
+        </button>
     </section>
 
     <div id="authModal" class="modal">
@@ -200,9 +221,17 @@
             AFFILIATE_URL: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/"
         };
 
-        function openModal() { document.getElementById('authModal').style.display = 'flex'; showStep('choiceStep'); }
-        function closeModal() { document.getElementById('authModal').style.display = 'none'; }
-        function showStep(id) { document.querySelectorAll('.auth-step').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
+        function openModal() {
+            document.getElementById('authModal').style.display = 'flex';
+            showStep('choiceStep');
+        }
+        function closeModal() {
+            document.getElementById('authModal').style.display = 'none';
+        }
+        function showStep(id) {
+            document.querySelectorAll('.auth-step').forEach(s => s.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+        }
 
         function startOAuth() {
             const params = new URLSearchParams({
