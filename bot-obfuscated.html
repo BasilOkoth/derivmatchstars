@@ -588,6 +588,13 @@
                         <input type="number" id="maxTrades" value="10" min="1" max="100" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
                     </div>
+
+                    <!-- Max Cycle Trades (Progression Cap) -->
+                    <div>
+                        <label for="maxCycleTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Cycle Trades</label>
+                        <input type="number" id="maxCycleTrades" value="10" min="1" max="50"
+                            class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
+                    </div>
                     
                     <!-- Mode Toggle - ONLY INSTANT AND AI AUTO -->
                     <div class="col-span-2 lg:col-span-3">
@@ -685,15 +692,46 @@
         
         // Global AI thresholds (single source of truth)
         window.AI_THRESHOLDS = {
-            // COMMERCIAL BALANCED MODE (BEST FOR REAL BOT)
-            minSupport: 25,                 // enough data
-            minH5: 0.48,                    // allow moderate early pressure
-            minP10: 0.70,                   // strong within 10
-            maxPersistenceStable: 85,       // allow more persistence when STABLE
-            maxPersistenceStableRelax: 95,  // only used with extra safety gates
-            maxPersistenceUnstable: 60,     // stricter when UNSTABLE
-            maxExtend: 2,                   // allow natural cold growth
-            require_g_lt_p90: true          // ALWAYS KEEP (NEVER REMOVE)
+            minSupport: 22,
+
+            // EARLY PRESSURE (REALISTIC MODE)
+            minH5: 0.42,        // 🔥 KEY CHANGE (from 0.50 → 0.45)
+            minP10: 0.66,       // slightly relaxed
+
+            maxPersistenceStable: 97,      // allow more clean cold
+            maxPersistenceStableRelax: 97,
+            maxPersistenceUnstable: 93,    // still strict when unstable
+
+            maxExtend: 3,
+            require_g_lt_p90: true
+        ,
+            // PRESSURE ZONE: only recommend digits whose current gap is close to P90
+            // Example: min=0.75 means "within last 15% of the P90 gap"
+            pressureZoneEnabled: true,
+            // Looser default so you still get trades, but quality stays high.
+            // 0.75 means "within last 25% of P90"
+            pressureZoneMinP90Ratio: 0.70,
+            pressureZoneMaxP90Ratio: 0.95,
+                        // Hard floor: never recommend if gap is far from P90 (prevents "gap 4, p90 20" type picks)
+            pressureZoneMinFloorP90Ratio: 0.60,
+// Adaptive fallback: if no digit qualifies at the first tier, the engine progressively relaxes.
+            // It will NEVER go below pressureZoneMinFloorP90Ratio.
+            pressureZoneFallbackMinP90Ratios: [0.70, 0.66, 0.63, 0.60]
+        };
+
+
+        // ============================================================================
+        // SURVIVAL CURVE ENGINE CONFIG (Empirical conditional survival from historical gaps)
+        // ============================================================================
+        window.SURVIVAL_WINDOW = 2000;   // rolling digits window (oldest -> newest)
+        window.lastDigits = [];          // rolling buffer of last digits for SurvivalEngine
+
+        // Ranking defaults (tweakable)
+        window.SURVIVAL_CFG = {
+            minPm5: 0.60,
+            maxS20: 0.05,
+            maxETM: 12,
+            requirePressure: true
         };
 
         // Engine State
@@ -789,6 +827,10 @@
                     updateTickFormatFromQuote(prices[i]);
                     const digit = getLastDigitFromQuote(prices[i]);
                     if (isNaN(digit) || digit < 0 || digit > 9) continue;
+
+                    // SurvivalEngine rolling digits buffer
+                    window.lastDigits.push(digit);
+                    if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
                     
                     // Debug digit 0
                     if (digit === 0) {
@@ -826,6 +868,10 @@
                 
                 // 🔥 FIXED: digit 0 is valid, so check for NaN instead
                 if (isNaN(digit) || digit < 0 || digit > 9) return;
+
+                // SurvivalEngine rolling digits buffer
+                window.lastDigits.push(digit);
+                if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
                 
                 // 🔥 FIX #3: advance tick index
                 this.tickIndex++;
@@ -889,9 +935,9 @@
                 const dominance = Math.max(...this.regime.counts) / n;
                 
                 const ok =
-                    entropy >= 0.90 &&
-                    chi2 <= 22 &&
-                    dominance <= 0.18;
+                    entropy >= 0.88 &&
+                    chi2 <= 28 &&
+                    dominance <= 0.20;
                 
                 return { 
                     ok, 
@@ -1025,113 +1071,310 @@
                         ? thresholds.maxPersistenceStable
                         : thresholds.maxPersistenceUnstable;
 
+                const rawPressureTiers = (thresholds.pressureZoneEnabled &&
+                    Array.isArray(thresholds.pressureZoneFallbackMinP90Ratios) &&
+                    thresholds.pressureZoneFallbackMinP90Ratios.length)
+                    ? thresholds.pressureZoneFallbackMinP90Ratios
+                    : [thresholds.pressureZoneEnabled ? thresholds.pressureZoneMinP90Ratio : 0.0];
 
-                for (let d = 0; d < 10; d++) {
-                    const s = this.digitStats[d];
-                    const g = s.currentGap;
-                    
-                    const P5  = this.conditionalReturnProb(d, g, 5);
-                    const P10 = this.conditionalReturnProb(d, g, 10);
-                    
-                    // Filter conditions
-                    if (s.gaps.length < thresholds.minSupport) continue;
+                const pressureFloor = (thresholds.pressureZoneEnabled && typeof thresholds.pressureZoneMinFloorP90Ratio === "number")
+                    ? thresholds.pressureZoneMinFloorP90Ratio
+                    : 0.0;
 
-                    // Gap zone: always block tail (NEVER REMOVE)
-                    if (thresholds.require_g_lt_p90 && g >= s.p90Gap) continue;
+                // Ensure tiers are sorted high→low, unique, and never drop below the floor.
+                const pressureTiers = Array.from(new Set(rawPressureTiers))
+                    .map(v => (typeof v === "number" ? v : 0.0))
+                    .filter(v => v >= pressureFloor && v < 1)
+                    .sort((a, b) => b - a);
 
-                    // Cold-stickiness / instability filters
-                    const extendRatio = (s.avgGap && s.avgGap > 0) ? (g / s.avgGap) : Infinity;
-                    const effectiveMaxPersistence = (
-                        regimeStatus.label === "STABLE" &&
-                        P10 >= (thresholds.minP10 + 0.05) &&
-                        extendRatio <= 1.3
-                    ) ? thresholds.maxPersistenceStableRelax : maxPersistence;
+                if (thresholds.pressureZoneEnabled && pressureTiers.length === 0) {
+                    pressureTiers.push(Math.max(0, Math.min(0.999, pressureFloor)));
+                }
 
-                    if (s.persistenceScore > effectiveMaxPersistence) continue;
-                    if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
-                    if (s.isUnstable) continue;
+                const runPass = (activeMinP90Ratio) => {
+                    let passBest = null;
 
-                    // Probability gates
-                    if (P5 < thresholds.minH5) continue;
-                    if (P10 < thresholds.minP10) continue;
+                    for (let d = 0; d < 10; d++) {
+                        const s = this.digitStats[d];
+                        const g = s.currentGap;
+                        const p90 = Math.max(s.p90Gap, 1);
+                        const p90Ratio = g / p90;
+                        const extendRatio = g / s.avgGap;
 
-                    // Calculate score
-                    const score =
-                        0.45 * P10 +
-                        0.25 * P5 +
-                        0.15 * (1 - g / Math.max(s.p90Gap,1)) +
-                        0.15 * (1 - s.persistenceScore / 100);
-                    
-                    if (score < 0.75) continue;
-                    
-                    if (!best || score > best.score) {
-                        best = { 
-                            digit: d, 
-                            score: score, 
-                            P10: P10,
-                            P5: P5,
-                            gap: g,
-                            persistenceScore: s.persistenceScore,
-                            isUnstable: s.isUnstable
-                        };
+                        // 🔥 HARD TAIL BLOCK: extreme stretch vs history
+                        if (extendRatio > 2.8) continue;
+
+                        // 🔥 Biased regime + stretched digit = tail risk
+                        if (regimeStatus.entropy < 0.96 && extendRatio > 1.5) continue;
+
+                        // 🔥 Tail forming: suppressed digit + stretched gap
+                        if (s.persistenceScore > 90 && extendRatio > 1.8) continue;
+
+                        const P5  = this.conditionalReturnProb(d, g, 5);
+                        const P10 = this.conditionalReturnProb(d, g, 10);
+
+                        // Filter conditions
+                        if (s.gaps.length < thresholds.minSupport) continue;
+
+                        // STRONG EARLY FIRST (H5 primary gate)
+                        if (P5 < thresholds.minH5) continue;
+
+                        // MEDIUM EARLY SECOND
+                        if (P10 < thresholds.minP10) continue;
+
+                        // SAFETY
+                        if (thresholds.require_g_lt_p90 && g >= p90) continue;
+
+                        // PRESSURE ZONE (adaptive): prefer digits close to P90, but relax if too strict.
+                        if (thresholds.pressureZoneEnabled) {
+                            if (p90Ratio < activeMinP90Ratio) continue;
+                            if (p90Ratio >= thresholds.pressureZoneMaxP90Ratio) continue;
+                        }
+
+                        // Cold-stickiness / persistence filters
+                        const effectiveMaxPersistence = (
+                            regimeStatus.label === "STABLE" &&
+                            P10 >= (thresholds.minP10 + 0.05) &&
+                            extendRatio <= 1.3
+                        ) ? thresholds.maxPersistenceStableRelax : maxPersistence;
+
+                        if (s.persistenceScore > effectiveMaxPersistence) continue;
+                        if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
+                        if (s.isUnstable) continue;
+
+                        // Calculate score (still strongly favors closest-to-P90)
+                        const denom = Math.max(1 - activeMinP90Ratio, 1e-6);
+                        const pressureScore = thresholds.pressureZoneEnabled
+                            ? Math.max(0, Math.min(1, (p90Ratio - activeMinP90Ratio) / denom))
+                            : Math.max(0, Math.min(1, g / p90));
+
+                        const score =
+                            0.45 * P10 +
+                            0.25 * P5 +
+                            0.20 * pressureScore +
+                            0.10 * (1 - s.persistenceScore / 100);
+
+                        if (!passBest || score > passBest.score) {
+                            passBest = {
+                                digit: d,
+                                score: score,
+                                P10: P10,
+                                P5: P5,
+                                gap: g,
+                                persistenceScore: s.persistenceScore,
+                                isUnstable: s.isUnstable
+                            };
+                        }
+                    }
+
+                    return passBest;
+                };
+
+                for (const activeMinP90Ratio of pressureTiers) {
+                    best = runPass(activeMinP90Ratio);
+                    if (best) {
+                        best.pressureMinP90Ratio = activeMinP90Ratio;
+                        break;
                     }
                 }
-                
+
                 return best;
             },
             
             // Analyze and recommend digit
             analyzeAndRecommend: function() {
                 const regimeStatus = this.computeRegimeStatus();
-                
-                if (regimeStatus.ok) {
-                    const best = this.selectBestDigit();
-                    
-                    if (best) {
-                        this.currentRecommendation = best;
-                        
-                        // Update UI
-                        document.getElementById('ai-recommended-digit').textContent = best.digit;
-                        document.getElementById('ai-digit-score').textContent = `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%`;
-                        
-                        // Color code based on score
-                        const scoreElem = document.getElementById('ai-digit-score');
-                        scoreElem.classList.remove('engine-digit-score-high', 'engine-digit-score-medium', 'engine-digit-score-low');
-                        if (best.score >= 0.85) scoreElem.classList.add('engine-digit-score-high');
-                        else if (best.score >= 0.75) scoreElem.classList.add('engine-digit-score-medium');
-                        else scoreElem.classList.add('engine-digit-score-low');
-                        
-                        log(`🧠 AI recommends digit ${best.digit} (Score: ${(best.score * 100).toFixed(1)}%, Gap: ${best.gap})`, 'ENGINE');
-                        
-                        // Update regime status display
-                        document.getElementById('engine-regime-status').textContent = 
-                            `Regime: ${regimeStatus.label} | E: ${regimeStatus.entropy} | D: ${regimeStatus.dominance}`;
-                        
-                        // Update engine status
-                        updateEngineStatus(`Ready | Digit ${best.digit} recommended`, 'READY', 100);
-                        
-                        // If in AI AUTO mode, update the digit automatically
-                        if (sessionState.mode === 'ai') {
-                            document.getElementById('predictedDigit').value = best.digit;
-                            sessionState.sessionDigit = best.digit;
-                            sessionState.sessionStarted = true;
-                            sessionState.manualOverride = false;
-                            updateSessionDisplay();
-                            log(`🤖 AI AUTO: Digit updated to ${best.digit}`, 'ENGINE');
-                        }
-                        
-                        return best;
-                    } else {
-                        log('🧠 No safe digit found - waiting for better opportunity', 'ENGINE');
-                        updateEngineStatus('Waiting for safe digit...', 'ANALYZING', 100);
-                        this.currentRecommendation = null;
-                        return null;
-                    }
-                } else {
-                    log(`🧠 Regime not stable yet (${regimeStatus.label})`, 'ENGINE');
-                    updateEngineStatus(`Regime: ${regimeStatus.label}`, 'ANALYZING', 100);
+
+                if (!regimeStatus.ok) {
+                    // Keep UI consistent when regime is unstable
                     this.currentRecommendation = null;
-                    return null;
+                    document.getElementById('ai-recommended-digit').textContent = '-';
+                    document.getElementById('ai-digit-score').textContent = 'Score: 0.0% | P10: 0.0% | NO-TRADE';
+                    return;
+                }
+
+                let best = this.selectBestDigit();
+
+                // -----------------------------
+                // Survival-curve overlay (always-on hybrid when data exists)
+                // -----------------------------
+                const minDigits = (typeof window.SURVIVAL_MIN_DIGITS === 'number') ? window.SURVIVAL_MIN_DIGITS : 80;
+                const windowSize = window.SURVIVAL_WINDOW || 2000;
+
+                let survivalStats = null;
+                let survivalByDigit = null;
+                let survivalTop3 = [];
+                let survivalTop = null;
+
+                try {
+                    if (window.SurvivalEngine && Array.isArray(window.lastDigits) && window.lastDigits.length >= minDigits) {
+                        survivalStats = window.SurvivalEngine.analyze(window.lastDigits, { window: windowSize });
+                        survivalByDigit = new Map(survivalStats.map(s => [s.digit, s]));
+
+                        // Try strict rank first (user cfg). If empty, fall back to global ranking (no "ignore" case).
+                        let ranked = [];
+                        try {
+                            ranked = window.SurvivalEngine.rank(survivalStats, window.SURVIVAL_CFG || {});
+                        } catch (_) {
+                            ranked = [];
+                        }
+
+                        const scoreRaw = (x) =>
+                            (2.0 * (x.pm5 || 0)) +
+                            (1.0 * (x.pm10 || 0)) -
+                            (2.5 * (x.s20 || 0)) -
+                            (0.05 * Math.min(Number.isFinite(x.etm) ? x.etm : 100, 100));
+
+                        const asScored = (arr) => arr.map(x => {
+                            const raw = Number.isFinite(x.survivalScore) ? x.survivalScore : scoreRaw(x);
+                            const norm = 1 / (1 + Math.exp(-raw));
+                            return { ...x, survivalScore: raw, survivalNorm: norm };
+                        });
+
+                        let globalRanked = asScored(ranked);
+                        if (!globalRanked.length) {
+                            globalRanked = asScored(survivalStats).sort((a, b) => (b.survivalNorm - a.survivalNorm));
+                        }
+
+                        survivalTop3 = globalRanked.slice(0, 3);
+                        survivalTop = survivalTop3[0] || null;
+                    }
+                } catch (e) {
+                    console.warn('SurvivalEngine error:', e);
+                    survivalStats = null;
+                    survivalByDigit = null;
+                    survivalTop3 = [];
+                    survivalTop = null;
+                }
+
+                const hasSurvival = !!(survivalByDigit && survivalByDigit.size);
+
+                // Expose latest survival stats for trading gates
+                try {
+                    window.latestSurvivalStats = Array.isArray(survivalStats) ? survivalStats : null;
+                    window.latestSurvivalByDigit = Array.isArray(survivalStats)
+                        ? Object.fromEntries(survivalStats.map(s => [s.digit, s]))
+                        : null;
+                    window.latestSurvivalUpdatedAt = Date.now();
+                } catch (_) {
+                    window.latestSurvivalStats = null;
+                    window.latestSurvivalByDigit = null;
+                }
+
+                const attachHybrid = (candidate) => {
+                    if (!candidate || !hasSurvival) return candidate;
+
+                    const s = survivalByDigit.get(candidate.digit) || null;
+                    if (s) {
+                        const raw =
+                            Number.isFinite(s.survivalScore) ? s.survivalScore :
+                            (2.0 * (s.pm5 || 0)) + (1.0 * (s.pm10 || 0)) - (2.5 * (s.s20 || 0)) - (0.05 * Math.min(Number.isFinite(s.etm) ? s.etm : 100, 100));
+                        const survNorm = 1 / (1 + Math.exp(-raw));
+
+                        const base = Number.isFinite(candidate.score) ? candidate.score : 0.0;
+                        const historyFactor = Math.min(1, (window.lastDigits.length / windowSize));
+                        const wBase = (typeof window.SURVIVAL_BLEND === 'number') ? window.SURVIVAL_BLEND : 0.35;
+                        const w = Math.max(0.10, Math.min(0.55, wBase * historyFactor));
+
+                        candidate.survival = { ...s, survivalScore: raw, survivalNorm: survNorm };
+                        candidate.source = 'HYBRID';
+                        candidate.score = Math.max(0, Math.min(1, ((1 - w) * base) + (w * survNorm)));
+                    } else {
+                        candidate.source = 'HYBRID';
+                        candidate.survival = null;
+                    }
+                    return candidate;
+                };
+
+                // If base engine has no pick, use survival's best digit (still HYBRID)
+                if (!best && hasSurvival && survivalTop) {
+                    best = {
+                        digit: survivalTop.digit,
+                        score: survivalTop.survivalNorm ?? (1 / (1 + Math.exp(-(survivalTop.survivalScore || 0)))),
+                        P10: survivalTop.pm10 ?? 0,
+                        P5: survivalTop.pm5 ?? 0,
+                        gap: survivalTop.gap ?? 0,
+                        persistenceScore: (this.digitStats[survivalTop.digit]?.persistenceScore ?? 0),
+                        isUnstable: (this.digitStats[survivalTop.digit]?.isUnstable ?? false),
+                        source: 'HYBRID',
+                        survival: survivalTop
+                    };
+                } else {
+                    best = attachHybrid(best);
+                }
+
+                // Optional override: if survival strongly prefers another digit, allow it to replace weak base picks.
+                if (best && hasSurvival && survivalTop && survivalTop.digit !== best.digit) {
+                    const baseScore = Number.isFinite(best.score) ? best.score : 0;
+                    const survTopNorm = survivalTop.survivalNorm ?? (1 / (1 + Math.exp(-(survivalTop.survivalScore || 0))));
+                    if (survTopNorm >= Math.max(0.62, baseScore + 0.08)) {
+                        best = {
+                            digit: survivalTop.digit,
+                            score: survTopNorm,
+                            P10: survivalTop.pm10 ?? 0,
+                            P5: survivalTop.pm5 ?? 0,
+                            gap: survivalTop.gap ?? 0,
+                            persistenceScore: (this.digitStats[survivalTop.digit]?.persistenceScore ?? 0),
+                            isUnstable: (this.digitStats[survivalTop.digit]?.isUnstable ?? false),
+                            source: 'HYBRID',
+                            survival: survivalTop
+                        };
+                    } else {
+                        // Ensure survival metrics are attached even if not overriding.
+                        best.survival = best.survival || survivalByDigit.get(best.digit) || null;
+                        best.source = 'HYBRID';
+                    }
+                }
+
+                if (best) {
+                    this.currentRecommendation = best;
+
+                    // Update UI
+                    document.getElementById('ai-recommended-digit').textContent = best.digit;
+
+                    const sourceLabel = best.source ? ` | ${best.source}` : '';
+
+                    let survivalLabel = '';
+                    if (hasSurvival) {
+                        const s = best.survival || (survivalByDigit ? survivalByDigit.get(best.digit) : null);
+                        if (s) {
+                            survivalLabel =
+                                ` | pm5:${Math.round((s.pm5 || 0) * 100)}% pm10:${Math.round((s.pm10 || 0) * 100)}% s20:${Math.round((s.s20 || 0) * 100)}% etm:${Number.isFinite(s.etm) ? s.etm.toFixed(1) : '∞'}`;
+                        } else {
+                            survivalLabel = ` | Survival: N/A`;
+                        }
+                    } else {
+                        const n = Array.isArray(window.lastDigits) ? window.lastDigits.length : 0;
+                        survivalLabel = ` | Survival: warming up (${n}/${minDigits})`;
+                    }
+
+                    document.getElementById('ai-digit-score').textContent =
+                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}`;
+
+                    // Color code based on score
+                    const scoreElem = document.getElementById('ai-digit-score');
+                    scoreElem.classList.remove('engine-digit-score-high', 'engine-digit-score-medium', 'engine-digit-score-low');
+                    if (best.score >= 0.85) scoreElem.classList.add('engine-digit-score-high');
+                    else if (best.score >= 0.75) scoreElem.classList.add('engine-digit-score-medium');
+                    else scoreElem.classList.add('engine-digit-score-low');
+
+                    // Update survival panel (top3)
+                    try {
+                        const panel = document.getElementById('survival-top3');
+                        if (panel) {
+                            if (!hasSurvival) {
+                                panel.textContent = 'Survival picks: warming up…';
+                            } else if (!survivalTop3.length) {
+                                panel.textContent = 'Survival picks: N/A';
+                            } else {
+                                panel.textContent = 'Top picks: ' + survivalTop3.map(x =>
+                                    `${x.digit} (pm5:${Math.round((x.pm5 || 0) * 100)}%, pm10:${Math.round((x.pm10 || 0) * 100)}%, s20:${Math.round((x.s20 || 0) * 100)}%, etm:${Number.isFinite(x.etm) ? x.etm.toFixed(1) : '∞'})`
+                                ).join(' | ');
+                            }
+                        }
+                    } catch (_) {}
+
+                    log(`🎯 AI recommends digit ${best.digit} (Score: ${(best.score * 100).toFixed(1)}%, P10: ${(best.P10 * 100).toFixed(1)}%)`, 'AI');
                 }
             },
             
@@ -1155,7 +1398,132 @@
             }
         };
         
+        
         // ============================================================================
+        // SURVIVAL CURVE ENGINE v1
+        // Empirical conditional survival from historical gaps (rolling digits)
+        // ============================================================================
+        const SurvivalEngine = (() => {
+          function clampDigit(x) {
+            x = Number(x);
+            if (!Number.isFinite(x)) return null;
+            x = Math.floor(x);
+            return (x >= 0 && x <= 9) ? x : null;
+          }
+
+          function buildGapSamples(digits) {
+            const lastSeen = Array(10).fill(null);
+            const gaps = Array.from({ length: 10 }, () => []);
+            for (let i = 0; i < digits.length; i++) {
+              const d = clampDigit(digits[i]);
+              if (d === null) continue;
+              if (lastSeen[d] !== null) gaps[d].push(i - lastSeen[d] - 1);
+              lastSeen[d] = i;
+            }
+            return gaps;
+          }
+
+          function computeCurrentGaps(digits) {
+            const lastSeen = Array(10).fill(null);
+            for (let i = 0; i < digits.length; i++) {
+              const d = clampDigit(digits[i]);
+              if (d === null) continue;
+              lastSeen[d] = i;
+            }
+            const n = digits.length;
+            return lastSeen.map(idx => (idx === null ? n : (n - 1 - idx)));
+          }
+
+          function percentile(arr, p) {
+            if (!arr.length) return 0;
+            const a = [...arr].sort((x, y) => x - y);
+            const idx = (p / 100) * (a.length - 1);
+            const lo = Math.floor(idx), hi = Math.ceil(idx);
+            if (lo === hi) return a[lo];
+            return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+          }
+
+          function survivalConditional(gaps, g, t) {
+            const eligible = gaps.filter(x => x > g);
+            if (!eligible.length) return 1.0;
+            const stillWaiting = eligible.filter(x => x > g + t);
+            return stillWaiting.length / eligible.length;
+          }
+
+          function pMatchWithin(gaps, g, k) {
+            return 1 - survivalConditional(gaps, g, k);
+          }
+
+          function expectedAdditionalTicks(gaps, g) {
+            const eligible = gaps.filter(x => x > g);
+            if (!eligible.length) return Infinity;
+            const rem = eligible.map(x => x - g);
+            return rem.reduce((s, x) => s + x, 0) / rem.length;
+          }
+
+          function analyze(lastDigits, opts = {}) {
+            const window = opts.window ?? 2000;
+            const digits = lastDigits.slice(-window);
+
+            const gapsByDigit = buildGapSamples(digits);
+            const currentGaps = computeCurrentGaps(digits);
+
+            const out = [];
+            for (let d = 0; d <= 9; d++) {
+              const gaps = gapsByDigit[d];
+              const g = currentGaps[d];
+
+              const p90 = percentile(gaps, 90);
+              const p75 = percentile(gaps, 75);
+              const avg = gaps.length ? (gaps.reduce((s,x)=>s+x,0)/gaps.length) : 0;
+
+              const pm5  = pMatchWithin(gaps, g, 5);
+              const pm10 = pMatchWithin(gaps, g, 10);
+
+              const s10 = survivalConditional(gaps, g, 10);
+              const s20 = survivalConditional(gaps, g, 20);
+
+              const etm = expectedAdditionalTicks(gaps, g);
+
+              const inPressure = (p90 > 0) ? (g >= 0.70 * p90 && g < 0.95 * p90) : false;
+
+              out.push({ digit: d, gap: g, avgGap: avg, p75, p90, inPressure, pm5, pm10, s10, s20, etm });
+            }
+            return out;
+          }
+
+          function rank(stats, cfg = {}) {
+            const minPm5 = cfg.minPm5 ?? 0.60;
+            const maxS20 = cfg.maxS20 ?? 0.25;
+            const maxETM = cfg.maxETM ?? 12;
+            const requirePressure = cfg.requirePressure ?? true;
+
+            const candidates = stats.filter(x => {
+              if (requirePressure && !x.inPressure) return false;
+              if (x.pm5 < minPm5) return false;
+              if (x.s20 > maxS20) return false;
+              if (x.etm > maxETM) return false;
+              return true;
+            });
+
+            candidates.forEach(x => {
+              x.survivalScore =
+                (2.0 * x.pm5) +
+                (1.0 * x.pm10) -
+                (2.5 * x.s20) -
+                (0.05 * Math.min(x.etm, 100));
+            });
+
+            candidates.sort((a, b) => b.survivalScore - a.survivalScore);
+            return candidates;
+          }
+
+          return { analyze, rank };
+        })();
+
+        window.SurvivalEngine = SurvivalEngine;
+
+// ============================================================================
         // MARTINGALE CALCULATOR FUNCTIONS
         // ============================================================================
         
@@ -1366,7 +1734,7 @@
         function updateDigitAnalysisDisplay() {
             const engine = window.digitIntelligenceEngine;
             const thresholds = window.AI_THRESHOLDS;
-            const scoreCutoff = 0.75;
+            const scoreCutoff = 0.50; // ranking hint only
 
             if (!engine.warmupDone) {
                 document.getElementById('digit-analysis-content').innerHTML = `
@@ -1385,6 +1753,17 @@
                     ? thresholds.maxPersistenceStable
                     : thresholds.maxPersistenceUnstable;
 
+            // SurvivalEngine top picks (if enough history)
+            let survivalTop3 = [];
+            try {
+                if (window.SurvivalEngine && Array.isArray(window.lastDigits) && window.lastDigits.length >= 200) {
+                    const sStats = window.SurvivalEngine.analyze(window.lastDigits, { window: window.SURVIVAL_WINDOW || 2000 });
+                    survivalTop3 = window.SurvivalEngine.rank(sStats, window.SURVIVAL_CFG || {}).slice(0, 3);
+                }
+            } catch (e) {
+                console.warn('SurvivalEngine display error:', e);
+            }
+
             let html = `
                 <div class="mb-3">
                     <div class="text-xs font-semibold text-gray-300 mb-1">Regime Status:</div>
@@ -1392,10 +1771,30 @@
                         ${regimeStatus.label} | Entropy: ${regimeStatus.entropy} | Dominance: ${regimeStatus.dominance}
                     </div>
                     <div class="text-[11px] text-gray-500 mt-1">
-                        Gates — Support≥${thresholds.minSupport}, H5≥${thresholds.minH5}, P10≥${thresholds.minP10}, Extend≤${thresholds.maxExtend},
-                        Persistence≤${baseMaxPersistence} (relax→${thresholds.maxPersistenceStableRelax}), Score≥${(scoreCutoff * 100).toFixed(0)}%
+                        Gates — Support≥${thresholds.minSupport}, H5≥${thresholds.minH5}, P10≥${thresholds.minP10}, Pressure∈[${thresholds.pressureZoneMinP90Ratio}×P90, ${thresholds.pressureZoneMaxP90Ratio}×P90), Extend≤${thresholds.maxExtend},
+                        Persistence≤${baseMaxPersistence} (relax→${thresholds.maxPersistenceStableRelax}), Score(rank)≥${(scoreCutoff * 100).toFixed(0)}%
                     </div>
                 </div>
+                ${survivalTop3.length ? `
+                <div class="mb-3 p-2 bg-gray-800/60 rounded border border-cyan-500/30">
+                    <div class="text-xs font-semibold text-cyan-300 mb-1">Survival Top Picks (fast + low tail-risk):</div>
+                    ${survivalTop3.map((x, i) => `
+                        <div class="text-[11px] text-gray-300 flex flex-wrap gap-x-3 gap-y-1">
+                            <span class="text-cyan-200 font-bold">#${i + 1} Digit ${x.digit}</span>
+                            <span>gap:${x.gap}</span>
+                            <span>pm5:${Math.round(x.pm5 * 100)}%</span>
+                            <span>pm10:${Math.round(x.pm10 * 100)}%</span>
+                            <span>s20:${Math.round(x.s20 * 100)}%</span>
+                            <span>etm:${Number.isFinite(x.etm) ? x.etm.toFixed(1) : '∞'}</span>
+                            <span class="text-gray-500">score:${x.survivalScore.toFixed(2)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : `
+                <div class="mb-3 text-[11px] text-gray-500">
+                    Survival picks: none (need more history or no digit passes pm5/s20/etm + pressure).
+                </div>
+                `}
                 <div class="grid grid-cols-1 gap-1">
             `;
 
@@ -1414,26 +1813,35 @@
                     extendRatio <= 1.3
                 ) ? thresholds.maxPersistenceStableRelax : baseMaxPersistence;
 
+                const p90 = Math.max(s.p90Gap, 1);
+                const p90Ratio = g / p90;
+
                 const passSupport = support >= thresholds.minSupport;
-                const passP90 = !(thresholds.require_g_lt_p90 && g >= s.p90Gap);
+                const passP90 = !(thresholds.require_g_lt_p90 && g >= p90);
+                const passPressure = !thresholds.pressureZoneEnabled || (
+                    p90Ratio >= thresholds.pressureZoneMinP90Ratio &&
+                    p90Ratio < thresholds.pressureZoneMaxP90Ratio
+                );
                 const passPersistence = s.persistenceScore <= effectiveMaxPersistence;
                 const passExtend = s.consecutiveExtendingGaps <= thresholds.maxExtend;
                 const passUnstable = !s.isUnstable;
                 const passP5 = P5 >= thresholds.minH5;
                 const passP10 = P10 >= thresholds.minP10;
+const denom = Math.max(1 - thresholds.pressureZoneMinP90Ratio, 1e-6);
+                const pressureScore = thresholds.pressureZoneEnabled
+                    ? Math.max(0, Math.min(1, (p90Ratio - thresholds.pressureZoneMinP90Ratio) / denom))
+                    : Math.max(0, Math.min(1, g / p90));
 
                 const score =
                     0.45 * P10 +
                     0.25 * P5 +
-                    0.15 * (1 - g / Math.max(s.p90Gap, 1)) +
-                    0.15 * (1 - s.persistenceScore / 100);
-
-                const passScore = score >= scoreCutoff;
+                    0.20 * pressureScore +
+                    0.10 * (1 - s.persistenceScore / 100);
+const passScore = score >= scoreCutoff;
 
                 const passAll =
-                    passSupport && passP90 && passPersistence && passExtend && passUnstable && passP5 && passP10 && passScore;
-
-                const isRecommended = engine.currentRecommendation && engine.currentRecommendation.digit === d;
+                    passSupport && passP90 && passPressure && passPersistence && passExtend && passUnstable && passP5 && passP10;
+const isRecommended = engine.currentRecommendation && engine.currentRecommendation.digit === d;
 
                 const barWidth = Math.min(100, (g / 50) * 100);
                 const barColor = !passAll ? 'bg-red-500' :
@@ -1471,7 +1879,7 @@
                         </div>
 
                         <div class="text-[11px] text-gray-500 mt-1">
-                            Pass: Support${flag(passSupport)} · P90${flag(passP90)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
+                            Pass: Support${flag(passSupport)} · P90${flag(passP90)} · Pressure${flag(passPressure)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
                         </div>
 
                         <div class="mt-1 bg-gray-700/40 rounded h-2">
@@ -1562,8 +1970,11 @@
         window.currentStake = 1.0;
         window.multiplier = 1.15;
         window.maxTrades = 20;
+        window.maxCycleTrades = 10;
+        window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
+        window.cycleLosses = 0;
         window.accountBalance = 0.0;
         window.startingBalance = 0.0;
         window.currentBalance = 0.0;
@@ -2006,22 +2417,92 @@
             }
         }
         
-        function lockSessionDigit(digit) {
-            if (sessionState.sessionStarted && sessionState.sessionDigit !== null) {
+        function lockSessionDigit(digit, force = false, reason = '') {
+            if (!force && sessionState.sessionStarted && sessionState.sessionDigit !== null) {
                 log(`🔒 Digit ${digit} is already locked for this session`, 'SESSION');
                 return sessionState.sessionDigit;
             }
-            
+
             sessionState.sessionDigit = digit;
             sessionState.sessionStarted = true;
             sessionState.manualOverride = false;
             document.getElementById('predictedDigit').value = digit;
             updateSessionDisplay();
-            log(`🔒 Digit ${digit} locked for current session`, 'SESSION');
+            log(`🔒 Digit ${digit} locked for current session${reason ? ' (' + reason + ')' : ''}`, 'SESSION');
             return digit;
         }
-        
-        // CONNECTION STATUS
+
+        function clearSessionDigitLock(reason = '') {
+            sessionState.sessionDigit = null;
+            sessionState.sessionStarted = false;
+            sessionState.manualOverride = false;
+            updateSessionDisplay();
+            if (reason) log(`🔓 Session digit lock cleared (${reason})`, 'SESSION');
+        }
+
+        // HYBRID UTILITIES (tail-risk gate + cycle rotation)
+        function getSurvivalForDigit(digit) {
+            const d = Number(digit);
+            if (!Number.isFinite(d) || d < 0 || d > 9) return null;
+
+            if (window.latestSurvivalByDigit && window.latestSurvivalByDigit[d]) {
+                return window.latestSurvivalByDigit[d];
+            }
+
+            const rec = window.digitIntelligenceEngine?.currentRecommendation;
+            if (rec && rec.digit === d && rec.survival) return rec.survival;
+
+            return null;
+        }
+
+        function pickBestLowTailRiskDigit(maxS20 = 0.05) {
+            if (!window.latestSurvivalByDigit) return null;
+
+            let best = null;
+            for (let d = 0; d <= 9; d++) {
+                const s = window.latestSurvivalByDigit[d];
+                if (!s) continue;
+
+                const s20 = Number(s.s20);
+                if (!Number.isFinite(s20) || s20 > maxS20) continue;
+
+                const raw =
+                    (2.0 * (s.pm5 || 0)) +
+                    (1.0 * (s.pm10 || 0)) -
+                    (2.5 * (s.s20 || 0)) -
+                    (0.05 * Math.min(Number.isFinite(s.etm) ? s.etm : 100, 100));
+
+                const norm = 1 / (1 + Math.exp(-raw));
+                if (!best || norm > best.norm) best = { digit: d, norm, s };
+            }
+            return best;
+        }
+
+        function rotateHybridDigit(reason = '') {
+            clearSessionDigitLock(reason || 'Rotate');
+            window.cycleRotations = (window.cycleRotations || 0) + 1;
+
+            // Reset progression (cycle reset)
+            window.martingaleStep = 0;
+            window.currentStake = window.baseStake;
+
+            if (sessionState.mode !== 'ai') return;
+
+            // Prefer a low tail-risk digit (s20 <= 5%), otherwise use current AI rec.
+            const pick = pickBestLowTailRiskDigit(0.05);
+            const nextDigit =
+                (pick && Number.isFinite(pick.digit)) ? pick.digit :
+                (window.digitIntelligenceEngine?.currentRecommendation?.digit ?? null);
+
+            if (nextDigit === null) return;
+
+            lockSessionDigit(nextDigit, true, reason || 'Rotate');
+            log(`🔁 Re-picked HYBRID digit ${nextDigit}${reason ? ' (' + reason + ')' : ''}`, 'SESSION');
+        }
+
+
+
+// CONNECTION STATUS
         function updateConnectionStatus() {
             const isConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
             const isConnecting = window.isConnecting || false;
@@ -2086,19 +2567,24 @@
             } else if (mode === 'ai') {
                 document.getElementById('mode_ai').classList.add('bg-green-600');
                 document.getElementById('mode_instant').classList.add('bg-purple-600');
-                document.getElementById('mode_description').textContent = '🤖 AI AUTO: Let AI select and update digits automatically';
+                document.getElementById('mode_description').textContent = '🤖 AI AUTO: Let AI select and lock the current prediction when started';
                 log('🔄 Switched to AI AUTO mode', 'SYSTEM');
-                
-                // Check if engine is ready
+
+                // In AI mode we PREVIEW digits while stopped, and LOCK only when the bot is running.
                 if (window.digitIntelligenceEngine.warmupDone && window.digitIntelligenceEngine.currentRecommendation) {
                     const recommendedDigit = window.digitIntelligenceEngine.currentRecommendation.digit;
                     document.getElementById('predictedDigit').value = recommendedDigit;
-                    sessionState.sessionDigit = recommendedDigit;
-                    sessionState.sessionStarted = true;
-                    sessionState.manualOverride = false;
-                    updateSessionDisplay();
-                    log(`🤖 AI mode active - Using recommended digit: ${recommendedDigit}`, 'ENGINE');
+
+                    if (window.isBotRunning) {
+                        lockSessionDigit(recommendedDigit, true, 'AI AUTO (running)');
+                        log(`🤖 AI mode active - Locked digit for trading: ${recommendedDigit}`, 'ENGINE');
+                    } else {
+                        clearSessionDigitLock('AI AUTO (preview)');
+                        log(`🤖 AI mode active - Preview digit: ${recommendedDigit} (will lock on START)`, 'ENGINE');
+                        updateTradeStatus('READY', `AI digit ${recommendedDigit} ready`, 'Will lock on Start', 'normal');
+                    }
                 } else {
+                    clearSessionDigitLock('AI AUTO (waiting)');
                     log('🤖 AI mode active - Waiting for engine recommendation...', 'ENGINE');
                     updateTradeStatus('WAITING', 'AI engine analyzing...', 'Waiting for AI recommendation', 'normal');
                 }
@@ -2108,27 +2594,54 @@
         }
         
         function updateExecutionLogic() {
-            if (sessionState.mode === 'ai' && !window.digitIntelligenceEngine.warmupDone) {
-                log('🧠 AI Engine still warming up...', 'ENGINE');
-                window.nextTradeAllowed = false;
-                updateTradeStatus('WAITING', 'AI Engine warming up', 'Please wait for engine to analyze', 'normal');
-            } else if (sessionState.mode === 'ai' && window.digitIntelligenceEngine.currentRecommendation) {
+            if (sessionState.mode === 'ai') {
+                const hasRec = !!window.digitIntelligenceEngine.currentRecommendation;
+                const warmed = !!window.digitIntelligenceEngine.warmupDone;
+
+                if (!warmed || !hasRec) {
+                    if (window.isBotRunning) {
+                        log('🧠 AI Engine not ready yet...', 'ENGINE');
+                        window.nextTradeAllowed = false;
+                        updateTradeStatus('WAITING', 'AI Engine warming up', 'Waiting for AI recommendation', 'normal');
+                    } else {
+                        window.nextTradeAllowed = false;
+                        clearSessionDigitLock('AI not ready (stopped)');
+                        updateTradeStatus('WAITING', 'AI engine analyzing...', 'Will lock on Start when ready', 'normal');
+                    }
+                    return;
+                }
+
                 const recommendedDigit = window.digitIntelligenceEngine.currentRecommendation.digit;
-                document.getElementById('predictedDigit').value = recommendedDigit;
-                sessionState.sessionDigit = recommendedDigit;
-                sessionState.sessionStarted = true;
-                sessionState.manualOverride = false;
-                updateSessionDisplay();
-                log(`🧠 Ready! Using AI recommended digit: ${recommendedDigit}`, 'ENGINE');
+
+                if (!window.isBotRunning) {
+                    // Preview only while stopped
+                    document.getElementById('predictedDigit').value = recommendedDigit;
+                    clearSessionDigitLock('AI preview (stopped)');
+                    window.nextTradeAllowed = false;
+                    updateTradeStatus('READY', `AI digit ${recommendedDigit} ready`, 'Will lock on Start', 'normal');
+                    return;
+                }
+
+                // Bot is running: lock ONCE (at start) and do NOT overwrite after lock.
+                if (!sessionState.sessionStarted || sessionState.sessionDigit === null) {
+                    lockSessionDigit(recommendedDigit, true, 'START lock');
+                    updateTradeStatus('READY', `AI digit ${recommendedDigit} locked`, 'Ready to trade', 'normal');
+                } else {
+                    // Keep the locked digit for trading
+                    updateTradeStatus('READY', `Digit ${sessionState.sessionDigit} locked`, 'Trading locked session digit', 'normal');
+                }
+
                 window.nextTradeAllowed = true;
-                updateTradeStatus('READY', `AI digit ${recommendedDigit} locked`, 'Ready to trade', 'normal');
-            } else if (sessionState.mode === 'instant') {
+                return;
+            }
+
+            if (sessionState.mode === 'instant') {
                 window.nextTradeAllowed = true;
                 updateTradeStatus('READY', 'Instant mode active', 'Trading on each tick', 'normal');
             }
         }
-        
-        // DOM Ready
+
+// DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
             initializeToggleState();
@@ -2450,6 +2963,12 @@
                 return;
             }
             
+            // AI AUTO: lock the CURRENT prediction for trading when the bot is running (once per START)
+            if (sessionState.mode === 'ai' && window.isBotRunning && (!sessionState.sessionStarted || sessionState.sessionDigit === null)) {
+                const d = window.digitIntelligenceEngine.currentRecommendation.digit;
+                lockSessionDigit(d, true, 'AUTO start lock');
+            }
+
             if (checkForImmediateWin(tick)) {
                 return;
             }
@@ -2459,6 +2978,27 @@
                 updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
                 stopBot();
                 return;
+            }
+
+
+            // 🧱 HARD TAIL-RISK GATE (s20 <= 5%)
+            if (sessionState.mode === 'ai' && window.isBotRunning) {
+                const lockedDigit = (sessionState.sessionDigit !== null) ? sessionState.sessionDigit : parseInt(document.getElementById('predictedDigit').value);
+                const s = getSurvivalForDigit(lockedDigit);
+
+                if (!s || !Number.isFinite(Number(s.s20))) {
+                    log('🧱 Tail-risk gate: Survival data not ready — no trade', 'ENGINE');
+                    updateTradeStatus('NO TRADE', 'Survival warming up', 'Waiting for more ticks', 'loss');
+                    return;
+                }
+
+                const s20 = Number(s.s20);
+                if (s20 > 0.05) {
+                    log(`🧱 Tail-risk gate: s20 ${(s20 * 100).toFixed(1)}% > 5% — re-picking`, 'ENGINE');
+                    updateTradeStatus('NO TRADE', `Tail risk too high (s20 ${(s20 * 100).toFixed(1)}%)`, 'Re-picking safer digit', 'loss');
+                    rotateHybridDigit('Tail-risk gate');
+                    return;
+                }
             }
             
             window.executionLock = true;
@@ -2568,9 +3108,11 @@
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
             
             if (winOrLoss === 'win') {
                 window.martingaleStep = 0;
+                window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
                 log(`✅ WIN! Reset stake: $${window.currentStake.toFixed(2)}`, 'WIN');
                 
@@ -2589,17 +3131,27 @@
                 );
                 
             } else if (winOrLoss === 'loss') {
-                window.martingaleStep++;
-                
-                if (window.martingaleStep >= window.maxTrades) {
-                    log(`🛑 MAX TRADES REACHED (${window.maxTrades})`, 'CRITICAL');
-                    updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
-                    stopBot();
-                    return;
-                }
-                
+                window.martingaleStep = (window.martingaleStep || 0) + 1;
+                window.cycleLosses = (window.cycleLosses || 0) + 1;
+
                 const newStake = window.currentStake * window.multiplier;
                 window.currentStake = parseFloat(newStake.toFixed(2));
+
+                if (window.cycleLosses >= window.maxCycleTrades) {
+                    log(`🧯 LOSS CAP REACHED (${window.maxCycleTrades}) — switching HYBRID digit (keeping martingale)`, 'CRITICAL');
+                    updateTradeStatus(
+                        'SWITCH DIGIT 🔁',
+                        `Loss cap reached (${window.maxCycleTrades})`,
+                        'Switching HYBRID digit; keeping martingale progression...',
+                        'loss'
+                    );
+
+                    window.cycleLosses = 0;
+
+                    if (window.isBotRunning && sessionState.mode === 'ai') {
+                        rotateHybridDigit(`Loss cap ${window.maxCycleTrades} (keep martingale)`);
+                    }
+                }
                 log(`❌ LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 
                 updateTradeStatus(
@@ -2614,6 +3166,7 @@
                 
             } else {
                 window.martingaleStep = 0;
+                window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
                 log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
                 updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
@@ -2632,6 +3185,7 @@
             }
             
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
             
             const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
             if (!token) {
@@ -2644,17 +3198,30 @@
             
             // Initialize intelligence engine
             window.digitIntelligenceEngine.init();
-            
-            sessionState.sessionDigit = parseInt(document.getElementById('predictedDigit').value) || 5;
-            sessionState.sessionStarted = true;
-            sessionState.manualOverride = true;
-            
-            window.isBotRunning = true;
+
+            // Always re-lock using the CURRENT prediction when START is pressed.
+            clearSessionDigitLock('Start');
+
+            if (sessionState.mode === 'instant') {
+                const manualDigit = parseInt(document.getElementById('predictedDigit').value);
+                sessionState.sessionDigit = (Number.isFinite(manualDigit) && manualDigit >= 0 && manualDigit <= 9) ? manualDigit : 5;
+                sessionState.sessionStarted = true;
+                sessionState.manualOverride = true;
+                updateSessionDisplay();
+            } else {
+                // AI mode: preview exists while stopped, but lock happens only after START when engine is ready.
+                sessionState.manualOverride = false;
+                sessionState.sessionStarted = false;
+                sessionState.sessionDigit = null;
+                updateSessionDisplay();
+            }
+window.isBotRunning = true;
             updateButtonState();
             
             log('🚀 Starting bot...', 'SYSTEM');
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
             log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
+            log(`🧯 Max Cycle Trades: ${window.maxCycleTrades}`, 'SYSTEM');
             log(`🔑 Using token: ${token.substring(0, 10)}...`, 'SYSTEM');
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
@@ -2986,6 +3553,8 @@
         // Reset all state
         function resetAllState() {
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
+            window.cycleRotations = 0;
             
             updateStake('initial');
             resetPnL();
