@@ -664,10 +664,16 @@
         </div>
         
         <!-- START/STOP BUTTON -->
-        <div class="flex justify-center mb-5">
+        <div class="flex flex-col md:flex-row justify-center mb-5 gap-3">
             <button id="toggleButton" onclick="toggleBot()" 
                 class="w-full md:w-1/2 px-6 py-3 bg-green-600 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-green-700 transition duration-150">
                 🚀 START BOT
+            </button>
+
+            <!-- S20 tail-risk cap (SurvivalEngine filter) -->
+            <button id="s20Button" onclick="openS20Config()"
+                class="w-full md:w-44 px-4 py-3 bg-slate-700 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-slate-600 transition duration-150">
+                🧯 S20: <span id="s20Value">5</span>%
             </button>
         </div>
 
@@ -714,9 +720,6 @@
             pressureZoneMaxP90Ratio: 0.95,
                         // Hard floor: never recommend if gap is far from P90 (prevents "gap 4, p90 20" type picks)
             pressureZoneMinFloorP90Ratio: 0.60,
-// Adaptive fallback: if no digit qualifies at the first tier, the engine progressively relaxes.
-            // It will NEVER go below pressureZoneMinFloorP90Ratio.
-            pressureZoneFallbackMinP90Ratios: [0.70, 0.66, 0.63, 0.60]
         };
 
 
@@ -733,6 +736,16 @@
             maxETM: 12,
             requirePressure: true
         };
+
+        // ============================================================================
+        // STRICT SAFETY CONSTANTS (single source of truth)
+        // ============================================================================
+        const MAX_EXTEND_RATIO = 1.5;
+        const MAX_ETM = 6.5;
+        const PRESSURE_MIN = 0.80;
+        const PRESSURE_MAX = 0.95;
+
+
 
         // Engine State
         window.digitIntelligenceEngine = {
@@ -1051,6 +1064,15 @@
                 if (denom === 0) return 0.0;
                 return numer / denom;
             },
+
+
+// Expected additional ticks given current gap (fallback safe)
+expectedAdditionalTicks: function(gaps, g) {
+    const eligible = (Array.isArray(gaps) ? gaps : []).filter(x => x > g);
+    if (!eligible.length) return Infinity;
+    const rem = eligible.map(x => x - g);
+    return rem.reduce((s, x) => s + x, 0) / rem.length;
+},
             
             // Select best digit using AI logic
             selectBestDigit: function() {
@@ -1071,25 +1093,7 @@
                         ? thresholds.maxPersistenceStable
                         : thresholds.maxPersistenceUnstable;
 
-                const rawPressureTiers = (thresholds.pressureZoneEnabled &&
-                    Array.isArray(thresholds.pressureZoneFallbackMinP90Ratios) &&
-                    thresholds.pressureZoneFallbackMinP90Ratios.length)
-                    ? thresholds.pressureZoneFallbackMinP90Ratios
-                    : [thresholds.pressureZoneEnabled ? thresholds.pressureZoneMinP90Ratio : 0.0];
-
-                const pressureFloor = (thresholds.pressureZoneEnabled && typeof thresholds.pressureZoneMinFloorP90Ratio === "number")
-                    ? thresholds.pressureZoneMinFloorP90Ratio
-                    : 0.0;
-
-                // Ensure tiers are sorted high→low, unique, and never drop below the floor.
-                const pressureTiers = Array.from(new Set(rawPressureTiers))
-                    .map(v => (typeof v === "number" ? v : 0.0))
-                    .filter(v => v >= pressureFloor && v < 1)
-                    .sort((a, b) => b - a);
-
-                if (thresholds.pressureZoneEnabled && pressureTiers.length === 0) {
-                    pressureTiers.push(Math.max(0, Math.min(0.999, pressureFloor)));
-                }
+                const activeMinP90Ratio = (thresholds.pressureZoneEnabled ? thresholds.pressureZoneMinP90Ratio : 0.0);
 
                 const runPass = (activeMinP90Ratio) => {
                     let passBest = null;
@@ -1099,7 +1103,7 @@
                         const g = s.currentGap;
                         const p90 = Math.max(s.p90Gap, 1);
                         const p90Ratio = g / p90;
-                        const extendRatio = g / s.avgGap;
+                        const extendRatio = g / Math.max(s.avgGap, 1);
 
                         // 🔥 HARD TAIL BLOCK: extreme stretch vs history
                         if (extendRatio > 2.8) continue;
@@ -1112,6 +1116,35 @@
 
                         const P5  = this.conditionalReturnProb(d, g, 5);
                         const P10 = this.conditionalReturnProb(d, g, 10);
+
+// =====================================================
+// 🔥 EARLY MATCH (2–3 TICKS) HARD FILTER
+// =====================================================
+
+const pm2  = pmK(s.gaps, g, 2);
+const pm3  = pmK(s.gaps, g, 3);
+const pm5w = pm5Weighted(s.gaps, g);
+
+const pressure75  = g / Math.max(s.p75Gap, 1);
+const slope       = gapSlope(s.gaps);
+
+// Expected additional ticks (fallback safe)
+const etm = (typeof this.expectedAdditionalTicks === "function")
+  ? this.expectedAdditionalTicks(s.gaps, g)
+  : Infinity;
+
+// ❌ HARD REJECTIONS — NO NEGOTIATION
+if (pm2 < 0.30) continue;
+if (pm3 < 0.45) continue;
+if (pm5w < 0.55) continue;
+
+if (extendRatio > 1.25) continue;
+
+if (pressure75 < 0.55 || pressure75 > 0.85) continue;
+
+if (etm > 8) continue;
+
+if (slope > 2) continue;
 
                         // Filter conditions
                         if (s.gaps.length < thresholds.minSupport) continue;
@@ -1142,40 +1175,39 @@
                         if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
                         if (s.isUnstable) continue;
 
-                        // Calculate score (still strongly favors closest-to-P90)
-                        const denom = Math.max(1 - activeMinP90Ratio, 1e-6);
-                        const pressureScore = thresholds.pressureZoneEnabled
-                            ? Math.max(0, Math.min(1, (p90Ratio - activeMinP90Ratio) / denom))
-                            : Math.max(0, Math.min(1, g / p90));
 
-                        const score =
-                            0.45 * P10 +
-                            0.25 * P5 +
-                            0.20 * pressureScore +
-                            0.10 * (1 - s.persistenceScore / 100);
+// =====================================================
+// 🎯 EARLY MATCH SCORING (FAST SNAP PRIORITY)
+// =====================================================
 
-                        if (!passBest || score > passBest.score) {
-                            passBest = {
-                                digit: d,
-                                score: score,
-                                P10: P10,
-                                P5: P5,
-                                gap: g,
-                                persistenceScore: s.persistenceScore,
-                                isUnstable: s.isUnstable
-                            };
-                        }
+const score =
+  0.40 * pm3 +
+  0.30 * pm2 +
+  0.20 * pm5w +
+  0.10 * (1 - extendRatio);
+
+if (!passBest || score > passBest.score) {
+  passBest = {
+    digit: d,
+    score,
+    P10: pm3,
+    P5: pm2,
+    pm2,
+    pm3,
+    pm5w,
+    gap: g,
+    extendRatio,
+    source: "EARLY"
+  };
+}
                     }
 
                     return passBest;
                 };
 
-                for (const activeMinP90Ratio of pressureTiers) {
-                    best = runPass(activeMinP90Ratio);
-                    if (best) {
-                        best.pressureMinP90Ratio = activeMinP90Ratio;
-                        break;
-                    }
+                best = runPass(activeMinP90Ratio);
+                if (best) {
+                    best.pressureMinP90Ratio = activeMinP90Ratio;
                 }
 
                 return best;
@@ -1232,12 +1264,14 @@
                         });
 
                         let globalRanked = asScored(ranked);
-                        if (!globalRanked.length) {
-                            globalRanked = asScored(survivalStats).sort((a, b) => (b.survivalNorm - a.survivalNorm));
-                        }
 
-                        survivalTop3 = globalRanked.slice(0, 3);
-                        survivalTop = survivalTop3[0] || null;
+// STRICT MODE: if no candidates meet filters (including maxS20), do NOT fall back to unfiltered ranking.
+if (!globalRanked.length) {
+    globalRanked = [];
+}
+
+survivalTop3 = globalRanked.slice(0, 3);
+survivalTop = survivalTop3[0] || null;
                     }
                 } catch (e) {
                     console.warn('SurvivalEngine error:', e);
@@ -1522,6 +1556,150 @@
         })();
 
         window.SurvivalEngine = SurvivalEngine;
+
+// =====================================================
+// 🔥 EARLY MATCH HELPERS (2–3 TICKS)
+// =====================================================
+
+// Probability of match within K ticks
+function pmK(gaps, g, K) {
+  const eligible = gaps.filter(x => x > g);
+  if (!eligible.length) return 0;
+
+  let hits = 0;
+  for (const x of eligible) {
+    if (x <= g + K) hits++;
+  }
+  return hits / eligible.length;
+}
+
+// Early-weighted pm5 (front-loaded)
+function pm5Weighted(gaps, g) {
+  const eligible = gaps.filter(x => x > g);
+  if (!eligible.length) return 0;
+
+  let score = 0;
+  for (const x of eligible) {
+    const d = x - g;
+    if (d <= 2) score += 1.0;
+    else if (d === 3) score += 0.8;
+    else if (d === 4) score += 0.4;
+    else if (d === 5) score += 0.2;
+  }
+  return score / eligible.length;
+}
+
+// Detect accelerating gaps (tail warning)
+function gapSlope(gaps) {
+  if (gaps.length < 3) return 0;
+  const n = gaps.length;
+  return gaps[n - 1] - gaps[n - 3];
+}
+
+
+
+// =====================================================
+// 🧱 SHORT-WINDOW VETO (kills tails)
+// =====================================================
+
+function shortWindowPass(d) {
+  let hits = 0;
+  if ((d.pm2 ?? 0) >= 0.35) hits++;
+  if ((d.pm3 ?? 0) >= 0.45) hits++;
+  if ((d.pm5_recent ?? 0) >= 0.60) hits++;
+  return hits >= 2;
+}
+
+function getCurrentRegimeNumbers() {
+  try {
+    const rs = window.digitIntelligenceEngine?.computeRegimeStatus?.();
+    return {
+      entropy: Number.parseFloat(rs?.entropy ?? "0"),
+      dominance: Number.parseFloat(rs?.dominance ?? "1")
+    };
+  } catch (_) {
+    return { entropy: 0, dominance: 1 };
+  }
+}
+
+function buildDigitDecision(digit) {
+  const engine = window.digitIntelligenceEngine;
+  const s = engine?.digitStats?.[digit];
+  if (!s) return null;
+
+  const g = Number(s.currentGap ?? 0);
+  const avgGap = Math.max(Number(s.avgGap ?? 0), 1);
+
+  const pm2 = pmK(s.gaps || [], g, 2);
+  const pm3 = pmK(s.gaps || [], g, 3);
+  const pm5w = pm5Weighted(s.gaps || [], g);
+
+  const etm = (typeof engine?.expectedAdditionalTicks === "function")
+    ? engine.expectedAdditionalTicks(s.gaps || [], g)
+    : Infinity;
+
+  const surv = (typeof getSurvivalForDigit === "function") ? getSurvivalForDigit(digit) : null;
+
+  const p90 = Number.isFinite(Number(surv?.p90)) ? Number(surv.p90) : Math.max(Number(s.p90Gap ?? 0), 1);
+  const extendRatio = g / avgGap;
+
+  return {
+    digit,
+    gap: g,
+    avgGap,
+    p90,
+    extendRatio,
+    pm2,
+    pm3,
+    pm5_recent: Number.isFinite(Number(surv?.pm5)) ? Number(surv.pm5) : pm5w,
+    s20: Number.isFinite(Number(surv?.s20)) ? Number(surv.s20) : 1,
+    etm
+  };
+}
+
+// =====================================================
+// ✅ FINAL TRADE DECISION (STRICT, NO FALLBACKS)
+// =====================================================
+
+function canTradeDigit(d, regime, tradeCount) {
+  // 1️⃣ HARD STOP — trade count
+  if (tradeCount >= (window.maxTrades ?? 10)) {
+    return { ok: false, reason: "MAX_TRADES_REACHED" };
+  }
+
+  // 2️⃣ REGIME GATE
+  if ((regime?.entropy ?? 0) < 0.95 || (regime?.dominance ?? 1) > 0.18) {
+    return { ok: false, reason: "REGIME_UNSTABLE" };
+  }
+
+  // 3️⃣ STRUCTURAL SAFETY
+  if ((d?.s20 ?? 1) !== 0) {
+    return { ok: false, reason: "TAIL_RISK_S20" };
+  }
+
+  if ((d?.extendRatio ?? Infinity) > MAX_EXTEND_RATIO) {
+    return { ok: false, reason: "EXTEND_RATIO_TOO_HIGH" };
+  }
+
+  // 4️⃣ PRESSURE (NO FALLBACK)
+  const pressureRatio = (d?.gap ?? 0) / Math.max((d?.p90 ?? 0), 1);
+  if (pressureRatio < PRESSURE_MIN || pressureRatio >= PRESSURE_MAX) {
+    return { ok: false, reason: "NOT_IN_PRESSURE_ZONE" };
+  }
+
+  // 5️⃣ SHORT-WINDOW VETO (MOST IMPORTANT)
+  if (!shortWindowPass(d)) {
+    return { ok: false, reason: "NO_IMMEDIATE_RELEASE" };
+  }
+
+  // 6️⃣ ETM CONFIRMATION
+  if ((d?.etm ?? Infinity) > MAX_ETM) {
+    return { ok: false, reason: "ETM_TOO_LATE" };
+  }
+
+  return { ok: true, reason: "TRADE_APPROVED" };
+}
+
 
 // ============================================================================
         // MARTINGALE CALCULATOR FUNCTIONS
@@ -2645,6 +2823,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
             initializeToggleState();
+            updateS20Label();
             
             // Initialize intelligence engine
             window.digitIntelligenceEngine.init();
@@ -2746,7 +2925,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.isConnecting = true;
             updateConnectionStatus();
             
-            const wsUrl = 'wss://ws.binaryws.com/websockets/v3?app_id=120389';
+            const wsUrl = 'wss://ws.binaryws.com/websockets/v3?app_id=118332';
             log('🔗 Connecting to Deriv API...', 'SYSTEM');
             
             window.ws = new WebSocket(wsUrl);
@@ -2981,27 +3160,34 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
 
 
-            // 🧱 HARD TAIL-RISK GATE (s20 <= 5%)
+            // 🧱 STRICT TRADE GATES (NO FALLBACKS)
             if (sessionState.mode === 'ai' && window.isBotRunning) {
-                const lockedDigit = (sessionState.sessionDigit !== null) ? sessionState.sessionDigit : parseInt(document.getElementById('predictedDigit').value);
-                const s = getSurvivalForDigit(lockedDigit);
+                const lockedDigit = (sessionState.sessionDigit !== null)
+                    ? sessionState.sessionDigit
+                    : parseInt(document.getElementById('predictedDigit').value);
 
-                if (!s || !Number.isFinite(Number(s.s20))) {
-                    log('🧱 Tail-risk gate: Survival data not ready — no trade', 'ENGINE');
-                    updateTradeStatus('NO TRADE', 'Survival warming up', 'Waiting for more ticks', 'loss');
+                const d = buildDigitDecision(lockedDigit);
+                if (!d) {
+                    log('🧱 Trade veto: digit metrics not ready — no trade', 'ENGINE');
+                    updateTradeStatus('NO TRADE', 'Metrics not ready', 'Waiting for more ticks', 'loss');
                     return;
                 }
 
-                const s20 = Number(s.s20);
-                if (s20 > 0.05) {
-                    log(`🧱 Tail-risk gate: s20 ${(s20 * 100).toFixed(1)}% > 5% — re-picking`, 'ENGINE');
-                    updateTradeStatus('NO TRADE', `Tail risk too high (s20 ${(s20 * 100).toFixed(1)}%)`, 'Re-picking safer digit', 'loss');
-                    rotateHybridDigit('Tail-risk gate');
+                const regime = getCurrentRegimeNumbers();
+                const verdict = canTradeDigit(d, regime, window.tradeCount);
+
+                if (!verdict.ok) {
+                    log(`🧱 Trade veto (${verdict.reason}) — no trade`, 'ENGINE');
+                    updateTradeStatus('NO TRADE', verdict.reason, 'Re-picking safer digit', 'loss');
+
+                    if (typeof rotateHybridDigit === 'function') {
+                        rotateHybridDigit(`VETO:${verdict.reason}`);
+                    }
                     return;
                 }
             }
-            
-            window.executionLock = true;
+
+window.executionLock = true;
             window.nextTradeAllowed = false;
             
             try {
@@ -3111,6 +3297,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
             
             if (winOrLoss === 'win') {
+                window.lastTradeWon = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
@@ -3131,6 +3318,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 );
                 
             } else if (winOrLoss === 'loss') {
+                window.lastTradeWon = false;
                 window.martingaleStep = (window.martingaleStep || 0) + 1;
                 window.cycleLosses = (window.cycleLosses || 0) + 1;
 
@@ -3246,7 +3434,7 @@ window.isBotRunning = true;
         }
         
         // STOP BOT - CRITICAL FUNCTION
-        function stopBot() {
+        function stopBot(reason) {
             if (!window.isBotRunning) return;
             
             window.isBotRunning = false;
@@ -3255,6 +3443,7 @@ window.isBotRunning = true;
             updateButtonState();
             
             log('⏹️ Bot stopped', 'SYSTEM');
+            if (reason) log(`🛑 Stop reason: ${reason}`, 'SYSTEM');
             
             // Stop any ongoing PnL updates
             if (window.pnlUpdateInterval) {
@@ -3305,7 +3494,36 @@ window.isBotRunning = true;
                 startBot();
             }
         }
-        
+
+        function updateS20Label() {
+            const v = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
+                ? window.SURVIVAL_CFG.maxS20
+                : 0.05;
+            const el = document.getElementById("s20Value");
+            if (el) el.textContent = String(Math.round(v * 100));
+        }
+
+        function openS20Config() {
+            const cur = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
+                ? window.SURVIVAL_CFG.maxS20
+                : 0.05;
+
+            const raw = prompt("Set max S20 tail risk cap (percent, e.g. 5). Lower = stricter.", String(Math.round(cur * 100)));
+            if (raw === null) return;
+
+            const pct = Number.parseFloat(raw);
+            if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+                alert("Invalid S20 value. Use a number between 0 and 100.");
+                return;
+            }
+
+            window.SURVIVAL_CFG = window.SURVIVAL_CFG || {};
+            window.SURVIVAL_CFG.maxS20 = pct / 100;
+
+            updateS20Label();
+            try { log(`🧯 S20 cap set to ${pct.toFixed(1)}%`, "CONFIG"); } catch (_) {}
+        }
+
         // HELPER FUNCTIONS
         function calculateRates() {
             const now = Date.now();
@@ -3548,6 +3766,8 @@ window.isBotRunning = true;
                 stopBot();
                 return;
             }
+
+
         }
         
         // Reset all state
@@ -3573,6 +3793,7 @@ window.isBotRunning = true;
             window.tickQueue = [];
             window.lastTick = null;
             window.lastTradeResult = null;
+            window.lastTradeWon = null;
             window.tradeCount = 0;
             window.martingaleStep = 0;
             window.pendingProposals.clear();
@@ -3595,6 +3816,376 @@ window.isBotRunning = true;
             
             log('🔄 Bot reset', 'SYSTEM');
         }
+        
+        // ========================================
+        // PRECISION DIGIT MATCHER ENGINE
+        // Tracks digit patterns and predicts which digit will appear in 2-4 trades
+        // ========================================
+        
+        window.precisionMatcher = {
+            digitHistory: [],
+            maxHistory: 100,
+            digitFreq: new Array(10).fill(0),
+            digitGaps: {},
+            digitStreaks: {},
+            patterns: { hotDigits: [], coldDigits: [], cyclePatterns: {}, gapPatterns: {} },
+            currentPrediction: null,
+            tradesInCycle: 0,
+            maxTradesPerCycle: 4,
+            minConfidence: 65, // Minimum confidence to trade
+            
+            init() {
+                for (let i = 0; i < 10; i++) {
+                    this.digitGaps[i] = [];
+                    this.digitStreaks[i] = 0;
+                }
+                log('🎯 Precision Digit Matcher initialized', 'SYSTEM');
+            },
+            
+            addDigit(digit) {
+                this.digitHistory.push(digit);
+                if (this.digitHistory.length > this.maxHistory) this.digitHistory.shift();
+                this.digitFreq[digit]++;
+                this.updateGapTracking(digit);
+                this.updateStreakTracking(digit);
+                this.analyzePatterns();
+            },
+            
+            updateGapTracking(currentDigit) {
+                for (let digit = 0; digit < 10; digit++) {
+                    if (digit === currentDigit) {
+                        this.digitGaps[digit].push(0);
+                        if (this.digitGaps[digit].length > 20) this.digitGaps[digit].shift();
+                    } else {
+                        if (this.digitGaps[digit].length > 0) {
+                            this.digitGaps[digit][this.digitGaps[digit].length - 1]++;
+                        } else {
+                            this.digitGaps[digit].push(1);
+                        }
+                    }
+                }
+            },
+            
+            updateStreakTracking(digit) {
+                const lastDigit = this.digitHistory[this.digitHistory.length - 2];
+                if (lastDigit === digit) {
+                    this.digitStreaks[digit]++;
+                } else {
+                    this.digitStreaks[digit] = 1;
+                }
+            },
+            
+            analyzePatterns() {
+                if (this.digitHistory.length < 20) return;
+                this.patterns.hotDigits = this.findHotDigits();
+                this.patterns.coldDigits = this.findColdDigits();
+                this.patterns.cyclePatterns = this.detectCyclePatterns();
+                this.patterns.gapPatterns = this.calculateAverageGaps();
+            },
+            
+            findHotDigits() {
+                const recentWindow = 20;
+                const recentDigits = this.digitHistory.slice(-recentWindow);
+                const recentFreq = new Array(10).fill(0);
+                recentDigits.forEach(d => recentFreq[d]++);
+                return recentFreq
+                    .map((freq, digit) => ({ digit, freq, percentage: (freq/recentWindow)*100 }))
+                    .sort((a, b) => b.freq - a.freq);
+            },
+            
+            findColdDigits() {
+                const currentGaps = [];
+                for (let digit = 0; digit < 10; digit++) {
+                    const gaps = this.digitGaps[digit];
+                    if (gaps.length > 0) {
+                        const currentGap = gaps[gaps.length - 1];
+                        const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+                        currentGaps.push({ digit, currentGap, avgGap, overdue: currentGap - avgGap });
+                    }
+                }
+                return currentGaps.sort((a, b) => b.overdue - a.overdue);
+            },
+            
+            detectCyclePatterns() {
+                const cycles = {};
+                const lastDigit = this.digitHistory[this.digitHistory.length - 1];
+                for (let i = 0; i < this.digitHistory.length - 5; i++) {
+                    if (this.digitHistory[i] === lastDigit) {
+                        for (let j = 2; j <= 4; j++) {
+                            if (i + j < this.digitHistory.length) {
+                                const followingDigit = this.digitHistory[i + j];
+                                const key = `${lastDigit}->${followingDigit}@${j}`;
+                                cycles[key] = (cycles[key] || 0) + 1;
+                            }
+                        }
+                    }
+                }
+                return cycles;
+            },
+            
+            calculateAverageGaps() {
+                const avgGaps = {};
+                for (let digit = 0; digit < 10; digit++) {
+                    const gaps = this.digitGaps[digit];
+                    if (gaps.length > 0) {
+                        avgGaps[digit] = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+                    }
+                }
+                return avgGaps;
+            },
+            
+            getPrediction() {
+                if (this.digitHistory.length < 20) {
+                    return { digit: null, confidence: 0, reason: 'Need 20+ ticks for analysis', shouldTrade: false };
+                }
+                
+                const lastDigit = this.digitHistory[this.digitHistory.length - 1];
+                const cycleScores = this.scoreByCyclePattern(lastDigit);
+                const overdueScores = this.scoreByOverdue();
+                const hotScores = this.scoreByHotDigits();
+                const gapScores = this.scoreByGapPattern();
+                
+                const combinedScores = [];
+                for (let digit = 0; digit < 10; digit++) {
+                    const score = 
+                        (cycleScores[digit] || 0) * 0.40 +
+                        (overdueScores[digit] || 0) * 0.25 +
+                        (hotScores[digit] || 0) * 0.20 +
+                        (gapScores[digit] || 0) * 0.15;
+                    combinedScores.push({ digit, score });
+                }
+                
+                combinedScores.sort((a, b) => b.score - a.score);
+                const topPrediction = combinedScores[0];
+                const confidence = Math.min(topPrediction.score * 10, 95);
+                
+                const reason = this.buildPredictionReason(topPrediction.digit, {
+                    cycle: cycleScores[topPrediction.digit],
+                    overdue: overdueScores[topPrediction.digit],
+                    hot: hotScores[topPrediction.digit],
+                    gap: gapScores[topPrediction.digit]
+                });
+                
+                return {
+                    digit: topPrediction.digit,
+                    confidence: Math.round(confidence),
+                    score: topPrediction.score,
+                    reason: reason,
+                    shouldTrade: confidence >= this.minConfidence,
+                    alternativeDigits: combinedScores.slice(1, 4).map(p => p.digit)
+                };
+            },
+            
+            scoreByCyclePattern(lastDigit) {
+                const scores = {};
+                const cycles = this.patterns.cyclePatterns;
+                for (let digit = 0; digit < 10; digit++) {
+                    let totalScore = 0;
+                    for (let gap = 2; gap <= 4; gap++) {
+                        const key = `${lastDigit}->${digit}@${gap}`;
+                        if (cycles[key]) {
+                            totalScore += cycles[key] * (5 - gap);
+                        }
+                    }
+                    scores[digit] = totalScore;
+                }
+                const maxScore = Math.max(...Object.values(scores));
+                if (maxScore > 0) {
+                    for (let digit in scores) {
+                        scores[digit] = (scores[digit] / maxScore) * 10;
+                    }
+                }
+                return scores;
+            },
+            
+            scoreByOverdue() {
+                const scores = {};
+                const coldDigits = this.patterns.coldDigits;
+                coldDigits.forEach((item, index) => {
+                    if (item.currentGap >= 2 && item.currentGap <= 6) {
+                        scores[item.digit] = 10 - index;
+                    }
+                });
+                return scores;
+            },
+            
+            scoreByHotDigits() {
+                const scores = {};
+                const hotDigits = this.patterns.hotDigits;
+                hotDigits.forEach((item, index) => {
+                    if (item.freq >= 3) {
+                        scores[item.digit] = 10 - index;
+                    }
+                });
+                return scores;
+            },
+            
+            scoreByGapPattern() {
+                const scores = {};
+                const gapPatterns = this.patterns.gapPatterns;
+                for (let digit = 0; digit < 10; digit++) {
+                    const avgGap = gapPatterns[digit];
+                    const currentGap = this.digitGaps[digit][this.digitGaps[digit].length - 1] || 0;
+                    if (avgGap && currentGap >= (avgGap - 1) && currentGap <= (avgGap + 1)) {
+                        scores[digit] = 8;
+                    } else if (avgGap && currentGap >= 2 && currentGap <= 4) {
+                        scores[digit] = 5;
+                    }
+                }
+                return scores;
+            },
+            
+            buildPredictionReason(digit, scores) {
+                const reasons = [];
+                if (scores.cycle > 5) reasons.push(`Cycle pattern`);
+                if (scores.overdue > 5) reasons.push(`Digit ${digit} overdue`);
+                if (scores.hot > 5) reasons.push(`Hot trend`);
+                if (scores.gap > 5) reasons.push(`Gap alignment`);
+                return reasons.length > 0 ? reasons.join(' + ') : 'Weak signals';
+            },
+            
+            checkForMatch(digit) {
+                if (this.currentPrediction === null) return false;
+                
+                this.tradesInCycle++;
+                
+                if (digit === this.currentPrediction) {
+                    log(`🎯 PRECISION MATCH! Digit ${digit} appeared on trade ${this.tradesInCycle}/4`, 'WIN');
+                    this.resetCycle();
+                    return true;
+                }
+                
+                if (this.tradesInCycle >= this.maxTradesPerCycle) {
+                    log(`❌ No match after ${this.tradesInCycle} trades. Prediction failed.`, 'WARNING');
+                    this.resetCycle();
+                    return false;
+                }
+                
+                log(`⏳ Waiting... Trade ${this.tradesInCycle}/${this.maxTradesPerCycle}, looking for digit ${this.currentPrediction}`, 'TRADE');
+                return null; // Still waiting
+            },
+            
+            startNewCycle() {
+                const prediction = this.getPrediction();
+                
+                if (!prediction.shouldTrade) {
+                    log(`⚠️ Confidence too low (${prediction.confidence}%). Need ${this.minConfidence}%+`, 'WARNING');
+                    return false;
+                }
+                
+                this.currentPrediction = prediction.digit;
+                this.tradesInCycle = 0;
+                
+                // Update the predicted digit in the UI
+                const predictedDigitInput = document.getElementById('predictedDigit');
+                if (predictedDigitInput) {
+                    predictedDigitInput.value = this.currentPrediction;
+                }
+                
+                log(`🎯 NEW PRECISION CYCLE: Predicting digit ${this.currentPrediction}`, 'PREDICTION');
+                log(`📊 Confidence: ${prediction.confidence}% | Reason: ${prediction.reason}`, 'PREDICTION');
+                log(`🔄 Will trade up to ${this.maxTradesPerCycle} times to match this digit`, 'PREDICTION');
+                
+                return true;
+            },
+            
+            resetCycle() {
+                this.currentPrediction = null;
+                this.tradesInCycle = 0;
+            }
+        };
+        
+        // Initialize precision matcher on page load
+        window.precisionMatcher.init();
+        
+        // Override the original handleTick to include precision matcher tracking
+        const originalHandleTick = handleTick;
+        handleTick = function(tick) {
+            // Add digit to precision matcher
+            if (tick && tick.quote) {
+                const price = parseFloat(tick.quote);
+                updateTickFormatFromQuote(tick.quote);
+                const digit = getLastDigitFromQuote(tick.quote);
+                
+                if (!isNaN(digit) && digit >= 0 && digit <= 9) {
+                    window.precisionMatcher.addDigit(digit);
+                }
+            }
+            
+            // Call original handler
+            return originalHandleTick(tick);
+        };
+        
+        // Override checkForImmediateWin to use precision matcher logic
+        const originalCheckForImmediateWin = checkForImmediateWin;
+        checkForImmediateWin = function(tick) {
+            if (!window.isBotRunning || window.stopAfterWin) return false;
+            
+            const tickDigit = parseInt(tick.digit);
+            
+            // If precision matcher has an active prediction, check for match
+            if (window.precisionMatcher.currentPrediction !== null) {
+                const result = window.precisionMatcher.checkForMatch(tickDigit);
+                
+                if (result === true) {
+                    // MATCH FOUND!
+                    window.lastTradeResult = 'win';
+                    window.stopAfterWin = true;
+                    window.stats.wins++;
+                    window.tradeCount++;
+                    
+                    playAudioFeedback('WIN');
+                    
+                    const payout = window.currentStake * 9;
+                    trackTradePayout(payout);
+                    log(`💰 Payout: $${payout.toFixed(2)}`, 'PNL');
+                    
+                    startExtendedPnlUpdate(payout);
+                    
+                    updateTradeStatus(
+                        'PRECISION MATCH 🎯',
+                        `Digit ${tickDigit} matched after ${window.precisionMatcher.tradesInCycle} trades!`,
+                        'Bot stopped. Start again for new prediction.',
+                        'win'
+                    );
+                    
+                    updateStake('win');
+                    stopBot(); // Stop bot after match
+                    return true;
+                    
+                } else if (result === false) {
+                    // Max trades reached without match
+                    updateTradeStatus(
+                        'NO MATCH ❌',
+                        `Digit ${window.precisionMatcher.currentPrediction} did not appear in ${window.precisionMatcher.maxTradesPerCycle} trades`,
+                        'Bot stopped. Start again for new prediction.',
+                        'loss'
+                    );
+                    stopBot(); // Stop bot after failed cycle
+                    return false;
+                }
+                // If result is null, continue trading
+            }
+            
+            return false;
+        };
+        
+        // Override startBot to start a new precision cycle
+        const originalStartBot = startBot;
+        startBot = function() {
+            // Start new precision cycle
+            const cycleStarted = window.precisionMatcher.startNewCycle();
+            
+            if (!cycleStarted) {
+                log('❌ Cannot start: Prediction confidence too low. Wait for more ticks.', 'ERROR');
+                return;
+            }
+            
+            // Call original startBot
+            return originalStartBot();
+        };
+        
+        log('✅ Precision Digit Matcher engine loaded and active', 'SYSTEM');
     </script>
 </body>
 </html>
