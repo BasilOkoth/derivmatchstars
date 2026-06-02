@@ -2925,7 +2925,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.isConnecting = true;
             updateConnectionStatus();
             
-            const wsUrl = 'wss://ws.binaryws.com/websockets/v3?app_id=33rp9Oy3CuZ2io6XAuLZ6';
+            const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
             log('🔗 Connecting to Deriv API...', 'SYSTEM');
             
             window.ws = new WebSocket(wsUrl);
