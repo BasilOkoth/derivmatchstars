@@ -62,58 +62,98 @@
         .auth-step.active { display: block; }
     </style>
 
-    <!-- ================= 🔐 OAUTH HANDLER (DUAL ACCOUNT) ================= -->
+    <!-- ================= 🔐 OAUTH HANDLER ================= -->
     <script>
     (function () {
         const params = new URLSearchParams(window.location.search);
 
-        // REAL account
-        const acct1  = params.get('acct1');
-        const token1 = params.get('token1');
+        const acct1  = params.get("acct1");
+        const token1 = params.get("token1");
 
-        // DEMO account
-        const acct2  = params.get('acct2');
-        const token2 = params.get('token2');
+        const acct2  = params.get("acct2");
+        const token2 = params.get("token2");
 
         let hasAuth = false;
+        const accounts = [];
 
+        // Save REAL account if returned
         if (acct1 && token1) {
-            localStorage.setItem('derivTokenReal', token1);
-            localStorage.setItem('derivRealAccount', acct1);
+            localStorage.setItem("derivTokenReal", token1);
+            localStorage.setItem("derivRealAccount", acct1);
+
+            accounts.push({
+                account: acct1,
+                token: token1,
+                type: "REAL"
+            });
+
             hasAuth = true;
         }
 
+        // Save DEMO account if returned
         if (acct2 && token2) {
-            localStorage.setItem('derivTokenDemo', token2);
-            localStorage.setItem('derivDemoAccount', acct2);
+            localStorage.setItem("derivTokenDemo", token2);
+            localStorage.setItem("derivDemoAccount", acct2);
+
+            accounts.push({
+                account: acct2,
+                token: token2,
+                type: "DEMO"
+            });
+
             hasAuth = true;
         }
 
         if (hasAuth) {
-            // Prefer DEMO if available
+            let selectedToken = null;
+            let selectedAccount = null;
+
+            // Prefer DEMO first if available
             if (acct2 && token2) {
-                localStorage.setItem('selectedAccountMode', 'DEMO');
-                localStorage.setItem('derivAccount', acct2);
+                selectedToken = token2;
+                selectedAccount = acct2;
+
+                localStorage.setItem("selectedAccountMode", "DEMO");
+                localStorage.setItem("derivAccount", acct2);
             } else {
-                localStorage.setItem('selectedAccountMode', 'REAL');
-                localStorage.setItem('derivAccount', acct1);
+                selectedToken = token1;
+                selectedAccount = acct1;
+
+                localStorage.setItem("selectedAccountMode", "REAL");
+                localStorage.setItem("derivAccount", acct1);
             }
 
-            localStorage.setItem('auth_method', 'oauth');
-            localStorage.setItem('auto_open_bot', 'true');
+            // Main tokens your bot can read
+            localStorage.setItem("active_token", selectedToken);
+            localStorage.setItem("derivToken", selectedToken);
+            localStorage.setItem("active_account", selectedAccount);
 
-            // Clean redirect to bot
-            window.location.replace('bot-obfuscated.html?oauth_redirect=1&auto_open=1');
+            // Store all returned accounts
+            localStorage.setItem("deriv_accounts", JSON.stringify(accounts));
+
+            // Authentication flag required by bot-obfuscated.html
+            localStorage.setItem("bot_authenticated", "true");
+            localStorage.setItem("auth_method", "oauth");
+            localStorage.setItem("auto_open_bot", "true");
+
+            // Remove OAuth parameters from the address and open only bot-obfuscated.html
+            window.location.replace("/bot-obfuscated.html");
             return;
         }
 
-        // Auto-reconnect if tokens already exist
-        if (
-            localStorage.getItem('derivTokenDemo') ||
-            localStorage.getItem('derivTokenReal')
-        ) {
+        // Auto-open bot only if already authenticated
+        const alreadyAuthenticated =
+            localStorage.getItem("bot_authenticated") === "true" &&
+            (
+                localStorage.getItem("active_token") ||
+                localStorage.getItem("derivToken") ||
+                localStorage.getItem("derivTokenDemo") ||
+                localStorage.getItem("derivTokenReal")
+            );
+
+        if (alreadyAuthenticated) {
             setTimeout(() => {
-                window.location.href = 'bot-obfuscated.html?auto_reconnect=1';
+                window.location.href = "/bot-obfuscated.html";
             }, 600);
         }
     })();
@@ -166,30 +206,32 @@
 
 <script>
 const CONFIG = {
-    APP_ID: 33rp9Oy3CuZ2io6XAuLZ6,
+    APP_ID: "33rp9Oy3CuZ2io6XAuLZ6",
     REDIRECT_URI: window.location.origin + window.location.pathname,
     AFFILIATE_URL: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/"
 };
 
 function openModal() {
-    document.getElementById('authModal').style.display = 'flex';
+    document.getElementById("authModal").style.display = "flex";
 }
+
 function closeModal() {
-    document.getElementById('authModal').style.display = 'none';
+    document.getElementById("authModal").style.display = "none";
 }
 
 function startOAuth() {
     const params = new URLSearchParams({
         app_id: CONFIG.APP_ID,
-        response_type: 'token',
+        response_type: "token",
         redirect_uri: CONFIG.REDIRECT_URI,
-        scope: 'read,trade,trading_information'
+        scope: "read,trade,trading_information"
     });
+
     window.location.href = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
 }
 
 function createAccount() {
-    window.open(CONFIG.AFFILIATE_URL, '_blank');
+    window.open(CONFIG.AFFILIATE_URL, "_blank");
 }
 </script>
 
