@@ -1,32 +1,38 @@
+DERIV NEW OAUTH SETUP
 
-DEPLOYMENT GUIDE - DigitMatchStars Pro™
-========================================
+Files updated:
+1. index.html
+2. api/deriv-token.js
+3. vercel.json
+4. bot-obfuscated.html
 
-FILES:
-1. index.html           - Landing page with OAuth
-2. bot.html             - Redirect to obfuscated version
-3. bot-obfuscated.html  - Obfuscated trading bot (MAIN)
-4. backend/             - Backend API
+IMPORTANT STEPS BEFORE DEPLOYING:
 
-URL STRUCTURE:
-- https://your-domain.com/              → index.html
-- https://your-domain.com/bot           → bot.html → bot-obfuscated.html
-- https://your-domain.com/bot.html      → bot-obfuscated.html
-- https://your-domain.com/bot-obfuscated.html → Direct access
+1. Open index.html and replace:
+   CLIENT_ID: "PUT_YOUR_DERIV_CLIENT_ID_HERE"
 
-OAUTH FLOW:
-1. User clicks "Connect via OAuth" on index.html
-2. Redirects to Deriv OAuth
-3. Returns to index.html with token
-4. Redirects to bot-obfuscated.html?token=XXX
-5. bot-obfuscated.html authenticates and loads bot
+   with your real Deriv OAuth client_id from the Deriv developer dashboard.
+   Your referral code 3655J683S288 is NOT the client_id.
 
-TO UPDATE:
-1. Edit bot.html (redirect file)
-2. Run: node obfuscate.js
-3. Deploy all files
+2. In Deriv developer dashboard, register this redirect URL exactly:
+   https://YOUR-VERCEL-DOMAIN.vercel.app/index.html
 
-TESTING:
-1. Open index.html locally
-2. Click "Connect via OAuth"
-3. Should redirect to bot-obfuscated.html
+   If you use a custom domain, register:
+   https://YOUR-DOMAIN.com/index.html
+
+3. Deploy to Vercel.
+
+4. If Deriv issued you a client secret, add it in Vercel Environment Variables:
+   DERIV_CLIENT_SECRET=your_secret_here
+
+   Optional:
+   DERIV_CLIENT_ID=your_client_id_here
+
+5. Your referral link is already set for the Create Deriv Account button:
+   https://partner-tracking.deriv.com/click?a=20638&o=1&c=3&link_id=1
+
+AUTH FLOW:
+index.html -> Deriv OAuth login -> /api/deriv-token exchanges code -> /bot-obfuscated.html
+
+NOTE:
+The new Deriv OAuth2 flow returns a short-lived access token. If your bot still uses the old Legacy WebSocket authorize(token) method, you may also need to migrate the trading API calls to Deriv's new authenticated API style.
