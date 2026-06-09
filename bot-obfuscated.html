@@ -692,6 +692,24 @@
 
     <script>
         // ============================================================================
+        // AUTHENTICATION GUARD - users must authenticate before opening this bot file
+        // ============================================================================
+        function getStoredDerivToken() {
+            return localStorage.getItem('active_token') ||
+                   localStorage.getItem('derivToken') ||
+                   localStorage.getItem('derivTokenDemo') ||
+                   localStorage.getItem('derivTokenReal');
+        }
+
+        function isBotAuthenticated() {
+            return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
+        }
+
+        if (!isBotAuthenticated()) {
+            window.location.replace('/');
+        }
+
+        // ============================================================================
         // DERIV DIGIT MATCH INTELLIGENCE ENGINE - FIXED FOR DIGIT 0
         // Warm-up (1000 ticks) → Live incremental → Regime + Smart digit selection
         // ============================================================================
@@ -2496,17 +2514,21 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Check for authentication token
         function checkAuthToken() {
-            const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
-            if (!token) {
-                log('⚠️ No API token found. Please authenticate first.', 'WARNING');
+            const token = getStoredDerivToken();
+            const authenticated = localStorage.getItem('bot_authenticated') === 'true';
+
+            if (!authenticated || !token) {
+                log('⚠️ Please authenticate first before using the bot.', 'WARNING');
+                window.location.replace('/');
                 return false;
             }
+
             return true;
         }
         
         // Initialize account toggle
         function initializeToggleState() {
-            const token = localStorage.getItem('active_token');
+            const token = getStoredDerivToken();
             const allAccounts = JSON.parse(localStorage.getItem('deriv_accounts')) || [];
             
             if (token && allAccounts.length > 0) {
@@ -2936,7 +2958,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 log('✅ WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
                 
-                const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
+                const token = getStoredDerivToken();
                 if (!token) {
                     log('❌ No API token found in storage', 'ERROR');
                     stopBot();
@@ -3375,7 +3397,7 @@ window.executionLock = true;
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
             window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
             
-            const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
+            const token = getStoredDerivToken();
             if (!token) {
                 log('❌ No API token found. Please authenticate first.', 'CRITICAL');
                 updateTradeStatus('ERROR', 'No API token found', 'Please authenticate first', 'loss');
