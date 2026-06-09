@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DigitMatchStars Pro™ - Official Deriv Trading Bot</title>
-    <meta name="description" content="Official Deriv trading bot with instant tick execution. Connect via OAuth.">
+    <meta name="description" content="Official Deriv trading bot with instant tick execution. Connect via Deriv OAuth.">
 
     <!-- UI -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -35,7 +35,7 @@
             border-radius: 12px;
             font-weight: 600;
         }
-        .btn-oauth {
+        .btn-secondary {
             background: linear-gradient(135deg,#8b5cf6,#7c3aed);
             padding: 14px 28px;
             border-radius: 12px;
@@ -49,12 +49,13 @@
             z-index: 9999;
             align-items: center;
             justify-content: center;
+            padding: 16px;
         }
         .modal-content {
             background: linear-gradient(135deg,#0f172a,#0a0f1f);
             padding: 40px;
             border-radius: 24px;
-            max-width: 500px;
+            max-width: 520px;
             width: 100%;
             border: 1px solid rgba(255,255,255,0.1);
         }
@@ -62,86 +63,178 @@
         .auth-step.active { display: block; }
     </style>
 
-    <!-- ================= 🔐 OAUTH HANDLER ================= -->
+    <!-- ================= 🔐 DERIV OAUTH HANDLER ================= -->
     <script>
-    (function () {
+    const CONFIG = {
+        // IMPORTANT: Replace this with your new Deriv OAuth client_id from the Deriv developer dashboard.
+        // It normally looks like app12345. Your referral code is NOT the client_id.
+        CLIENT_ID: "PUT_YOUR_DERIV_CLIENT_ID_HERE",
+
+        // Optional: only set this if you still maintain a Legacy Deriv API app.
+        LEGACY_APP_ID: "",
+
+        REDIRECT_URI: window.location.origin + "/index.html",
+
+        // Your Deriv partner sign-up details. These are for sign-up/referral, not OAuth login.
+        AFFILIATE_URL: "https://partner-tracking.deriv.com/click?a=20638&o=1&c=3&link_id=1",
+        REFERRAL_CODE: "3655J683S288"
+    };
+
+    function generateRandomString(length = 64) {
+        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+        const values = new Uint8Array(length);
+        crypto.getRandomValues(values);
+        return Array.from(values, value => chars[value % chars.length]).join("");
+    }
+
+    async function sha256(text) {
+        return await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    }
+
+    function base64UrlEncode(buffer) {
+        return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=+$/, "");
+    }
+
+    function saveAuthenticatedToken(token, extra = {}) {
+        if (!token) return false;
+
+        localStorage.setItem("active_token", token);
+        localStorage.setItem("derivToken", token);
+        localStorage.setItem("bot_authenticated", "true");
+        localStorage.setItem("auth_method", extra.auth_method || "oauth2_pkce");
+        localStorage.setItem("selectedAccountMode", extra.selectedAccountMode || "DERIV");
+        localStorage.setItem("auto_open_bot", "true");
+
+        if (extra.token_type) localStorage.setItem("deriv_token_type", extra.token_type);
+        if (extra.expires_in) {
+            const expiresAt = Date.now() + (Number(extra.expires_in) * 1000);
+            localStorage.setItem("deriv_token_expires_at", String(expiresAt));
+        }
+        if (extra.account) localStorage.setItem("derivAccount", extra.account);
+
+        return true;
+    }
+
+    async function handleOAuthCallback() {
         const params = new URLSearchParams(window.location.search);
 
+        // New Deriv OAuth2 + PKCE returns code + state.
+        const code = params.get("code");
+        const returnedState = params.get("state");
+        const error = params.get("error");
+        const errorDescription = params.get("error_description");
+
+        if (error) {
+            alert("Deriv authentication failed: " + (errorDescription || error));
+            window.history.replaceState({}, document.title, "/index.html");
+            return;
+        }
+
+        if (code) {
+            const expectedState = sessionStorage.getItem("deriv_oauth_state");
+            const codeVerifier = sessionStorage.getItem("deriv_code_verifier");
+
+            if (!expectedState || returnedState !== expectedState) {
+                alert("Security error: OAuth state mismatch. Please try connecting again.");
+                window.history.replaceState({}, document.title, "/index.html");
+                return;
+            }
+
+            if (!codeVerifier) {
+                alert("OAuth session expired. Please try connecting again.");
+                window.history.replaceState({}, document.title, "/index.html");
+                return;
+            }
+
+            try {
+                document.addEventListener("DOMContentLoaded", () => {
+                    const msg = document.getElementById("authStatus");
+                    if (msg) msg.textContent = "Completing Deriv authentication...";
+                });
+
+                const response = await fetch("/api/deriv-token", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        code,
+                        code_verifier: codeVerifier,
+                        redirect_uri: CONFIG.REDIRECT_URI,
+                        client_id: CONFIG.CLIENT_ID
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || !data.access_token) {
+                    throw new Error(data.error_description || data.error || "Token exchange failed");
+                }
+
+                sessionStorage.removeItem("deriv_oauth_state");
+                sessionStorage.removeItem("deriv_code_verifier");
+
+                saveAuthenticatedToken(data.access_token, {
+                    token_type: data.token_type,
+                    expires_in: data.expires_in,
+                    auth_method: "oauth2_pkce"
+                });
+
+                window.location.replace("/bot-obfuscated.html");
+                return;
+            } catch (err) {
+                console.error(err);
+                alert("Could not complete Deriv authentication: " + err.message);
+                window.history.replaceState({}, document.title, "/index.html");
+                return;
+            }
+        }
+
+        // Backward compatibility: old Legacy OAuth style may return acct1/token1 etc.
         const acct1  = params.get("acct1");
         const token1 = params.get("token1");
-
         const acct2  = params.get("acct2");
         const token2 = params.get("token2");
 
-        let hasAuth = false;
+        let hasLegacyAuth = false;
         const accounts = [];
 
-        // Save REAL account if returned
         if (acct1 && token1) {
             localStorage.setItem("derivTokenReal", token1);
             localStorage.setItem("derivRealAccount", acct1);
-
-            accounts.push({
-                account: acct1,
-                token: token1,
-                type: "REAL"
-            });
-
-            hasAuth = true;
+            accounts.push({ account: acct1, token: token1, type: "REAL" });
+            hasLegacyAuth = true;
         }
 
-        // Save DEMO account if returned
         if (acct2 && token2) {
             localStorage.setItem("derivTokenDemo", token2);
             localStorage.setItem("derivDemoAccount", acct2);
-
-            accounts.push({
-                account: acct2,
-                token: token2,
-                type: "DEMO"
-            });
-
-            hasAuth = true;
+            accounts.push({ account: acct2, token: token2, type: "DEMO" });
+            hasLegacyAuth = true;
         }
 
-        if (hasAuth) {
-            let selectedToken = null;
-            let selectedAccount = null;
+        if (hasLegacyAuth) {
+            const selectedToken = token2 || token1;
+            const selectedAccount = acct2 || acct1;
+            const selectedAccountMode = token2 ? "DEMO" : "REAL";
 
-            // Prefer DEMO first if available
-            if (acct2 && token2) {
-                selectedToken = token2;
-                selectedAccount = acct2;
-
-                localStorage.setItem("selectedAccountMode", "DEMO");
-                localStorage.setItem("derivAccount", acct2);
-            } else {
-                selectedToken = token1;
-                selectedAccount = acct1;
-
-                localStorage.setItem("selectedAccountMode", "REAL");
-                localStorage.setItem("derivAccount", acct1);
-            }
-
-            // Main tokens your bot can read
-            localStorage.setItem("active_token", selectedToken);
-            localStorage.setItem("derivToken", selectedToken);
+            localStorage.setItem("selectedAccountMode", selectedAccountMode);
+            localStorage.setItem("derivAccount", selectedAccount);
             localStorage.setItem("active_account", selectedAccount);
-
-            // Store all returned accounts
             localStorage.setItem("deriv_accounts", JSON.stringify(accounts));
 
-            // Authentication flag required by bot-obfuscated.html
-            localStorage.setItem("bot_authenticated", "true");
-            localStorage.setItem("auth_method", "oauth");
-            localStorage.setItem("auto_open_bot", "true");
+            saveAuthenticatedToken(selectedToken, {
+                account: selectedAccount,
+                selectedAccountMode,
+                auth_method: "legacy_oauth"
+            });
 
-            // Remove OAuth parameters from the address and open only bot-obfuscated.html
             window.location.replace("/bot-obfuscated.html");
             return;
         }
 
-        // Auto-open bot only if already authenticated
+        // Optional auto-open only if the user already authenticated before.
         const alreadyAuthenticated =
             localStorage.getItem("bot_authenticated") === "true" &&
             (
@@ -151,12 +244,12 @@
                 localStorage.getItem("derivTokenReal")
             );
 
-        if (alreadyAuthenticated) {
-            setTimeout(() => {
-                window.location.href = "/bot-obfuscated.html";
-            }, 600);
+        if (alreadyAuthenticated && localStorage.getItem("auto_open_bot") === "true") {
+            setTimeout(() => window.location.href = "/bot-obfuscated.html", 500);
         }
-    })();
+    }
+
+    handleOAuthCallback();
     </script>
 </head>
 
@@ -175,12 +268,18 @@
 
 <!-- HERO -->
 <section class="pt-44 pb-24 text-center px-6">
-    <h1 class="text-6xl md:text-7xl font-bold mb-6">
+    <h1 class="text-5xl md:text-7xl font-bold mb-6">
         <span class="gradient-text">Instant Tick</span><br>DigitMatch Bot
     </h1>
-    <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">
-        Connect via OAuth
-    </button>
+    <p id="authStatus" class="text-gray-300 mb-8">Connect securely through Deriv OAuth.</p>
+    <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <button onclick="openModal()" class="btn-primary text-lg px-12 py-5">
+            Connect via OAuth
+        </button>
+        <button onclick="createAccount()" class="btn-secondary text-lg px-12 py-5">
+            Create Deriv Account
+        </button>
+    </div>
 </section>
 
 <!-- MODAL -->
@@ -191,13 +290,13 @@
         <div id="choiceStep" class="auth-step active">
             <h2 class="text-3xl font-bold mb-6 text-center">Connect</h2>
             <div class="space-y-4">
-                <div class="glass-card p-6 cursor-pointer" onclick="startOAuth()">
-                    <h3 class="font-bold">Connect via OAuth</h3>
-                    <p class="text-sm text-gray-400">Existing Deriv account</p>
+                <div class="glass-card p-6 cursor-pointer hover:border-green-500" onclick="startOAuth()">
+                    <h3 class="font-bold">Connect via Deriv OAuth</h3>
+                    <p class="text-sm text-gray-400">Existing Deriv account. You will be redirected to Deriv to log in and approve access.</p>
                 </div>
-                <div class="glass-card p-6 cursor-pointer" onclick="createAccount()">
+                <div class="glass-card p-6 cursor-pointer hover:border-purple-500" onclick="createAccount()">
                     <h3 class="font-bold">Need an account?</h3>
-                    <p class="text-sm text-gray-400">Sign up with affiliate link</p>
+                    <p class="text-sm text-gray-400">Sign up using your referral link. Referral code: 3655J683S288</p>
                 </div>
             </div>
         </div>
@@ -205,12 +304,6 @@
 </div>
 
 <script>
-const CONFIG = {
-    APP_ID: "33rp9Oy3CuZ2io6XAuLZ6",
-    REDIRECT_URI: window.location.origin + window.location.pathname,
-    AFFILIATE_URL: "https://track.deriv.com/_0rfpRaHuZeFMjdsyM5hasGNd7ZgqdRLk/1/"
-};
-
 function openModal() {
     document.getElementById("authModal").style.display = "flex";
 }
@@ -219,15 +312,34 @@ function closeModal() {
     document.getElementById("authModal").style.display = "none";
 }
 
-function startOAuth() {
+async function startOAuth() {
+    if (!CONFIG.CLIENT_ID || CONFIG.CLIENT_ID === "PUT_YOUR_DERIV_CLIENT_ID_HERE") {
+        alert("Please set CONFIG.CLIENT_ID in index.html using your Deriv OAuth client_id first.");
+        return;
+    }
+
+    const codeVerifier = generateRandomString(64);
+    const state = generateRandomString(32);
+    const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
+
+    sessionStorage.setItem("deriv_code_verifier", codeVerifier);
+    sessionStorage.setItem("deriv_oauth_state", state);
+
     const params = new URLSearchParams({
-        app_id: CONFIG.APP_ID,
-        response_type: "token",
+        response_type: "code",
+        client_id: CONFIG.CLIENT_ID,
         redirect_uri: CONFIG.REDIRECT_URI,
-        scope: "read,trade,trading_information"
+        scope: "trade account_manage",
+        state,
+        code_challenge: codeChallenge,
+        code_challenge_method: "S256"
     });
 
-    window.location.href = `https://oauth.deriv.com/oauth2/authorize?${params.toString()}`;
+    if (CONFIG.LEGACY_APP_ID) {
+        params.set("app_id", CONFIG.LEGACY_APP_ID);
+    }
+
+    window.location.href = `https://auth.deriv.com/oauth2/auth?${params.toString()}`;
 }
 
 function createAccount() {
