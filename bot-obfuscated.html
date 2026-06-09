@@ -701,6 +701,33 @@
                    localStorage.getItem('derivTokenReal');
         }
 
+        function getStoredDerivAccount() {
+            const mode = localStorage.getItem('selectedAccountMode');
+
+            if (mode === 'DEMO') {
+                return localStorage.getItem('active_account') ||
+                       localStorage.getItem('derivAccount') ||
+                       localStorage.getItem('derivDemoAccount');
+            }
+
+            if (mode === 'REAL') {
+                return localStorage.getItem('active_account') ||
+                       localStorage.getItem('derivAccount') ||
+                       localStorage.getItem('derivRealAccount');
+            }
+
+            return localStorage.getItem('active_account') ||
+                   localStorage.getItem('derivAccount') ||
+                   localStorage.getItem('derivDemoAccount') ||
+                   localStorage.getItem('derivRealAccount');
+        }
+
+        function getDerivAppIdForRest() {
+            return localStorage.getItem('deriv_app_id') ||
+                   localStorage.getItem('deriv_client_id') ||
+                   '019e8851-5a46-7e6c-888f-2b494d061494';
+        }
+
         function isBotAuthenticated() {
             return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
         }
@@ -2936,77 +2963,130 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
         }
         
-        // WEBSOCKET CONNECTION - UPDATED WITH NETWORK RECOVERY
-        function connectWebSocket() {
+        // WEBSOCKET CONNECTION - UPDATED FOR NEW DERIV OTP WEBSOCKET FLOW
+        async function getAuthenticatedDerivWebSocketUrl() {
+            const token = getStoredDerivToken();
+            const account_id = getStoredDerivAccount();
+            const app_id = getDerivAppIdForRest();
+
+            if (!token) {
+                throw new Error('No Deriv access token found. Please login again.');
+            }
+
+            if (!account_id) {
+                throw new Error('No Deriv account ID found. Please login again.');
+            }
+
+            const response = await fetch('/api/deriv-ws-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    token,
+                    account_id,
+                    app_id
+                })
+            });
+
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (e) {
+                throw new Error('Invalid response from /api/deriv-ws-url');
+            }
+
+            if (!response.ok || !data.websocket_url) {
+                throw new Error(data.error || 'Failed to get authenticated Deriv WebSocket URL');
+            }
+
+            return data.websocket_url;
+        }
+
+        async function connectWebSocket() {
             if (window.ws) {
                 try {
                     window.ws.close();
                 } catch (e) {}
             }
-            
+
             window.isConnecting = true;
             updateConnectionStatus();
-            
-            const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
-            log('🔗 Connecting to Deriv API...', 'SYSTEM');
-            
+
+            log('🔗 Getting authenticated Deriv WebSocket URL...', 'SYSTEM');
+
+            let wsUrl;
+            try {
+                wsUrl = await getAuthenticatedDerivWebSocketUrl();
+            } catch (error) {
+                window.isConnecting = false;
+                updateConnectionStatus();
+                log(`❌ ${error.message}`, 'ERROR');
+                updateTradeStatus('ERROR', error.message, 'Login again or check api/deriv-ws-url.js', 'loss');
+
+                if (window.isBotRunning && window.networkRecoveryEnabled) {
+                    attemptNetworkRecovery();
+                }
+                return;
+            }
+
+            log('🔗 Connecting to authenticated Deriv WebSocket...', 'SYSTEM');
+
             window.ws = new WebSocket(wsUrl);
-            
+
             window.ws.onopen = () => {
                 window.isConnecting = false;
                 resetReconnectionAttempts();
-                log('✅ WebSocket connected', 'SYSTEM');
+                log('✅ Authenticated WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
-                
+
                 const token = getStoredDerivToken();
                 if (!token) {
                     log('❌ No API token found in storage', 'ERROR');
                     stopBot();
                     return;
                 }
-                
+
                 sendRequest({ 
                     authorize: token, 
                     req_id: getNextReqId() 
                 });
             };
-            
+
             window.ws.onmessage = (msg) => {
                 try {
                     const data = JSON.parse(msg.data);
-                    console.log('API Response:', data.msg_type, data); // Debug logging
-                    
+                    console.log('API Response:', data.msg_type, data);
+
                     // 🔥 CRITICAL FIX: Handle tick messages
                     if (data.msg_type === 'tick') {
-                        console.log('Tick received:', data.tick); // Debug
-                        
-                        // Log specifically for digit 0
+                        console.log('Tick received:', data.tick);
+
                         updateTickFormatFromQuote(data.tick.quote);
                         const digit = getLastDigitFromQuote(data.tick.quote);
                         if (digit === 0) {
                             console.log('🎯 DIGIT 0 DETECTED in formatted tick:', formatQuoteForDigit(data.tick.quote));
                         }
-                        
+
                         handleTick(data.tick);
                         return;
                     }
-                    
+
                     handleAPIResponse(data);
                 } catch (e) {
                     console.error('WebSocket message error:', e);
                     log('❌ Error parsing WebSocket message', 'ERROR');
                 }
             };
-            
+
             window.ws.onclose = () => {
                 window.isConnecting = false;
                 updateConnectionStatus();
                 log('🔌 WebSocket disconnected', 'SYSTEM');
-                
+
                 if (window.isBotRunning) {
                     window.lastDisconnectTime = Date.now();
-                    
-                    // Attempt automatic reconnection if enabled
+
                     if (window.networkRecoveryEnabled) {
                         attemptNetworkRecovery();
                     } else {
@@ -3015,14 +3095,15 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     }
                 }
             };
-            
+
             window.ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
                 log('❌ WebSocket connection error', 'ERROR');
-                updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check network connection', 'loss');
+                updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check token/API route/network', 'loss');
             };
         }
-        
+
+
         // ============================================================================
         // ✅ FIXED: TICK HANDLER - PROPER DIGIT EXTRACTION INCLUDING DIGIT 0
         // ============================================================================
