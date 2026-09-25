@@ -760,12 +760,10 @@
             // PRESSURE ZONE: only recommend digits whose current gap is close to P90
             // Example: min=0.75 means "within last 15% of the P90 gap"
             pressureZoneEnabled: true,
-            // Looser default so you still get trades, but quality stays high.
-            // 0.75 means "within last 25% of P90"
-            pressureZoneMinP90Ratio: 0.70,
+            // Pressure is a ranking signal in V7, not a mandatory gate.
+            pressureZoneMinP90Ratio: 0.35,
             pressureZoneMaxP90Ratio: 0.95,
-                        // Hard floor: never recommend if gap is far from P90 (prevents "gap 4, p90 20" type picks)
-            pressureZoneMinFloorP90Ratio: 0.60,
+            pressureZoneMinFloorP90Ratio: 0.00,
         };
 
 
@@ -777,10 +775,10 @@
 
         // Ranking defaults (tweakable)
         window.SURVIVAL_CFG = {
-            minPm5: 0.60,
-            maxS20: 0.05,
+            minPm5: 0.45,
+            maxS20: 0.20,
             maxETM: 12,
-            requirePressure: true
+            requirePressure: false
         };
 
         // ============================================================================
@@ -958,8 +956,8 @@
                 this.updateRegime(digit);
                 this.onNewDigit(digit);
                 
-                // Update analysis every 50 ticks
-                if (this.tickIndex % 50 === 0) {
+                // Refresh AI ranking every 10 ticks.
+                if (this.tickIndex % 10 === 0) {
                     this.analyzeAndRecommend();
                 }
             },
@@ -1126,142 +1124,102 @@ expectedAdditionalTicks: function(gaps, g) {
             // Select best digit using AI logic
             selectBestDigit: function() {
                 if (!this.warmupDone || !this.enabled) return null;
-                
+
                 const regimeStatus = this.computeRegimeStatus();
                 if (!regimeStatus.ok) {
                     log(`🧠 Regime unstable: E=${regimeStatus.entropy}, χ²=${regimeStatus.chi2}, D=${regimeStatus.dominance}`, 'ENGINE');
                     return null;
                 }
-                
-                let best = null;
 
                 const thresholds = window.AI_THRESHOLDS;
+                const candidates = [];
 
-                const maxPersistence =
-                    regimeStatus.label === "STABLE"
-                        ? thresholds.maxPersistenceStable
-                        : thresholds.maxPersistenceUnstable;
+                for (let d = 0; d < 10; d++) {
+                    const s = this.digitStats[d];
+                    if (!s) continue;
 
-                const activeMinP90Ratio = (thresholds.pressureZoneEnabled ? thresholds.pressureZoneMinP90Ratio : 0.0);
+                    const g = Number(s.currentGap || 0);
+                    const p90 = Math.max(Number(s.p90Gap || 0), 1);
+                    const p90Ratio = g / p90;
+                    const avgGap = Math.max(Number(s.avgGap || 0), 1);
+                    const extendRatio = g / avgGap;
+                    const support = Array.isArray(s.gaps) ? s.gaps.length : 0;
 
-                const runPass = (activeMinP90Ratio) => {
-                    let passBest = null;
+                    const P5 = this.conditionalReturnProb(d, g, 5);
+                    const P10 = this.conditionalReturnProb(d, g, 10);
+                    const pm2 = pmK(s.gaps || [], g, 2);
+                    const pm3 = pmK(s.gaps || [], g, 3);
+                    const pm5w = pm5Weighted(s.gaps || [], g);
+                    const etm = (typeof this.expectedAdditionalTicks === "function")
+                        ? this.expectedAdditionalTicks(s.gaps || [], g)
+                        : Infinity;
 
-                    for (let d = 0; d < 10; d++) {
-                        const s = this.digitStats[d];
-                        const g = s.currentGap;
-                        const p90 = Math.max(s.p90Gap, 1);
-                        const p90Ratio = g / p90;
-                        const extendRatio = g / Math.max(s.avgGap, 1);
+                    // HARD SAFETY GATES
+                    if (support < thresholds.minSupport) continue;
+                    if (s.isUnstable) continue;
+                    if (s.persistenceScore > thresholds.maxPersistenceStable) continue;
+                    if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
+                    if (thresholds.require_g_lt_p90 && g >= p90) continue;
+                    if (extendRatio > 1.80) continue;
+                    if (!Number.isFinite(etm) || etm > 12) continue;
 
-                        // 🔥 HARD TAIL BLOCK: extreme stretch vs history
-                        if (extendRatio > 2.8) continue;
+                    // RANKING SIGNALS — pressure no longer vetoes an otherwise safe digit.
+                    const pressureTarget = 0.65;
+                    const pressureScore = Math.max(
+                        0,
+                        1 - (Math.abs(p90Ratio - pressureTarget) / pressureTarget)
+                    );
 
-                        // 🔥 Biased regime + stretched digit = tail risk
-                        if (regimeStatus.entropy < 0.96 && extendRatio > 1.5) continue;
+                    const persistenceSafety =
+                        Math.max(0, Math.min(1, 1 - (Number(s.persistenceScore || 0) / 100)));
 
-                        // 🔥 Tail forming: suppressed digit + stretched gap
-                        if (s.persistenceScore > 90 && extendRatio > 1.8) continue;
+                    const score =
+                        0.22 * P5 +
+                        0.23 * P10 +
+                        0.16 * pm2 +
+                        0.16 * pm3 +
+                        0.13 * pm5w +
+                        0.07 * pressureScore +
+                        0.03 * persistenceSafety;
 
-                        const P5  = this.conditionalReturnProb(d, g, 5);
-                        const P10 = this.conditionalReturnProb(d, g, 10);
+                    candidates.push({
+                        digit: d,
+                        score: Math.max(0, Math.min(1, score)),
+                        P5,
+                        P10,
+                        pm2,
+                        pm3,
+                        pm5w,
+                        gap: g,
+                        p90,
+                        p90Ratio,
+                        avgGap,
+                        extendRatio,
+                        etm,
+                        support,
+                        persistenceScore: Number(s.persistenceScore || 0),
+                        consecutiveExtendingGaps: Number(s.consecutiveExtendingGaps || 0),
+                        isUnstable: !!s.isUnstable,
+                        pressureScore,
+                        source: 'RANKED'
+                    });
+                }
 
-// =====================================================
-// 🔥 EARLY MATCH (2–3 TICKS) HARD FILTER
-// =====================================================
+                candidates.sort((a, b) => b.score - a.score);
+                const best = candidates[0] || null;
 
-const pm2  = pmK(s.gaps, g, 2);
-const pm3  = pmK(s.gaps, g, 3);
-const pm5w = pm5Weighted(s.gaps, g);
-
-const pressure75  = g / Math.max(s.p75Gap, 1);
-const slope       = gapSlope(s.gaps);
-
-// Expected additional ticks (fallback safe)
-const etm = (typeof this.expectedAdditionalTicks === "function")
-  ? this.expectedAdditionalTicks(s.gaps, g)
-  : Infinity;
-
-// ❌ HARD REJECTIONS — NO NEGOTIATION
-if (pm2 < 0.30) continue;
-if (pm3 < 0.45) continue;
-if (pm5w < 0.55) continue;
-
-if (extendRatio > 1.25) continue;
-
-if (pressure75 < 0.55 || pressure75 > 0.85) continue;
-
-if (etm > 8) continue;
-
-if (slope > 2) continue;
-
-                        // Filter conditions
-                        if (s.gaps.length < thresholds.minSupport) continue;
-
-                        // STRONG EARLY FIRST (H5 primary gate)
-                        if (P5 < thresholds.minH5) continue;
-
-                        // MEDIUM EARLY SECOND
-                        if (P10 < thresholds.minP10) continue;
-
-                        // SAFETY
-                        if (thresholds.require_g_lt_p90 && g >= p90) continue;
-
-                        // PRESSURE ZONE (adaptive): prefer digits close to P90, but relax if too strict.
-                        if (thresholds.pressureZoneEnabled) {
-                            if (p90Ratio < activeMinP90Ratio) continue;
-                            if (p90Ratio >= thresholds.pressureZoneMaxP90Ratio) continue;
-                        }
-
-                        // Cold-stickiness / persistence filters
-                        const effectiveMaxPersistence = (
-                            regimeStatus.label === "STABLE" &&
-                            P10 >= (thresholds.minP10 + 0.05) &&
-                            extendRatio <= 1.3
-                        ) ? thresholds.maxPersistenceStableRelax : maxPersistence;
-
-                        if (s.persistenceScore > effectiveMaxPersistence) continue;
-                        if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
-                        if (s.isUnstable) continue;
-
-
-// =====================================================
-// 🎯 EARLY MATCH SCORING (FAST SNAP PRIORITY)
-// =====================================================
-
-const score =
-  0.40 * pm3 +
-  0.30 * pm2 +
-  0.20 * pm5w +
-  0.10 * (1 - extendRatio);
-
-if (!passBest || score > passBest.score) {
-  passBest = {
-    digit: d,
-    score,
-    P10: pm3,
-    P5: pm2,
-    pm2,
-    pm3,
-    pm5w,
-    gap: g,
-    extendRatio,
-    source: "EARLY"
-  };
-}
-                    }
-
-                    return passBest;
-                };
-
-                best = runPass(activeMinP90Ratio);
                 if (best) {
-                    best.pressureMinP90Ratio = activeMinP90Ratio;
+                    log(
+                        `🧠 Ranked digit ${best.digit}: score ${(best.score * 100).toFixed(1)}% | ` +
+                        `P5 ${(best.P5 * 100).toFixed(0)}% | P10 ${(best.P10 * 100).toFixed(0)}% | ` +
+                        `gap/P90 ${best.p90Ratio.toFixed(2)}`,
+                        'ENGINE'
+                    );
                 }
 
                 return best;
             },
-            
+
             // Analyze and recommend digit
             analyzeAndRecommend: function() {
                 const regimeStatus = this.computeRegimeStatus();
@@ -1576,10 +1534,10 @@ survivalTop = survivalTop3[0] || null;
           }
 
           function rank(stats, cfg = {}) {
-            const minPm5 = cfg.minPm5 ?? 0.60;
-            const maxS20 = cfg.maxS20 ?? 0.25;
+            const minPm5 = cfg.minPm5 ?? 0.45;
+            const maxS20 = cfg.maxS20 ?? 0.20;
             const maxETM = cfg.maxETM ?? 12;
-            const requirePressure = cfg.requirePressure ?? true;
+            const requirePressure = cfg.requirePressure ?? false;
 
             const candidates = stats.filter(x => {
               if (requirePressure && !x.inPressure) return false;
@@ -1590,11 +1548,19 @@ survivalTop = survivalTop3[0] || null;
             });
 
             candidates.forEach(x => {
+              const p90 = Math.max(Number(x.p90 || 0), 1);
+              const pressureRatio = Number(x.gap || 0) / p90;
+              const pressureScore = Math.max(
+                0,
+                1 - (Math.abs(pressureRatio - 0.65) / 0.65)
+              );
+
               x.survivalScore =
-                (2.0 * x.pm5) +
-                (1.0 * x.pm10) -
-                (2.5 * x.s20) -
-                (0.05 * Math.min(x.etm, 100));
+                (1.80 * (x.pm5 || 0)) +
+                (1.10 * (x.pm10 || 0)) -
+                (2.25 * (x.s20 || 0)) -
+                (0.04 * Math.min(Number.isFinite(x.etm) ? x.etm : 100, 100)) +
+                (0.35 * pressureScore);
             });
 
             candidates.sort((a, b) => b.survivalScore - a.survivalScore);
@@ -1678,31 +1644,50 @@ function buildDigitDecision(digit) {
 
   const g = Number(s.currentGap ?? 0);
   const avgGap = Math.max(Number(s.avgGap ?? 0), 1);
+  const localP90 = Math.max(Number(s.p90Gap ?? 0), 1);
 
   const pm2 = pmK(s.gaps || [], g, 2);
   const pm3 = pmK(s.gaps || [], g, 3);
   const pm5w = pm5Weighted(s.gaps || [], g);
 
+  const P5 = (typeof engine?.conditionalReturnProb === "function")
+    ? engine.conditionalReturnProb(digit, g, 5)
+    : 0;
+
+  const P10 = (typeof engine?.conditionalReturnProb === "function")
+    ? engine.conditionalReturnProb(digit, g, 10)
+    : 0;
+
   const etm = (typeof engine?.expectedAdditionalTicks === "function")
     ? engine.expectedAdditionalTicks(s.gaps || [], g)
     : Infinity;
 
-  const surv = (typeof getSurvivalForDigit === "function") ? getSurvivalForDigit(digit) : null;
+  const surv = (typeof getSurvivalForDigit === "function")
+    ? getSurvivalForDigit(digit)
+    : null;
 
-  const p90 = Number.isFinite(Number(surv?.p90)) ? Number(surv.p90) : Math.max(Number(s.p90Gap ?? 0), 1);
-  const extendRatio = g / avgGap;
+  const p90 = Number.isFinite(Number(surv?.p90))
+    ? Number(surv.p90)
+    : localP90;
 
   return {
     digit,
     gap: g,
     avgGap,
     p90,
-    extendRatio,
+    pressureRatio: g / Math.max(p90, 1),
+    extendRatio: g / avgGap,
     pm2,
     pm3,
     pm5_recent: Number.isFinite(Number(surv?.pm5)) ? Number(surv.pm5) : pm5w,
-    s20: Number.isFinite(Number(surv?.s20)) ? Number(surv.s20) : 1,
-    etm
+    P5,
+    P10,
+    s20: Number.isFinite(Number(surv?.s20)) ? Number(surv.s20) : null,
+    etm,
+    support: Array.isArray(s.gaps) ? s.gaps.length : 0,
+    persistenceScore: Number(s.persistenceScore || 0),
+    consecutiveExtendingGaps: Number(s.consecutiveExtendingGaps || 0),
+    isUnstable: !!s.isUnstable
   };
 }
 
@@ -1711,41 +1696,49 @@ function buildDigitDecision(digit) {
 // =====================================================
 
 function canTradeDigit(d, regime, tradeCount) {
-  // 1️⃣ HARD STOP — trade count
   if (tradeCount >= (window.maxTrades ?? 10)) {
     return { ok: false, reason: "MAX_TRADES_REACHED" };
   }
 
-  // 2️⃣ REGIME GATE
-  if ((regime?.entropy ?? 0) < 0.95 || (regime?.dominance ?? 1) > 0.18) {
+  if (!d) return { ok: false, reason: "DIGIT_METRICS_NOT_READY" };
+
+  // Market safety.
+  if ((regime?.entropy ?? 0) < 0.93 || (regime?.dominance ?? 1) > 0.21) {
     return { ok: false, reason: "REGIME_UNSTABLE" };
   }
 
-  // 3️⃣ STRUCTURAL SAFETY
-  if ((d?.s20 ?? 1) !== 0) {
-    return { ok: false, reason: "TAIL_RISK_S20" };
+  // Structural safety.
+  if ((d.support ?? 0) < (window.AI_THRESHOLDS?.minSupport ?? 22)) {
+    return { ok: false, reason: "INSUFFICIENT_SUPPORT" };
+  }
+  if (d.isUnstable) return { ok: false, reason: "DIGIT_UNSTABLE" };
+  if ((d.persistenceScore ?? 100) > 97) {
+    return { ok: false, reason: "PERSISTENCE_TOO_HIGH" };
+  }
+  if ((d.consecutiveExtendingGaps ?? 99) > 3) {
+    return { ok: false, reason: "EXTENDING_GAPS" };
   }
 
-  if ((d?.extendRatio ?? Infinity) > MAX_EXTEND_RATIO) {
+  // Tail safety.
+  if ((d.gap ?? 0) >= Math.max((d.p90 ?? 0), 1)) {
+    return { ok: false, reason: "AT_OR_BEYOND_P90" };
+  }
+  if ((d.extendRatio ?? Infinity) > 1.80) {
     return { ok: false, reason: "EXTEND_RATIO_TOO_HIGH" };
   }
 
-  // 4️⃣ PRESSURE (NO FALLBACK)
-  const pressureRatio = (d?.gap ?? 0) / Math.max((d?.p90 ?? 0), 1);
-  if (pressureRatio < PRESSURE_MIN || pressureRatio >= PRESSURE_MAX) {
-    return { ok: false, reason: "NOT_IN_PRESSURE_ZONE" };
+  // Survival tail risk only if available.
+  const configuredMaxS20 = Number(window.SURVIVAL_CFG?.maxS20 ?? 0.20);
+  const safetyMaxS20 = Math.min(Math.max(configuredMaxS20, 0.05), 0.25);
+  if (Number.isFinite(d.s20) && d.s20 > safetyMaxS20) {
+    return { ok: false, reason: "TAIL_RISK_S20" };
   }
 
-  // 5️⃣ SHORT-WINDOW VETO (MOST IMPORTANT)
-  if (!shortWindowPass(d)) {
-    return { ok: false, reason: "NO_IMMEDIATE_RELEASE" };
-  }
-
-  // 6️⃣ ETM CONFIRMATION
-  if ((d?.etm ?? Infinity) > MAX_ETM) {
+  if (!Number.isFinite(d.etm) || d.etm > 12) {
     return { ok: false, reason: "ETM_TOO_LATE" };
   }
 
+  // Pressure/P5/P10/pm2/pm3 are ranking signals, not individual vetoes.
   return { ok: true, reason: "TRADE_APPROVED" };
 }
 
@@ -1998,8 +1991,7 @@ function canTradeDigit(d, regime, tradeCount) {
                         ${regimeStatus.label} | Entropy: ${regimeStatus.entropy} | Dominance: ${regimeStatus.dominance}
                     </div>
                     <div class="text-[11px] text-gray-500 mt-1">
-                        Gates — Support≥${thresholds.minSupport}, H5≥${thresholds.minH5}, P10≥${thresholds.minP10}, Pressure∈[${thresholds.pressureZoneMinP90Ratio}×P90, ${thresholds.pressureZoneMaxP90Ratio}×P90), Extend≤${thresholds.maxExtend},
-                        Persistence≤${baseMaxPersistence} (relax→${thresholds.maxPersistenceStableRelax}), Score(rank)≥${(scoreCutoff * 100).toFixed(0)}%
+                        Safety gates — Support≥${thresholds.minSupport}, Gap&lt;P90, Extend≤${thresholds.maxExtend}, Persistence≤${baseMaxPersistence}. Ranking signals — H5, P10, pressure, short-window return and survival. Pressure is not a hard veto.
                     </div>
                 </div>
                 ${survivalTop3.length ? `
@@ -2067,7 +2059,7 @@ const denom = Math.max(1 - thresholds.pressureZoneMinP90Ratio, 1e-6);
 const passScore = score >= scoreCutoff;
 
                 const passAll =
-                    passSupport && passP90 && passPressure && passPersistence && passExtend && passUnstable && passP5 && passP10;
+                    passSupport && passP90 && passPersistence && passExtend && passUnstable;
 const isRecommended = engine.currentRecommendation && engine.currentRecommendation.digit === d;
 
                 const barWidth = Math.min(100, (g / 50) * 100);
@@ -2106,7 +2098,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                         </div>
 
                         <div class="text-[11px] text-gray-500 mt-1">
-                            Pass: Support${flag(passSupport)} · P90${flag(passP90)} · Pressure${flag(passPressure)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
+                            Safety: Support${flag(passSupport)} · P90${flag(passP90)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)}
+                            <br>Rank: Pressure${flag(passPressure)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
                         </div>
 
                         <div class="mt-1 bg-gray-700/40 rounded h-2">
@@ -3224,7 +3217,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: FAST-TICK V6 · pip-aware canonical digits · async recovery', 'SYSTEM');
+            log('🚀 Runtime: FAST-TICK V7 · safety-gated AI ranking · pressure-as-score', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
