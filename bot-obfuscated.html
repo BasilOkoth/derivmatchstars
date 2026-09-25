@@ -3373,11 +3373,24 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // API RESPONSE HANDLER - MODIFIED FOR ENGINE INTEGRATION
         function handleAPIResponse(data) {
-            if (data.error) {
-                log(`API Error: ${data.error.message}`, 'ERROR');
-                if (data.error.code === 'InvalidToken') {
-                    log('❌ Invalid API Token. Please check your authentication.', 'CRITICAL');
+            const apiError = data?.error || (Array.isArray(data?.errors) ? data.errors[0] : null);
+
+            if (apiError) {
+                const message = apiError.message || 'Unknown Deriv API error';
+                const code = apiError.code || apiError.error_code || '';
+
+                log(`API Error: ${message}`, 'ERROR');
+
+                // Release the trade lock when a proposal/buy is rejected so INSTANT
+                // mode can continue instead of getting permanently stuck.
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+
+                if (code === 'InvalidToken' || code === 'AuthorizationRequired') {
+                    log('❌ Trading authorization is no longer valid. Please reconnect.', 'CRITICAL');
                     stopBot();
+                } else {
+                    updateTradeStatus('ERROR', message, 'Waiting for next tick', 'loss');
                 }
                 return;
             }
@@ -3516,13 +3529,13 @@ window.executionLock = true;
             
             const proposalRequest = {
                 proposal: 1,
-                amount: stake.toFixed(2),
+                amount: Number(stake.toFixed(2)),
                 basis: "stake",
                 contract_type: contractType,
                 currency: "USD",
                 duration: 1,
                 duration_unit: "t",
-                symbol: symbol,
+                underlying_symbol: symbol,
                 barrier: predictedDigit.toString(),
                 req_id: getNextReqId()
             };
@@ -4010,9 +4023,19 @@ window.isBotRunning = true;
         }
         
         function executeBuy(proposal_id, ask_price, pending) {
+            const numericAskPrice = Number(ask_price);
+
+            if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
+                log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+                updateTradeStatus('ERROR', 'Invalid proposal price', 'Waiting for next tick', 'loss');
+                return;
+            }
+
             const buyRequest = {
                 buy: proposal_id,
-                price: ask_price,
+                price: numericAskPrice,
                 req_id: getNextReqId()
             };
             
