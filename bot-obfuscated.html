@@ -2376,9 +2376,13 @@ window.nextTickModel = {
             );
             set(
                 'ntm-decision',
-                evaln.approved
-                    ? `✅ ${evaln.reason}`
-                    : `🧱 ${evaln.reason}`
+                evaln.reason === 'EV_GATE_NOT_APPLIED'
+                    ? 'ℹ️ Recovery quote · entry EV gate not applied'
+                    : (
+                        evaln.approved
+                            ? `✅ ${evaln.reason}`
+                            : `🧱 ${evaln.reason}`
+                    )
             );
         } else {
             set('ntm-breakeven', 'Awaiting quote');
@@ -2625,16 +2629,18 @@ window.cyclePerformance = {
         row.profit = Number(profit || 0);
         row.settledAt = Date.now();
 
-        if (row.payout > 0) {
-            this.current.totalPayout += row.payout;
+        // Losing DIGITMATCH settlements contribute zero payout.
+        // Only confirmed winning payouts count as cycle revenue.
+        if (result === 'WIN') {
+            const winPayout = Number(row.payout || 0);
+            if (Number.isFinite(winPayout) && winPayout > 0) {
+                this.current.totalPayout += winPayout;
+            }
+            this.current.winningTradeNumber = row.tradeNumber;
         }
 
         this.current.netPnL =
             this.current.totalPayout - this.current.totalInvestment;
-
-        if (result === 'WIN') {
-            this.current.winningTradeNumber = row.tradeNumber;
-        }
 
         this.render();
     },
@@ -2646,6 +2652,19 @@ window.cyclePerformance = {
         c.endedAt = Date.now();
         c.status = status;
         c.finalReason = reason || status;
+
+        // Rebuild authoritative totals from confirmed purchases and confirmed wins.
+        c.totalInvestment = c.trades.reduce((sum, t) => {
+            const stake = Number(t.stake || 0);
+            return sum + (Number.isFinite(stake) && stake > 0 ? stake : 0);
+        }, 0);
+
+        c.totalPayout = c.trades.reduce((sum, t) => {
+            if (t.result !== 'WIN') return sum;
+            const payout = Number(t.payout || 0);
+            return sum + (Number.isFinite(payout) && payout > 0 ? payout : 0);
+        }, 0);
+
         c.netPnL = c.totalPayout - c.totalInvestment;
 
         const symbol = c.symbol || this.getSymbol();
@@ -2662,10 +2681,26 @@ window.cyclePerformance = {
 
         log(
             `📊 CYCLE COMPLETE | ${status} | ${c.trades.length} trades | ` +
+            `invested $${c.totalInvestment.toFixed(2)} | payout $${c.totalPayout.toFixed(2)} | ` +
             `net ${c.netPnL >= 0 ? '+' : ''}$${c.netPnL.toFixed(2)} | ` +
             `max stake $${c.maxStake.toFixed(2)} | ${durationSec.toFixed(1)}s`,
             status === 'WIN' ? 'WIN' : 'SYSTEM'
         );
+
+        const sessionLedgerPnL =
+            Number(window.pnlTracker?.totalPayout || 0) -
+            Number(window.pnlTracker?.totalInvestment || 0);
+
+        if (
+            status === 'WIN' &&
+            Number.isFinite(sessionLedgerPnL) &&
+            Math.abs(sessionLedgerPnL - c.netPnL) > 0.01
+        ) {
+            log(
+                `⚠️ CYCLE/SESSION P&L MISMATCH | cycle ${c.netPnL.toFixed(2)} vs session ledger ${sessionLedgerPnL.toFixed(2)}`,
+                'WARNING'
+            );
+        }
 
         this.current = null;
         this.render();
@@ -4378,7 +4413,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V12 · persistent cycle performance recorder · -1.00 pp edge band · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V13 · corrected cycle accounting · synchronized post-cycle UI · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -5133,6 +5168,14 @@ window.isBotRunning = true;
             );
             
             sessionState.sessionStarted = false;
+            sessionState.sessionDigit = null;
+            sessionState.manualOverride = false;
+
+            if (window.nextTickModel) {
+                window.nextTickModel.lastEvaluation = null;
+                window.nextTickModel.render();
+            }
+
             sessionDisplay.classList.add('hidden');
         }
         
