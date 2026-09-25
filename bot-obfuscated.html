@@ -2816,7 +2816,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 document.getElementById('market_status').textContent = 'Live';
                 document.getElementById('market_status').className = 'ml-2 font-bold text-green-400';
                 if (!window.isBotRunning && !hasOpenContract()) {
-                    updateTradeStatus('CONNECTED', 'Market live - Ready to trade', 'Set parameters and start trading', 'normal');
+                    updateTradeStatus('READY', 'Market analysis active · Trading idle', 'Press START BOT when ready', 'normal');
                 }
             } else if (isConnecting) {
                 document.getElementById('status-badge').textContent = '🟡 CONNECTING';
@@ -3090,8 +3090,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
                 updateTradeStatus(
                     'CONNECTED',
-                    'Market online - AI warming up',
-                    'Trading remains stopped until START BOT',
+                    'Market analysis active',
+                    'Trading idle until START BOT',
                     'normal'
                 );
             };
@@ -3217,7 +3217,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: FAST-TICK V7 · safety-gated AI ranking · pressure-as-score', 'SYSTEM');
+            log('🚀 Runtime: FAST-TICK V8 · clear engine/trading states', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -3623,7 +3623,13 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             
             // In AI mode, wait for engine recommendation
             if (sessionState.mode === 'ai' && (!window.digitIntelligenceEngine.warmupDone || !window.digitIntelligenceEngine.currentRecommendation)) {
-                log('🤖 Waiting for AI recommendation...', 'ENGINE');
+                log('🤖 AI AUTO armed · Evaluating safe entries', 'ENGINE');
+                updateTradeStatus(
+                    'AI AUTO ARMED',
+                    'Evaluating safe entries',
+                    'Waiting for an approved digit',
+                    'normal'
+                );
                 return;
             }
             
@@ -3631,6 +3637,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (sessionState.mode === 'ai' && window.isBotRunning && (!sessionState.sessionStarted || sessionState.sessionDigit === null)) {
                 const d = window.digitIntelligenceEngine.currentRecommendation.digit;
                 lockSessionDigit(d, true, 'AUTO start lock');
+                updateTradeStatus(
+                    'AI AUTO ACTIVE',
+                    `Digit ${d} locked`,
+                    'Evaluating execution safety gates',
+                    'trade'
+                );
             }
 
             if (checkForImmediateWin(tick)) {
@@ -3888,7 +3900,7 @@ window.isBotRunning = true;
             
             // Keep public market monitoring and AI analysis active after STOP.
             if (window.digitIntelligenceEngine.warmupDone) {
-                updateEngineStatus('Market monitoring - trading stopped', 'ANALYZING', 100);
+                updateEngineStatus('Market analysis active · Trading idle', 'ANALYZING', 100);
             }
             
             document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
@@ -4442,7 +4454,7 @@ window.isBotRunning = true;
                 window.settlementLedger.delete(contractId);
                 if (window.activeContract && Number(window.activeContract.contractId) === contractId) window.activeContract = null;
 
-                updateTradeStatus('WIN CONFIRMED 🎯', `Profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)} · digit ${finalDigit ?? ac.predictedDigit}`, 'Cycle complete — no further trade will be placed', 'win');
+                updateTradeStatus('WIN CONFIRMED 🎯', `Profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)} · digit ${finalDigit ?? ac.predictedDigit}`, 'Cycle complete · Trading idle · Market analysis continues', 'win');
                 setTimeout(() => stopBot('Confirmed DIGITMATCH win'), 50);
                 return;
             }
@@ -4882,7 +4894,7 @@ window.isBotRunning = true;
             // AI AUTO: arm the trading engine now. The existing processTickImmediately
             // function waits until Digit Intelligence has a recommendation and all
             // strict digit gates pass.
-            log('🤖 AI AUTO armed - Digit Intelligence controls entry; Precision Matcher is analytics only', 'ENGINE');
+            log('🤖 AI AUTO armed · Evaluating safe entries', 'ENGINE');
             return originalStartBot();
         };
 
