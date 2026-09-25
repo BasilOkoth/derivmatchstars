@@ -725,7 +725,7 @@
         function getDerivAppIdForRest() {
             return localStorage.getItem('deriv_app_id') ||
                    localStorage.getItem('deriv_client_id') ||
-                   '019e8851-5a46-7e6c-888f-2b494d061494';
+                   '34uXWAMOwfAO5EtltnV4n';
         }
 
         function isBotAuthenticated() {
@@ -2731,8 +2731,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
 // CONNECTION STATUS
         function updateConnectionStatus() {
-            const isConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
-            const isConnecting = window.isConnecting || false;
+            const publicConnected = window.marketWs && window.marketWs.readyState === WebSocket.OPEN;
+            const tradingConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
+            const isConnected = !!(publicConnected || tradingConnected);
+            const isConnecting = !!(window.marketIsConnecting || window.isConnecting);
             
             if (isConnected) {
                 document.getElementById('status-badge').textContent = '🟢 CONNECTED';
@@ -2751,7 +2753,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-disconnected text-white shadow-md';
                 document.getElementById('market_status').textContent = 'Offline';
                 document.getElementById('market_status').className = 'ml-2 font-bold text-red-400';
-                updateTradeStatus('DISCONNECTED', 'Market offline', 'Start bot to connect', 'normal');
+                updateTradeStatus('DISCONNECTED', 'Market offline', 'Reconnecting to market data...', 'normal');
             }
             
             document.getElementById('current_symbol').textContent = 
@@ -2868,6 +2870,185 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
         }
 
+
+        // ============================================================================
+        // PUBLIC MARKET DATA CONNECTION
+        // ONLINE status + AI warm-up work before START BOT.
+        // ============================================================================
+        window.marketWs = null;
+        window.marketIsConnecting = false;
+        window.marketReconnectTimer = null;
+        window.marketReconnectAttempts = 0;
+        window.marketReqId = 500000;
+
+        function marketNextReqId() {
+            return ++window.marketReqId;
+        }
+
+        function sendMarketRequest(request) {
+            if (window.marketWs && window.marketWs.readyState === WebSocket.OPEN) {
+                window.marketWs.send(JSON.stringify(request));
+                return request.req_id;
+            }
+            return null;
+        }
+
+        function requestPublicWarmupTicks(symbol) {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            window.digitIntelligenceEngine.reset();
+
+            sendMarketRequest({
+                ticks_history: symbol,
+                count: window.digitIntelligenceEngine.targetWarmupTicks,
+                end: "latest",
+                style: "ticks",
+                req_id: marketNextReqId()
+            });
+
+            log(`🧠 Requesting ${window.digitIntelligenceEngine.targetWarmupTicks} public warm-up ticks for ${symbol}`, 'ENGINE');
+        }
+
+        function subscribePublicTicks(symbol) {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            window.tickFormat.symbol = symbol;
+            window.tickFormat.lastQuote = null;
+            window.tickFormat.minStep = Infinity;
+
+            sendMarketRequest({
+                ticks: symbol,
+                subscribe: 1,
+                req_id: marketNextReqId()
+            });
+
+            log(`📡 Public market stream subscribed: ${symbol}`, 'SYSTEM');
+        }
+
+        function schedulePublicMarketReconnect() {
+            if (window.marketReconnectTimer) return;
+
+            const delay = Math.min(30000, 1500 * Math.pow(1.7, window.marketReconnectAttempts));
+            window.marketReconnectAttempts++;
+
+            window.marketReconnectTimer = setTimeout(() => {
+                window.marketReconnectTimer = null;
+                connectPublicMarketData();
+            }, delay);
+
+            log(`🔄 Public market reconnect scheduled in ${(delay / 1000).toFixed(1)}s`, 'NETWORK');
+        }
+
+        function connectPublicMarketData(force = false) {
+            const symbolEl = document.getElementById('symbol');
+            const symbol = symbolEl ? symbolEl.value : 'R_10';
+
+            if (!force && window.marketWs &&
+                (window.marketWs.readyState === WebSocket.OPEN ||
+                 window.marketWs.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            if (window.marketWs) {
+                try { window.marketWs.close(); } catch (_) {}
+                window.marketWs = null;
+            }
+
+            window.marketIsConnecting = true;
+            updateConnectionStatus();
+            log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
+
+            window.marketWs = new WebSocket(
+                'wss://api.derivws.com/trading/v1/options/ws/public'
+            );
+
+            window.marketWs.onopen = () => {
+                window.marketIsConnecting = false;
+                window.marketReconnectAttempts = 0;
+                log('🟢 Public market WebSocket connected', 'SYSTEM');
+                updateConnectionStatus();
+
+                subscribePublicTicks(symbol);
+                requestPublicWarmupTicks(symbol);
+
+                updateTradeStatus(
+                    'CONNECTED',
+                    'Market online - AI warming up',
+                    'Trading remains stopped until START BOT',
+                    'normal'
+                );
+            };
+
+            window.marketWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.error || (Array.isArray(data.errors) && data.errors.length)) {
+                        const message =
+                            data?.error?.message ||
+                            data?.errors?.[0]?.message ||
+                            'Public market API error';
+                        log(`❌ Public market error: ${message}`, 'ERROR');
+                        return;
+                    }
+
+                    if (data.msg_type === 'history' && data.history?.prices) {
+                        window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                        log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+                        return;
+                    }
+
+                    if (data.msg_type === 'tick' && data.tick) {
+                        handleTick(data.tick);
+                        return;
+                    }
+
+                    if (data.tick?.quote !== undefined) {
+                        handleTick(data.tick);
+                        return;
+                    }
+
+                    if (data.history?.prices) {
+                        window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                        log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+                    }
+                } catch (error) {
+                    console.error('Public market WebSocket message error:', error);
+                    log('❌ Could not parse public market message', 'ERROR');
+                }
+            };
+
+            window.marketWs.onerror = (error) => {
+                console.error('Public market WebSocket error:', error);
+                log('❌ Public market connection error', 'ERROR');
+            };
+
+            window.marketWs.onclose = () => {
+                window.marketIsConnecting = false;
+                log('🔌 Public market WebSocket disconnected', 'NETWORK');
+                updateConnectionStatus();
+                schedulePublicMarketReconnect();
+            };
+        }
+
+        function restartPublicMarketForSymbol() {
+            window.totalTicksReceived = 0;
+            window.tickTimestamps = [];
+            document.getElementById('ticks_received').textContent = '0';
+            document.getElementById('current_tick_rate').textContent = '0/s';
+
+            if (window.marketWs) {
+                try {
+                    window.marketWs.onclose = null;
+                    window.marketWs.close();
+                } catch (_) {}
+                window.marketWs = null;
+            }
+
+            connectPublicMarketData(true);
+        }
+
+
 // DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
@@ -2916,6 +3097,14 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
+
+            // Connect market data immediately; START is only for trading.
+            setTimeout(() => connectPublicMarketData(), 250);
+
+            const symbolControl = document.getElementById('symbol');
+            if (symbolControl) {
+                symbolControl.addEventListener('change', restartPublicMarketForSymbol);
+            }
             
             document.getElementById('predictedDigit').addEventListener('change', function() {
                 const newDigit = parseInt(this.value);
@@ -3037,20 +3226,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.ws.onopen = () => {
                 window.isConnecting = false;
                 resetReconnectionAttempts();
-                log('✅ Authenticated WebSocket connected', 'SYSTEM');
+                log('✅ Authenticated trading WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
 
-                const token = getStoredDerivToken();
-                if (!token) {
-                    log('❌ No API token found in storage', 'ERROR');
-                    stopBot();
-                    return;
-                }
-
-                sendRequest({ 
-                    authorize: token, 
-                    req_id: getNextReqId() 
-                });
+                // OTP URL is already authenticated. Do not send legacy authorize.
+                subscribeToBalance();
+                log('🔐 Trading account channel ready', 'SYSTEM');
             };
 
             window.ws.onmessage = (msg) => {
@@ -3110,7 +3291,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // TICK HANDLER - FIXED DIGIT EXTRACTION (SPECIAL FIX FOR DIGIT 0)
         function handleTick(tick) {
-            if (!window.isBotRunning || !tick || !tick.quote) return;
+            // Process market ticks even while trading is stopped.
+            if (!tick || tick.quote === undefined || tick.quote === null) return;
             
             const price = parseFloat(tick.quote);
             
@@ -3171,16 +3353,17 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const tenSecondsAgo = Date.now() - 10000;
             window.tickTimestamps = window.tickTimestamps.filter(ts => ts > tenSecondsAgo);
             
-            // Add tick to queue for processing
-            addTickToQueue(tickData);
-            
-            // Update engine with digit
+            // Update the AI continuously even before START.
             if (window.digitIntelligenceEngine.enabled) {
                 window.digitIntelligenceEngine.processLiveTick(digit);
             }
-            
-            playAudioFeedback('TICK');
-            
+
+            // Only active trading sessions may enqueue ticks.
+            if (window.isBotRunning) {
+                addTickToQueue(tickData);
+                playAudioFeedback('TICK');
+            }
+
             // Update connection status UI
             updateConnectionStatus();
         }
@@ -3487,8 +3670,8 @@ window.executionLock = true;
             
             resetAllState();
             
-            // Initialize intelligence engine
-            window.digitIntelligenceEngine.init();
+            // Preserve AI warm-up collected before START.
+            // START controls trading only; market analysis keeps running.
 
             // Always re-lock using the CURRENT prediction when START is pressed.
             clearSessionDigitLock('Start');
@@ -3565,8 +3748,10 @@ window.isBotRunning = true;
             window.pendingProposals.clear();
             window.executionLock = false;
             
-            // Reset engine status
-            updateEngineStatus('Inactive', 'WARMUP', 0);
+            // Keep public market monitoring and AI analysis active after STOP.
+            if (window.digitIntelligenceEngine.warmupDone) {
+                updateEngineStatus('Market monitoring - trading stopped', 'ANALYZING', 100);
+            }
             
             document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
                 control.disabled = false;
