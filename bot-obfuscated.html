@@ -610,7 +610,7 @@
                             </button>
                         </div>
                         <p id="mode_description" class="text-xs text-gray-400 mt-1">
-                            ⚡ INSTANT: Trade on each tick with manual digit
+                            ⚡ INSTANT: Starts trading immediately with your selected digit
                         </p>
                     </div>
                 </div>
@@ -2522,8 +2522,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         function resetPnL() {
             window.pnlTracker = { totalInvestment: 0.0, totalPayout: 0.0, netProfit: 0.0, trades: [] };
-            window.startingBalance = 0.0;
-            window.currentBalance = 0.0;
+            // Preserve live Deriv balance; reset only session P/L.
+            window.startingBalance = Number(window.currentBalance) || 0.0;
             window.netProfit = 0.0;
             
             if (window.pnlUpdateInterval) {
@@ -2555,42 +2555,34 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Initialize account toggle
         function initializeToggleState() {
-            const token = getStoredDerivToken();
-            const allAccounts = JSON.parse(localStorage.getItem('deriv_accounts')) || [];
-            
-            if (token && allAccounts.length > 0) {
-                const currentAccount = allAccounts.find(acc => acc.token === token);
-                if (currentAccount) {
-                    const isReal = !currentAccount.account.startsWith('VR');
-                    document.getElementById('accTypeToggle').checked = isReal;
-                    log(`Account: ${isReal ? 'REAL' : 'DEMO'} (${currentAccount.account})`, 'SYSTEM');
-                }
-            }
-        }
-        
-        // Switch account
-        function switchAccount() {
-            const isRealRequested = document.getElementById('accTypeToggle').checked;
-            const allAccounts = JSON.parse(localStorage.getItem('deriv_accounts')) || [];
-            
-            const targetAccount = allAccounts.find(acc => 
-                isRealRequested ? !acc.account.startsWith('VR') : acc.account.startsWith('VR')
-            );
-        
-            if (targetAccount) {
-                localStorage.setItem('active_token', targetAccount.token);
-                log(`Switched to ${isRealRequested ? 'REAL' : 'DEMO'} account`, 'SYSTEM');
-                
-                if (window.isBotRunning) {
-                    stopBot();
-                    setTimeout(() => startBot(), 1000);
-                }
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const toggle = document.getElementById('accTypeToggle');
+            if (toggle) toggle.checked = mode === 'REAL';
+
+            const accountId =
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('derivAccount') ||
+                localStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount');
+
+            if (accountId) {
+                log(`Account: ${mode} (${accountId})`, 'SYSTEM');
             } else {
-                alert(`No ${isRealRequested ? 'Real' : 'Demo'} account found`);
-                document.getElementById('accTypeToggle').checked = !isRealRequested;
+                log(`Account mode: ${mode}`, 'SYSTEM');
             }
         }
-        
+
+        function switchAccount() {
+            const requestedMode = document.getElementById('accTypeToggle').checked ? 'REAL' : 'DEMO';
+            const currentMode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+
+            if (requestedMode === currentMode) return;
+
+            localStorage.setItem('requestedAccountMode', requestedMode);
+            log(`🔄 Switching from ${currentMode} to ${requestedMode} requires Deriv authorization`, 'SYSTEM');
+            alert(`To switch to ${requestedMode}, reconnect through Deriv so the correct account can be selected.`);
+            window.location.replace('/');
+        }
+
         // TRADE STATUS UI FUNCTIONS
         function updateTradeStatus(status, result, action, type = 'normal') {
             tradeResultContainer.classList.remove('win-glow');
@@ -2779,7 +2771,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (mode === 'instant') {
                 document.getElementById('mode_instant').classList.add('bg-green-600');
                 document.getElementById('mode_ai').classList.add('bg-purple-600');
-                document.getElementById('mode_description').textContent = '⚡ INSTANT: Trade on each tick with manual digit';
+                document.getElementById('mode_description').textContent = '⚡ INSTANT: Starts trading immediately with your selected digit';
                 log('🔄 Switched to INSTANT mode', 'SYSTEM');
                 window.nextTradeAllowed = true;
                 
@@ -3098,8 +3090,19 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             updatePnL();
             resetTradeStatus();
 
-            // Connect market data immediately; START is only for trading.
+            // Connect market data immediately.
             setTimeout(() => connectPublicMarketData(), 250);
+
+            // Connect the authenticated account channel too, so balance is visible
+            // before START BOT. This alone does not place trades.
+            setTimeout(() => {
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);
 
             const symbolControl = document.getElementById('symbol');
             if (symbolControl) {
@@ -3703,7 +3706,12 @@ window.isBotRunning = true;
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
             updateStake('initial');
             initTone();
-            connectWebSocket();
+
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+            } else {
+                log('✅ Reusing authenticated trading connection', 'SYSTEM');
+            }
             
             document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
                 control.disabled = true;
@@ -4458,21 +4466,41 @@ window.isBotRunning = true;
             return false;
         };
         
-        // Override startBot to start a new precision cycle
+        // Override START behavior by execution mode.
+        // INSTANT bypasses AI/precision confidence and starts immediately.
         const originalStartBot = startBot;
         startBot = function() {
-            // Start new precision cycle
+            if (sessionState.mode === 'instant') {
+                log('⚡ INSTANT mode: starting immediately - confidence gate bypassed', 'SYSTEM');
+
+                const result = originalStartBot();
+
+                // Fire the first trade immediately using the latest live tick.
+                // Further trades continue from subsequent ticks.
+                setTimeout(() => {
+                    if (window.isBotRunning &&
+                        window.lastTick &&
+                        !window.executionLock &&
+                        window.nextTradeAllowed) {
+                        log('⚡ INSTANT mode: executing first trade now', 'TRADE');
+                        processTickImmediately(window.lastTick);
+                    }
+                }, 150);
+
+                return result;
+            }
+
+            // AI AUTO keeps the confidence gate.
             const cycleStarted = window.precisionMatcher.startNewCycle();
-            
+
             if (!cycleStarted) {
-                log('❌ Cannot start: Prediction confidence too low. Wait for more ticks.', 'ERROR');
+                log('❌ Cannot start AI AUTO: Prediction confidence too low. Wait for stronger signal.', 'ERROR');
                 return;
             }
-            
-            // Call original startBot
+
             return originalStartBot();
         };
-        
+
         log('✅ Precision Digit Matcher engine loaded and active', 'SYSTEM');
     </script>
 </body>
