@@ -200,5 +200,60 @@
     };
   };
 
-  console.log('✅ Deriv live connection bridge loaded');
+
+  // ------------------------------------------------------------
+  // IMPORTANT: connect independently of the START BOT button.
+  //
+  // The original bot blocks START while AI confidence is 0%.
+  // But confidence cannot increase until the engine receives its
+  // warm-up history. That created a deadlock:
+  //
+  //   START blocked -> no WebSocket -> no history -> 0% forever.
+  //
+  // Connect as soon as the authenticated bot page is ready. This
+  // only opens the market data/account connection; it does NOT
+  // start automated trading.
+  // ------------------------------------------------------------
+  async function autoConnectForWarmup() {
+    const authenticated =
+      localStorage.getItem('bot_authenticated') === 'true' &&
+      !!(localStorage.getItem('active_token') || localStorage.getItem('derivToken')) &&
+      !!(localStorage.getItem('active_account') || localStorage.getItem('derivAccount'));
+
+    if (!authenticated) {
+      console.warn('Deriv bridge: OAuth session/account not available; skipping auto-connect.');
+      return;
+    }
+
+    // Do not create a second socket if one is already connected/connecting.
+    if (window.ws &&
+        (window.ws.readyState === WebSocket.OPEN ||
+         window.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (typeof window.log === 'function') {
+      window.log('🔐 OAuth session found - connecting market data for AI warm-up...', 'SYSTEM');
+    }
+
+    try {
+      await window.connectWebSocket();
+    } catch (error) {
+      console.error('Automatic Deriv warm-up connection failed:', error);
+      if (typeof window.log === 'function') {
+        window.log(`❌ Automatic connection failed: ${error.message}`, 'ERROR');
+      }
+    }
+  }
+
+  // Wait until the original bot script has finished initializing.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(autoConnectForWarmup, 400);
+    });
+  } else {
+    setTimeout(autoConnectForWarmup, 400);
+  }
+
+  console.log('✅ Deriv live connection bridge v2 loaded (auto-connect warm-up enabled)');
 })();

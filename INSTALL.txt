@@ -103,3 +103,24 @@ https://derivmatchstars.vercel.app/index.html
 
 The code in this package uses:
 https://derivmatchstars.vercel.app/
+
+
+OFFLINE / 0% WARM-UP FIX
+-------------------------
+The updated deriv-live-bridge.js now connects automatically after OAuth,
+BEFORE the START BOT button is pressed.
+
+This fixes the circular dependency in the original bot:
+START was blocked at 0% confidence, while 0% confidence could not change
+because START was also the only path that opened the WebSocket.
+
+The new behavior is:
+OAuth success
+-> bot page opens
+-> authenticated WebSocket opens automatically
+-> balance/ticks subscription starts
+-> 1000-tick warm-up history is requested
+-> AI confidence can initialize
+-> START BOT remains a separate action for trading
+
+This auto-connect does NOT automatically start trading.
