@@ -1,0 +1,83 @@
+DERIVMATCHSTARS — LIVE DERIV CONNECTION FIX
+==========================================
+
+This package fixes the mixed old/new Deriv authentication flow.
+
+FILES TO UPLOAD
+---------------
+1. Replace:
+   /index.html
+
+2. Add:
+   /api/deriv-accounts.js
+
+3. Replace:
+   /api/deriv-ws-url.js
+
+4. Add:
+   /deriv-live-bridge.js
+
+ONE SMALL EDIT REQUIRED
+-----------------------
+Open /bot-obfuscated.html.
+
+Immediately BEFORE </body>, add:
+
+    <script src="/deriv-live-bridge.js"></script>
+
+Then save the file.
+
+WHY THIS IS REQUIRED
+--------------------
+Your bot already requests an OTP WebSocket URL, but after opening that
+authenticated URL it still sends the old legacy:
+
+    {"authorize":"TOKEN"}
+
+The current Deriv Options WebSocket flow does not need this. The OTP URL is
+already authenticated.
+
+The bridge replaces connectWebSocket() after the existing bot code loads.
+It:
+- requests an OTP URL
+- opens the authenticated WebSocket
+- does NOT send the legacy authorize command
+- subscribes to ticks immediately
+- subscribes to balance immediately
+- starts the warm-up history request
+
+OAUTH ACCOUNT FIX
+-----------------
+The new index.html now:
+1. completes OAuth2 + PKCE
+2. retrieves Options accounts
+3. lets the user explicitly choose DEMO or REAL before login
+4. stores the returned Options account_id
+5. redirects to bot-obfuscated.html
+
+VERCEL
+------
+The repo already uses Vercel-style /api functions.
+
+After uploading the files, redeploy Vercel.
+
+IMPORTANT
+---------
+Do not put a Deriv client secret in browser JavaScript.
+
+For OAuth2, DERIV_APP_ID is NOT needed on the Options account/OTP calls.
+For PAT authentication only, DERIV_APP_ID is required.
+
+TEST ORDER
+----------
+1. Test DEMO first.
+2. Confirm the log shows:
+   "Authenticated Deriv Options WebSocket connected"
+3. Confirm:
+   - live ticks arrive
+   - balance appears
+   - warm-up ticks load
+4. Only after DEMO works, test REAL.
+
+If REAL login says no REAL Options account is available, the Deriv login
+does not currently expose a real Options account for that user.

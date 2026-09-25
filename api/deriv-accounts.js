@@ -1,5 +1,5 @@
-// Vercel Serverless Function: /api/deriv-ws-url
-// Gets a short-lived authenticated Deriv Options WebSocket URL via the OTP endpoint.
+// Vercel Serverless Function: /api/deriv-accounts
+// Returns Deriv Options accounts for an OAuth2 or PAT bearer token.
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -8,21 +8,17 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const { token, account_id, auth_method, app_id } = req.body || {};
+    const { token, auth_method, app_id } = req.body || {};
 
     if (!token) {
       return res.status(400).json({ error: 'Missing Deriv access token' });
-    }
-
-    if (!account_id) {
-      return res.status(400).json({ error: 'Missing Deriv account_id' });
     }
 
     const headers = {
       'Authorization': `Bearer ${token}`
     };
 
-    // Only PAT authentication needs Deriv-App-ID.
+    // Deriv-App-ID is required for PAT authentication, not OAuth2.
     if (String(auth_method || '').toLowerCase() === 'pat') {
       const finalAppId = process.env.DERIV_APP_ID || app_id;
       if (!finalAppId) {
@@ -33,37 +29,33 @@ module.exports = async function handler(req, res) {
       headers['Deriv-App-ID'] = finalAppId;
     }
 
-    const endpoint =
-      `https://api.derivws.com/trading/v1/options/accounts/${encodeURIComponent(account_id)}/otp`;
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers
-    });
+    const response = await fetch(
+      'https://api.derivws.com/trading/v1/options/accounts',
+      { method: 'GET', headers }
+    );
 
     const data = await response.json().catch(() => ({}));
 
-    const websocketUrl =
-      data?.data?.url ||
-      data?.data?.websocket_url ||
-      data?.url ||
-      data?.websocket_url;
-
-    if (!response.ok || !websocketUrl) {
-      const errorMessage =
+    if (!response.ok) {
+      const message =
         data?.errors?.[0]?.message ||
         data?.error?.message ||
         data?.message ||
-        `Failed to get authenticated WebSocket URL. HTTP ${response.status}`;
+        `Failed to load Deriv Options accounts. HTTP ${response.status}`;
 
-      return res.status(response.status || 500).json({
-        error: errorMessage,
+      return res.status(response.status).json({
+        error: message,
         details: data
       });
     }
 
+    const accounts = Array.isArray(data?.data)
+      ? data.data
+      : (data?.data ? [data.data] : []);
+
     return res.status(200).json({
-      websocket_url: websocketUrl
+      accounts,
+      meta: data?.meta || null
     });
   } catch (error) {
     return res.status(500).json({
