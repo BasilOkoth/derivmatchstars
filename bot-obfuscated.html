@@ -2462,11 +2462,522 @@ function getFrozenNextTickSnapshot(symbol, digit) {
 
 
 // ============================================================================
-// MATCHSTAR V12 — CYCLE PERFORMANCE RECORDER
+// MATCHSTAR V16 — TAIL PRECURSOR LAB
+// Prospective, forward-only cycle-state recorder.
+// It does NOT invent a tail score from hand-written weights. It learns only
+// after enough completed normal and natural-tail cycles have accumulated.
+// ============================================================================
+
+window.tailPrecursorLab = {
+    minNormalForModel: 20,
+    minTailForModel: 5,
+    neighborCount: 12,
+
+    numericFeatures: [
+        ['aiScore', 'AI score'],
+        ['p10', 'P10'],
+        ['p5', 'P5'],
+        ['pm5', 'pm5'],
+        ['pm10', 'pm10'],
+        ['s20', 'S20'],
+        ['etm', 'ETM'],
+        ['gapP90', 'gap/P90'],
+        ['extendRatio', 'extend ratio'],
+        ['persistenceScore', 'persistence'],
+        ['consecutiveExtendingGaps', 'extending gaps'],
+        ['entropy', 'entropy'],
+        ['chi2', 'chi-square'],
+        ['dominance', 'dominance'],
+        ['nextTickProbability', 'next-tick P'],
+        ['targetFreq20', 'target freq 20'],
+        ['targetFreq50', 'target freq 50'],
+        ['targetFreq100', 'target freq 100']
+    ],
+
+    finite(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    },
+
+    mean(values) {
+        const xs = values.map(Number).filter(Number.isFinite);
+        return xs.length ? xs.reduce((a,b) => a+b, 0) / xs.length : null;
+    },
+
+    sd(values) {
+        const xs = values.map(Number).filter(Number.isFinite);
+        if (xs.length < 2) return null;
+        const m = this.mean(xs);
+        const v = xs.reduce((s,x) => s + Math.pow(x-m,2), 0) / (xs.length-1);
+        return Math.sqrt(Math.max(0, v));
+    },
+
+    captureState(digit, trigger = 'SNAPSHOT', tradeNumber = 0) {
+        const d = Number(digit);
+        let decision = null;
+        try {
+            if (typeof buildDigitDecision === 'function') decision = buildDigitDecision(d);
+        } catch (_) {}
+
+        const engine = window.digitIntelligenceEngine;
+        const rec = engine?.currentRecommendation || null;
+        const ds = engine?.digitStats?.[d] || null;
+
+        let regime = null;
+        try {
+            regime = engine?.computeRegimeStatus ? engine.computeRegimeStatus() : null;
+        } catch (_) {}
+
+        let pred = null;
+        try {
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                null;
+            pred = window.nextTickModel?.getPrediction
+                ? window.nextTickModel.getPrediction(symbol, d)
+                : null;
+        } catch (_) {}
+
+        const digits = Array.isArray(window.lastDigits)
+            ? window.lastDigits.slice(-100)
+            : [];
+
+        const freq = (n) => {
+            const xs = digits.slice(-n);
+            if (!xs.length) return null;
+            return xs.filter(x => Number(x) === d).length / xs.length;
+        };
+
+        const gap = Number(decision?.gap ?? decision?.g ?? ds?.currentGap ?? NaN);
+        const p90 = Number(decision?.p90 ?? ds?.p90Gap ?? NaN);
+        const avgGap = Number(decision?.avgGap ?? ds?.avgGap ?? NaN);
+
+        return {
+            at: Date.now(),
+            trigger,
+            tradeNumber: Number(tradeNumber || 0),
+            digit: d,
+
+            aiScore: Number(rec?.score ?? decision?.score ?? NaN),
+            p10: Number(rec?.p10 ?? rec?.P10 ?? decision?.P10 ?? NaN),
+            p5: Number(decision?.P5 ?? NaN),
+            pm5: Number(rec?.pm5 ?? decision?.pm5 ?? decision?.pm5w ?? NaN),
+            pm10: Number(rec?.pm10 ?? decision?.pm10 ?? NaN),
+            s20: Number(rec?.s20 ?? decision?.s20 ?? NaN),
+            etm: Number(rec?.etm ?? decision?.etm ?? NaN),
+
+            gap,
+            p90,
+            gapP90: Number.isFinite(gap) && Number.isFinite(p90) && p90 > 0
+                ? gap / p90
+                : NaN,
+            avgGap,
+            extendRatio: Number(
+                decision?.extendRatio ??
+                (
+                    Number.isFinite(gap) && Number.isFinite(avgGap) && avgGap > 0
+                        ? gap / avgGap
+                        : NaN
+                )
+            ),
+            persistenceScore: Number(
+                decision?.persistenceScore ??
+                ds?.persistenceScore ??
+                NaN
+            ),
+            consecutiveExtendingGaps: Number(
+                decision?.consecutiveExtendingGaps ??
+                ds?.consecutiveExtendingGaps ??
+                NaN
+            ),
+            unstable: !!(decision?.isUnstable ?? ds?.isUnstable),
+
+            entropy: Number(regime?.entropy ?? NaN),
+            chi2: Number(regime?.chi2 ?? NaN),
+            dominance: Number(regime?.dominance ?? NaN),
+            regimeLabel: regime?.label || (regime?.ok ? 'STABLE' : 'UNKNOWN'),
+
+            nextTickProbability: Number(pred?.probability ?? NaN),
+            modelSupport: Number(pred?.effectiveSupport ?? NaN),
+
+            targetFreq20: Number(freq(20) ?? NaN),
+            targetFreq50: Number(freq(50) ?? NaN),
+            targetFreq100: Number(freq(100) ?? NaN),
+
+            recentDigits: digits.slice(-50)
+        };
+    },
+
+    classifyCycle(cycle) {
+        if (!cycle) return 'EXCLUDE';
+
+        const n = Number(cycle.trades?.length || 0);
+        const reason = String(cycle.finalReason || '').toLowerCase();
+        const winN = Number(cycle.winningTradeNumber || 0);
+
+        if (cycle.status === 'WIN' && winN > 0 && winN <= 10) {
+            return winN <= 5 ? 'FAST_WIN' : 'NORMAL_WIN';
+        }
+
+        if (cycle.status === 'WIN' && winN > 10) return 'TAIL_WIN';
+
+        const naturalTailReason =
+            reason.includes('maximum trades') ||
+            reason.includes('maximum cycle') ||
+            reason.includes('tail risk');
+
+        if (n > 10 || naturalTailReason) return 'TAIL_STOP';
+
+        // Reconciliation/network/manual technical stops are excluded from the
+        // precursor model because they are not market tails.
+        return 'TECHNICAL_STOP';
+    },
+
+    eligibleGroups(symbol) {
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const enriched = rows.map(r => ({
+            cycle: r,
+            klass: r.tailClass || this.classifyCycle(r)
+        }));
+
+        return {
+            normal: enriched.filter(x =>
+                x.klass === 'FAST_WIN' || x.klass === 'NORMAL_WIN'
+            ),
+            tails: enriched.filter(x =>
+                x.klass === 'TAIL_WIN' || x.klass === 'TAIL_STOP'
+            ),
+            technical: enriched.filter(x => x.klass === 'TECHNICAL_STOP')
+        };
+    },
+
+    entrySnapshot(cycle) {
+        return cycle?.tailTrajectory?.[0] || cycle?.entryTailState || null;
+    },
+
+    featureStats(symbol) {
+        const g = this.eligibleGroups(symbol);
+        const result = [];
+
+        for (const [key, label] of this.numericFeatures) {
+            const nv = g.normal
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+            const tv = g.tails
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+
+            if (nv.length < 3 || tv.length < 2) continue;
+
+            const nm = this.mean(nv);
+            const tm = this.mean(tv);
+            const pooled = this.sd(nv.concat(tv));
+
+            if (!Number.isFinite(pooled) || pooled <= 1e-12) continue;
+
+            result.push({
+                key,
+                label,
+                normalMean: nm,
+                tailMean: tm,
+                effect: (tm - nm) / pooled,
+                normalN: nv.length,
+                tailN: tv.length
+            });
+        }
+
+        result.sort((a,b) => Math.abs(b.effect) - Math.abs(a.effect));
+        return result;
+    },
+
+    modelReady(symbol) {
+        const g = this.eligibleGroups(symbol);
+        return (
+            g.normal.length >= this.minNormalForModel &&
+            g.tails.length >= this.minTailForModel
+        );
+    },
+
+    empiricalTailScore(symbol, currentState) {
+        const g = this.eligibleGroups(symbol);
+        if (!this.modelReady(symbol) || !currentState) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: 0,
+                reason: `Learning: need ≥${this.minNormalForModel} normal wins and ≥${this.minTailForModel} natural tails`
+            };
+        }
+
+        const all = [
+            ...g.normal.map(x => ({...x, y: 0})),
+            ...g.tails.map(x => ({...x, y: 1}))
+        ];
+
+        const usableFeatures = this.featureStats(symbol)
+            .slice(0, 8)
+            .map(x => x.key);
+
+        if (usableFeatures.length < 3) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: 0,
+                reason: 'Learning: not enough stable precursor features'
+            };
+        }
+
+        const scales = {};
+        for (const key of usableFeatures) {
+            const values = all
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+            scales[key] = {
+                mean: this.mean(values),
+                sd: this.sd(values)
+            };
+        }
+
+        const distances = [];
+        for (const row of all) {
+            const s = this.entrySnapshot(row.cycle);
+            if (!s) continue;
+
+            let sum = 0;
+            let used = 0;
+
+            for (const key of usableFeatures) {
+                const a = Number(currentState[key]);
+                const b = Number(s[key]);
+                const sd = Number(scales[key]?.sd);
+
+                if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(sd) || sd <= 1e-12) continue;
+
+                sum += Math.pow((a-b)/sd, 2);
+                used++;
+            }
+
+            if (used >= 3) {
+                distances.push({
+                    d: Math.sqrt(sum/used),
+                    y: row.y
+                });
+            }
+        }
+
+        distances.sort((a,b) => a.d-b.d);
+        const k = Math.min(this.neighborCount, distances.length);
+        const near = distances.slice(0,k);
+
+        if (near.length < 8) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: near.length,
+                reason: 'Learning: too few comparable historical states'
+            };
+        }
+
+        // Distance-weighted empirical tail frequency. This is descriptive, not
+        // a claim of causal prediction.
+        let wTail = 0;
+        let wTotal = 0;
+        for (const n of near) {
+            const w = 1 / Math.max(0.10, n.d);
+            wTotal += w;
+            wTail += w * n.y;
+        }
+
+        const p = wTotal > 0 ? wTail / wTotal : null;
+
+        return {
+            ready: Number.isFinite(p),
+            score: Number.isFinite(p) ? p : null,
+            neighbors: near.length,
+            reason: Number.isFinite(p) ? 'Empirical nearest-state tail rate' : 'Unavailable'
+        };
+    },
+
+    conditionalRecovery(symbol, depth) {
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const d = Math.max(1, Number(depth || 1));
+
+        // Only cycles that actually reached depth d were "at risk" at that point.
+        const atRisk = rows.filter(r => Number(r.trades?.length || 0) >= d);
+        if (!atRisk.length) {
+            return { n: 0, next1: null, next2: null, next4: null, tail10: null };
+        }
+
+        const wonBy = (h) => atRisk.filter(r => {
+            const w = Number(r.winningTradeNumber || 0);
+            return r.status === 'WIN' && w >= d && w <= d + h;
+        }).length / atRisk.length;
+
+        const tail10 = atRisk.filter(r => {
+            const klass = r.tailClass || this.classifyCycle(r);
+            return klass === 'TAIL_WIN' || klass === 'TAIL_STOP';
+        }).length / atRisk.length;
+
+        return {
+            n: atRisk.length,
+            next1: wonBy(1),
+            next2: wonBy(2),
+            next4: wonBy(4),
+            tail10
+        };
+    },
+
+    ensurePanel() {
+        if (document.getElementById('tail-precursor-panel')) return;
+
+        const tailPanel = document.getElementById('tail-risk-panel');
+        const cyclePanel = document.getElementById('cycle-performance-panel');
+        const anchor = tailPanel || cyclePanel;
+        if (!anchor || !anchor.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'tail-precursor-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-fuchsia-300 mb-1">🧬 TAIL PRECURSOR LAB</div>
+            <div class="text-gray-400 mb-2">
+                Forward-only research · learns what is different before natural tails
+            </div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Learning sample:</span>
+                <span id="tpl-sample" class="font-bold text-white">0 normal · 0 tails</span>
+
+                <span class="text-gray-400">Technical stops excluded:</span>
+                <span id="tpl-tech" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Current tail state:</span>
+                <span id="tpl-state" class="font-bold text-yellow-300">LEARNING</span>
+
+                <span class="text-gray-400">Empirical tail score:</span>
+                <span id="tpl-score" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Comparable cycles:</span>
+                <span id="tpl-neighbors" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Cycle depth:</span>
+                <span id="tpl-depth" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Recover ≤ next 1:</span>
+                <span id="tpl-rec1" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Recover ≤ next 2:</span>
+                <span id="tpl-rec2" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Recover ≤ next 4:</span>
+                <span id="tpl-rec4" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Observed tail rate at depth:</span>
+                <span id="tpl-taildepth" class="font-bold text-white">-</span>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-1">Strongest observed entry differences:</div>
+                <div id="tpl-precursors" class="font-mono text-gray-200">
+                    Learning — more natural tails required.
+                </div>
+            </div>
+
+            <div class="mt-2 text-gray-400" id="tpl-action">
+                Adaptive control remains observation-only until the validation sample is large enough.
+            </div>
+        `;
+
+        anchor.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+        this.ensurePanel();
+
+        const symbol =
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN';
+
+        const g = this.eligibleGroups(symbol);
+        const current = window.cyclePerformance?.current || null;
+        const depth = Number(current?.trades?.length || 0);
+
+        let currentState = null;
+        if (current?.tailTrajectory?.length) {
+            currentState = current.tailTrajectory[current.tailTrajectory.length - 1];
+        } else {
+            const digit =
+                current?.digit ??
+                sessionState?.sessionDigit ??
+                window.digitIntelligenceEngine?.currentRecommendation?.digit;
+            if (Number.isInteger(Number(digit))) {
+                currentState = this.captureState(Number(digit), 'LIVE_PREVIEW', depth);
+            }
+        }
+
+        const score = this.empiricalTailScore(symbol, currentState);
+        const recovery = this.conditionalRecovery(symbol, Math.max(1, depth || 1));
+        const effects = this.featureStats(symbol).slice(0, 4);
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        set('tpl-sample', `${g.normal.length} normal · ${g.tails.length} tails`);
+        set('tpl-tech', String(g.technical.length));
+        set('tpl-depth', String(depth));
+
+        if (score.ready) {
+            const pct = score.score * 100;
+            const label = pct >= 50 ? 'HIGH' : (pct >= 25 ? 'CAUTION' : 'LOW');
+            set('tpl-state', label);
+            set('tpl-score', `${pct.toFixed(1)}%`);
+            set('tpl-neighbors', String(score.neighbors));
+            set(
+                'tpl-action',
+                `Empirical state comparison active. Hard dollar/trade caps remain the authoritative control.`
+            );
+        } else {
+            set('tpl-state', 'LEARNING');
+            set('tpl-score', '-');
+            set('tpl-neighbors', String(score.neighbors || 0));
+            set('tpl-action', score.reason);
+        }
+
+        const pct = (x) => Number.isFinite(x) ? `${(x*100).toFixed(1)}%` : '-';
+        set('tpl-rec1', recovery.n ? `${pct(recovery.next1)} · n=${recovery.n}` : '-');
+        set('tpl-rec2', recovery.n ? pct(recovery.next2) : '-');
+        set('tpl-rec4', recovery.n ? pct(recovery.next4) : '-');
+        set('tpl-taildepth', recovery.n ? pct(recovery.tail10) : '-');
+
+        const p = document.getElementById('tpl-precursors');
+        if (p) {
+            if (effects.length && g.tails.length >= 2) {
+                p.innerHTML = effects.map(e => {
+                    const direction = e.effect >= 0 ? '↑ in tails' : '↓ in tails';
+                    const fmt = (v) => Number.isFinite(v) ? Number(v).toFixed(3) : '-';
+                    return `${e.label}: ${direction} · normal ${fmt(e.normalMean)} vs tail ${fmt(e.tailMean)} · effect ${Math.abs(e.effect).toFixed(2)}`;
+                }).join('<br>');
+            } else {
+                p.textContent = 'Learning — at least 2 natural tails are needed even for a preliminary comparison.';
+            }
+        }
+    }
+};
+
+
+// ============================================================================
+// MATCHSTAR V16 — CYCLE PERFORMANCE RECORDER + PRECURSOR TRAJECTORY
 // ============================================================================
 
 window.cyclePerformance = {
-    version: 'CPR-1',
+    version: 'CPR-3',
     current: null,
     historyBySymbol: {},
     maxStoredCyclesPerSymbol: 500,
@@ -2480,7 +2991,7 @@ window.cyclePerformance = {
     },
 
     storageKey(symbol = this.getSymbol()) {
-        return `matchstar_cycle_history_v1_${symbol}`;
+        return `matchstar_cycle_history_v3_${symbol}`;
     },
 
     load(symbol = this.getSymbol()) {
@@ -2551,6 +3062,11 @@ window.cyclePerformance = {
                 expectedValue: Number(contract?.expectedValueAtEntry ?? NaN)
             },
 
+            tailTrajectory: [
+                window.tailPrecursorLab.captureState(digit, 'ENTRY', 0)
+            ],
+            tailClass: null,
+
             trades: [],
             totalInvestment: 0,
             totalPayout: 0,
@@ -2605,7 +3121,42 @@ window.cyclePerformance = {
         this.current.netPnL =
             this.current.totalPayout - this.current.totalInvestment;
 
+        // Preserve the state immediately before/at each confirmed purchase.
+        this.current.tailTrajectory = this.current.tailTrajectory || [];
+        this.current.tailTrajectory.push(
+            window.tailPrecursorLab.captureState(
+                Number(contract.predictedDigit),
+                'PURCHASE',
+                this.current.trades.length
+            )
+        );
+
         this.render();
+        window.tailPrecursorLab.render();
+    },
+
+    recordTailSnapshot(trigger, digit = null) {
+        if (!this.current) return;
+
+        const d = Number(
+            digit ??
+            this.current.digit ??
+            sessionState?.sessionDigit ??
+            window.digitIntelligenceEngine?.currentRecommendation?.digit
+        );
+
+        if (!Number.isInteger(d) || d < 0 || d > 9) return;
+
+        this.current.tailTrajectory = this.current.tailTrajectory || [];
+        this.current.tailTrajectory.push(
+            window.tailPrecursorLab.captureState(
+                d,
+                trigger,
+                this.current.trades.length
+            )
+        );
+
+        window.tailPrecursorLab.render();
     },
 
     settleTrade(contractId, result, finalDigit, payout, profit) {
@@ -2667,6 +3218,8 @@ window.cyclePerformance = {
 
         c.netPnL = c.totalPayout - c.totalInvestment;
 
+        c.tailClass = window.tailPrecursorLab.classifyCycle(c);
+
         const symbol = c.symbol || this.getSymbol();
         const rows = this.load(symbol);
 
@@ -2683,9 +3236,12 @@ window.cyclePerformance = {
             `📊 CYCLE COMPLETE | ${status} | ${c.trades.length} trades | ` +
             `invested $${c.totalInvestment.toFixed(2)} | payout $${c.totalPayout.toFixed(2)} | ` +
             `net ${c.netPnL >= 0 ? '+' : ''}$${c.netPnL.toFixed(2)} | ` +
-            `max stake $${c.maxStake.toFixed(2)} | ${durationSec.toFixed(1)}s`,
+            `max stake $${c.maxStake.toFixed(2)} | ${durationSec.toFixed(1)}s | ` +
+            `class ${c.tailClass}`,
             status === 'WIN' ? 'WIN' : 'SYSTEM'
         );
+
+        window.tailPrecursorLab.render();
 
         const sessionLedgerPnL =
             Number(window.pnlTracker?.totalPayout || 0) -
@@ -2797,7 +3353,7 @@ window.cyclePerformance = {
             'mt-3 p-3 bg-gray-800 rounded-lg border border-purple-500/30 text-xs';
 
         panel.innerHTML = `
-            <div class="font-bold text-purple-300 mb-2">🔁 CYCLE PERFORMANCE</div>
+            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Clean V16+ research history · precursor trajectories enabled</div>
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
                 <span class="text-gray-400">Current cycle:</span>
@@ -2824,7 +3380,7 @@ window.cyclePerformance = {
                 <span class="text-gray-400">Wins ≤10 trades:</span>
                 <span id="cycle-win10" class="font-bold text-white">0</span>
 
-                <span class="text-gray-400">% wins ≤10:</span>
+                <span class="text-gray-400">% winning cycles ≤10:</span>
                 <span id="cycle-win10pct" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Average trades/cycle:</span>
@@ -2929,6 +3485,13 @@ window.cyclePerformance = {
                 ? `${stats.worstPnL >= 0 ? '+' : ''}$${stats.worstPnL.toFixed(2)}`
                 : '-'
         );
+
+        if (typeof renderTailRiskPanel === 'function') {
+            renderTailRiskPanel();
+        }
+        if (window.tailPrecursorLab) {
+            window.tailPrecursorLab.render();
+        }
     }
 };
 
@@ -4413,7 +4976,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V14 · Deriv epoch-aligned fast settlement · corrected cycle accounting · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -4830,6 +5393,251 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
         
         // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
+        // ============================================================================
+        // MATCHSTAR V15 — TAIL RISK MEASUREMENT + HARD CYCLE GUARDS
+        // ============================================================================
+
+        window.TAIL_RISK_CONFIG = window.TAIL_RISK_CONFIG || {
+            enabled: true,
+            maxCycleLoss: null
+        };
+
+        function projectedProgressionExposure(baseStake, multiplier, trades) {
+            let stake = Number(baseStake || 0);
+            const mult = Number(multiplier || 1);
+            const count = Math.max(0, Number(trades || 0));
+            let total = 0;
+
+            for (let i = 0; i < count; i++) {
+                total += stake;
+                stake = Number((stake * mult).toFixed(2));
+            }
+            return Number(total.toFixed(2));
+        }
+
+        function defaultTailDollarCap() {
+            const base = Number(document.getElementById('baseStake')?.value || window.baseStake || 1);
+            const mult = Number(document.getElementById('multiplier')?.value || window.multiplier || 1.15);
+            const hardTrades = Number(document.getElementById('maxCycleTrades')?.value || window.maxCycleTrades || 10);
+            return projectedProgressionExposure(base, mult, hardTrades);
+        }
+
+        function getTailDollarCap() {
+            const input = document.getElementById('tail-max-loss-input');
+            const fromInput = Number(input?.value);
+            if (Number.isFinite(fromInput) && fromInput > 0) return fromInput;
+
+            const configured = Number(window.TAIL_RISK_CONFIG.maxCycleLoss);
+            if (Number.isFinite(configured) && configured > 0) return configured;
+
+            return defaultTailDollarCap();
+        }
+
+        function getCurrentCycleExposure() {
+            const c = window.cyclePerformance?.current;
+            if (c) return Number(c.totalInvestment || 0);
+            return window.cycleHasPurchasedContract
+                ? Number(window.pnlTracker?.totalInvestment || 0)
+                : 0;
+        }
+
+        function getCurrentCycleTradeCount() {
+            const c = window.cyclePerformance?.current;
+            if (c) return Number(c.trades?.length || 0);
+            return window.cycleHasPurchasedContract ? Number(window.tradeCount || 0) : 0;
+        }
+
+        function tailRiskSnapshot() {
+            const exposure = getCurrentCycleExposure();
+            const nextStake = Number(window.currentStake || window.baseStake || 0);
+            const nextLossExposure = Number((exposure + nextStake).toFixed(2));
+            const dollarCap = getTailDollarCap();
+            const maxCycleTrades = Number(window.maxCycleTrades || 10);
+            const currentTrades = getCurrentCycleTradeCount();
+
+            return {
+                exposure,
+                nextStake,
+                nextLossExposure,
+                dollarCap,
+                maxCycleTrades,
+                currentTrades,
+                remainingBudget: Number(Math.max(0, dollarCap - exposure).toFixed(2)),
+                projected10: projectedProgressionExposure(window.baseStake, window.multiplier, 10),
+                projected15: projectedProgressionExposure(window.baseStake, window.multiplier, 15),
+                projected20: projectedProgressionExposure(window.baseStake, window.multiplier, 20)
+            };
+        }
+
+        function tailRiskAllowsNextTrade() {
+            if (!window.cycleHasPurchasedContract) {
+                return { ok: true, reason: 'ENTRY' };
+            }
+
+            const s = tailRiskSnapshot();
+
+            if (s.currentTrades >= s.maxCycleTrades) {
+                return { ok: false, reason: 'MAX_CYCLE_TRADES', snapshot: s };
+            }
+
+            if (
+                window.TAIL_RISK_CONFIG.enabled &&
+                s.nextLossExposure > s.dollarCap + 1e-9
+            ) {
+                return { ok: false, reason: 'MAX_CYCLE_LOSS', snapshot: s };
+            }
+
+            return { ok: true, reason: 'WITHIN_LIMIT', snapshot: s };
+        }
+
+        function hardStopForTailRisk(verdict) {
+            const s = verdict.snapshot || tailRiskSnapshot();
+
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            if (verdict.reason === 'MAX_CYCLE_TRADES') {
+                log(
+                    `🛡️ TAIL STOP | hard cycle cap ${s.maxCycleTrades} trades reached | exposure $${s.exposure.toFixed(2)} | no further recovery contract`,
+                    'CRITICAL'
+                );
+                updateTradeStatus(
+                    'TAIL RISK STOP 🛡️',
+                    `Cycle cap reached: ${s.currentTrades}/${s.maxCycleTrades} trades`,
+                    `Exposure frozen at $${s.exposure.toFixed(2)}`,
+                    'loss'
+                );
+                stopBot('Tail risk: maximum cycle trades reached');
+                return;
+            }
+
+            log(
+                `🛡️ TAIL STOP | next loss exposure $${s.nextLossExposure.toFixed(2)} would exceed $${s.dollarCap.toFixed(2)} cycle-loss cap | current exposure $${s.exposure.toFixed(2)} | next stake $${s.nextStake.toFixed(2)}`,
+                'CRITICAL'
+            );
+            updateTradeStatus(
+                'TAIL RISK STOP 🛡️',
+                `Projected exposure $${s.nextLossExposure.toFixed(2)} exceeds cap $${s.dollarCap.toFixed(2)}`,
+                `Current exposure frozen at $${s.exposure.toFixed(2)}`,
+                'loss'
+            );
+            stopBot('Tail risk: maximum cycle dollar exposure reached');
+        }
+
+        function ensureTailRiskPanel() {
+            if (document.getElementById('tail-risk-panel')) return;
+
+            const cyclePanel = document.getElementById('cycle-performance-panel');
+            if (!cyclePanel || !cyclePanel.parentElement) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'tail-risk-panel';
+            panel.className = 'mt-3 p-3 bg-gray-800 rounded-lg border border-red-500/30 text-xs';
+
+            panel.innerHTML = `
+                <div class="font-bold text-red-300 mb-2">🛡️ TAIL RISK CONTROL</div>
+                <div class="mb-2 text-gray-300">
+                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V16</span>
+                    <span class="mx-1">·</span>
+                    <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <span class="text-gray-400">Current exposure:</span>
+                    <span id="tail-current-exposure" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">Next stake:</span>
+                    <span id="tail-next-stake" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">If next trade loses:</span>
+                    <span id="tail-next-loss" class="font-bold text-yellow-300">$0.00</span>
+
+                    <span class="text-gray-400">Remaining risk budget:</span>
+                    <span id="tail-remaining" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">Hard cycle trade cap:</span>
+                    <span id="tail-trade-cap" class="font-bold text-white">10</span>
+
+                    <span class="text-gray-400">Current cycle trades:</span>
+                    <span id="tail-current-trades" class="font-bold text-white">0</span>
+
+                    <span class="text-gray-400">Projected exposure @10:</span>
+                    <span id="tail-proj10" class="font-bold text-white">-</span>
+
+                    <span class="text-gray-400">Projected exposure @15:</span>
+                    <span id="tail-proj15" class="font-bold text-white">-</span>
+
+                    <span class="text-gray-400">Projected exposure @20:</span>
+                    <span id="tail-proj20" class="font-bold text-white">-</span>
+                </div>
+
+                <div class="mt-3 flex items-center gap-2">
+                    <label for="tail-max-loss-input" class="text-gray-400">Max cycle exposure $</label>
+                    <input id="tail-max-loss-input" type="number" min="0.01" step="0.01"
+                           class="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white" />
+                    <span id="tail-cap-state" class="font-bold text-green-300">ACTIVE</span>
+                </div>
+
+                <div class="mt-2 text-gray-400">
+                    Stops before the next recovery purchase if either the hard
+                    trade cap or dollar exposure cap would be exceeded.
+                </div>
+            `;
+
+            cyclePanel.parentElement.appendChild(panel);
+
+            const input = document.getElementById('tail-max-loss-input');
+            if (input) {
+                input.value = getTailDollarCap().toFixed(2);
+                input.addEventListener('change', () => {
+                    const v = Number(input.value);
+                    if (!Number.isFinite(v) || v <= 0) {
+                        input.value = getTailDollarCap().toFixed(2);
+                        return;
+                    }
+                    window.TAIL_RISK_CONFIG.maxCycleLoss = v;
+                    try { localStorage.setItem('matchstar_tail_max_loss', String(v)); } catch (_) {}
+                    renderTailRiskPanel();
+                    log(`🛡️ Tail dollar cap set to $${v.toFixed(2)}`, 'CONFIG');
+                });
+            }
+        }
+
+        function renderTailRiskPanel() {
+            ensureTailRiskPanel();
+            const s = tailRiskSnapshot();
+            const set = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+
+            set('tail-current-exposure', `$${s.exposure.toFixed(2)}`);
+            set('tail-next-stake', `$${s.nextStake.toFixed(2)}`);
+            set('tail-next-loss', `$${s.nextLossExposure.toFixed(2)}`);
+            set('tail-remaining', `$${s.remainingBudget.toFixed(2)}`);
+            set('tail-trade-cap', String(s.maxCycleTrades));
+            set('tail-current-trades', String(s.currentTrades));
+            set('tail-proj10', `$${s.projected10.toFixed(2)}`);
+            set('tail-proj15', `$${s.projected15.toFixed(2)}`);
+            set('tail-proj20', `$${s.projected20.toFixed(2)}`);
+
+            const input = document.getElementById('tail-max-loss-input');
+            if (input && document.activeElement !== input) {
+                input.value = s.dollarCap.toFixed(2);
+            }
+
+            const state = document.getElementById('tail-cap-state');
+            if (state) state.textContent = window.TAIL_RISK_CONFIG.enabled ? 'ACTIVE' : 'OFF';
+        }
+
+        try {
+            const storedTailCap = Number(localStorage.getItem('matchstar_tail_max_loss'));
+            if (Number.isFinite(storedTailCap) && storedTailCap > 0) {
+                window.TAIL_RISK_CONFIG.maxCycleLoss = storedTailCap;
+            }
+        } catch (_) {}
+
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
             if (!mayPlaceNextTrade()) return;
@@ -4871,10 +5679,19 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (window.tradeCount >= window.maxTrades) {
                 log(`🛑 Max trades reached (${window.maxTrades})`, 'CRITICAL');
                 updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
-                stopBot();
+                stopBot('Maximum trades reached');
                 return;
             }
 
+            if (window.cycleHasPurchasedContract) {
+                const tailVerdict = tailRiskAllowsNextTrade();
+                if (!tailVerdict.ok) {
+                    hardStopForTailRisk(tailVerdict);
+                    return;
+                }
+            }
+
+            renderTailRiskPanel();
 
             // 🧱 ENTRY SAFETY GATES
             // Apply these only before the first real purchase in a cycle.
@@ -5013,11 +5830,7 @@ window.executionLock = true;
                 window.martingaleStep = (window.martingaleStep || 0) + 1;
                 window.cycleLosses = (window.cycleLosses || 0) + 1;
                 window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
-                if (window.cycleLosses >= window.maxCycleTrades) {
-                    log(`🧯 LOSS CAP REACHED (${window.maxCycleTrades}) — switching HYBRID digit while KEEPING recovery stake`, 'CRITICAL');
-                    window.cycleLosses = 0;
-                    if (window.isBotRunning && sessionState.mode === 'ai') rotateHybridDigit(`Loss cap ${window.maxCycleTrades} — stake preserved`);
-                }
+                renderTailRiskPanel();
                 log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
             } else {
@@ -5076,7 +5889,28 @@ window.isBotRunning = true;
             log('🚀 Starting bot...', 'SYSTEM');
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
             log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
-            log(`🧯 Max Cycle Trades: ${window.maxCycleTrades}`, 'SYSTEM');
+            log(`🧯 Max Cycle Trades HARD CAP: ${window.maxCycleTrades}`, 'SYSTEM');
+
+            if (!Number.isFinite(Number(window.TAIL_RISK_CONFIG.maxCycleLoss)) ||
+                Number(window.TAIL_RISK_CONFIG.maxCycleLoss) <= 0) {
+                window.TAIL_RISK_CONFIG.maxCycleLoss = defaultTailDollarCap();
+            }
+
+            log(
+                `🛡️ Tail risk guard: ACTIVE | max cycle exposure $${getTailDollarCap().toFixed(2)} | ` +
+                `projected @${window.maxCycleTrades} trades $${defaultTailDollarCap().toFixed(2)}`,
+                'SYSTEM'
+            );
+            renderTailRiskPanel();
+
+            log(
+                '🧬 Tail Precursor Lab: FORWARD-ONLY LEARNING | ' +
+                `model gate ≥${window.tailPrecursorLab.minNormalForModel} normal wins + ` +
+                `≥${window.tailPrecursorLab.minTailForModel} natural tails`,
+                'ENGINE'
+            );
+            window.tailPrecursorLab.render();
+
             log('🔐 Trading credential loaded', 'SYSTEM');
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
@@ -5660,13 +6494,16 @@ window.isBotRunning = true;
 
             window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
 
-            if (window.cycleLosses >= window.maxCycleTrades) {
-                log(`🧯 FAST LOSS CAP (${window.maxCycleTrades}) reached — switching AI digit while preserving $${window.currentStake.toFixed(2)} recovery stake`, 'CRITICAL');
-                window.cycleLosses = 0;
-                if (window.isBotRunning && sessionState.mode === 'ai') {
-                    rotateHybridDigit(`Fast loss cap ${window.maxCycleTrades} — stake preserved`);
-                }
+            // V16: capture the post-loss state before any next recovery order.
+            if (window.cyclePerformance?.current) {
+                window.cyclePerformance.recordTailSnapshot(
+                    'LOSS_AFTER_TICK',
+                    contract.predictedDigit
+                );
             }
+
+            // V15 hard caps remain active.
+            renderTailRiskPanel();
 
             const stakeElem = document.getElementById('metricCurrentStake');
             if (stakeElem) {
@@ -5688,6 +6525,13 @@ window.isBotRunning = true;
             window.nextTradeAllowed = false;
             window.executionLock = true;
             window.tickQueue.length = 0;
+
+            if (window.cyclePerformance?.current) {
+                window.cyclePerformance.recordTailSnapshot(
+                    'MATCH_DETECTED',
+                    contract.predictedDigit
+                );
+            }
 
             log(`🎯 FAST MATCH: ${observedDigit} = ${contract.predictedDigit} on contract ${contract.contractId}. ALL NEW TRADES FROZEN pending Deriv settlement.`, 'WIN');
             updateTradeStatus('MATCH DETECTED 🎯', `Digit ${observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
@@ -6050,6 +6894,7 @@ window.isBotRunning = true;
             logArea.innerHTML = '[00:00:00] 🤖 Bot reset. Ready.';
             
             log('🔄 Bot reset', 'SYSTEM');
+            if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
         }
         
         // ========================================
