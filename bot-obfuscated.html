@@ -2229,9 +2229,17 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.contractSequence = 0;
         window.contractMonitorRetries = 0;
         window.maxContractMonitorRetries = 3;
+        window.settlementLedger = new Map();
+        window.reconciliationMismatch = false;
+        window.fastRecoveryEnabled = true;
 
         function hasOpenContract() {
-            return !!(window.activeContract && window.activeContract.contractId && !window.activeContract.settled);
+            return !!(
+                window.activeContract &&
+                window.activeContract.contractId &&
+                !window.activeContract.settled &&
+                !window.activeContract.tickResolved
+            );
         }
 
         function mayPlaceNextTrade() {
@@ -3384,11 +3392,26 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 window.digitIntelligenceEngine.processLiveTick(digit);
             }
 
-            // Fast settlement-tick observer for the currently purchased contract.
-            observeActiveContractTick(tickData);
+            // Resolve the current one-tick contract against this tick immediately.
+            const fastResult = observeActiveContractTick(tickData);
 
-            // Never queue another order while a contract is unresolved.
-            if (window.isBotRunning && !hasOpenContract() && !window.stopAfterWin) {
+            if (window.isBotRunning && fastResult?.fastLoss && !window.stopAfterWin) {
+                if (window.tradeCount >= window.maxTrades) {
+                    window.nextTradeAllowed = false;
+                    log(`🛑 Max trades reached (${window.maxTrades}) after fast loss`, 'CRITICAL');
+                    stopBot('Maximum trades reached');
+                    return;
+                }
+
+                log('⚡ FAST RECOVERY: placing next contract immediately after loss tick', 'TRADE');
+                processTickImmediately(tickData);
+                playAudioFeedback('TICK');
+            } else if (
+                window.isBotRunning &&
+                !fastResult?.handled &&
+                !hasOpenContract() &&
+                !window.stopAfterWin
+            ) {
                 addTickToQueue(tickData);
                 playAudioFeedback('TICK');
             }
@@ -4094,11 +4117,22 @@ window.isBotRunning = true;
                 askPrice: Number(buyData.buy_price ?? pending?.askPrice ?? 0),
                 quotedPayout: Number(pending?.quotedPayout ?? 0),
                 proposalId: pending?.proposal_id || pending?.proposalId || null,
-                status: 'OPEN', settled: false, matchDetected: false, settlementTickObserved: false,
-                observedDigit: null, armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0), confirmedAtMs: Date.now(),
-                monitorReqId: null, subscriptionId: null
+                status: 'OPEN',
+                settled: false,
+                tickResolved: false,
+                matchDetected: false,
+                settlementTickObserved: false,
+                observedDigit: null,
+                fastOutcome: null,
+                fastOutcomeAt: null,
+                progressionApplied: false,
+                armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0),
+                confirmedAtMs: Date.now(),
+                monitorReqId: null,
+                subscriptionId: null
             };
 
+            window.settlementLedger.set(contractId, window.activeContract);
             window.executionLock = true;
             window.nextTradeAllowed = false;
             log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
@@ -4106,30 +4140,86 @@ window.isBotRunning = true;
             if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
         }
 
+        function applyFastLossProgression(contract) {
+            if (!contract || contract.progressionApplied) return;
+
+            contract.progressionApplied = true;
+            contract.fastOutcome = 'LOSS';
+            contract.fastOutcomeAt = Date.now();
+
+            window.lastTradeWon = false;
+            window.martingaleStep = (window.martingaleStep || 0) + 1;
+            window.cycleLosses = (window.cycleLosses || 0) + 1;
+
+            window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
+
+            if (window.cycleLosses >= window.maxCycleTrades) {
+                log(`🧯 FAST LOSS CAP (${window.maxCycleTrades}) reached — switching AI digit while preserving $${window.currentStake.toFixed(2)} recovery stake`, 'CRITICAL');
+                window.cycleLosses = 0;
+                if (window.isBotRunning && sessionState.mode === 'ai') {
+                    rotateHybridDigit(`Fast loss cap ${window.maxCycleTrades} — stake preserved`);
+                }
+            }
+
+            const stakeElem = document.getElementById('metricCurrentStake');
+            if (stakeElem) {
+                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+                stakeElem.className = 'text-lg font-bold text-white';
+            }
+
+            log(`⚡ FAST LOSS: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
+        }
+
+        function freezeForPossibleWin(contract, observedDigit) {
+            if (!contract) return;
+            contract.fastOutcome = 'WIN';
+            contract.fastOutcomeAt = Date.now();
+            contract.matchDetected = true;
+            contract.status = 'MATCH_DETECTED';
+
+            window.stopAfterWin = true;
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            log(`🎯 FAST MATCH: ${observedDigit} = ${contract.predictedDigit} on contract ${contract.contractId}. ALL NEW TRADES FROZEN pending Deriv settlement.`, 'WIN');
+            updateTradeStatus('MATCH DETECTED 🎯', `Digit ${observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
+        }
+
         function observeActiveContractTick(tickData) {
             const ac = window.activeContract;
-            if (!ac || ac.settled || !ac.contractId || ac.settlementTickObserved) return;
-            const epoch = Number(tickData?.raw?.epoch || 0);
-            if (ac.armedAfterEpoch && epoch && epoch <= ac.armedAfterEpoch) return;
-            if (!epoch && Date.now() <= ac.confirmedAtMs) return;
+            if (!ac || ac.settled || !ac.contractId || ac.tickResolved) {
+                return { handled: false, fastLoss: false, fastWin: false };
+            }
 
+            const epoch = Number(tickData?.raw?.epoch || 0);
+            if (ac.armedAfterEpoch && epoch && epoch <= ac.armedAfterEpoch) {
+                return { handled: false, fastLoss: false, fastWin: false };
+            }
+            if (!epoch && Date.now() <= ac.confirmedAtMs) {
+                return { handled: false, fastLoss: false, fastWin: false };
+            }
+
+            ac.tickResolved = true;
             ac.settlementTickObserved = true;
             ac.observedDigit = Number(tickData.digit);
             ac.observedPrice = Number(tickData.price);
             ac.observedEpoch = epoch || null;
 
             if (ac.observedDigit === ac.predictedDigit) {
-                ac.matchDetected = true;
-                ac.status = 'MATCH_DETECTED';
-                window.stopAfterWin = true;
-                window.nextTradeAllowed = false;
-                window.executionLock = true;
-                window.tickQueue.length = 0;
-                log(`🎯 MATCH DETECTED IMMEDIATELY: ${ac.observedDigit} = ${ac.predictedDigit}. ALL NEW TRADES FROZEN pending Deriv confirmation.`, 'WIN');
-                updateTradeStatus('MATCH DETECTED 🎯', `Digit ${ac.observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
-            } else {
-                log(`👀 Settlement-tick candidate: ${ac.observedDigit} ≠ ${ac.predictedDigit}. Awaiting Deriv settlement.`, 'TRADE');
+                freezeForPossibleWin(ac, ac.observedDigit);
+                return { handled: true, fastLoss: false, fastWin: true };
             }
+
+            applyFastLossProgression(ac);
+            ac.status = 'FAST_LOSS_AWAITING_SETTLEMENT';
+
+            window.activeContract = null;
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
+
+            updateTradeStatus('FAST LOSS', `Digit ${ac.observedDigit} ≠ ${ac.predictedDigit}`, `Placing next trade at $${window.currentStake.toFixed(2)}`, 'loss');
+            return { handled: true, fastLoss: true, fastWin: false };
         }
 
         function getContractFinalDigit(contract) {
@@ -4140,27 +4230,67 @@ window.isBotRunning = true;
             return Number.isFinite(d) ? d : null;
         }
 
+        function hardStopOnReconciliationMismatch(ac, contract, reason) {
+            window.reconciliationMismatch = true;
+            window.stopAfterWin = true;
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            const finalDigit = getContractFinalDigit(contract);
+            log(`🚨 RECONCILIATION MISMATCH — ${reason}. Contract ${ac?.contractId ?? contract?.contract_id}, fast=${ac?.fastOutcome ?? 'UNKNOWN'}, observed=${ac?.observedDigit ?? '?'}, Deriv final=${finalDigit ?? '?'}. TRADING FROZEN.`, 'CRITICAL');
+            updateTradeStatus('SAFETY STOP 🚨', 'Fast tick and Deriv settlement disagree', 'Trading frozen — inspect logs before restarting', 'loss');
+            setTimeout(() => stopBot('Settlement reconciliation mismatch'), 50);
+        }
+
         function handleOpenContractUpdate(contract, envelope = {}) {
             if (!contract || !contract.contract_id) return;
-            const ac = window.activeContract;
-            if (!ac || Number(ac.contractId) !== Number(contract.contract_id)) return;
+
+            const contractId = Number(contract.contract_id);
+            const ac = window.settlementLedger.get(contractId) ||
+                (window.activeContract && Number(window.activeContract.contractId) === contractId ? window.activeContract : null);
+
+            if (!ac) {
+                log(`⚠️ Settlement update received for untracked contract ${contractId}`, 'WARNING');
+                return;
+            }
+
             if (envelope?.subscription?.id) ac.subscriptionId = envelope.subscription.id;
 
             const status = String(contract.status || '').toLowerCase();
             const isSold = contract.is_sold === true || Number(contract.is_sold) === 1 || ['won','lost','sold'].includes(status);
-            if (!isSold) { ac.status = ac.matchDetected ? 'MATCH_DETECTED' : 'OPEN'; return; }
-            if (ac.settled) return;
+            if (!isSold || ac.settled) return;
+
             ac.settled = true;
-            ac.status = 'SETTLING';
+            ac.status = 'SETTLED';
 
             const actualProfit = Number(contract.profit ?? 0);
             const actualBuyPrice = Number(contract.buy_price ?? ac.askPrice ?? ac.stake ?? 0);
             let actualPayout = Number(contract.payout);
             if (!Number.isFinite(actualPayout)) actualPayout = Math.max(0, actualBuyPrice + actualProfit);
-            const finalDigit = getContractFinalDigit(contract);
-            ac.actualProfit = actualProfit; ac.actualBuyPrice = actualBuyPrice; ac.actualPayout = actualPayout; ac.finalDigit = finalDigit;
 
+            const finalDigit = getContractFinalDigit(contract);
             const confirmedWin = actualProfit > 0 || status === 'won';
+
+            ac.actualProfit = actualProfit;
+            ac.actualBuyPrice = actualBuyPrice;
+            ac.actualPayout = actualPayout;
+            ac.finalDigit = finalDigit;
+            ac.confirmedOutcome = confirmedWin ? 'WIN' : 'LOSS';
+
+            if (ac.fastOutcome === 'WIN' && !confirmedWin) {
+                hardStopOnReconciliationMismatch(ac, contract, 'fast WIN but Deriv LOSS');
+                return;
+            }
+            if (ac.fastOutcome === 'LOSS' && confirmedWin) {
+                hardStopOnReconciliationMismatch(ac, contract, 'fast LOSS but Deriv WIN');
+                return;
+            }
+            if (ac.observedDigit !== null && finalDigit !== null && Number(ac.observedDigit) !== Number(finalDigit)) {
+                hardStopOnReconciliationMismatch(ac, contract, 'observed last digit differs from Deriv exit digit');
+                return;
+            }
+
             if (confirmedWin) {
                 window.stopAfterWin = true;
                 window.nextTradeAllowed = false;
@@ -4169,34 +4299,39 @@ window.isBotRunning = true;
                 window.stats.wins = (window.stats.wins || 0) + 1;
                 window.lastTradeResult = 'win';
                 window.lastTradeWon = true;
+
                 if (actualPayout > 0) trackTradePayout(actualPayout);
-                log(`🏁 CONFIRMED DERIV WIN | Contract ${ac.contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)}`, 'WIN');
+
+                log(`🏁 CONFIRMED DERIV WIN | Contract ${contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)}`, 'WIN');
+
                 updateStake('win');
+                window.settlementLedger.delete(contractId);
+                if (window.activeContract && Number(window.activeContract.contractId) === contractId) window.activeContract = null;
+
                 updateTradeStatus('WIN CONFIRMED 🎯', `Profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)} · digit ${finalDigit ?? ac.predictedDigit}`, 'Cycle complete — no further trade will be placed', 'win');
                 setTimeout(() => stopBot('Confirmed DIGITMATCH win'), 50);
                 return;
             }
 
-            if (ac.matchDetected) log('⚠️ Public-tick match warning was not confirmed by Deriv settlement. Settlement is authoritative.', 'WARNING');
             window.stats.losses = (window.stats.losses || 0) + 1;
             window.lastTradeResult = 'loss';
             window.lastTradeWon = false;
-            log(`❌ CONFIRMED DERIV LOSS | Contract ${ac.contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`, 'LOSS');
 
-            window.activeContract = null;
-            window.stopAfterWin = false;
-            window.executionLock = false;
-            updateStake('loss');
+            log(`✅ RECONCILED LOSS | Contract ${contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`, 'LOSS');
 
-            if (window.tradeCount >= window.maxTrades) {
-                window.nextTradeAllowed = false;
-                updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Recovery cycle stopped', 'loss');
-                stopBot('Maximum trades reached');
-                return;
+            if (!ac.progressionApplied) applyFastLossProgression(ac);
+
+            window.settlementLedger.delete(contractId);
+
+            if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
+                window.activeContract = null;
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
             }
-            window.nextTradeAllowed = true;
-            updateSessionDisplay();
-            updateTradeStatus('LOSS CONFIRMED', `Next stake $${window.currentStake.toFixed(2)}`, 'Waiting for next live tick', 'loss');
+
+            if (!window.activeContract && window.isBotRunning && !window.stopAfterWin) {
+                updateTradeStatus('LOSS CONFIRMED', `Contract ${contractId} reconciled`, `Recovery continues at $${window.currentStake.toFixed(2)}`, 'loss');
+            }
         }
 
         function onTradeComplete(isSuccess = true) {
@@ -4234,6 +4369,8 @@ window.isBotRunning = true;
             window.botTickTimestamps = [];
             window.activeContract = null;
             window.contractMonitorRetries = 0;
+            window.settlementLedger.clear();
+            window.reconciliationMismatch = false;
             
             window.executionLock = false;
             window.waitingForTradeResult = false;
