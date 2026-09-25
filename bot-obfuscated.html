@@ -4413,7 +4413,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V13 · corrected cycle accounting · synchronized post-cycle UI · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V14 · Deriv epoch-aligned fast settlement · corrected cycle accounting · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -4689,6 +4689,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             };
             
             window.lastTick = tickData;
+            rememberMarketTick(tickData);
             
             // Update UI - show the digit clearly
             document.getElementById('metricLiveTick').textContent = formattedTick;
@@ -5616,6 +5617,14 @@ window.isBotRunning = true;
                 fastOutcomeAt: null,
                 progressionApplied: false,
                 armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0),
+                serverStartEpoch: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0),
+                alignmentReady: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0) > 0,
+                alignmentSource: Number(buyData?.entry_tick_time || 0) > 0
+                    ? 'buy.entry_tick_time'
+                    : (Number(buyData?.date_start || 0) > 0
+                        ? 'buy.date_start'
+                        : (Number(buyData?.start_time || 0) > 0 ? 'buy.start_time' : null)),
+                alignmentLogged: false,
                 confirmedAtMs: Date.now(),
                 monitorReqId: null,
                 subscriptionId: null,
@@ -5684,6 +5693,81 @@ window.isBotRunning = true;
             updateTradeStatus('MATCH DETECTED 🎯', `Digit ${observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
         }
 
+        // V14: epoch-aligned public tick buffer for one-tick contracts.
+        window.recentMarketTicks = window.recentMarketTicks || [];
+
+        function rememberMarketTick(tickData) {
+            const epoch = Number(tickData?.raw?.epoch || 0);
+            if (!epoch) return;
+            const last = window.recentMarketTicks[window.recentMarketTicks.length - 1];
+            if (last && Number(last?.raw?.epoch || 0) === epoch && Number(last.digit) === Number(tickData.digit)) return;
+            window.recentMarketTicks.push(tickData);
+            if (window.recentMarketTicks.length > 40) {
+                window.recentMarketTicks.splice(0, window.recentMarketTicks.length - 40);
+            }
+        }
+
+        function getDerivContractStartEpoch(contract) {
+            for (const value of [contract?.entry_tick_time, contract?.date_start, contract?.start_time]) {
+                const n = Number(value || 0);
+                if (Number.isFinite(n) && n > 0) return n;
+            }
+            return 0;
+        }
+
+        function updateContractAlignmentFromDeriv(ac, contract) {
+            if (!ac || !contract) return false;
+            const start = getDerivContractStartEpoch(contract);
+            if (!start) return false;
+
+            ac.serverStartEpoch = Math.max(Number(ac.serverStartEpoch || 0), start);
+            ac.alignmentReady = true;
+            ac.alignmentSource = Number(contract.entry_tick_time || 0) > 0
+                ? 'entry_tick_time'
+                : (Number(contract.date_start || 0) > 0 ? 'date_start' : 'start_time');
+
+            if (!ac.alignmentLogged) {
+                ac.alignmentLogged = true;
+                log(`🧭 CONTRACT ALIGNMENT | ${ac.contractId} | server start ${ac.serverStartEpoch} (${ac.alignmentSource}) | local arm ${Number(ac.armedAfterEpoch || 0)}`, 'TRADE');
+            }
+            return true;
+        }
+
+        function contractTickBarrierEpoch(ac) {
+            return Math.max(Number(ac?.armedAfterEpoch || 0), Number(ac?.serverStartEpoch || 0));
+        }
+
+        function findBufferedSettlementTick(ac) {
+            if (!ac || !ac.alignmentReady || ac.tickResolved) return null;
+            const barrier = contractTickBarrierEpoch(ac);
+            if (!barrier) return null;
+
+            return window.recentMarketTicks
+                .filter(t => Number(t?.raw?.epoch || 0) > barrier)
+                .sort((a, b) => Number(a?.raw?.epoch || 0) - Number(b?.raw?.epoch || 0))[0] || null;
+        }
+
+        function resolveBufferedSettlementTick(ac) {
+            if (!ac || !window.activeContract || Number(window.activeContract.contractId) !== Number(ac.contractId)) return;
+            const buffered = findBufferedSettlementTick(ac);
+            if (!buffered) return;
+
+            const result = observeActiveContractTick(buffered);
+
+            if (window.isBotRunning && result?.fastLoss && !window.stopAfterWin) {
+                if (window.tradeCount >= window.maxTrades) {
+                    window.nextTradeAllowed = false;
+                    log(`🛑 Max trades reached (${window.maxTrades}) after aligned fast loss`, 'CRITICAL');
+                    stopBot('Maximum trades reached');
+                    return;
+                }
+
+                log('⚡ ALIGNED FAST RECOVERY: first buffered public tick strictly after Deriv contract start', 'TRADE');
+                processTickImmediately(buffered);
+                playAudioFeedback('TICK');
+            }
+        }
+
         function observeActiveContractTick(tickData) {
             const ac = window.activeContract;
             if (!ac || ac.settled || !ac.contractId || ac.tickResolved) {
@@ -5691,10 +5775,16 @@ window.isBotRunning = true;
             }
 
             const epoch = Number(tickData?.raw?.epoch || 0);
-            if (ac.armedAfterEpoch && epoch && epoch <= ac.armedAfterEpoch) {
+
+            // Never guess which public tick settles a newly purchased contract.
+            // Wait for Deriv server timing, then consume the first public tick
+            // strictly after the aligned start barrier.
+            if (!ac.alignmentReady) {
                 return { handled: false, fastLoss: false, fastWin: false };
             }
-            if (!epoch && Date.now() <= ac.confirmedAtMs) {
+
+            const barrierEpoch = contractTickBarrierEpoch(ac);
+            if (!epoch || epoch <= barrierEpoch) {
                 return { handled: false, fastLoss: false, fastWin: false };
             }
 
@@ -5767,6 +5857,11 @@ window.isBotRunning = true;
 
             if (envelope?.subscription?.id) ac.subscriptionId = envelope.subscription.id;
 
+            const alignmentBecameReady = updateContractAlignmentFromDeriv(ac, contract);
+            if (alignmentBecameReady && !ac.tickResolved) {
+                resolveBufferedSettlementTick(ac);
+            }
+
             const status = String(contract.status || '').toLowerCase();
             const isSold = contract.is_sold === true || Number(contract.is_sold) === 1 || ['won','lost','sold'].includes(status);
             if (!isSold || ac.settled) return;
@@ -5788,17 +5883,52 @@ window.isBotRunning = true;
             ac.finalDigit = finalDigit;
             ac.confirmedOutcome = confirmedWin ? 'WIN' : 'LOSS';
 
+            const observedEpochForOutcome = Number(ac.observedEpoch || 0);
+            const derivExitEpochForOutcome = Number(contract?.exit_spot_time ?? contract?.sell_spot_time ?? 0);
+            const sameProvenSettlementEpoch =
+                observedEpochForOutcome > 0 &&
+                derivExitEpochForOutcome > 0 &&
+                observedEpochForOutcome === derivExitEpochForOutcome;
+
             if (ac.fastOutcome === 'WIN' && !confirmedWin) {
-                hardStopOnReconciliationMismatch(ac, contract, 'fast WIN but Deriv LOSS');
-                return;
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(ac, contract, 'same settlement epoch: fast WIN but Deriv LOSS');
+                    return;
+                }
+                log(`🧭 ALIGNMENT CORRECTION | Contract ${contractId}: fast WIN used a different/unverified epoch. Deriv LOSS is authoritative.`, 'WARNING');
+                ac.alignmentCorrected = true;
             }
+
             if (ac.fastOutcome === 'LOSS' && confirmedWin) {
-                hardStopOnReconciliationMismatch(ac, contract, 'fast LOSS but Deriv WIN');
-                return;
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(ac, contract, 'same settlement epoch: fast LOSS but Deriv WIN');
+                    return;
+                }
+                log(`🧭 ALIGNMENT CORRECTION | Contract ${contractId}: fast LOSS used a different/unverified epoch. Deriv WIN is authoritative.`, 'WARNING');
+                ac.alignmentCorrected = true;
             }
-            if (ac.observedDigit !== null && finalDigit !== null && Number(ac.observedDigit) !== Number(finalDigit)) {
-                hardStopOnReconciliationMismatch(ac, contract, 'observed last digit differs from Deriv exit digit');
-                return;
+            if (
+                ac.observedDigit !== null &&
+                finalDigit !== null &&
+                Number(ac.observedDigit) !== Number(finalDigit)
+            ) {
+                const observedEpoch = Number(ac.observedEpoch || 0);
+                const derivExitEpoch = Number(contract?.exit_spot_time ?? contract?.sell_spot_time ?? 0);
+
+                if (observedEpoch > 0 && derivExitEpoch > 0 && observedEpoch === derivExitEpoch) {
+                    hardStopOnReconciliationMismatch(
+                        ac,
+                        contract,
+                        'same settlement epoch but observed digit differs from Deriv exit digit'
+                    );
+                    return;
+                }
+
+                log(
+                    `🧭 ALIGNMENT CORRECTION | Contract ${contractId} | public epoch ${observedEpoch || '?'} digit ${ac.observedDigit} | Deriv exit epoch ${derivExitEpoch || '?'} digit ${finalDigit}. Using Deriv settlement; no hard stop.`,
+                    'WARNING'
+                );
+                ac.alignmentCorrected = true;
             }
 
             if (confirmedWin) {
@@ -5900,6 +6030,7 @@ window.isBotRunning = true;
             window.activeContract = null;
             window.contractMonitorRetries = 0;
             window.settlementLedger.clear();
+            window.recentMarketTicks = [];
             window.reconciliationMismatch = false;
             window.cycleHasPurchasedContract = false;
             
