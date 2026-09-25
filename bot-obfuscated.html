@@ -881,10 +881,13 @@
                 
                 
                 initTickFormatFromPrices(prices);
+                const warmupSymbol =
+                    window.tickFormat.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    null;
+
                 for (let i = 0; i < prices.length; i++) {
-                    // Digit extraction using auto-detected decimals (preserves trailing zeros)
-                    updateTickFormatFromQuote(prices[i]);
-                    const digit = getLastDigitFromQuote(prices[i]);
+                    const digit = getLastDigitFromQuote(prices[i], null, warmupSymbol);
                     if (isNaN(digit) || digit < 0 || digit > 9) continue;
 
                     // SurvivalEngine rolling digits buffer
@@ -2284,65 +2287,131 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         // Tick decimal auto-detection (preserves trailing zeros for correct digit counting)
         window.tickFormat = {
             decimals: 3,
-            lastQuote: null,
-            minStep: Infinity,
-            symbol: null
+            symbol: null,
+            source: 'default',
+            pipSizeBySymbol: {}
         };
 
-        function estimateDecimalsFromStep(step) {
-            if (!Number.isFinite(step) || step <= 0) return window.tickFormat.decimals;
-            const tolerance = 1e-6;
-            for (let dec = 0; dec <= 6; dec++) {
-                const scaled = step * Math.pow(10, dec);
-                if (Math.abs(scaled - Math.round(scaled)) < tolerance) return dec;
-            }
-            return 6;
-        }
+        function decimalsFromPipSize(pipSize) {
+            const p = Number(pipSize);
+            if (!Number.isFinite(p) || p <= 0) return null;
 
-        function updateTickFormatFromQuote(quote) {
-            const q = Number(quote);
-            if (!Number.isFinite(q)) return;
+            // tick.pip_size may be an integer decimal count; active_symbols.pip_size
+            // is normally a step such as 0.01 or 0.001.
+            if (Number.isInteger(p) && p >= 0 && p <= 10) return p;
 
-            if (window.tickFormat.lastQuote !== null) {
-                const diff = Math.abs(q - window.tickFormat.lastQuote);
-                if (diff > 0) {
-                    window.tickFormat.minStep = Math.min(window.tickFormat.minStep, diff);
-                    window.tickFormat.decimals = estimateDecimalsFromStep(window.tickFormat.minStep);
+            if (p < 1) {
+                const s = p.toString().toLowerCase();
+                if (s.includes('e-')) {
+                    const exp = Number(s.split('e-')[1]);
+                    return Number.isFinite(exp) ? exp : null;
+                }
+                const dot = s.indexOf('.');
+                if (dot >= 0) {
+                    const frac = s.slice(dot + 1).replace(/0+$/, '');
+                    return frac.length;
                 }
             }
-            window.tickFormat.lastQuote = q;
+            return null;
+        }
+
+        function setSymbolPipSize(symbol, pipSize, source = 'api') {
+            if (!symbol) return false;
+            const decimals = decimalsFromPipSize(pipSize);
+            if (!Number.isInteger(decimals) || decimals < 0 || decimals > 10) return false;
+
+            window.tickFormat.pipSizeBySymbol[symbol] = {
+                pipSize: Number(pipSize),
+                decimals,
+                source
+            };
+
+            if (window.tickFormat.symbol === symbol) {
+                window.tickFormat.decimals = decimals;
+                window.tickFormat.source = source;
+            }
+            return true;
+        }
+
+        function getSymbolDecimals(symbol, tick = null) {
+            if (tick && tick.pip_size !== undefined && tick.pip_size !== null) {
+                const d = decimalsFromPipSize(tick.pip_size);
+                if (Number.isInteger(d)) {
+                    setSymbolPipSize(symbol || tick.symbol, tick.pip_size, 'tick.pip_size');
+                    return d;
+                }
+            }
+
+            const cached = window.tickFormat.pipSizeBySymbol[symbol];
+            if (cached && Number.isInteger(cached.decimals)) return cached.decimals;
+
+            return Number.isInteger(window.tickFormat.decimals)
+                ? window.tickFormat.decimals
+                : 3;
+        }
+
+        function canonicalTickString(quote, tick = null, symbolOverride = null) {
+            const q = Number(quote);
+            if (!Number.isFinite(q)) return null;
+
+            const symbol =
+                symbolOverride ||
+                tick?.symbol ||
+                window.tickFormat.symbol ||
+                document.getElementById('symbol')?.value ||
+                null;
+
+            const decimals = getSymbolDecimals(symbol, tick);
+            window.tickFormat.decimals = decimals;
+            if (symbol) window.tickFormat.symbol = symbol;
+
+            return q.toFixed(decimals);
+        }
+
+        // Compatibility wrappers used throughout the existing bot.
+        function updateTickFormatFromQuote(quote, tick = null, symbolOverride = null) {
+            return canonicalTickString(quote, tick, symbolOverride);
         }
 
         function initTickFormatFromPrices(prices) {
-            let minStep = Infinity;
-            for (let i = 1; i < prices.length; i++) {
-                const a = Number(prices[i - 1]);
-                const b = Number(prices[i]);
-                if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-                const diff = Math.abs(b - a);
-                if (diff > 0) minStep = Math.min(minStep, diff);
-            }
-            if (Number.isFinite(minStep)) {
-                window.tickFormat.minStep = minStep;
-                window.tickFormat.decimals = estimateDecimalsFromStep(minStep);
-            }
+            // Do not infer decimal precision from random price differences.
+            // Historical prices are formatted using symbol metadata.
+            return window.tickFormat.decimals;
         }
 
-        function formatQuoteForDigit(quote) {
-            const q = Number(quote);
-            if (!Number.isFinite(q)) return null;
-            return q.toFixed(window.tickFormat.decimals);
+        function formatQuoteForDigit(quote, tick = null, symbolOverride = null) {
+            return canonicalTickString(quote, tick, symbolOverride);
         }
 
-        function getLastDigitFromQuote(quote) {
-            const s = formatQuoteForDigit(quote);
+        function getLastDigitFromQuote(quote, tick = null, symbolOverride = null) {
+            const s = canonicalTickString(quote, tick, symbolOverride);
             if (!s) return NaN;
-            const lastChar = s[s.length - 1];
-            const d = Number.parseInt(lastChar, 10);
+            const d = Number.parseInt(s[s.length - 1], 10);
             return Number.isNaN(d) ? NaN : d;
         }
 
-        
+        function runCanonicalDigitSelfTest() {
+            const cases = [
+                { quote: 86.732, pip_size: 0.001, expected: '86.732', digit: 2 },
+                { quote: 86.73, pip_size: 0.01, expected: '86.73', digit: 3 },
+                { quote: 86.7, pip_size: 0.01, expected: '86.70', digit: 0 },
+                { quote: 4938.099, pip_size: 0.001, expected: '4938.099', digit: 9 }
+            ];
+
+            for (const c of cases) {
+                const tick = { quote: c.quote, pip_size: c.pip_size, symbol: '__TEST__' };
+                const formatted = canonicalTickString(c.quote, tick, '__TEST__');
+                const digit = getLastDigitFromQuote(c.quote, tick, '__TEST__');
+                if (formatted !== c.expected || digit !== c.digit) {
+                    console.error('❌ Canonical digit self-test failed', { c, formatted, digit });
+                    return false;
+                }
+            }
+
+            console.log('✅ Canonical digit self-test passed');
+            return true;
+        }
+
         // DOM Elements
         const toggleButton = document.getElementById('toggleButton');
         const soundToggleButton = document.getElementById('soundToggle');
@@ -2907,6 +2976,40 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             return null;
         }
 
+        function requestActiveSymbolMetadata() {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            sendMarketRequest({
+                active_symbols: "brief",
+                req_id: marketNextReqId()
+            });
+
+            log('🔢 Requesting Deriv symbol precision metadata (pip_size)', 'SYSTEM');
+        }
+
+        function handleActiveSymbolsMetadata(data) {
+            const items = Array.isArray(data?.active_symbols) ? data.active_symbols : [];
+            let loaded = 0;
+
+            for (const item of items) {
+                const symbol = item?.underlying_symbol || item?.symbol;
+                const pipSize = item?.pip_size ?? item?.pip;
+                if (symbol && setSymbolPipSize(symbol, pipSize, 'active_symbols')) loaded++;
+            }
+
+            const currentSymbol = document.getElementById('symbol')?.value;
+            const current = currentSymbol ? window.tickFormat.pipSizeBySymbol[currentSymbol] : null;
+
+            if (current) {
+                window.tickFormat.symbol = currentSymbol;
+                window.tickFormat.decimals = current.decimals;
+                window.tickFormat.source = current.source;
+                log(`🔢 ${currentSymbol} precision locked: ${current.decimals} d.p. (pip_size ${current.pipSize})`, 'SYSTEM');
+            } else {
+                log(`⚠️ Loaded precision metadata for ${loaded} symbols, but current symbol metadata was not found`, 'WARNING');
+            }
+        }
+
         function requestPublicWarmupTicks(symbol) {
             if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
 
@@ -2927,8 +3030,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
 
             window.tickFormat.symbol = symbol;
-            window.tickFormat.lastQuote = null;
-            window.tickFormat.minStep = Infinity;
+            const cachedPrecision = window.tickFormat.pipSizeBySymbol[symbol];
+            if (cachedPrecision) {
+                window.tickFormat.decimals = cachedPrecision.decimals;
+                window.tickFormat.source = cachedPrecision.source;
+            }
 
             sendMarketRequest({
                 ticks: symbol,
@@ -2982,8 +3088,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 log('🟢 Public market WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
 
-                subscribePublicTicks(symbol);
-                requestPublicWarmupTicks(symbol);
+                requestActiveSymbolMetadata();
+
+                setTimeout(() => {
+                    subscribePublicTicks(symbol);
+                    requestPublicWarmupTicks(symbol);
+                }, 150);
 
                 updateTradeStatus(
                     'CONNECTED',
@@ -3003,6 +3113,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                             data?.errors?.[0]?.message ||
                             'Public market API error';
                         log(`❌ Public market error: ${message}`, 'ERROR');
+                        return;
+                    }
+
+                    if (data.msg_type === 'active_symbols' && Array.isArray(data.active_symbols)) {
+                        handleActiveSymbolsMetadata(data);
                         return;
                     }
 
@@ -3066,6 +3181,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 // DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
+            runCanonicalDigitSelfTest();
             initializeToggleState();
             updateS20Label();
             
@@ -3108,7 +3224,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: FAST-TICK V5 · async loss recovery · Deriv settlement authority', 'SYSTEM');
+            log('🚀 Runtime: FAST-TICK V6 · pip-aware canonical digits · async recovery', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -3278,10 +3394,17 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     if (data.msg_type === 'tick') {
                         console.log('Tick received:', data.tick);
 
-                        updateTickFormatFromQuote(data.tick.quote);
-                        const digit = getLastDigitFromQuote(data.tick.quote);
+                        const authFormattedTick = canonicalTickString(
+                            data.tick.quote,
+                            data.tick,
+                            data.tick.symbol
+                        );
+                        const digit = authFormattedTick
+                            ? Number.parseInt(authFormattedTick[authFormattedTick.length - 1], 10)
+                            : NaN;
+
                         if (digit === 0) {
-                            console.log('🎯 DIGIT 0 DETECTED in formatted tick:', formatQuoteForDigit(data.tick.quote));
+                            console.log('🎯 DIGIT 0 DETECTED in canonical tick:', authFormattedTick);
                         }
 
                         handleTick(data.tick);
@@ -3330,16 +3453,19 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (!tick || tick.quote === undefined || tick.quote === null) return;
             
             const price = parseFloat(tick.quote);
-            
-            // Digit extraction using auto-detected decimals (preserves trailing zeros)
-            updateTickFormatFromQuote(tick.quote);
-            const digit = getLastDigitFromQuote(tick.quote);
-            
-            // Debug logging for digit 0
+
+            // One canonical representation drives BOTH display and digit logic.
+            // Precision comes from tick.pip_size when available, otherwise the
+            // active_symbols pip_size cached for this exact symbol.
+            const formattedTick = canonicalTickString(tick.quote, tick, tick.symbol);
+            const digit = formattedTick
+                ? Number.parseInt(formattedTick[formattedTick.length - 1], 10)
+                : NaN;
+
             if (digit === 0) {
-                console.log('Digit 0 detected:', tick.quote, 'Formatted:', formatQuoteForDigit(tick.quote));
+                console.log('Digit 0 detected:', tick.quote, 'Canonical:', formattedTick);
             }
-            
+
             if (isNaN(digit) || digit < 0 || digit > 9) {
                 log(`⚠️ Invalid digit from tick: ${tick.quote}`, 'WARNING');
                 return;
@@ -3364,9 +3490,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 }
             }
             
-            const tickData = { 
-                digit: digit, 
-                price: price, 
+            const tickData = {
+                digit: digit,
+                price: price,
+                formattedPrice: formattedTick,
+                decimals: getSymbolDecimals(tick.symbol || window.tickFormat.symbol, tick),
                 time: Date.now(),
                 raw: tick
             };
@@ -3374,7 +3502,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.lastTick = tickData;
             
             // Update UI - show the digit clearly
-            document.getElementById('metricLiveTick').textContent = price.toFixed(3);
+            document.getElementById('metricLiveTick').textContent = formattedTick;
             document.getElementById('metricLastDigit').textContent = `Digit: ${digit}`;
             document.getElementById('metricLiveTick').classList.add('tick-flash');
             setTimeout(() => document.getElementById('metricLiveTick').classList.remove('tick-flash'), 50);
@@ -4226,8 +4354,20 @@ window.isBotRunning = true;
         function getContractFinalDigit(contract) {
             const exitSpot = contract?.exit_spot ?? contract?.current_spot ?? null;
             if (exitSpot === null || exitSpot === undefined) return null;
-            updateTickFormatFromQuote(exitSpot);
-            const d = getLastDigitFromQuote(exitSpot);
+
+            const symbol =
+                contract?.underlying_symbol ||
+                contract?.symbol ||
+                window.tickFormat.symbol ||
+                document.getElementById('symbol')?.value ||
+                null;
+
+            const pseudoTick = {
+                symbol,
+                pip_size: contract?.pip_size
+            };
+
+            const d = getLastDigitFromQuote(exitSpot, pseudoTick, symbol);
             return Number.isFinite(d) ? d : null;
         }
 
@@ -4678,8 +4818,10 @@ window.isBotRunning = true;
             // Add digit to precision matcher
             if (tick && tick.quote) {
                 const price = parseFloat(tick.quote);
-                updateTickFormatFromQuote(tick.quote);
-                const digit = getLastDigitFromQuote(tick.quote);
+                const precisionFormattedTick = canonicalTickString(tick.quote, tick, tick.symbol);
+                const digit = precisionFormattedTick
+                    ? Number.parseInt(precisionFormattedTick[precisionFormattedTick.length - 1], 10)
+                    : NaN;
                 
                 if (!isNaN(digit) && digit >= 0 && digit <= 9) {
                     window.precisionMatcher.addDigit(digit);
