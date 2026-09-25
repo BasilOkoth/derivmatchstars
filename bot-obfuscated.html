@@ -1755,9 +1755,10 @@ window.EV_GATE_CONFIG = {
     // AI AUTO only. INSTANT remains a manual execution mode.
     applyToInstant: false,
 
-    // Required probability advantage above the live quote break-even probability.
-    // 0.005 = 0.5 percentage points.
-    minEdge: 0.005,
+    // Experimental entry threshold.
+    // -0.01 = allow entries down to -1.00 percentage point below live break-even.
+    // P90 and other entry-safety gates remain active.
+    minEdge: -0.01,
 
     // Exact-next-tick empirical model readiness.
     minEffectiveSupport: 20,
@@ -2222,13 +2223,12 @@ window.nextTickModel = {
                 reason = 'NEXT_TICK_MODEL_NOT_READY';
             } else if (edge < window.EV_GATE_CONFIG.minEdge) {
                 approved = false;
-                reason = 'INSUFFICIENT_LIVE_EDGE';
-            } else if (expectedValue <= 0) {
-                approved = false;
-                reason = 'NEGATIVE_EXPECTED_VALUE';
+                reason = 'EDGE_BELOW_THRESHOLD';
             } else {
                 approved = true;
-                reason = 'POSITIVE_LIVE_EDGE';
+                reason = edge >= 0
+                    ? 'POSITIVE_LIVE_EDGE'
+                    : 'EDGE_WITHIN_EXPERIMENTAL_BAND';
             }
         }
 
@@ -2278,6 +2278,9 @@ window.nextTickModel = {
 
                 <span class="text-gray-400">Live edge:</span>
                 <span id="ntm-edge" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Entry threshold:</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">-1.00 pp</span>
 
                 <span class="text-gray-400">Expected value:</span>
                 <span id="ntm-ev" class="font-bold text-white">-</span>
@@ -3928,7 +3931,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V10 · committed-buy accounting · continuous recovery · synchronized EV', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V11 · -1.00 pp experimental edge band · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -4965,8 +4968,8 @@ window.isBotRunning = true;
                 );
                 updateTradeStatus(
                     'AI AUTO ARMED',
-                    'Waiting for positive live edge',
-                    `P ${(evaluation.modelProbability * 100).toFixed(2)}% vs BE ${(evaluation.breakEvenProbability * 100).toFixed(2)}% · no trade counted`,
+                    'Waiting for edge ≥ -1.00 pp',
+                    `Edge ${(evaluation.edge * 100).toFixed(2)} pp · threshold -1.00 pp · no trade counted`,
                     'normal'
                 );
                 if (
