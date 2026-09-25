@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
+    <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -2222,6 +2223,20 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.stopAfterWin = false;
         window.pendingProposals = new Map();
         window.executionLock = false;
+
+        // ACTIVE CONTRACT LIFECYCLE V3
+        window.activeContract = null;
+        window.contractSequence = 0;
+        window.contractMonitorRetries = 0;
+        window.maxContractMonitorRetries = 3;
+
+        function hasOpenContract() {
+            return !!(window.activeContract && window.activeContract.contractId && !window.activeContract.settled);
+        }
+
+        function mayPlaceNextTrade() {
+            return !!(window.isBotRunning && !window.stopAfterWin && !window.executionLock && !hasOpenContract() && window.nextTradeAllowed);
+        }
         
         // Statistics
         window.stats = {
@@ -2701,10 +2716,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             clearSessionDigitLock(reason || 'Rotate');
             window.cycleRotations = (window.cycleRotations || 0) + 1;
 
-            // Reset progression (cycle reset)
-            window.martingaleStep = 0;
-            window.currentStake = window.baseStake;
-
+            // Preserve martingale/recovery stake across AI digit rotations.
             if (sessionState.mode !== 'ai') return;
 
             // Prefer a low tail-risk digit (s20 <= 5%), otherwise use current AI rec.
@@ -2733,7 +2745,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connected text-white shadow-md';
                 document.getElementById('market_status').textContent = 'Live';
                 document.getElementById('market_status').className = 'ml-2 font-bold text-green-400';
-                updateTradeStatus('CONNECTED', 'Market live - Ready to trade', 'Set parameters and start trading', 'normal');
+                if (!window.isBotRunning && !hasOpenContract()) {
+                    updateTradeStatus('CONNECTED', 'Market live - Ready to trade', 'Set parameters and start trading', 'normal');
+                }
             } else if (isConnecting) {
                 document.getElementById('status-badge').textContent = '🟡 CONNECTING';
                 document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connecting text-white shadow-md';
@@ -3370,8 +3384,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 window.digitIntelligenceEngine.processLiveTick(digit);
             }
 
-            // Only active trading sessions may enqueue ticks.
-            if (window.isBotRunning) {
+            // Fast settlement-tick observer for the currently purchased contract.
+            observeActiveContractTick(tickData);
+
+            // Never queue another order while a contract is unresolved.
+            if (window.isBotRunning && !hasOpenContract() && !window.stopAfterWin) {
                 addTickToQueue(tickData);
                 playAudioFeedback('TICK');
             }
@@ -3390,10 +3407,13 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
                 log(`API Error: ${message}`, 'ERROR');
 
-                // Release the trade lock when a proposal/buy is rejected so INSTANT
-                // mode can continue instead of getting permanently stuck.
-                window.executionLock = false;
-                window.nextTradeAllowed = true;
+                if (hasOpenContract()) {
+                    window.executionLock = true;
+                    window.nextTradeAllowed = false;
+                } else {
+                    window.executionLock = false;
+                    window.nextTradeAllowed = true;
+                }
 
                 if (code === 'InvalidToken' || code === 'AuthorizationRequired') {
                     log('❌ Trading authorization is no longer valid. Please reconnect.', 'CRITICAL');
@@ -3427,7 +3447,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             } else if (data.msg_type === 'proposal') {
                 handleProposalResponse(data.proposal, data.req_id);
             } else if (data.msg_type === 'buy') {
-                handleBuyResponse(data.buy);
+                handleBuyResponse(data.buy, data.req_id);
+            } else if (data.msg_type === 'proposal_open_contract') {
+                handleOpenContractUpdate(data.proposal_open_contract, data);
             } else if (data.msg_type === 'balance') {
                 handleBalanceUpdate(data.balance);
             }
@@ -3446,6 +3468,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
+            if (!mayPlaceNextTrade()) return;
 
             // Public market ticks may arrive before the authenticated trading
             // WebSocket is ready. Never attempt an order until it is OPEN.
@@ -3565,110 +3588,45 @@ window.executionLock = true;
                 martingaleStep: window.martingaleStep
             });
             
-            sendRequest(proposalRequest);
+            const sentReqId = sendRequest(proposalRequest);
+            if (sentReqId === null) {
+                window.pendingProposals.delete(proposalRequest.req_id);
+                rollbackUnsentTrade(stake);
+                log('⏳ Proposal not sent — trading socket unavailable', 'ERROR');
+            }
         }
         
         // CHECK FOR IMMEDIATE WIN - CRITICAL FUNCTION
         function checkForImmediateWin(tick) {
-            if (!window.isBotRunning || window.stopAfterWin) return false;
-            
-            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
-            const tickDigit = parseInt(tick.digit);
-            
-            if (tickDigit === predictedDigit) {
-                log(`🎯 IMMEDIATE WIN! Digit ${tickDigit} matches ${predictedDigit}`, 'WIN');
-                
-                window.lastTradeResult = 'win';
-                window.stopAfterWin = true;
-                window.stats.wins++;
-                window.tradeCount++;
-                
-                playAudioFeedback('WIN');
-                
-                const payout = window.currentStake * 9;
-                trackTradePayout(payout);
-                log(`💰 Payout: $${payout.toFixed(2)}`, 'PNL');
-                
-                // Start extended PnL updates for 10 seconds
-                startExtendedPnlUpdate(payout);
-                
-                updateTradeStatus(
-                    'IMMEDIATE WIN 🎯',
-                    `Digit ${tickDigit} matched! Payout: $${payout.toFixed(2)}`,
-                    'PnL updating for 10 seconds...',
-                    'win'
-                );
-                
-                updateStake('win');
-                return true;
-            }
-            
             return false;
         }
-        
+
         // UPDATE STAKE - CRITICAL FUNCTION
         function updateStake(winOrLoss) {
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
             window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
-            
+
             if (winOrLoss === 'win') {
                 window.lastTradeWon = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
-                log(`✅ WIN! Reset stake: $${window.currentStake.toFixed(2)}`, 'WIN');
-                
-                const payout = window.currentStake * 9;
-                trackTradePayout(payout);
-                log(`💰 Payout: $${payout.toFixed(2)}`, 'PNL');
-                
-                // Start extended PnL updates for 10 seconds
-                startExtendedPnlUpdate(payout);
-                
-                updateTradeStatus(
-                    'WIN 🎯',
-                    `WON! Digit matched - Payout: $${payout.toFixed(2)}`,
-                    'PnL updating for 10 seconds...',
-                    'win'
-                );
-                
+                log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
+                updatePnL();
             } else if (winOrLoss === 'loss') {
                 window.lastTradeWon = false;
                 window.martingaleStep = (window.martingaleStep || 0) + 1;
                 window.cycleLosses = (window.cycleLosses || 0) + 1;
-
-                const newStake = window.currentStake * window.multiplier;
-                window.currentStake = parseFloat(newStake.toFixed(2));
-
+                window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
                 if (window.cycleLosses >= window.maxCycleTrades) {
-                    log(`🧯 LOSS CAP REACHED (${window.maxCycleTrades}) — switching HYBRID digit (keeping martingale)`, 'CRITICAL');
-                    updateTradeStatus(
-                        'SWITCH DIGIT 🔁',
-                        `Loss cap reached (${window.maxCycleTrades})`,
-                        'Switching HYBRID digit; keeping martingale progression...',
-                        'loss'
-                    );
-
+                    log(`🧯 LOSS CAP REACHED (${window.maxCycleTrades}) — switching HYBRID digit while KEEPING recovery stake`, 'CRITICAL');
                     window.cycleLosses = 0;
-
-                    if (window.isBotRunning && sessionState.mode === 'ai') {
-                        rotateHybridDigit(`Loss cap ${window.maxCycleTrades} (keep martingale)`);
-                    }
+                    if (window.isBotRunning && sessionState.mode === 'ai') rotateHybridDigit(`Loss cap ${window.maxCycleTrades} — stake preserved`);
                 }
-                log(`❌ LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
-                
-                updateTradeStatus(
-                    'LOSS ❌',
-                    `Lost - Next: $${window.currentStake.toFixed(2)}`,
-                    'Increasing stake',
-                    'loss'
-                );
-                
-                // Always update PnL
+                log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
-                
             } else {
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
@@ -3676,12 +3634,11 @@ window.executionLock = true;
                 log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
                 updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
             }
-            
             const stakeElem = document.getElementById('metricCurrentStake');
             stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
             stakeElem.className = winOrLoss === 'win' ? 'text-lg font-bold text-green-400' : 'text-lg font-bold text-white';
         }
-        
+
         // START BOT - CRITICAL FUNCTION
         function startBot() {
             if (window.isBotRunning) {
@@ -3955,14 +3912,15 @@ window.isBotRunning = true;
         function startQueueProcessor() {
             setInterval(() => {
                 if (!window.isBotRunning || window.stopAfterWin) return;
-                
-                while (window.tickQueue.length > 0 && !window.executionLock && window.nextTradeAllowed) {
+                if (!mayPlaceNextTrade()) return;
+
+                while (window.tickQueue.length > 0 && mayPlaceNextTrade()) {
                     const tick = window.tickQueue.shift();
                     processTickImmediately(tick);
                 }
             }, 50);
         }
-        
+
         function sendRequest(request) {
             if (window.ws && window.ws.readyState === WebSocket.OPEN) {
                 const message = JSON.stringify(request);
@@ -4025,85 +3983,227 @@ window.isBotRunning = true;
         
         function handleProposalResponse(proposal, req_id) {
             if (!proposal || !proposal.id) {
-                log(`❌ Proposal failed`, 'ERROR');
-                updateTradeStatus('ERROR', 'Proposal failed', 'Retrying...', 'loss');
-                return;
-            }
-        
-            const pending = window.pendingProposals.get(req_id);
-            if (!pending) return;
-        
-            window.pendingProposals.delete(req_id);
-            executeBuy(proposal.id, proposal.ask_price, pending);
-        }
-        
-        function executeBuy(proposal_id, ask_price, pending) {
-            const numericAskPrice = Number(ask_price);
-
-            if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
-                log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
+                log('❌ Proposal failed', 'ERROR');
                 window.executionLock = false;
                 window.nextTradeAllowed = true;
-                updateTradeStatus('ERROR', 'Invalid proposal price', 'Waiting for next tick', 'loss');
+                updateTradeStatus('ERROR', 'Proposal failed', 'Waiting for next tick', 'loss');
                 return;
             }
 
-            const buyRequest = {
-                buy: proposal_id,
-                price: numericAskPrice,
-                req_id: getNextReqId()
-            };
-            
-            log(`✅ Buying: $${pending.stake.toFixed(2)} on digit ${pending.predictedDigit}`, 'TRADE');
-            
-            window.pendingProposals.set(buyRequest.req_id, {
-                ...pending,
-                proposal_id: proposal_id,
-                buyStartTime: Date.now()
-            });
-            
-            sendRequest(buyRequest);
-        }
-        
-        function handleBuyResponse(buyData) {
-            if (buyData.contract_id) {
-                log(`✅ Trade executed successfully`, 'TRADE');
-                
-                // Check if this was a win or loss
-                const wasWin = buyData.longcode && buyData.longcode.includes("win");
-                
-                updateStake(wasWin ? 'win' : 'loss');
-                onTradeComplete(true);
-            } else {
-                log(`❌ Trade failed`, 'ERROR');
-                updateTradeStatus('ERROR', 'Trade execution failed', 'Retrying...', 'loss');
-                onTradeComplete(false);
+            const pending = window.pendingProposals.get(req_id);
+            if (!pending) {
+                log(`⚠️ Proposal response ${req_id} has no pending context`, 'WARNING');
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+                return;
             }
+
+            window.pendingProposals.delete(req_id);
+            pending.proposalId = proposal.id;
+            pending.askPrice = Number(proposal.ask_price);
+            pending.quotedPayout = Number(proposal.payout);
+
+            if (Number.isFinite(pending.askPrice) && Number.isFinite(pending.quotedPayout)) {
+                const quotedProfit = pending.quotedPayout - pending.askPrice;
+                const priorLosses = Math.max(0, (window.pnlTracker?.totalInvestment || 0) - pending.stake - (window.pnlTracker?.totalPayout || 0));
+                const recoveryNet = quotedProfit - priorLosses;
+                log(`📐 Quote: cost $${pending.askPrice.toFixed(2)} → payout $${pending.quotedPayout.toFixed(2)} | win profit $${quotedProfit.toFixed(2)} | cycle net if win ≈ ${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)}`, 'PNL');
+            }
+
+            executeBuy(proposal.id, proposal.ask_price, pending);
         }
-        
-        function onTradeComplete(isSuccess = true) {
+
+        function rollbackUnsentTrade(stake) {
             window.executionLock = false;
             window.nextTradeAllowed = true;
+            window.tradeCount = Math.max(0, window.tradeCount - 1);
+            window.stats.tradesExecuted = Math.max(0, (window.stats.tradesExecuted || 0) - 1);
+            document.getElementById('metricTradeCount').textContent = window.tradeCount;
+            if (window.pnlTracker) {
+                window.pnlTracker.totalInvestment = Math.max(0, (window.pnlTracker.totalInvestment || 0) - Number(stake || 0));
+                if (Array.isArray(window.pnlTracker.trades) && window.pnlTracker.trades.length) {
+                    const last = window.pnlTracker.trades[window.pnlTracker.trades.length - 1];
+                    if (last?.type === 'investment' && Number(last.amount) === Number(stake)) window.pnlTracker.trades.pop();
+                }
+            }
+            updatePnL();
             updateSessionDisplay();
-            
-            if (!isSuccess) {
-                updateStake('loss');
-            }
-            
-            if (window.stopAfterWin) {
-                return;
-            }
-            
-            if (window.tradeCount >= window.maxTrades) {
-                log(`🛑 Max trades reached (${window.maxTrades})`, 'CRITICAL');
-                updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
-                stopBot();
-                return;
-            }
-
-
         }
-        
+
+        function executeBuy(proposal_id, ask_price, pending) {
+            const numericAskPrice = Number(ask_price);
+            if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
+                log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
+                rollbackUnsentTrade(pending?.stake || window.currentStake);
+                return;
+            }
+
+            const buyRequest = { buy: proposal_id, price: numericAskPrice, req_id: getNextReqId() };
+            log(`✅ Buying: $${pending.stake.toFixed(2)} on digit ${pending.predictedDigit}`, 'TRADE');
+            window.pendingProposals.set(buyRequest.req_id, { ...pending, proposal_id, askPrice: numericAskPrice, buyStartTime: Date.now() });
+            const sent = sendRequest(buyRequest);
+            if (sent === null) {
+                window.pendingProposals.delete(buyRequest.req_id);
+                rollbackUnsentTrade(pending.stake);
+                log('⏳ Buy not sent — trading socket unavailable', 'ERROR');
+            }
+        }
+
+        function subscribeToActiveContract(contractId) {
+            if (!contractId || !window.ws || window.ws.readyState !== WebSocket.OPEN) return false;
+            const reqId = getNextReqId();
+            const sent = sendRequest({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1, req_id: reqId });
+            if (sent === null) return false;
+            if (window.activeContract && Number(window.activeContract.contractId) === Number(contractId)) window.activeContract.monitorReqId = reqId;
+            log(`👁️ Monitoring contract ${contractId} until Deriv settlement`, 'TRADE');
+            return true;
+        }
+
+        function retryContractMonitor(contractId) {
+            if (!window.activeContract || window.activeContract.settled) return;
+            if (window.contractMonitorRetries >= window.maxContractMonitorRetries) {
+                log(`❌ Settlement monitor failed for contract ${contractId}. SAFETY FREEZE.`, 'CRITICAL');
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+                updateTradeStatus('SAFETY FREEZE', 'Contract settlement monitor unavailable', 'Do not continue until contract state is known', 'loss');
+                return;
+            }
+            window.contractMonitorRetries++;
+            setTimeout(() => { if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId); }, 300 * window.contractMonitorRetries);
+        }
+
+        function handleBuyResponse(buyData, req_id) {
+            const pending = window.pendingProposals.get(req_id) || null;
+            if (pending) window.pendingProposals.delete(req_id);
+            if (!buyData || !buyData.contract_id) {
+                log('❌ Trade purchase failed', 'ERROR');
+                rollbackUnsentTrade(pending?.stake || window.currentStake);
+                return;
+            }
+
+            const contractId = Number(buyData.contract_id);
+            window.contractSequence++;
+            window.contractMonitorRetries = 0;
+            window.activeContract = {
+                sequence: window.contractSequence,
+                contractId,
+                predictedDigit: Number(pending?.predictedDigit ?? document.getElementById('predictedDigit').value),
+                stake: Number(pending?.stake ?? window.currentStake),
+                askPrice: Number(buyData.buy_price ?? pending?.askPrice ?? 0),
+                quotedPayout: Number(pending?.quotedPayout ?? 0),
+                proposalId: pending?.proposal_id || pending?.proposalId || null,
+                status: 'OPEN', settled: false, matchDetected: false, settlementTickObserved: false,
+                observedDigit: null, armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0), confirmedAtMs: Date.now(),
+                monitorReqId: null, subscriptionId: null
+            };
+
+            window.executionLock = true;
+            window.nextTradeAllowed = false;
+            log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
+            updateTradeStatus('CONTRACT OPEN', `Watching next tick for digit ${window.activeContract.predictedDigit}`, 'No new trade until Deriv settlement', 'trade');
+            if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
+        }
+
+        function observeActiveContractTick(tickData) {
+            const ac = window.activeContract;
+            if (!ac || ac.settled || !ac.contractId || ac.settlementTickObserved) return;
+            const epoch = Number(tickData?.raw?.epoch || 0);
+            if (ac.armedAfterEpoch && epoch && epoch <= ac.armedAfterEpoch) return;
+            if (!epoch && Date.now() <= ac.confirmedAtMs) return;
+
+            ac.settlementTickObserved = true;
+            ac.observedDigit = Number(tickData.digit);
+            ac.observedPrice = Number(tickData.price);
+            ac.observedEpoch = epoch || null;
+
+            if (ac.observedDigit === ac.predictedDigit) {
+                ac.matchDetected = true;
+                ac.status = 'MATCH_DETECTED';
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+                log(`🎯 MATCH DETECTED IMMEDIATELY: ${ac.observedDigit} = ${ac.predictedDigit}. ALL NEW TRADES FROZEN pending Deriv confirmation.`, 'WIN');
+                updateTradeStatus('MATCH DETECTED 🎯', `Digit ${ac.observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
+            } else {
+                log(`👀 Settlement-tick candidate: ${ac.observedDigit} ≠ ${ac.predictedDigit}. Awaiting Deriv settlement.`, 'TRADE');
+            }
+        }
+
+        function getContractFinalDigit(contract) {
+            const exitSpot = contract?.exit_spot ?? contract?.current_spot ?? null;
+            if (exitSpot === null || exitSpot === undefined) return null;
+            updateTickFormatFromQuote(exitSpot);
+            const d = getLastDigitFromQuote(exitSpot);
+            return Number.isFinite(d) ? d : null;
+        }
+
+        function handleOpenContractUpdate(contract, envelope = {}) {
+            if (!contract || !contract.contract_id) return;
+            const ac = window.activeContract;
+            if (!ac || Number(ac.contractId) !== Number(contract.contract_id)) return;
+            if (envelope?.subscription?.id) ac.subscriptionId = envelope.subscription.id;
+
+            const status = String(contract.status || '').toLowerCase();
+            const isSold = contract.is_sold === true || Number(contract.is_sold) === 1 || ['won','lost','sold'].includes(status);
+            if (!isSold) { ac.status = ac.matchDetected ? 'MATCH_DETECTED' : 'OPEN'; return; }
+            if (ac.settled) return;
+            ac.settled = true;
+            ac.status = 'SETTLING';
+
+            const actualProfit = Number(contract.profit ?? 0);
+            const actualBuyPrice = Number(contract.buy_price ?? ac.askPrice ?? ac.stake ?? 0);
+            let actualPayout = Number(contract.payout);
+            if (!Number.isFinite(actualPayout)) actualPayout = Math.max(0, actualBuyPrice + actualProfit);
+            const finalDigit = getContractFinalDigit(contract);
+            ac.actualProfit = actualProfit; ac.actualBuyPrice = actualBuyPrice; ac.actualPayout = actualPayout; ac.finalDigit = finalDigit;
+
+            const confirmedWin = actualProfit > 0 || status === 'won';
+            if (confirmedWin) {
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+                window.stats.wins = (window.stats.wins || 0) + 1;
+                window.lastTradeResult = 'win';
+                window.lastTradeWon = true;
+                if (actualPayout > 0) trackTradePayout(actualPayout);
+                log(`🏁 CONFIRMED DERIV WIN | Contract ${ac.contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)}`, 'WIN');
+                updateStake('win');
+                updateTradeStatus('WIN CONFIRMED 🎯', `Profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)} · digit ${finalDigit ?? ac.predictedDigit}`, 'Cycle complete — no further trade will be placed', 'win');
+                setTimeout(() => stopBot('Confirmed DIGITMATCH win'), 50);
+                return;
+            }
+
+            if (ac.matchDetected) log('⚠️ Public-tick match warning was not confirmed by Deriv settlement. Settlement is authoritative.', 'WARNING');
+            window.stats.losses = (window.stats.losses || 0) + 1;
+            window.lastTradeResult = 'loss';
+            window.lastTradeWon = false;
+            log(`❌ CONFIRMED DERIV LOSS | Contract ${ac.contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`, 'LOSS');
+
+            window.activeContract = null;
+            window.stopAfterWin = false;
+            window.executionLock = false;
+            updateStake('loss');
+
+            if (window.tradeCount >= window.maxTrades) {
+                window.nextTradeAllowed = false;
+                updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Recovery cycle stopped', 'loss');
+                stopBot('Maximum trades reached');
+                return;
+            }
+            window.nextTradeAllowed = true;
+            updateSessionDisplay();
+            updateTradeStatus('LOSS CONFIRMED', `Next stake $${window.currentStake.toFixed(2)}`, 'Waiting for next live tick', 'loss');
+        }
+
+        function onTradeComplete(isSuccess = true) {
+            if (!isSuccess && !hasOpenContract()) { window.executionLock = false; window.nextTradeAllowed = true; }
+            updateSessionDisplay();
+        }
+
         // Reset all state
         function resetAllState() {
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
@@ -4132,6 +4232,8 @@ window.isBotRunning = true;
             window.martingaleStep = 0;
             window.pendingProposals.clear();
             window.botTickTimestamps = [];
+            window.activeContract = null;
+            window.contractMonitorRetries = 0;
             
             window.executionLock = false;
             window.waitingForTradeResult = false;
