@@ -89,6 +89,17 @@ App ID / OAuth client_id:
 34uXWAMOwfAO5EtltnV4n
 
 Registered redirect URL:
-https://derivmatchstars.vercel.app
+https://derivmatchstars.vercel.app/
 
 These values are now already included in index.html.
+
+
+DERIV REDIRECT URLS TO REGISTER
+-------------------------------
+Also register these exact URLs in your Deriv app settings:
+https://derivmatchstars.vercel.app/
+https://derivmatchstars.vercel.app
+https://derivmatchstars.vercel.app/index.html
+
+The code in this package uses:
+https://derivmatchstars.vercel.app/
