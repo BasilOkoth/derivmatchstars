@@ -3235,6 +3235,15 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 // OTP URL is already authenticated. Do not send legacy authorize.
                 subscribeToBalance();
                 log('🔐 Trading account channel ready', 'SYSTEM');
+
+                if (window.isBotRunning) {
+                    updateTradeStatus(
+                        'READY',
+                        'Trading connection ready',
+                        'Waiting for next live tick',
+                        'normal'
+                    );
+                }
             };
 
             window.ws.onmessage = (msg) => {
@@ -3437,6 +3446,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
+
+            // Public market ticks may arrive before the authenticated trading
+            // WebSocket is ready. Never attempt an order until it is OPEN.
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
             
             // In AI mode, wait for engine recommendation
             if (sessionState.mode === 'ai' && (!window.digitIntelligenceEngine.warmupDone || !window.digitIntelligenceEngine.currentRecommendation)) {
@@ -4490,26 +4505,47 @@ window.isBotRunning = true;
         };
         
         // Override START behavior by execution mode.
-        // INSTANT bypasses AI/precision confidence and starts immediately.
+        // INSTANT bypasses AI/precision confidence but waits for the authenticated
+        // trading socket before sending the first order.
         const originalStartBot = startBot;
+
+        function waitForTradingSocketAndFireFirstInstantTrade(timeoutMs = 10000) {
+            const startedAt = Date.now();
+
+            const check = () => {
+                if (!window.isBotRunning || sessionState.mode !== 'instant') return;
+
+                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                    if (window.lastTick && !window.executionLock && window.nextTradeAllowed) {
+                        log('⚡ INSTANT mode: trading connection ready - executing first trade now', 'TRADE');
+                        processTickImmediately(window.lastTick);
+                    }
+                    return;
+                }
+
+                if (Date.now() - startedAt >= timeoutMs) {
+                    log('❌ Trading connection did not become ready in time', 'ERROR');
+                    updateTradeStatus(
+                        'ERROR',
+                        'Trading connection timeout',
+                        'Stop and reconnect your Deriv account',
+                        'loss'
+                    );
+                    return;
+                }
+
+                setTimeout(check, 100);
+            };
+
+            check();
+        }
+
         startBot = function() {
             if (sessionState.mode === 'instant') {
                 log('⚡ INSTANT mode: starting immediately - confidence gate bypassed', 'SYSTEM');
 
                 const result = originalStartBot();
-
-                // Fire the first trade immediately using the latest live tick.
-                // Further trades continue from subsequent ticks.
-                setTimeout(() => {
-                    if (window.isBotRunning &&
-                        window.lastTick &&
-                        !window.executionLock &&
-                        window.nextTradeAllowed) {
-                        log('⚡ INSTANT mode: executing first trade now', 'TRADE');
-                        processTickImmediately(window.lastTick);
-                    }
-                }, 150);
-
+                waitForTradingSocketAndFireFirstInstantTrade();
                 return result;
             }
 
