@@ -81,3 +81,14 @@ TEST ORDER
 
 If REAL login says no REAL Options account is available, the Deriv login
 does not currently expose a real Options account for that user.
+
+
+REGISTERED DERIV OAUTH SETTINGS
+-------------------------------
+App ID / OAuth client_id:
+34uXWAMOwfAO5EtltnV4n
+
+Registered redirect URL:
+https://derivmatchstars.vercel.app
+
+These values are now already included in index.html.
