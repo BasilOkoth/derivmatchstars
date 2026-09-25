@@ -2408,6 +2408,10 @@ window.nextTickModel = {
             'ntm-brier',
             brier !== null ? brier.toFixed(4) : '-'
         );
+
+        if (window.cyclePerformance) {
+            window.cyclePerformance.render();
+        }
     },
 
     saveShadow(symbol = this.getSymbol()) {
@@ -2451,6 +2455,447 @@ window.nextTickModel = {
 function getFrozenNextTickSnapshot(symbol, digit) {
     return window.nextTickModel.getPrediction(symbol, digit);
 }
+
+
+// ============================================================================
+// MATCHSTAR V12 — CYCLE PERFORMANCE RECORDER
+// ============================================================================
+
+window.cyclePerformance = {
+    version: 'CPR-1',
+    current: null,
+    historyBySymbol: {},
+    maxStoredCyclesPerSymbol: 500,
+
+    getSymbol() {
+        return (
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN'
+        );
+    },
+
+    storageKey(symbol = this.getSymbol()) {
+        return `matchstar_cycle_history_v1_${symbol}`;
+    },
+
+    load(symbol = this.getSymbol()) {
+        if (this.historyBySymbol[symbol]) return this.historyBySymbol[symbol];
+
+        let rows = [];
+        try {
+            const raw = localStorage.getItem(this.storageKey(symbol));
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) rows = parsed;
+            }
+        } catch (_) {}
+
+        this.historyBySymbol[symbol] = rows;
+        return rows;
+    },
+
+    save(symbol = this.getSymbol()) {
+        const rows = this.historyBySymbol[symbol] || [];
+        const trimmed = rows.slice(-this.maxStoredCyclesPerSymbol);
+        this.historyBySymbol[symbol] = trimmed;
+
+        try {
+            localStorage.setItem(
+                this.storageKey(symbol),
+                JSON.stringify(trimmed)
+            );
+        } catch (_) {}
+    },
+
+    startCycle(contract, pending = null) {
+        if (this.current) return;
+
+        const symbol = pending?.symbol || this.getSymbol();
+        const digit = Number(contract?.predictedDigit);
+
+        let decision = null;
+        try {
+            if (typeof buildDigitDecision === 'function') {
+                decision = buildDigitDecision(digit);
+            }
+        } catch (_) {}
+
+        const rec = window.digitIntelligenceEngine?.currentRecommendation || null;
+
+        this.current = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            symbol,
+            digit,
+            startedAt: Date.now(),
+            endedAt: null,
+            status: 'ACTIVE',
+
+            entry: {
+                aiScore: Number(rec?.score ?? NaN),
+                p10: Number(rec?.p10 ?? rec?.P10 ?? decision?.P10 ?? NaN),
+                p5: Number(decision?.P5 ?? NaN),
+                pm5: Number(rec?.pm5 ?? decision?.pm5 ?? NaN),
+                pm10: Number(rec?.pm10 ?? decision?.pm10 ?? NaN),
+                s20: Number(rec?.s20 ?? decision?.s20 ?? NaN),
+                etm: Number(rec?.etm ?? decision?.etm ?? NaN),
+                gap: Number(decision?.gap ?? decision?.g ?? NaN),
+                p90: Number(decision?.p90 ?? NaN),
+                nextTickProbability: Number(contract?.nextTickProbability ?? NaN),
+                breakEvenProbability: Number(contract?.liveBreakEvenProbability ?? NaN),
+                liveEdge: Number(contract?.liveEdge ?? NaN),
+                expectedValue: Number(contract?.expectedValueAtEntry ?? NaN)
+            },
+
+            trades: [],
+            totalInvestment: 0,
+            totalPayout: 0,
+            netPnL: 0,
+            maxStake: 0,
+            winningTradeNumber: null,
+            finalReason: null
+        };
+
+        log(
+            `🔁 CYCLE START | ${symbol} | digit ${digit} | entry edge ` +
+            `${Number.isFinite(this.current.entry.liveEdge) ? (this.current.entry.liveEdge * 100).toFixed(2) + ' pp' : 'n/a'}`,
+            'SYSTEM'
+        );
+
+        this.render();
+    },
+
+    recordPurchase(contract, pending = null) {
+        if (!contract) return;
+
+        if (!this.current) this.startCycle(contract, pending);
+        if (!this.current) return;
+
+        const contractId = Number(contract.contractId);
+        if (this.current.trades.some(t => Number(t.contractId) === contractId)) {
+            return;
+        }
+
+        const stake = Number(contract.askPrice || contract.stake || 0);
+
+        this.current.trades.push({
+            tradeNumber: this.current.trades.length + 1,
+            contractId,
+            digit: Number(contract.predictedDigit),
+            stake,
+            quotedPayout: Number(contract.quotedPayout || 0),
+            nextTickProbability: Number(contract.nextTickProbability ?? NaN),
+            breakEvenProbability: Number(contract.liveBreakEvenProbability ?? NaN),
+            liveEdge: Number(contract.liveEdge ?? NaN),
+            expectedValueAtEntry: Number(contract.expectedValueAtEntry ?? NaN),
+            purchasedAt: Date.now(),
+            settledAt: null,
+            result: 'OPEN',
+            finalDigit: null,
+            payout: 0,
+            profit: null
+        });
+
+        this.current.totalInvestment += stake;
+        this.current.maxStake = Math.max(this.current.maxStake, stake);
+        this.current.netPnL =
+            this.current.totalPayout - this.current.totalInvestment;
+
+        this.render();
+    },
+
+    settleTrade(contractId, result, finalDigit, payout, profit) {
+        if (!this.current) return;
+
+        const row = this.current.trades.find(
+            t => Number(t.contractId) === Number(contractId)
+        );
+
+        if (!row) return;
+
+        // Ignore duplicate settlement updates.
+        if (row.result !== 'OPEN') return;
+
+        row.result = result;
+        row.finalDigit =
+            finalDigit === null || finalDigit === undefined
+                ? null
+                : Number(finalDigit);
+        row.payout = Number(payout || 0);
+        row.profit = Number(profit || 0);
+        row.settledAt = Date.now();
+
+        if (row.payout > 0) {
+            this.current.totalPayout += row.payout;
+        }
+
+        this.current.netPnL =
+            this.current.totalPayout - this.current.totalInvestment;
+
+        if (result === 'WIN') {
+            this.current.winningTradeNumber = row.tradeNumber;
+        }
+
+        this.render();
+    },
+
+    completeCycle(status = 'WIN', reason = null) {
+        if (!this.current) return null;
+
+        const c = this.current;
+        c.endedAt = Date.now();
+        c.status = status;
+        c.finalReason = reason || status;
+        c.netPnL = c.totalPayout - c.totalInvestment;
+
+        const symbol = c.symbol || this.getSymbol();
+        const rows = this.load(symbol);
+
+        rows.push(JSON.parse(JSON.stringify(c)));
+        this.historyBySymbol[symbol] = rows;
+        this.save(symbol);
+
+        const durationSec = Math.max(
+            0,
+            (c.endedAt - c.startedAt) / 1000
+        );
+
+        log(
+            `📊 CYCLE COMPLETE | ${status} | ${c.trades.length} trades | ` +
+            `net ${c.netPnL >= 0 ? '+' : ''}$${c.netPnL.toFixed(2)} | ` +
+            `max stake $${c.maxStake.toFixed(2)} | ${durationSec.toFixed(1)}s`,
+            status === 'WIN' ? 'WIN' : 'SYSTEM'
+        );
+
+        this.current = null;
+        this.render();
+
+        return c;
+    },
+
+    abortActiveCycle(reason = 'Stopped before confirmed win') {
+        if (!this.current) return null;
+
+        // Do not count an empty shell as a cycle.
+        if (!Array.isArray(this.current.trades) || !this.current.trades.length) {
+            this.current = null;
+            this.render();
+            return null;
+        }
+
+        return this.completeCycle('STOPPED', reason);
+    },
+
+    getStats(symbol = this.getSymbol()) {
+        const rows = this.load(symbol);
+        const finalized = rows.filter(r =>
+            r &&
+            Array.isArray(r.trades) &&
+            r.trades.length > 0
+        );
+
+        const wins = finalized.filter(r => r.status === 'WIN');
+        const stopped = finalized.filter(r => r.status !== 'WIN');
+
+        const wonWithin5 = wins.filter(r =>
+            Number(r.winningTradeNumber || r.trades.length) <= 5
+        ).length;
+
+        const wonWithin10 = wins.filter(r =>
+            Number(r.winningTradeNumber || r.trades.length) <= 10
+        ).length;
+
+        const tradeCounts = finalized.map(r => Number(r.trades.length || 0));
+        const pnlRows = finalized.map(r => Number(r.netPnL || 0));
+
+        const avgTrades = finalized.length
+            ? tradeCounts.reduce((a, b) => a + b, 0) / finalized.length
+            : 0;
+
+        const longest = finalized.length
+            ? Math.max(...tradeCounts)
+            : 0;
+
+        const totalPnL = pnlRows.reduce((a, b) => a + b, 0);
+
+        const avgPnL = finalized.length
+            ? totalPnL / finalized.length
+            : 0;
+
+        const worstPnL = finalized.length
+            ? Math.min(...pnlRows)
+            : 0;
+
+        return {
+            symbol,
+            completed: finalized.length,
+            wins: wins.length,
+            stopped: stopped.length,
+            wonWithin5,
+            wonWithin10,
+            pctWinsWithin5OfWins: wins.length
+                ? (wonWithin5 / wins.length) * 100
+                : 0,
+            pctWinsWithin10OfWins: wins.length
+                ? (wonWithin10 / wins.length) * 100
+                : 0,
+            pctResolvedWithin10All: finalized.length
+                ? (wonWithin10 / finalized.length) * 100
+                : 0,
+            avgTrades,
+            longest,
+            totalPnL,
+            avgPnL,
+            worstPnL
+        };
+    },
+
+    ensurePanel() {
+        if (document.getElementById('cycle-performance-panel')) return;
+
+        const edgePanel = document.getElementById('next-tick-edge-panel');
+        if (!edgePanel || !edgePanel.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'cycle-performance-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-purple-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-purple-300 mb-2">🔁 CYCLE PERFORMANCE</div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Current cycle:</span>
+                <span id="cycle-current" class="font-bold text-white">Idle</span>
+
+                <span class="text-gray-400">Current exposure:</span>
+                <span id="cycle-exposure" class="font-bold text-white">$0.00</span>
+
+                <span class="text-gray-400">Max stake this cycle:</span>
+                <span id="cycle-max-stake" class="font-bold text-white">$0.00</span>
+
+                <span class="text-gray-400">Completed cycles:</span>
+                <span id="cycle-completed" class="font-bold text-cyan-300">0</span>
+
+                <span class="text-gray-400">Winning cycles:</span>
+                <span id="cycle-wins" class="font-bold text-green-300">0</span>
+
+                <span class="text-gray-400">Stopped / unresolved:</span>
+                <span id="cycle-stopped" class="font-bold text-yellow-300">0</span>
+
+                <span class="text-gray-400">Wins ≤5 trades:</span>
+                <span id="cycle-win5" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Wins ≤10 trades:</span>
+                <span id="cycle-win10" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">% wins ≤10:</span>
+                <span id="cycle-win10pct" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Average trades/cycle:</span>
+                <span id="cycle-avg-trades" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Longest cycle:</span>
+                <span id="cycle-longest" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Average cycle P/L:</span>
+                <span id="cycle-avg-pnl" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Total cycle P/L:</span>
+                <span id="cycle-total-pnl" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Worst cycle P/L:</span>
+                <span id="cycle-worst-pnl" class="font-bold text-white">-</span>
+            </div>
+        `;
+
+        edgePanel.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+
+        this.ensurePanel();
+
+        const symbol = this.getSymbol();
+        const stats = this.getStats(symbol);
+        const cur = this.current && this.current.symbol === symbol
+            ? this.current
+            : null;
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        if (cur) {
+            set(
+                'cycle-current',
+                `ACTIVE · digit ${cur.digit} · trade ${cur.trades.length}`
+            );
+            set(
+                'cycle-exposure',
+                `$${cur.totalInvestment.toFixed(2)}`
+            );
+            set(
+                'cycle-max-stake',
+                `$${cur.maxStake.toFixed(2)}`
+            );
+        } else {
+            set('cycle-current', 'Idle');
+            set('cycle-exposure', '$0.00');
+            set('cycle-max-stake', '$0.00');
+        }
+
+        set('cycle-completed', String(stats.completed));
+        set('cycle-wins', String(stats.wins));
+        set('cycle-stopped', String(stats.stopped));
+        set('cycle-win5', String(stats.wonWithin5));
+        set('cycle-win10', String(stats.wonWithin10));
+
+        set(
+            'cycle-win10pct',
+            stats.wins
+                ? `${stats.pctWinsWithin10OfWins.toFixed(1)}%`
+                : '-'
+        );
+
+        set(
+            'cycle-avg-trades',
+            stats.completed
+                ? stats.avgTrades.toFixed(2)
+                : '-'
+        );
+
+        set(
+            'cycle-longest',
+            stats.completed
+                ? `${stats.longest} trades`
+                : '-'
+        );
+
+        set(
+            'cycle-avg-pnl',
+            stats.completed
+                ? `${stats.avgPnL >= 0 ? '+' : ''}$${stats.avgPnL.toFixed(2)}`
+                : '-'
+        );
+
+        set(
+            'cycle-total-pnl',
+            stats.completed
+                ? `${stats.totalPnL >= 0 ? '+' : ''}$${stats.totalPnL.toFixed(2)}`
+                : '-'
+        );
+
+        set(
+            'cycle-worst-pnl',
+            stats.completed
+                ? `${stats.worstPnL >= 0 ? '+' : ''}$${stats.worstPnL.toFixed(2)}`
+                : '-'
+        );
+    }
+};
 
 // ============================================================================
         // MARTINGALE CALCULATOR FUNCTIONS
@@ -3888,6 +4333,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             setTimeout(() => {
                 window.nextTickModel.ensurePanel();
                 window.nextTickModel.render();
+                window.cyclePerformance.ensurePanel();
+                window.cyclePerformance.render();
             }, 50);
             initializeToggleState();
             updateS20Label();
@@ -3931,7 +4378,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V11 · -1.00 pp experimental edge band · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V12 · persistent cycle performance recorder · -1.00 pp edge band · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -4633,6 +5080,17 @@ window.isBotRunning = true;
             
             log('⏹️ Bot stopped', 'SYSTEM');
             if (reason) log(`🛑 Stop reason: ${reason}`, 'SYSTEM');
+
+            // A confirmed win is already finalized before stopBot().
+            // Any other stop with purchased contracts is retained as a STOPPED cycle.
+            if (
+                window.cyclePerformance?.current &&
+                reason !== 'Confirmed DIGITMATCH win'
+            ) {
+                window.cyclePerformance.abortActiveCycle(
+                    reason || 'Bot stopped before confirmed win'
+                );
+            }
             
             // Stop any ongoing PnL updates
             if (window.pnlUpdateInterval) {
@@ -5125,6 +5583,11 @@ window.isBotRunning = true;
             };
 
             window.settlementLedger.set(contractId, window.activeContract);
+
+            // Persistent cycle recorder: first confirmed BUY starts the cycle,
+            // every confirmed BUY becomes one trade inside that cycle.
+            window.cyclePerformance.recordPurchase(window.activeContract, pending);
+
             window.executionLock = true;
             window.nextTradeAllowed = false;
             log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
@@ -5306,6 +5769,18 @@ window.isBotRunning = true;
 
                 if (actualPayout > 0) trackTradePayout(actualPayout);
 
+                window.cyclePerformance.settleTrade(
+                    contractId,
+                    'WIN',
+                    finalDigit,
+                    actualPayout,
+                    actualProfit
+                );
+                window.cyclePerformance.completeCycle(
+                    'WIN',
+                    'Confirmed DIGITMATCH win'
+                );
+
                 log(`🏁 CONFIRMED DERIV WIN | Contract ${contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)}`, 'WIN');
 
                 updateStake('win');
@@ -5322,6 +5797,14 @@ window.isBotRunning = true;
             window.lastTradeWon = false;
 
             log(`✅ RECONCILED LOSS | Contract ${contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`, 'LOSS');
+
+            window.cyclePerformance.settleTrade(
+                contractId,
+                'LOSS',
+                finalDigit,
+                actualPayout,
+                actualProfit
+            );
 
             if (!ac.progressionApplied) applyFastLossProgression(ac);
 
