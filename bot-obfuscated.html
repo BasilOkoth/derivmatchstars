@@ -3108,6 +3108,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
+            log('🚀 Runtime: FAST-TICK V5 · async loss recovery · Deriv settlement authority', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -3403,7 +3404,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     return;
                 }
 
-                log('⚡ FAST RECOVERY: placing next contract immediately after loss tick', 'TRADE');
+                log('⚡ FAST RECOVERY V5: placing next contract immediately on this loss tick for the NEXT market tick', 'TRADE');
                 processTickImmediately(tickData);
                 playAudioFeedback('TICK');
             } else if (
@@ -4167,7 +4168,7 @@ window.isBotRunning = true;
                 stakeElem.className = 'text-lg font-bold text-white';
             }
 
-            log(`⚡ FAST LOSS: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
+            log(`⚡ FAST LOSS V5: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
         }
 
         function freezeForPossibleWin(contract, observedDigit) {
@@ -4689,63 +4690,19 @@ window.isBotRunning = true;
             return originalHandleTick(tick);
         };
         
-        // Override checkForImmediateWin to use precision matcher logic
+        // Precision Matcher is ANALYTICS ONLY in V5.
+        // It must never declare a financial win, create payouts, increment trade
+        // counters, or stop the bot. Contract outcome is owned exclusively by the
+        // active-contract fast tick mapper + Deriv proposal_open_contract settlement.
         const originalCheckForImmediateWin = checkForImmediateWin;
         checkForImmediateWin = function(tick) {
-            if (!window.isBotRunning || window.stopAfterWin) return false;
-            
-            const tickDigit = parseInt(tick.digit);
-            
-            // If precision matcher has an active prediction, check for match
-            if (window.precisionMatcher.currentPrediction !== null) {
-                const result = window.precisionMatcher.checkForMatch(tickDigit);
-                
-                if (result === true) {
-                    // MATCH FOUND!
-                    window.lastTradeResult = 'win';
-                    window.stopAfterWin = true;
-                    window.stats.wins++;
-                    window.tradeCount++;
-                    
-                    playAudioFeedback('WIN');
-                    
-                    const payout = window.currentStake * 9;
-                    trackTradePayout(payout);
-                    log(`💰 Payout: $${payout.toFixed(2)}`, 'PNL');
-                    
-                    startExtendedPnlUpdate(payout);
-                    
-                    updateTradeStatus(
-                        'PRECISION MATCH 🎯',
-                        `Digit ${tickDigit} matched after ${window.precisionMatcher.tradesInCycle} trades!`,
-                        'Bot stopped. Start again for new prediction.',
-                        'win'
-                    );
-                    
-                    updateStake('win');
-                    stopBot(); // Stop bot after match
-                    return true;
-                    
-                } else if (result === false) {
-                    // Max trades reached without match
-                    updateTradeStatus(
-                        'NO MATCH ❌',
-                        `Digit ${window.precisionMatcher.currentPrediction} did not appear in ${window.precisionMatcher.maxTradesPerCycle} trades`,
-                        'Bot stopped. Start again for new prediction.',
-                        'loss'
-                    );
-                    stopBot(); // Stop bot after failed cycle
-                    return false;
-                }
-                // If result is null, continue trading
-            }
-            
-            return false;
+            return originalCheckForImmediateWin(tick);
         };
-        
+
         // Override START behavior by execution mode.
-        // INSTANT bypasses AI/precision confidence but waits for the authenticated
-        // trading socket before sending the first order.
+        // INSTANT starts immediately.
+        // AI AUTO is armed immediately and waits for the Digit Intelligence Engine;
+        // the legacy Precision Matcher no longer controls trading eligibility.
         const originalStartBot = startBot;
 
         function waitForTradingSocketAndFireFirstInstantTrade(timeoutMs = 10000) {
@@ -4782,24 +4739,19 @@ window.isBotRunning = true;
         startBot = function() {
             if (sessionState.mode === 'instant') {
                 log('⚡ INSTANT mode: starting immediately - confidence gate bypassed', 'SYSTEM');
-
                 const result = originalStartBot();
                 waitForTradingSocketAndFireFirstInstantTrade();
                 return result;
             }
 
-            // AI AUTO keeps the confidence gate.
-            const cycleStarted = window.precisionMatcher.startNewCycle();
-
-            if (!cycleStarted) {
-                log('❌ Cannot start AI AUTO: Prediction confidence too low. Wait for stronger signal.', 'ERROR');
-                return;
-            }
-
+            // AI AUTO: arm the trading engine now. The existing processTickImmediately
+            // function waits until Digit Intelligence has a recommendation and all
+            // strict digit gates pass.
+            log('🤖 AI AUTO armed - Digit Intelligence controls entry; Precision Matcher is analytics only', 'ENGINE');
             return originalStartBot();
         };
 
-        log('✅ Precision Digit Matcher engine loaded and active', 'SYSTEM');
+        log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
     </script>
 </body>
 </html>
