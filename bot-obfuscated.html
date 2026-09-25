@@ -2346,7 +2346,13 @@ window.nextTickModel = {
         );
 
         const evaln = this.lastEvaluation;
-        if (evaln && evaln.symbol === symbol) {
+        const evaluationMatchesCurrentDigit =
+            evaln &&
+            evaln.symbol === symbol &&
+            digit !== null &&
+            Number(evaln.digit) === Number(digit);
+
+        if (evaluationMatchesCurrentDigit) {
             set(
                 'ntm-breakeven',
                 evaln.breakEvenProbability !== null
@@ -2928,6 +2934,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.settlementLedger = new Map();
         window.reconciliationMismatch = false;
         window.fastRecoveryEnabled = true;
+        window.cycleHasPurchasedContract = false;
 
         function hasOpenContract() {
             return !!(
@@ -3921,7 +3928,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V9 · next-tick probability · live EV gate · forward calibration', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V10 · committed-buy accounting · continuous recovery · synchronized EV', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -4383,8 +4390,13 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
 
 
-            // 🧱 STRICT TRADE GATES (NO FALLBACKS)
-            if (sessionState.mode === 'ai' && window.isBotRunning) {
+            // 🧱 ENTRY SAFETY GATES
+            // Apply these only before the first real purchase in a cycle.
+            if (
+                sessionState.mode === 'ai' &&
+                window.isBotRunning &&
+                !window.cycleHasPurchasedContract
+            ) {
                 const lockedDigit = (sessionState.sessionDigit !== null)
                     ? sessionState.sessionDigit
                     : parseInt(document.getElementById('predictedDigit').value);
@@ -4401,7 +4413,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
                 if (!verdict.ok) {
                     log(`🧱 Trade veto (${verdict.reason}) — no trade`, 'ENGINE');
-                    updateTradeStatus('NO TRADE', verdict.reason, 'Re-picking safer digit', 'loss');
+                    updateTradeStatus('AI AUTO ARMED', verdict.reason, 'Re-picking safer entry digit', 'normal');
 
                     if (typeof rotateHybridDigit === 'function') {
                         rotateHybridDigit(`VETO:${verdict.reason}`);
@@ -4412,25 +4424,29 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
 window.executionLock = true;
             window.nextTradeAllowed = false;
-            
+
             try {
-                window.stats.tradesExecuted++;
-                window.tradeCount++;
-                document.getElementById('metricTradeCount').textContent = window.tradeCount;
-                
-                updateSessionDisplay();
-                log(`⚡ Trade #${window.tradeCount}: ${tick.price.toFixed(3)} (Digit ${tick.digit})`, 'TRADE');
-                
+                const nextTradeNumber = window.tradeCount + 1;
+                const selectedDigit = parseInt(document.getElementById('predictedDigit').value);
+
                 updateTradeStatus(
-                    'TRADING',
-                    `Trade #${window.tradeCount}: $${window.currentStake.toFixed(2)} on digit ${parseInt(document.getElementById('predictedDigit').value)}`,
-                    'Executing trade...',
-                    'trade'
+                    window.cycleHasPurchasedContract ? 'RECOVERY CHECK' : 'ENTRY CHECK',
+                    `Evaluating trade #${nextTradeNumber}: $${window.currentStake.toFixed(2)} on digit ${selectedDigit}`,
+                    window.cycleHasPurchasedContract
+                        ? 'Checking live recovery quote'
+                        : 'Checking live probability and break-even edge',
+                    'normal'
                 );
-                
+
+                log(
+                    `${window.cycleHasPurchasedContract ? '🔄 RECOVERY' : '🔎 ENTRY'} attempt #${nextTradeNumber}: ` +
+                    `${tick.formattedPrice || tick.price} (Digit ${tick.digit}) → target ${selectedDigit}`,
+                    'TRADE'
+                );
+
                 playAudioFeedback('EXECUTION');
                 executeTrade(tick);
-                
+
             } catch (error) {
                 log(`❌ Error: ${error}`, 'ERROR');
                 window.executionLock = false;
@@ -4446,7 +4462,6 @@ window.executionLock = true;
             const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
             
             let stake = window.currentStake;
-            trackTradeInvestment(stake);
             
             const proposalRequest = {
                 proposal: 1,
@@ -4472,7 +4487,7 @@ window.executionLock = true;
                 contractType: contractType,
                 predictedDigit: predictedDigit,
                 startTime: Date.now(),
-                tradeNumber: window.tradeCount,
+                tradeNumber: window.tradeCount + 1,
                 martingaleStep: window.martingaleStep,
                 symbol,
                 executionMode: sessionState.mode,
@@ -4504,6 +4519,7 @@ window.executionLock = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
+                window.cycleHasPurchasedContract = false;
                 log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
                 updatePnL();
             } else if (winOrLoss === 'loss') {
@@ -4886,12 +4902,7 @@ window.isBotRunning = true;
             if (!proposal || !proposal.id) {
                 log('❌ Proposal failed', 'ERROR');
                 rollbackUnsentTrade(pending.stake || window.currentStake);
-                updateTradeStatus(
-                    'ERROR',
-                    'Proposal failed',
-                    'Waiting for next tick',
-                    'loss'
-                );
+                updateTradeStatus('WAITING', 'Proposal unavailable', 'No trade counted · waiting for next tick', 'normal');
                 return;
             }
 
@@ -4908,26 +4919,18 @@ window.isBotRunning = true;
             if (!quoteValid) {
                 log('❌ Invalid Deriv proposal economics', 'ERROR');
                 rollbackUnsentTrade(pending.stake);
-                updateTradeStatus(
-                    'NO TRADE',
-                    'Invalid proposal economics',
-                    'Waiting for a valid live quote',
-                    'loss'
-                );
+                updateTradeStatus('WAITING', 'Invalid proposal economics', 'No trade counted · waiting for next tick', 'normal');
                 return;
             }
 
-            const quotedProfit =
-                pending.quotedPayout - pending.askPrice;
-
+            const quotedProfit = pending.quotedPayout - pending.askPrice;
             const priorLosses = Math.max(
                 0,
                 (window.pnlTracker?.totalInvestment || 0) -
-                pending.stake -
                 (window.pnlTracker?.totalPayout || 0)
             );
-
             const recoveryNet = quotedProfit - priorLosses;
+            const isRecovery = !!window.cycleHasPurchasedContract;
 
             const evaluation = window.nextTickModel.evaluateProposal({
                 symbol: pending.symbol,
@@ -4935,7 +4938,7 @@ window.isBotRunning = true;
                 askPrice: pending.askPrice,
                 payout: pending.quotedPayout,
                 modelSnapshot: pending.modelSnapshot,
-                mode: pending.executionMode
+                mode: isRecovery ? 'recovery' : pending.executionMode
             });
 
             log(
@@ -4954,29 +4957,39 @@ window.isBotRunning = true;
                 'PNL'
             );
 
-            if (!evaluation.approved) {
+            if (!isRecovery && !evaluation.approved) {
                 rollbackUnsentTrade(pending.stake);
-
                 log(
-                    `🧱 EV GATE VETO: ${evaluation.reason} | no contract purchased`,
+                    `🧱 ENTRY EV VETO: ${evaluation.reason} | no contract purchased | trade count unchanged`,
                     'ENGINE'
                 );
-
                 updateTradeStatus(
-                    'NO TRADE',
-                    evaluation.reason,
-                    `P ${(evaluation.modelProbability * 100).toFixed(2)}% vs BE ${(evaluation.breakEvenProbability * 100).toFixed(2)}%`,
-                    'loss'
+                    'AI AUTO ARMED',
+                    'Waiting for positive live edge',
+                    `P ${(evaluation.modelProbability * 100).toFixed(2)}% vs BE ${(evaluation.breakEvenProbability * 100).toFixed(2)}% · no trade counted`,
+                    'normal'
                 );
-
-                // AI AUTO may re-evaluate a different digit on the next market tick.
                 if (
                     pending.executionMode === 'ai' &&
                     typeof clearSessionDigitLock === 'function'
                 ) {
-                    clearSessionDigitLock(`EV:${evaluation.reason}`);
+                    clearSessionDigitLock(`ENTRY_EV:${evaluation.reason}`);
                 }
+                return;
+            }
 
+            if (isRecovery && recoveryNet <= 0) {
+                rollbackUnsentTrade(pending.stake);
+                log(
+                    `🧱 RECOVERY QUOTE VETO: cycle net if win ${recoveryNet.toFixed(2)} | recovery paused`,
+                    'CRITICAL'
+                );
+                updateTradeStatus(
+                    'RECOVERY PAUSED',
+                    'Live quote cannot recover the current cycle deficit',
+                    'Waiting for a viable recovery quote',
+                    'loss'
+                );
                 return;
             }
 
@@ -4985,26 +4998,18 @@ window.isBotRunning = true;
                 proposal.ask_price,
                 {
                     ...pending,
-                    liveEdgeEvaluation: evaluation
+                    liveEdgeEvaluation: evaluation,
+                    isRecovery
                 }
             );
         }
 
         function rollbackUnsentTrade(stake) {
+            // Proposal attempts are not real trades in V10.
             window.executionLock = false;
             window.nextTradeAllowed = true;
-            window.tradeCount = Math.max(0, window.tradeCount - 1);
-            window.stats.tradesExecuted = Math.max(0, (window.stats.tradesExecuted || 0) - 1);
-            document.getElementById('metricTradeCount').textContent = window.tradeCount;
-            if (window.pnlTracker) {
-                window.pnlTracker.totalInvestment = Math.max(0, (window.pnlTracker.totalInvestment || 0) - Number(stake || 0));
-                if (Array.isArray(window.pnlTracker.trades) && window.pnlTracker.trades.length) {
-                    const last = window.pnlTracker.trades[window.pnlTracker.trades.length - 1];
-                    if (last?.type === 'investment' && Number(last.amount) === Number(stake)) window.pnlTracker.trades.pop();
-                }
-            }
-            updatePnL();
             updateSessionDisplay();
+            updatePnL();
         }
 
         function executeBuy(proposal_id, ask_price, pending) {
@@ -5055,10 +5060,36 @@ window.isBotRunning = true;
             const pending = window.pendingProposals.get(req_id) || null;
             if (pending) window.pendingProposals.delete(req_id);
             if (!buyData || !buyData.contract_id) {
-                log('❌ Trade purchase failed', 'ERROR');
+                log('❌ Trade purchase failed — no trade counted', 'ERROR');
                 rollbackUnsentTrade(pending?.stake || window.currentStake);
+                updateTradeStatus('WAITING', 'Buy was not confirmed', 'No trade counted · waiting for next tick', 'normal');
                 return;
             }
+
+            const actualBuyPrice = Number(
+                buyData.buy_price ?? pending?.askPrice ?? pending?.stake ?? 0
+            );
+
+            // A trade becomes real only after Deriv confirms the purchase.
+            window.tradeCount++;
+            window.stats.tradesExecuted++;
+            window.cycleHasPurchasedContract = true;
+
+            trackTradeInvestment(
+                Number.isFinite(actualBuyPrice) && actualBuyPrice > 0
+                    ? actualBuyPrice
+                    : Number(pending?.stake || window.currentStake)
+            );
+
+            document.getElementById('metricTradeCount').textContent = window.tradeCount;
+            updateSessionDisplay();
+
+            log(
+                `⚡ Trade #${window.tradeCount} CONFIRMED PURCHASE | ` +
+                `$${Number(pending?.stake || window.currentStake).toFixed(2)} on digit ` +
+                `${Number(pending?.predictedDigit ?? document.getElementById('predictedDigit').value)}`,
+                'TRADE'
+            );
 
             const contractId = Number(buyData.contract_id);
             window.contractSequence++;
@@ -5094,7 +5125,7 @@ window.isBotRunning = true;
             window.executionLock = true;
             window.nextTradeAllowed = false;
             log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
-            updateTradeStatus('CONTRACT OPEN', `Watching next tick for digit ${window.activeContract.predictedDigit}`, 'No new trade until Deriv settlement', 'trade');
+            updateTradeStatus('CONTRACT OPEN', `Watching next tick for digit ${window.activeContract.predictedDigit}`, 'Next market tick drives fast outcome · settlement reconciles in background', 'trade');
             if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
         }
 
@@ -5341,6 +5372,7 @@ window.isBotRunning = true;
             window.contractMonitorRetries = 0;
             window.settlementLedger.clear();
             window.reconciliationMismatch = false;
+            window.cycleHasPurchasedContract = false;
             
             window.executionLock = false;
             window.waitingForTradeResult = false;
