@@ -1372,6 +1372,7 @@ survivalTop = survivalTop3[0] || null;
 
                     // Update UI
                     document.getElementById('ai-recommended-digit').textContent = best.digit;
+                    if (window.nextTickModel) window.nextTickModel.render();
 
                     const sourceLabel = best.source ? ` | ${best.source}` : '';
 
@@ -1742,6 +1743,705 @@ function canTradeDigit(d, regime, tradeCount) {
   return { ok: true, reason: "TRADE_APPROVED" };
 }
 
+
+
+// ============================================================================
+// MATCHSTAR V9 — NEXT-TICK PROBABILITY + EV GATE + FORWARD SHADOW VALIDATION
+// ============================================================================
+
+window.EV_GATE_CONFIG = {
+    enabled: true,
+
+    // AI AUTO only. INSTANT remains a manual execution mode.
+    applyToInstant: false,
+
+    // Required probability advantage above the live quote break-even probability.
+    // 0.005 = 0.5 percentage points.
+    minEdge: 0.005,
+
+    // Exact-next-tick empirical model readiness.
+    minEffectiveSupport: 20,
+
+    // Calibration affects probabilities only after a bucket has enough genuine
+    // forward observations. Until then the raw probability is used.
+    minCalibrationSamples: 100,
+    maxCalibrationBlend: 0.50
+};
+
+window.nextTickModel = {
+    version: 'NTM-1',
+    states: {},
+    lastEvaluation: null,
+
+    getSymbol() {
+        return (
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN'
+        );
+    },
+
+    state(symbol = this.getSymbol()) {
+        if (!this.states[symbol]) {
+            this.states[symbol] = {
+                symbol,
+                lastDigit: null,
+                pendingForecast: null,
+                transition: Array.from({ length: 10 }, () => Array(10).fill(0)),
+                transitionTotals: Array(10).fill(0),
+                shadowTicks: 0,
+                shadowPredictions: 0,
+                topPickHits: 0,
+                brierSum: 0,
+                calibration: {},
+                seeded: false,
+                lastForecast: null,
+                lastOutcome: null
+            };
+            this.loadShadow(symbol);
+        }
+        return this.states[symbol];
+    },
+
+    betaPosterior(hits, trials, priorP = 0.10, strength = 30) {
+        const a = priorP * strength;
+        const b = (1 - priorP) * strength;
+        return (hits + a) / (trials + a + b);
+    },
+
+    probabilityBucket(p) {
+        // 1 percentage-point calibration buckets.
+        const clamped = Math.max(0, Math.min(0.999999, Number(p) || 0));
+        return (Math.floor(clamped * 100) / 100).toFixed(2);
+    },
+
+    getCalibration(symbol, p) {
+        const st = this.state(symbol);
+        const key = this.probabilityBucket(p);
+        const row = st.calibration[key];
+        if (!row || row.n < window.EV_GATE_CONFIG.minCalibrationSamples) {
+            return {
+                ready: false,
+                n: row?.n || 0,
+                observed: null,
+                bucket: key
+            };
+        }
+
+        return {
+            ready: true,
+            n: row.n,
+            observed: row.hits / row.n,
+            bucket: key
+        };
+    },
+
+    applyCalibration(symbol, p) {
+        const cal = this.getCalibration(symbol, p);
+        if (!cal.ready) return { probability: p, calibration: cal };
+
+        const strength = Math.min(
+            window.EV_GATE_CONFIG.maxCalibrationBlend,
+            cal.n / 1000
+        );
+
+        const adjusted =
+            ((1 - strength) * p) +
+            (strength * cal.observed);
+
+        return {
+            probability: Math.max(0.001, Math.min(0.999, adjusted)),
+            calibration: cal
+        };
+    },
+
+    seedTransitionsFromWarmup(symbol = this.getSymbol()) {
+        const st = this.state(symbol);
+        if (st.seeded) return;
+
+        const digits = Array.isArray(window.lastDigits) ? window.lastDigits : [];
+        if (digits.length < 2) return;
+
+        for (let i = 1; i < digits.length; i++) {
+            const prev = Number(digits[i - 1]);
+            const next = Number(digits[i]);
+            if (
+                Number.isInteger(prev) && prev >= 0 && prev <= 9 &&
+                Number.isInteger(next) && next >= 0 && next <= 9
+            ) {
+                st.transition[prev][next]++;
+                st.transitionTotals[prev]++;
+            }
+        }
+
+        st.seeded = true;
+        st.lastDigit = Number(digits[digits.length - 1]);
+    },
+
+    recentDigitRate(targetDigit, windowSize = 250) {
+        const digits = Array.isArray(window.lastDigits)
+            ? window.lastDigits.slice(-windowSize)
+            : [];
+
+        if (!digits.length) return { p: 0.10, support: 0 };
+
+        let hits = 0;
+        for (const d of digits) {
+            if (Number(d) === Number(targetDigit)) hits++;
+        }
+
+        return {
+            p: this.betaPosterior(hits, digits.length, 0.10, 30),
+            support: digits.length
+        };
+    },
+
+    exactHazard(targetDigit) {
+        const engine = window.digitIntelligenceEngine;
+        const stats = engine?.digitStats?.[targetDigit];
+        if (!stats || !Array.isArray(stats.gaps)) {
+            return { p: 0.10, support: 0, hits: 0, gap: 0 };
+        }
+
+        const g = Number(stats.currentGap || 0);
+        let eligible = 0;
+        let hits = 0;
+
+        // Exact next-tick hazard:
+        // among completed historical gaps that survived beyond current gap g,
+        // how many ended exactly one tick later?
+        for (const gap of stats.gaps) {
+            const x = Number(gap);
+            if (!Number.isFinite(x)) continue;
+            if (x > g) {
+                eligible++;
+                if (x === g + 1) hits++;
+            }
+        }
+
+        return {
+            p: this.betaPosterior(hits, eligible, 0.10, 35),
+            support: eligible,
+            hits,
+            gap: g
+        };
+    },
+
+    transitionProbability(symbol, previousDigit, targetDigit) {
+        const st = this.state(symbol);
+        if (
+            previousDigit === null ||
+            !Number.isInteger(Number(previousDigit))
+        ) {
+            return { p: 0.10, support: 0, hits: 0 };
+        }
+
+        const prev = Number(previousDigit);
+        const target = Number(targetDigit);
+        const support = Number(st.transitionTotals[prev] || 0);
+        const hits = Number(st.transition[prev]?.[target] || 0);
+
+        return {
+            p: this.betaPosterior(hits, support, 0.10, 30),
+            support,
+            hits
+        };
+    },
+
+    rawDigitProbability(symbol, targetDigit, previousDigit) {
+        const hazard = this.exactHazard(targetDigit);
+        const transition = this.transitionProbability(
+            symbol,
+            previousDigit,
+            targetDigit
+        );
+        const recent = this.recentDigitRate(targetDigit);
+
+        // Exact-gap hazard has highest weight because it directly asks the
+        // one-tick question. Transition and recent frequency are stabilizers.
+        const hazardReliability = Math.min(1, hazard.support / 60);
+        const transitionReliability = Math.min(1, transition.support / 100);
+
+        const wHazard = 0.45 + (0.20 * hazardReliability);
+        const wTransition = 0.15 + (0.10 * transitionReliability);
+        const wRecent = Math.max(0.10, 1 - wHazard - wTransition);
+
+        const p =
+            (wHazard * hazard.p) +
+            (wTransition * transition.p) +
+            (wRecent * recent.p);
+
+        return {
+            targetDigit,
+            raw: p,
+            hazard,
+            transition,
+            recent,
+            effectiveSupport: Math.max(
+                hazard.support,
+                transition.support
+            )
+        };
+    },
+
+    forecastNext(symbol = this.getSymbol(), currentDigit = null, tickData = null) {
+        const st = this.state(symbol);
+        this.seedTransitionsFromWarmup(symbol);
+
+        const previousDigit =
+            currentDigit !== null && currentDigit !== undefined
+                ? Number(currentDigit)
+                : st.lastDigit;
+
+        const components = [];
+        let rawSum = 0;
+
+        for (let d = 0; d <= 9; d++) {
+            const row = this.rawDigitProbability(symbol, d, previousDigit);
+            components.push(row);
+            rawSum += row.raw;
+        }
+
+        if (!Number.isFinite(rawSum) || rawSum <= 0) rawSum = 1;
+
+        // Normalize so exact-next-digit probabilities sum to 1.
+        let calibratedRows = components.map(row => {
+            const normalized = row.raw / rawSum;
+            const cal = this.applyCalibration(symbol, normalized);
+            return {
+                ...row,
+                normalized,
+                calibratedRaw: cal.probability,
+                calibration: cal.calibration
+            };
+        });
+
+        let calibratedSum = calibratedRows.reduce(
+            (sum, row) => sum + row.calibratedRaw,
+            0
+        );
+        if (!Number.isFinite(calibratedSum) || calibratedSum <= 0) {
+            calibratedSum = 1;
+        }
+
+        calibratedRows = calibratedRows.map(row => ({
+            ...row,
+            probability: row.calibratedRaw / calibratedSum
+        }));
+
+        const predictions = Object.fromEntries(
+            calibratedRows.map(row => [row.targetDigit, row])
+        );
+
+        const top = calibratedRows
+            .slice()
+            .sort((a, b) => b.probability - a.probability)[0];
+
+        const forecast = {
+            symbol,
+            createdAt: Date.now(),
+            epoch: Number(tickData?.raw?.epoch || 0) || null,
+            previousDigit,
+            predictions,
+            topDigit: top?.targetDigit ?? null,
+            topProbability: top?.probability ?? 0
+        };
+
+        st.pendingForecast = forecast;
+        st.lastForecast = forecast;
+        this.render();
+
+        return forecast;
+    },
+
+    settleForwardOutcome(symbol, actualDigit) {
+        const st = this.state(symbol);
+        const forecast = st.pendingForecast;
+
+        if (!forecast) return;
+
+        const actual = Number(actualDigit);
+        if (!Number.isInteger(actual) || actual < 0 || actual > 9) return;
+
+        let brier = 0;
+
+        for (let d = 0; d <= 9; d++) {
+            const row = forecast.predictions[d];
+            if (!row) continue;
+
+            const p = Number(row.probability || 0);
+            const y = d === actual ? 1 : 0;
+            const key = this.probabilityBucket(p);
+
+            if (!st.calibration[key]) {
+                st.calibration[key] = { n: 0, hits: 0 };
+            }
+
+            st.calibration[key].n++;
+            st.calibration[key].hits += y;
+
+            st.shadowPredictions++;
+            brier += Math.pow(p - y, 2);
+        }
+
+        st.shadowTicks++;
+        st.brierSum += brier;
+        if (forecast.topDigit === actual) st.topPickHits++;
+        st.lastOutcome = actual;
+        st.pendingForecast = null;
+
+        if (st.shadowTicks % 50 === 0) {
+            const acc = st.shadowTicks
+                ? (st.topPickHits / st.shadowTicks) * 100
+                : 0;
+            const brierMean = st.shadowTicks
+                ? st.brierSum / st.shadowTicks
+                : 0;
+
+            log(
+                `🧪 Forward shadow: ${st.shadowTicks} ticks | top-pick hit ${acc.toFixed(1)}% | Brier ${brierMean.toFixed(3)}`,
+                'ENGINE'
+            );
+            this.saveShadow(symbol);
+        }
+
+        this.render();
+    },
+
+    updateTransition(symbol, previousDigit, actualDigit) {
+        const st = this.state(symbol);
+
+        if (
+            Number.isInteger(Number(previousDigit)) &&
+            Number(previousDigit) >= 0 &&
+            Number(previousDigit) <= 9 &&
+            Number.isInteger(Number(actualDigit)) &&
+            Number(actualDigit) >= 0 &&
+            Number(actualDigit) <= 9
+        ) {
+            const prev = Number(previousDigit);
+            const next = Number(actualDigit);
+            st.transition[prev][next]++;
+            st.transitionTotals[prev]++;
+        }
+
+        st.lastDigit = Number(actualDigit);
+    },
+
+    onTickBeforeEngine(symbol, actualDigit) {
+        const st = this.state(symbol);
+        const previousDigit = st.lastDigit;
+
+        // Settle the forecast that was frozen BEFORE this tick existed.
+        this.settleForwardOutcome(symbol, actualDigit);
+
+        // Only after scoring the forecast do we expose this outcome to the
+        // transition model.
+        this.updateTransition(symbol, previousDigit, actualDigit);
+    },
+
+    onTickAfterEngine(symbol, actualDigit, tickData) {
+        this.forecastNext(symbol, actualDigit, tickData);
+    },
+
+    getPrediction(symbol, digit) {
+        const st = this.state(symbol);
+        const forecast = st.lastForecast;
+        const row = forecast?.predictions?.[digit];
+
+        if (!row) {
+            return {
+                ready: false,
+                probability: 0.10,
+                effectiveSupport: 0,
+                source: 'BASELINE'
+            };
+        }
+
+        return {
+            ready:
+                Number(row.effectiveSupport || 0) >=
+                window.EV_GATE_CONFIG.minEffectiveSupport,
+            probability: Number(row.probability || 0.10),
+            effectiveSupport: Number(row.effectiveSupport || 0),
+            hazardProbability: Number(row.hazard?.p || 0.10),
+            hazardSupport: Number(row.hazard?.support || 0),
+            transitionProbability: Number(row.transition?.p || 0.10),
+            transitionSupport: Number(row.transition?.support || 0),
+            recentProbability: Number(row.recent?.p || 0.10),
+            calibration: row.calibration || null,
+            forecastCreatedAt: forecast.createdAt,
+            source: 'NEXT_TICK_MODEL'
+        };
+    },
+
+    evaluateProposal({
+        symbol,
+        digit,
+        askPrice,
+        payout,
+        modelSnapshot = null,
+        mode = null
+    }) {
+        const model = modelSnapshot || this.getPrediction(symbol, digit);
+        const ask = Number(askPrice);
+        const grossPayout = Number(payout);
+
+        if (
+            !Number.isFinite(ask) || ask <= 0 ||
+            !Number.isFinite(grossPayout) || grossPayout <= 0
+        ) {
+            return {
+                approved: false,
+                reason: 'INVALID_QUOTE',
+                modelProbability: Number(model?.probability || 0),
+                breakEvenProbability: null,
+                edge: null,
+                expectedValue: null
+            };
+        }
+
+        const p = Number(model?.probability || 0.10);
+        const breakEven = ask / grossPayout;
+        const edge = p - breakEven;
+        const expectedValue = (p * grossPayout) - ask;
+
+        const gateApplies =
+            window.EV_GATE_CONFIG.enabled &&
+            (
+                mode === 'ai' ||
+                (mode === 'instant' && window.EV_GATE_CONFIG.applyToInstant)
+            );
+
+        let approved = true;
+        let reason = 'EV_GATE_NOT_APPLIED';
+
+        if (gateApplies) {
+            if (!model?.ready) {
+                approved = false;
+                reason = 'NEXT_TICK_MODEL_NOT_READY';
+            } else if (edge < window.EV_GATE_CONFIG.minEdge) {
+                approved = false;
+                reason = 'INSUFFICIENT_LIVE_EDGE';
+            } else if (expectedValue <= 0) {
+                approved = false;
+                reason = 'NEGATIVE_EXPECTED_VALUE';
+            } else {
+                approved = true;
+                reason = 'POSITIVE_LIVE_EDGE';
+            }
+        }
+
+        const result = {
+            approved,
+            reason,
+            modelProbability: p,
+            breakEvenProbability: breakEven,
+            edge,
+            expectedValue,
+            askPrice: ask,
+            payout: grossPayout,
+            support: Number(model?.effectiveSupport || 0),
+            gateApplies,
+            digit,
+            symbol
+        };
+
+        this.lastEvaluation = result;
+        this.render();
+        return result;
+    },
+
+    ensurePanel() {
+        if (document.getElementById('next-tick-edge-panel')) return;
+
+        const analysisPanel = document.getElementById('digit-analysis-panel');
+        if (!analysisPanel || !analysisPanel.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'next-tick-edge-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-cyan-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-cyan-300 mb-2">🎯 NEXT-TICK EDGE ENGINE</div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Digit:</span>
+                <span id="ntm-digit" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Next-tick P:</span>
+                <span id="ntm-prob" class="font-bold text-cyan-300">-</span>
+
+                <span class="text-gray-400">Live break-even:</span>
+                <span id="ntm-breakeven" class="font-bold text-yellow-300">Awaiting quote</span>
+
+                <span class="text-gray-400">Live edge:</span>
+                <span id="ntm-edge" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Expected value:</span>
+                <span id="ntm-ev" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Model support:</span>
+                <span id="ntm-support" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Forward shadow:</span>
+                <span id="ntm-shadow" class="font-bold text-white">0 ticks</span>
+
+                <span class="text-gray-400">Top-pick hit rate:</span>
+                <span id="ntm-hit-rate" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Brier score:</span>
+                <span id="ntm-brier" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Decision:</span>
+                <span id="ntm-decision" class="font-bold text-gray-300">Shadow monitoring</span>
+            </div>
+        `;
+
+        analysisPanel.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+        this.ensurePanel();
+
+        const symbol = this.getSymbol();
+        const st = this.state(symbol);
+
+        let digit = null;
+        if (
+            typeof sessionState !== 'undefined' &&
+            sessionState.mode === 'ai' &&
+            sessionState.sessionDigit !== null
+        ) {
+            digit = Number(sessionState.sessionDigit);
+        } else {
+            const rec = window.digitIntelligenceEngine?.currentRecommendation;
+            if (rec && Number.isInteger(Number(rec.digit))) {
+                digit = Number(rec.digit);
+            }
+        }
+
+        const prediction =
+            digit !== null ? this.getPrediction(symbol, digit) : null;
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        set('ntm-digit', digit !== null ? String(digit) : '-');
+        set(
+            'ntm-prob',
+            prediction
+                ? `${(prediction.probability * 100).toFixed(2)}%`
+                : '-'
+        );
+        set(
+            'ntm-support',
+            prediction
+                ? `${prediction.effectiveSupport}${prediction.ready ? ' ✓' : ' · warming'}`
+                : '-'
+        );
+
+        const evaln = this.lastEvaluation;
+        if (evaln && evaln.symbol === symbol) {
+            set(
+                'ntm-breakeven',
+                evaln.breakEvenProbability !== null
+                    ? `${(evaln.breakEvenProbability * 100).toFixed(2)}%`
+                    : '-'
+            );
+            set(
+                'ntm-edge',
+                evaln.edge !== null
+                    ? `${evaln.edge >= 0 ? '+' : ''}${(evaln.edge * 100).toFixed(2)} pp`
+                    : '-'
+            );
+            set(
+                'ntm-ev',
+                evaln.expectedValue !== null
+                    ? `${evaln.expectedValue >= 0 ? '+' : ''}$${evaln.expectedValue.toFixed(3)} / trade`
+                    : '-'
+            );
+            set(
+                'ntm-decision',
+                evaln.approved
+                    ? `✅ ${evaln.reason}`
+                    : `🧱 ${evaln.reason}`
+            );
+        } else {
+            set('ntm-breakeven', 'Awaiting quote');
+            set('ntm-edge', '-');
+            set('ntm-ev', '-');
+            set('ntm-decision', 'Shadow monitoring');
+        }
+
+        set('ntm-shadow', `${st.shadowTicks} ticks`);
+
+        const hitRate =
+            st.shadowTicks > 0
+                ? (st.topPickHits / st.shadowTicks) * 100
+                : null;
+
+        set(
+            'ntm-hit-rate',
+            hitRate !== null ? `${hitRate.toFixed(2)}%` : '-'
+        );
+
+        const brier =
+            st.shadowTicks > 0
+                ? st.brierSum / st.shadowTicks
+                : null;
+
+        set(
+            'ntm-brier',
+            brier !== null ? brier.toFixed(4) : '-'
+        );
+    },
+
+    saveShadow(symbol = this.getSymbol()) {
+        try {
+            const st = this.state(symbol);
+            const payload = {
+                shadowTicks: st.shadowTicks,
+                shadowPredictions: st.shadowPredictions,
+                topPickHits: st.topPickHits,
+                brierSum: st.brierSum,
+                calibration: st.calibration
+            };
+            localStorage.setItem(
+                `matchstar_shadow_v1_${symbol}`,
+                JSON.stringify(payload)
+            );
+        } catch (_) {}
+    },
+
+    loadShadow(symbol = this.getSymbol()) {
+        try {
+            const raw = localStorage.getItem(`matchstar_shadow_v1_${symbol}`);
+            if (!raw) return;
+
+            const saved = JSON.parse(raw);
+            const st = this.states[symbol];
+            if (!st) return;
+
+            st.shadowTicks = Number(saved.shadowTicks || 0);
+            st.shadowPredictions = Number(saved.shadowPredictions || 0);
+            st.topPickHits = Number(saved.topPickHits || 0);
+            st.brierSum = Number(saved.brierSum || 0);
+            st.calibration =
+                saved.calibration && typeof saved.calibration === 'object'
+                    ? saved.calibration
+                    : {};
+        } catch (_) {}
+    }
+};
+
+function getFrozenNextTickSnapshot(symbol, digit) {
+    return window.nextTickModel.getPrediction(symbol, digit);
+}
 
 // ============================================================================
         // MARTINGALE CALCULATOR FUNCTIONS
@@ -3175,6 +3875,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
             runCanonicalDigitSelfTest();
+            setTimeout(() => {
+                window.nextTickModel.ensurePanel();
+                window.nextTickModel.render();
+            }, 50);
             initializeToggleState();
             updateS20Label();
             
@@ -3217,7 +3921,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: FAST-TICK V8 · clear engine/trading states', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V9 · next-tick probability · live EV gate · forward calibration', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -3509,10 +4213,23 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const tenSecondsAgo = Date.now() - 10000;
             window.tickTimestamps = window.tickTimestamps.filter(ts => ts > tenSecondsAgo);
             
+            // FORWARD-ONLY VALIDATION:
+            // score the forecast that existed before this tick, then let the
+            // statistical engine learn this tick, then freeze a forecast for the
+            // NEXT unseen tick.
+            const modelSymbol =
+                tick.symbol ||
+                document.getElementById('symbol')?.value ||
+                window.tickFormat.symbol;
+
+            window.nextTickModel.onTickBeforeEngine(modelSymbol, digit);
+
             // Update the AI continuously even before START.
             if (window.digitIntelligenceEngine.enabled) {
                 window.digitIntelligenceEngine.processLiveTick(digit);
             }
+
+            window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
 
             // Resolve the current one-tick contract against this tick immediately.
             const fastResult = observeActiveContractTick(tickData);
@@ -3551,6 +4268,15 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 const code = apiError.code || apiError.error_code || '';
 
                 log(`API Error: ${message}`, 'ERROR');
+
+                const failedPending = data?.req_id
+                    ? window.pendingProposals.get(data.req_id)
+                    : null;
+
+                if (failedPending && !hasOpenContract()) {
+                    window.pendingProposals.delete(data.req_id);
+                    rollbackUnsentTrade(failedPending.stake || window.currentStake);
+                }
 
                 if (hasOpenContract()) {
                     window.executionLock = true;
@@ -3735,6 +4461,11 @@ window.executionLock = true;
                 req_id: getNextReqId()
             };
             
+            const modelSnapshot = getFrozenNextTickSnapshot(
+                symbol,
+                predictedDigit
+            );
+
             window.pendingProposals.set(proposalRequest.req_id, {
                 tick: tick,
                 stake: stake,
@@ -3742,7 +4473,10 @@ window.executionLock = true;
                 predictedDigit: predictedDigit,
                 startTime: Date.now(),
                 tradeNumber: window.tradeCount,
-                martingaleStep: window.martingaleStep
+                martingaleStep: window.martingaleStep,
+                symbol,
+                executionMode: sessionState.mode,
+                modelSnapshot
             });
             
             const sentReqId = sendRequest(proposalRequest);
@@ -3841,7 +4575,7 @@ window.isBotRunning = true;
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
             log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
             log(`🧯 Max Cycle Trades: ${window.maxCycleTrades}`, 'SYSTEM');
-            log(`🔑 Using token: ${token.substring(0, 10)}...`, 'SYSTEM');
+            log('🔐 Trading credential loaded', 'SYSTEM');
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             
@@ -4139,15 +4873,9 @@ window.isBotRunning = true;
         }
         
         function handleProposalResponse(proposal, req_id) {
-            if (!proposal || !proposal.id) {
-                log('❌ Proposal failed', 'ERROR');
-                window.executionLock = false;
-                window.nextTradeAllowed = true;
-                updateTradeStatus('ERROR', 'Proposal failed', 'Waiting for next tick', 'loss');
-                return;
-            }
+            const pending = window.pendingProposals.get(req_id) || null;
+            if (pending) window.pendingProposals.delete(req_id);
 
-            const pending = window.pendingProposals.get(req_id);
             if (!pending) {
                 log(`⚠️ Proposal response ${req_id} has no pending context`, 'WARNING');
                 window.executionLock = false;
@@ -4155,19 +4883,111 @@ window.isBotRunning = true;
                 return;
             }
 
-            window.pendingProposals.delete(req_id);
+            if (!proposal || !proposal.id) {
+                log('❌ Proposal failed', 'ERROR');
+                rollbackUnsentTrade(pending.stake || window.currentStake);
+                updateTradeStatus(
+                    'ERROR',
+                    'Proposal failed',
+                    'Waiting for next tick',
+                    'loss'
+                );
+                return;
+            }
+
             pending.proposalId = proposal.id;
             pending.askPrice = Number(proposal.ask_price);
             pending.quotedPayout = Number(proposal.payout);
 
-            if (Number.isFinite(pending.askPrice) && Number.isFinite(pending.quotedPayout)) {
-                const quotedProfit = pending.quotedPayout - pending.askPrice;
-                const priorLosses = Math.max(0, (window.pnlTracker?.totalInvestment || 0) - pending.stake - (window.pnlTracker?.totalPayout || 0));
-                const recoveryNet = quotedProfit - priorLosses;
-                log(`📐 Quote: cost $${pending.askPrice.toFixed(2)} → payout $${pending.quotedPayout.toFixed(2)} | win profit $${quotedProfit.toFixed(2)} | cycle net if win ≈ ${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)}`, 'PNL');
+            const quoteValid =
+                Number.isFinite(pending.askPrice) &&
+                pending.askPrice > 0 &&
+                Number.isFinite(pending.quotedPayout) &&
+                pending.quotedPayout > 0;
+
+            if (!quoteValid) {
+                log('❌ Invalid Deriv proposal economics', 'ERROR');
+                rollbackUnsentTrade(pending.stake);
+                updateTradeStatus(
+                    'NO TRADE',
+                    'Invalid proposal economics',
+                    'Waiting for a valid live quote',
+                    'loss'
+                );
+                return;
             }
 
-            executeBuy(proposal.id, proposal.ask_price, pending);
+            const quotedProfit =
+                pending.quotedPayout - pending.askPrice;
+
+            const priorLosses = Math.max(
+                0,
+                (window.pnlTracker?.totalInvestment || 0) -
+                pending.stake -
+                (window.pnlTracker?.totalPayout || 0)
+            );
+
+            const recoveryNet = quotedProfit - priorLosses;
+
+            const evaluation = window.nextTickModel.evaluateProposal({
+                symbol: pending.symbol,
+                digit: pending.predictedDigit,
+                askPrice: pending.askPrice,
+                payout: pending.quotedPayout,
+                modelSnapshot: pending.modelSnapshot,
+                mode: pending.executionMode
+            });
+
+            log(
+                `📐 LIVE EDGE | digit ${pending.predictedDigit} | ` +
+                `next-tick P ${(evaluation.modelProbability * 100).toFixed(2)}% | ` +
+                `break-even ${(evaluation.breakEvenProbability * 100).toFixed(2)}% | ` +
+                `edge ${evaluation.edge >= 0 ? '+' : ''}${(evaluation.edge * 100).toFixed(2)} pp | ` +
+                `EV ${evaluation.expectedValue >= 0 ? '+' : ''}$${evaluation.expectedValue.toFixed(3)}`,
+                evaluation.approved ? 'PNL' : 'ENGINE'
+            );
+
+            log(
+                `📐 Quote: cost $${pending.askPrice.toFixed(2)} → payout $${pending.quotedPayout.toFixed(2)} | ` +
+                `win profit $${quotedProfit.toFixed(2)} | cycle net if win ≈ ` +
+                `${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)}`,
+                'PNL'
+            );
+
+            if (!evaluation.approved) {
+                rollbackUnsentTrade(pending.stake);
+
+                log(
+                    `🧱 EV GATE VETO: ${evaluation.reason} | no contract purchased`,
+                    'ENGINE'
+                );
+
+                updateTradeStatus(
+                    'NO TRADE',
+                    evaluation.reason,
+                    `P ${(evaluation.modelProbability * 100).toFixed(2)}% vs BE ${(evaluation.breakEvenProbability * 100).toFixed(2)}%`,
+                    'loss'
+                );
+
+                // AI AUTO may re-evaluate a different digit on the next market tick.
+                if (
+                    pending.executionMode === 'ai' &&
+                    typeof clearSessionDigitLock === 'function'
+                ) {
+                    clearSessionDigitLock(`EV:${evaluation.reason}`);
+                }
+
+                return;
+            }
+
+            executeBuy(
+                proposal.id,
+                proposal.ask_price,
+                {
+                    ...pending,
+                    liveEdgeEvaluation: evaluation
+                }
+            );
         }
 
         function rollbackUnsentTrade(stake) {
@@ -4263,7 +5083,11 @@ window.isBotRunning = true;
                 armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0),
                 confirmedAtMs: Date.now(),
                 monitorReqId: null,
-                subscriptionId: null
+                subscriptionId: null,
+                nextTickProbability: Number(pending?.modelSnapshot?.probability ?? NaN),
+                liveBreakEvenProbability: Number(pending?.liveEdgeEvaluation?.breakEvenProbability ?? NaN),
+                liveEdge: Number(pending?.liveEdgeEvaluation?.edge ?? NaN),
+                expectedValueAtEntry: Number(pending?.liveEdgeEvaluation?.expectedValue ?? NaN)
             };
 
             window.settlementLedger.set(contractId, window.activeContract);
