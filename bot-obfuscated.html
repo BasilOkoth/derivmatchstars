@@ -693,6 +693,259 @@
 
     <script>
         // ============================================================================
+        // V16 UI ADD-ON — MINIMIZABLE PANELS + HISTORY VIEWER
+        // Trading logic and storage keys are intentionally unchanged.
+        // ============================================================================
+
+        function getPanelMinState(key, defaultMinimized = false) {
+            try {
+                const raw = localStorage.getItem(`matchstar_panel_min_${key}`);
+                if (raw === null) return !!defaultMinimized;
+                return raw === '1';
+            } catch (_) {
+                return !!defaultMinimized;
+            }
+        }
+
+        function setPanelMinState(key, minimized) {
+            try {
+                localStorage.setItem(`matchstar_panel_min_${key}`, minimized ? '1' : '0');
+            } catch (_) {}
+        }
+
+        function makePanelMinimizable(panel, options = {}) {
+            if (!panel || panel.dataset.minimizableReady === '1') return;
+
+            const key = options.key || panel.id || `panel-${Math.random().toString(36).slice(2)}`;
+            const title = options.title || 'Panel';
+            const icon = options.icon || '';
+            const defaultMinimized = !!options.defaultMinimized;
+
+            panel.dataset.minimizableReady = '1';
+
+            // Preserve every existing node exactly; only move them into a body wrapper.
+            const existingNodes = Array.from(panel.childNodes);
+            const body = document.createElement('div');
+            body.className = 'matchstar-min-body';
+            body.id = `${key}-min-body`;
+
+            existingNodes.forEach(node => body.appendChild(node));
+
+            const header = document.createElement('div');
+            header.className = 'flex items-center justify-between gap-2 mb-2 pb-1 border-b border-gray-700';
+
+            const heading = document.createElement('div');
+            heading.className = 'font-bold text-gray-200';
+            heading.textContent = `${icon ? icon + ' ' : ''}${title}`;
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded font-bold text-white';
+            btn.setAttribute('aria-controls', body.id);
+
+            header.appendChild(heading);
+            header.appendChild(btn);
+
+            panel.insertBefore(header, panel.firstChild);
+            panel.appendChild(body);
+
+            const apply = (minimized) => {
+                body.classList.toggle('hidden', minimized);
+                btn.textContent = minimized ? '+' : '−';
+                btn.title = minimized ? `Expand ${title}` : `Minimize ${title}`;
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                setPanelMinState(key, minimized);
+            };
+
+            let minimized = getPanelMinState(key, defaultMinimized);
+            apply(minimized);
+
+            btn.addEventListener('click', () => {
+                minimized = !minimized;
+                apply(minimized);
+            });
+        }
+
+        function initializeStaticMinimizablePanels() {
+            // Martingale already has its own minimizer, so do not wrap it again.
+
+            const marketOuter = document.querySelector('.lg\\:col-span-1 > .bg-gray-900.border.border-gray-700.rounded-xl');
+            if (marketOuter) {
+                makePanelMinimizable(marketOuter, {
+                    key: 'market-status-engine',
+                    title: 'MARKET STATUS & ENGINE',
+                    icon: '📊'
+                });
+            }
+
+            const tradeStatus = document.getElementById('trade-result-container');
+            if (tradeStatus) {
+                makePanelMinimizable(tradeStatus, {
+                    key: 'trade-status',
+                    title: 'TRADE STATUS',
+                    icon: '⚡',
+                    defaultMinimized: false
+                });
+            }
+
+            const logColumn = document.getElementById('log-column');
+            if (logColumn) {
+                makePanelMinimizable(logColumn, {
+                    key: 'live-log',
+                    title: 'LIVE LOG',
+                    icon: '🧾',
+                    defaultMinimized: true
+                });
+            }
+        }
+
+        function decorateDynamicPanels() {
+            const edge = document.getElementById('next-tick-edge-panel');
+            if (edge) {
+                makePanelMinimizable(edge, {
+                    key: 'next-tick-edge',
+                    title: 'NEXT-TICK EDGE ENGINE',
+                    icon: '🎯'
+                });
+            }
+
+            const cycle = document.getElementById('cycle-performance-panel');
+            if (cycle) {
+                makePanelMinimizable(cycle, {
+                    key: 'cycle-performance',
+                    title: 'CYCLE PERFORMANCE',
+                    icon: '🔁'
+                });
+            }
+
+            const risk = document.getElementById('tail-risk-panel');
+            if (risk) {
+                makePanelMinimizable(risk, {
+                    key: 'tail-risk',
+                    title: 'TAIL RISK CONTROL',
+                    icon: '🛡️'
+                });
+            }
+
+            const precursor = document.getElementById('tail-precursor-panel');
+            if (precursor) {
+                makePanelMinimizable(precursor, {
+                    key: 'tail-precursor',
+                    title: 'TAIL PRECURSOR LAB',
+                    icon: '🧬'
+                });
+            }
+
+            const depthTracker = document.getElementById('post-stop-depth-panel');
+            if (depthTracker) {
+                makePanelMinimizable(depthTracker, {
+                    key: 'post-stop-depth',
+                    title: 'POST-STOP DEPTH TRACKER',
+                    icon: '🔭'
+                });
+            }
+        }
+
+        function ensureCycleHistoryPanel() {
+            if (document.getElementById('cycle-history-panel')) return;
+
+            const precursor =
+                document.getElementById('tail-precursor-panel') ||
+                document.getElementById('cycle-performance-panel');
+
+            if (!precursor || !precursor.parentElement) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'cycle-history-panel';
+            panel.className =
+                'mt-3 p-3 bg-gray-800 rounded-lg border border-cyan-500/30 text-xs';
+
+            panel.innerHTML = `
+                <div class="text-gray-400 mb-2">
+                    Uses the existing V16 CPR-3 history. Nothing is cleared or migrated.
+                </div>
+                <div id="cycle-history-summary" class="text-gray-300 mb-2">No history loaded.</div>
+                <div id="cycle-history-rows" class="space-y-1 max-h-72 overflow-y-auto"></div>
+            `;
+
+            precursor.parentElement.appendChild(panel);
+
+            makePanelMinimizable(panel, {
+                key: 'cycle-history',
+                title: 'CYCLE HISTORY',
+                icon: '🗂️',
+                defaultMinimized: true
+            });
+        }
+
+        function renderCycleHistoryPanel() {
+            ensureCycleHistoryPanel();
+
+            const summary = document.getElementById('cycle-history-summary');
+            const box = document.getElementById('cycle-history-rows');
+            if (!summary || !box || !window.cyclePerformance) return;
+
+            const symbol = window.cyclePerformance.getSymbol();
+            const rows = window.cyclePerformance.load(symbol) || [];
+            const recent = rows.slice(-20).reverse();
+
+            summary.textContent =
+                `${rows.length} saved V16 cycles for ${symbol} · showing latest ${recent.length}`;
+
+            if (!recent.length) {
+                box.innerHTML = '<div class="text-gray-500">No completed cycles saved yet.</div>';
+                return;
+            }
+
+            box.innerHTML = recent.map((r, idx) => {
+                const trades = Number(r?.trades?.length || 0);
+                const pnl = Number(r?.netPnL || 0);
+                const status = String(r?.status || 'UNKNOWN');
+                const klass = String(r?.tailClass || '-');
+                const digit = Number.isFinite(Number(r?.digit)) ? Number(r.digit) : '-';
+                const when = Number(r?.endedAt || r?.startedAt || 0);
+                const stamp = when ? new Date(when).toLocaleString() : '-';
+                const depth = r?.postStopDepth;
+                const depthLabel =
+                    depth?.status === 'RESOLVED' && Number.isFinite(Number(depth?.wouldWinTradeNumber))
+                        ? ` → would win @${Number(depth.wouldWinTradeNumber)}`
+                        : (depth?.status === 'TRACKING'
+                            ? ` → tracking +${Number(depth.postStopTicks || 0)}`
+                            : '');
+
+                return `
+                    <div class="grid grid-cols-6 gap-1 p-2 rounded bg-gray-900/70 border border-gray-700">
+                        <div class="text-gray-500">#${rows.length - idx}</div>
+                        <div class="${status === 'WIN' ? 'text-green-300' : 'text-yellow-300'}">${status}</div>
+                        <div class="text-white">${trades} trades${depthLabel}</div>
+                        <div class="${pnl >= 0 ? 'text-green-300' : 'text-red-300'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</div>
+                        <div class="text-cyan-300">d${digit} · ${klass}</div>
+                        <div class="text-gray-500 truncate" title="${stamp}">${stamp}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Keep dynamic/minimized panels and history refreshed without changing
+        // any trading logic. MutationObserver only decorates UI elements.
+        function startMinimizablePanelObserver() {
+            const observer = new MutationObserver(() => {
+                decorateDynamicPanels();
+                if (window.cyclePerformance) {
+                    try { renderCycleHistoryPanel(); } catch (_) {}
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            setTimeout(() => {
+                initializeStaticMinimizablePanels();
+                decorateDynamicPanels();
+                try { renderCycleHistoryPanel(); } catch (_) {}
+            }, 0);
+        }
+
+        // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
         function getStoredDerivToken() {
@@ -3492,6 +3745,16 @@ window.cyclePerformance = {
         if (window.tailPrecursorLab) {
             window.tailPrecursorLab.render();
         }
+
+        if (typeof renderCycleHistoryPanel === 'function') {
+            renderCycleHistoryPanel();
+        }
+        if (window.postStopDepthTracker) {
+            window.postStopDepthTracker.render();
+        }
+        if (typeof decorateDynamicPanels === 'function') {
+            decorateDynamicPanels();
+        }
     }
 };
 
@@ -5287,6 +5550,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
 
+            // V16 post-stop research: observe public digits after a risk-capped
+            // cycle has stopped. This path never sends trades.
+            if (window.postStopDepthTracker) {
+                window.postStopDepthTracker.onPublicTick(tickData);
+            }
+
             // Resolve the current one-tick contract against this tick immediately.
             const fastResult = observeActiveContractTick(tickData);
 
@@ -5393,6 +5662,411 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
         
         // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
+        // ============================================================================
+        // MATCHSTAR V16 — POST-STOP DEPTH TRACKER
+        // Observes ONLY public digits after a risk-capped cycle stops.
+        // It NEVER sends proposal/buy requests and never changes live stakes.
+        // ============================================================================
+
+        window.postStopDepthTracker = {
+            version: 'PSD-1',
+            active: [],
+            completed: [],
+            maxCompletedMemory: 200,
+
+            getSymbol() {
+                return (
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+            },
+
+            storageKey(symbol = this.getSymbol()) {
+                return `matchstar_poststop_depth_v1_${symbol}`;
+            },
+
+            loadCompleted(symbol = this.getSymbol()) {
+                if (this.completed.length) return this.completed;
+                try {
+                    const raw = localStorage.getItem(this.storageKey(symbol));
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (Array.isArray(parsed)) this.completed = parsed;
+                    }
+                } catch (_) {}
+                return this.completed;
+            },
+
+            saveCompleted(symbol = this.getSymbol()) {
+                try {
+                    const rows = this.completed.slice(-this.maxCompletedMemory);
+                    this.completed = rows;
+                    localStorage.setItem(this.storageKey(symbol), JSON.stringify(rows));
+                } catch (_) {}
+            },
+
+            isRiskCapReason(reason) {
+                const r = String(reason || '').toLowerCase();
+                return (
+                    r.includes('tail risk') ||
+                    r.includes('maximum cycle trades') ||
+                    r.includes('maximum cycle dollar exposure')
+                );
+            },
+
+            startFromCurrentCycle(reason, snapshot = null) {
+                const c = window.cyclePerformance?.current;
+                if (!c || !Array.isArray(c.trades) || !c.trades.length) return null;
+                if (!this.isRiskCapReason(reason)) return null;
+
+                // Prevent duplicate trackers for the same cycle.
+                if (this.active.some(x => String(x.cycleId) === String(c.id))) {
+                    return this.active.find(x => String(x.cycleId) === String(c.id));
+                }
+
+                const stopDepth = Number(c.trades.length || snapshot?.currentTrades || 0);
+                const targetDigit = Number(c.digit);
+                const symbol = c.symbol || this.getSymbol();
+
+                if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) {
+                    return null;
+                }
+
+                const tracker = {
+                    id: `psd-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+                    cycleId: c.id,
+                    symbol,
+                    targetDigit,
+                    stopDepth,
+                    stopReason: String(reason || 'Tail risk stop'),
+                    stoppedAt: Date.now(),
+                    stoppedEpoch: Number(window.lastTick?.raw?.epoch || 0) || null,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    resolvedAt: null,
+                    resolvedEpoch: null,
+                    status: 'TRACKING',
+                    digits: [],
+                    stateSnapshots: []
+                };
+
+                // Attach the observation placeholder to the current cycle BEFORE
+                // stopBot() persists it into the existing CPR-3 history.
+                c.postStopDepth = {
+                    status: 'TRACKING',
+                    targetDigit,
+                    stopDepth,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    digits: []
+                };
+
+                this.active.push(tracker);
+
+                log(
+                    `🔭 POST-STOP TRACKING START | cycle ${c.id} | digit ${targetDigit} | ` +
+                    `live stopped at trade ${stopDepth} | next public tick = hypothetical trade ${stopDepth + 1} | NO MONEY`,
+                    'ENGINE'
+                );
+
+                this.render();
+                return tracker;
+            },
+
+            findStoredCycle(symbol, cycleId) {
+                const rows = window.cyclePerformance?.load(symbol) || [];
+                const row = rows.find(r => String(r.id) === String(cycleId));
+                return { rows, row };
+            },
+
+            syncIntoCycleHistory(tracker) {
+                if (!tracker || !window.cyclePerformance) return;
+
+                const { rows, row } = this.findStoredCycle(tracker.symbol, tracker.cycleId);
+                if (!row) return;
+
+                row.postStopDepth = {
+                    status: tracker.status,
+                    targetDigit: tracker.targetDigit,
+                    stopDepth: tracker.stopDepth,
+                    postStopTicks: tracker.postStopTicks,
+                    wouldWinTradeNumber: tracker.wouldWinTradeNumber,
+                    stoppedAt: tracker.stoppedAt,
+                    resolvedAt: tracker.resolvedAt,
+                    stoppedEpoch: tracker.stoppedEpoch,
+                    resolvedEpoch: tracker.resolvedEpoch,
+                    stopReason: tracker.stopReason,
+                    digits: tracker.digits.slice(),
+                    stateSnapshots: tracker.stateSnapshots.slice()
+                };
+
+                window.cyclePerformance.historyBySymbol[tracker.symbol] = rows;
+                window.cyclePerformance.save(tracker.symbol);
+            },
+
+            captureState(targetDigit, impliedTrade) {
+                try {
+                    if (window.tailPrecursorLab?.captureState) {
+                        return window.tailPrecursorLab.captureState(
+                            Number(targetDigit),
+                            'POST_STOP_TICK',
+                            Number(impliedTrade)
+                        );
+                    }
+                } catch (_) {}
+                return null;
+            },
+
+            onPublicTick(tickData) {
+                if (!tickData || !this.active.length) return;
+
+                const tickSymbol =
+                    tickData?.raw?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+
+                const observedDigit = Number(tickData.digit);
+                const epoch = Number(tickData?.raw?.epoch || 0) || null;
+                const survivors = [];
+
+                for (const tracker of this.active) {
+                    if (!tracker || tracker.status !== 'TRACKING') continue;
+
+                    // Only consume ticks from the market where the stopped cycle occurred.
+                    if (
+                        tracker.symbol &&
+                        tracker.symbol !== 'UNKNOWN' &&
+                        tickSymbol &&
+                        tickSymbol !== 'UNKNOWN' &&
+                        tracker.symbol !== tickSymbol
+                    ) {
+                        survivors.push(tracker);
+                        continue;
+                    }
+
+                    // Do not accidentally consume the same public tick that caused
+                    // the live stop.
+                    if (
+                        tracker.stoppedEpoch &&
+                        epoch &&
+                        epoch <= tracker.stoppedEpoch
+                    ) {
+                        survivors.push(tracker);
+                        continue;
+                    }
+
+                    tracker.postStopTicks += 1;
+                    const impliedTrade = tracker.stopDepth + tracker.postStopTicks;
+                    const matched = observedDigit === Number(tracker.targetDigit);
+
+                    const record = {
+                        postStopTick: tracker.postStopTicks,
+                        impliedTrade,
+                        digit: observedDigit,
+                        matched,
+                        epoch,
+                        at: Date.now()
+                    };
+
+                    tracker.digits.push(record);
+
+                    const state = this.captureState(tracker.targetDigit, impliedTrade);
+                    if (state) {
+                        tracker.stateSnapshots.push({
+                            impliedTrade,
+                            postStopTick: tracker.postStopTicks,
+                            state
+                        });
+                    }
+
+                    if (matched) {
+                        tracker.status = 'RESOLVED';
+                        tracker.wouldWinTradeNumber = impliedTrade;
+                        tracker.resolvedAt = Date.now();
+                        tracker.resolvedEpoch = epoch;
+
+                        log(
+                            `🔭 POST-STOP RESOLVED | cycle ${tracker.cycleId} | digit ${tracker.targetDigit} ` +
+                            `appeared ${tracker.postStopTicks} tick(s) after stop | ` +
+                            `would have matched at trade ${impliedTrade} | NO MONEY TRADED`,
+                            'ENGINE'
+                        );
+
+                        this.syncIntoCycleHistory(tracker);
+                        this.completed.push(JSON.parse(JSON.stringify(tracker)));
+                        this.saveCompleted(tracker.symbol);
+                        continue;
+                    }
+
+                    this.syncIntoCycleHistory(tracker);
+                    survivors.push(tracker);
+                }
+
+                this.active = survivors;
+                this.render();
+
+                if (typeof renderCycleHistoryPanel === 'function') {
+                    renderCycleHistoryPanel();
+                }
+            },
+
+            stats(symbol = this.getSymbol()) {
+                const storedCycles = window.cyclePerformance?.load(symbol) || [];
+                const observed = storedCycles
+                    .map(r => r?.postStopDepth)
+                    .filter(x => x && x.status === 'RESOLVED' && Number.isFinite(Number(x.wouldWinTradeNumber)));
+
+                const depths = observed.map(x => Number(x.wouldWinTradeNumber));
+                const postTicks = observed.map(x => Number(x.postStopTicks || 0));
+
+                const bucket = (lo, hi) => observed.filter(x => {
+                    const d = Number(x.wouldWinTradeNumber);
+                    return d >= lo && d <= hi;
+                }).length;
+
+                return {
+                    resolved: observed.length,
+                    active: this.active.filter(x => x.symbol === symbol || symbol === 'UNKNOWN').length,
+                    avgWouldWin: depths.length
+                        ? depths.reduce((a,b) => a+b, 0) / depths.length
+                        : null,
+                    deepest: depths.length ? Math.max(...depths) : null,
+                    avgExtraTicks: postTicks.length
+                        ? postTicks.reduce((a,b) => a+b, 0) / postTicks.length
+                        : null,
+                    win11to15: bucket(11,15),
+                    win16to20: bucket(16,20),
+                    win21plus: observed.filter(x => Number(x.wouldWinTradeNumber) >= 21).length,
+                    observed
+                };
+            },
+
+            ensurePanel() {
+                if (document.getElementById('post-stop-depth-panel')) return;
+
+                const precursor =
+                    document.getElementById('tail-precursor-panel') ||
+                    document.getElementById('tail-risk-panel') ||
+                    document.getElementById('cycle-performance-panel');
+
+                if (!precursor || !precursor.parentElement) return;
+
+                const panel = document.createElement('div');
+                panel.id = 'post-stop-depth-panel';
+                panel.className =
+                    'mt-3 p-3 bg-gray-800 rounded-lg border border-sky-500/30 text-xs';
+
+                panel.innerHTML = `
+                    <div class="font-bold text-sky-300 mb-1">🔭 POST-STOP DEPTH TRACKER</div>
+                    <div class="text-gray-400 mb-2">
+                        After live trading stops at the cycle cap, follows the SAME target digit on public ticks only. No purchases.
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">Active watches:</span>
+                        <span id="psd-active" class="font-bold text-cyan-300">0</span>
+
+                        <span class="text-gray-400">Resolved stopped cycles:</span>
+                        <span id="psd-resolved" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Average would-win trade:</span>
+                        <span id="psd-average" class="font-bold text-white">-</span>
+
+                        <span class="text-gray-400">Deepest observed:</span>
+                        <span id="psd-deepest" class="font-bold text-yellow-300">-</span>
+
+                        <span class="text-gray-400">Would win 11–15:</span>
+                        <span id="psd-11-15" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 16–20:</span>
+                        <span id="psd-16-20" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 21+:</span>
+                        <span id="psd-21plus" class="font-bold text-white">0</span>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Current / latest sequence:</div>
+                        <div id="psd-live" class="font-mono text-gray-200">Waiting for a risk-capped cycle.</div>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Latest resolved:</div>
+                        <div id="psd-latest" class="font-mono text-gray-200">-</div>
+                    </div>
+                `;
+
+                precursor.parentElement.appendChild(panel);
+
+                if (typeof makePanelMinimizable === 'function') {
+                    makePanelMinimizable(panel, {
+                        key: 'post-stop-depth',
+                        title: 'POST-STOP DEPTH TRACKER',
+                        icon: '🔭'
+                    });
+                }
+            },
+
+            render() {
+                this.ensurePanel();
+
+                const symbol = this.getSymbol();
+                const s = this.stats(symbol);
+
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set('psd-active', String(s.active));
+                set('psd-resolved', String(s.resolved));
+                set(
+                    'psd-average',
+                    Number.isFinite(s.avgWouldWin) ? `Trade ${s.avgWouldWin.toFixed(1)}` : '-'
+                );
+                set(
+                    'psd-deepest',
+                    Number.isFinite(s.deepest) ? `Trade ${s.deepest}` : '-'
+                );
+                set('psd-11-15', String(s.win11to15));
+                set('psd-16-20', String(s.win16to20));
+                set('psd-21plus', String(s.win21plus));
+
+                const live = document.getElementById('psd-live');
+                if (live) {
+                    const active = this.active.find(x => x.symbol === symbol) || this.active[0];
+                    if (active) {
+                        const recentDigits = active.digits.slice(-20).map(x => x.digit).join(' ');
+                        live.textContent =
+                            `digit ${active.targetDigit} | stopped @${active.stopDepth} | ` +
+                            `${active.postStopTicks} post-stop ticks | current implied depth ${active.stopDepth + active.postStopTicks}` +
+                            (recentDigits ? ` | digits: ${recentDigits}` : '');
+                    } else {
+                        live.textContent = 'No active post-stop watch.';
+                    }
+                }
+
+                const latest = document.getElementById('psd-latest');
+                if (latest) {
+                    const resolved = s.observed
+                        .slice()
+                        .sort((a,b) => Number(b.resolvedAt || 0) - Number(a.resolvedAt || 0))[0];
+
+                    if (resolved) {
+                        const digitSeq = (resolved.digits || []).map(x => x.digit).join(' ');
+                        latest.textContent =
+                            `stopped @${resolved.stopDepth} → target ${resolved.targetDigit} appeared after ` +
+                            `${resolved.postStopTicks} tick(s) → would win @${resolved.wouldWinTradeNumber}` +
+                            (digitSeq ? ` | sequence: ${digitSeq}` : '');
+                    } else {
+                        latest.textContent = '-';
+                    }
+                }
+            }
+        };
+
         // ============================================================================
         // MATCHSTAR V15 — TAIL RISK MEASUREMENT + HARD CYCLE GUARDS
         // ============================================================================
@@ -5508,6 +6182,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     `Exposure frozen at $${s.exposure.toFixed(2)}`,
                     'loss'
                 );
+                window.postStopDepthTracker.startFromCurrentCycle(
+                    'Tail risk: maximum cycle trades reached',
+                    s
+                );
                 stopBot('Tail risk: maximum cycle trades reached');
                 return;
             }
@@ -5521,6 +6199,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 `Projected exposure $${s.nextLossExposure.toFixed(2)} exceeds cap $${s.dollarCap.toFixed(2)}`,
                 `Current exposure frozen at $${s.exposure.toFixed(2)}`,
                 'loss'
+            );
+            window.postStopDepthTracker.startFromCurrentCycle(
+                'Tail risk: maximum cycle dollar exposure reached',
+                s
             );
             stopBot('Tail risk: maximum cycle dollar exposure reached');
         }
@@ -7260,6 +7942,13 @@ window.isBotRunning = true;
         };
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
+        // V16 UI add-on startup. Existing histories/localStorage keys are untouched.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startMinimizablePanelObserver, { once: true });
+        } else {
+            startMinimizablePanelObserver();
+        }
+
     </script>
 </body>
 </html>
