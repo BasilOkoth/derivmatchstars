@@ -314,31 +314,54 @@
             transform: scale(1.02);
             box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
         }
+    
+/* === Premium compact app header === */
+.app-header{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:4px 0 14px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,.16);
+}
+.app-brand{font-size:clamp(1.35rem,2.6vw,2rem);line-height:1;font-weight:900;color:#4ade80;white-space:nowrap}
+.app-status-row{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;min-width:0}
+.app-header .account-toggle-container{margin-left:0!important;padding:4px 8px;gap:4px;background:rgba(15,23,42,.70);border:1px solid rgba(148,163,184,.18)}
+.app-header #status-badge,.app-header #engine-status-badge{margin-left:0!important;padding:.42rem .70rem;font-size:.72rem;line-height:1;box-shadow:none}
+.app-header #contract-type-badge{margin-left:0!important;padding:.42rem .62rem;border-radius:9999px;font-size:.70rem;line-height:1}
+.app-header .sound-icon-btn{width:32px;height:32px;flex:0 0 32px}
+.app-header #network-recovery-badge,.header-utility-hidden{display:none!important}
+.trade-actions{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(148,163,184,.14)}
+.trade-actions #toggleButton{width:auto!important;min-width:150px;padding:.62rem 1rem!important;font-size:.88rem!important;line-height:1.1;border-radius:.70rem;box-shadow:0 8px 22px rgba(0,0,0,.18)}
+.trade-actions #s20Button{width:auto!important;min-width:108px;padding:.62rem .85rem!important;font-size:.82rem!important;line-height:1.1;border-radius:.70rem;box-shadow:none}
+@media (max-width:767px){
+  body{padding:.55rem!important}
+  body>div.w-full.max-w-6xl{padding:.80rem!important;border-radius:.85rem!important}
+  .app-header{align-items:flex-start;gap:10px;padding-bottom:11px;margin-bottom:12px}
+  .app-brand{width:100%;font-size:1.45rem}
+  .app-status-row{width:100%;justify-content:flex-start;gap:6px}
+  .app-header #status-badge,.app-header #engine-status-badge,.app-header #contract-type-badge{font-size:.66rem;padding:.38rem .56rem}
+  .app-header .account-label{font-size:.66rem}
+  .app-header .account-toggle{width:38px;height:20px;margin:0 5px}
+  .app-header .account-toggle-slider:before{width:14px;height:14px}
+  .app-header input:checked+.account-toggle-slider:before{transform:translateX(18px)}
+  .trade-actions{align-items:stretch;gap:7px}
+  .trade-actions #toggleButton{flex:1 1 auto;min-width:0}
+  .trade-actions #s20Button{flex:0 0 auto;min-width:94px}
+}
+@media (max-width:390px){
+  .app-status-row{gap:5px}
+  .app-header #engine-status-badge{max-width:148px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .trade-actions{flex-direction:column}
+  .trade-actions #toggleButton,.trade-actions #s20Button{width:100%!important}
+}
+
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
     <div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
-        <div class="flex justify-between items-center mb-4">
-            <h1 class="text-3xl font-extrabold text-green-400 border-b border-gray-700 pb-2">
-                DigitMatchStar Bot 
-                <span id="status-badge" class="ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-disconnected text-white shadow-md">
-                    🔴 DISCONNECTED
-                </span>
-                <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
-                <button id="soundToggle" onclick="toggleSound()" class="sound-icon-btn" aria-label="Toggle sound" title="Sound ON">🔊</button>
-
-                <!-- Intelligence Engine Badge -->
-                <span id="engine-status-badge" class="ml-2 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full engine-status-warmup text-white shadow-md">
-                    🔥 ENGINE: WARM-UP
-                </span>
-                <!-- Network Recovery Badge -->
-                <span id="network-recovery-badge" class="ml-2 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full hidden network-recovery-badge text-white shadow-md">
-                    🔄 AUTO-RECOVER
-                </span>
-                <!-- Account toggle -->
-                <div class="account-toggle-container ml-3">
+        <div class="app-header">
+            <div class="app-brand">DigitMatchStar Bot</div>
+            <div class="app-status-row">
+                <div class="account-toggle-container">
                     <span class="account-label account-label-demo">DEMO</span>
                     <label class="account-toggle">
                         <input type="checkbox" id="accTypeToggle" onchange="switchAccount()">
@@ -346,22 +369,13 @@
                     </label>
                     <span class="account-label account-label-real">REAL</span>
                 </div>
-            </h1>
-            <div class="controls-wrap flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 w-full sm:w-auto">
-                <div class="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full sm:w-auto sm:justify-end">
-<div class="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:justify-end">
-                        <span id="networkRecoveryIndicator" class="status-chip on" title="Auto-Recovery is ON">
-                            <span class="status-icon" aria-hidden="true">🔄</span>
-                            <span class="status-dot" aria-hidden="true"></span>
-                            <span class="status-label">Auto-Recovery</span>
-                        </span>
-                        <span id="engineIndicator" class="status-chip on" title="AI Engine is ON">
-                            <span class="status-icon" aria-hidden="true">🧠</span>
-                            <span class="status-dot" aria-hidden="true"></span>
-                            <span class="status-label">AI Engine</span>
-                        </span>
-                    </div>
-                </div>
+                <span id="status-badge" class="inline-flex items-center rounded-full connection-badge-disconnected text-white">🔴 DISCONNECTED</span>
+                <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
+                <span id="engine-status-badge" class="inline-flex items-center rounded-full engine-status-warmup text-white">🔥 ENGINE: WARM-UP</span>
+                <button id="soundToggle" onclick="toggleSound()" class="sound-icon-btn" aria-label="Toggle sound" title="Sound ON">🔊</button>
+                <span id="network-recovery-badge" class="hidden network-recovery-badge">🔄 AUTO-RECOVER</span>
+                <span id="networkRecoveryIndicator" class="status-chip on header-utility-hidden" title="Auto-Recovery is ON"><span class="status-dot"></span><span class="status-label">Auto-Recovery</span></span>
+                <span id="engineIndicator" class="status-chip on header-utility-hidden" title="AI Engine is ON"><span class="status-dot"></span><span class="status-label">AI Engine</span></span>
             </div>
         </div>
         
@@ -659,25 +673,15 @@
                             <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
                             <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Start bot to begin</p>
                         </div>
+                        <div class="trade-actions">
+                            <button id="toggleButton" onclick="toggleBot()" class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150">🚀 START BOT</button>
+                            <button id="s20Button" onclick="openS20Config()" class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150" title="Tail-risk cap">🧯 S20: <span id="s20Value">5</span>%</button>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <!-- START/STOP BUTTON -->
-        <div class="flex flex-col md:flex-row justify-center mb-5 gap-3">
-            <button id="toggleButton" onclick="toggleBot()" 
-                class="w-full md:w-1/2 px-6 py-3 bg-green-600 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-green-700 transition duration-150">
-                🚀 START BOT
-            </button>
-
-            <!-- S20 tail-risk cap (SurvivalEngine filter) -->
-            <button id="s20Button" onclick="openS20Config()"
-                class="w-full md:w-44 px-4 py-3 bg-slate-700 text-white font-bold text-lg rounded-lg shadow-xl hover:bg-slate-600 transition duration-150">
-                🧯 S20: <span id="s20Value">5</span>%
-            </button>
-        </div>
-
         <!-- LOG AREA -->
         <div id="log-column" class="w-full flex flex-col">
             <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Log</h2>
