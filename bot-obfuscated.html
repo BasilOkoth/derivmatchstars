@@ -2732,42 +2732,62 @@ window.tailPrecursorLab = {
     classifyCycle(cycle) {
         if (!cycle) return 'EXCLUDE';
 
-        const n = Number(cycle.trades?.length || 0);
         const reason = String(cycle.finalReason || '').toLowerCase();
-        const winN = Number(cycle.winningTradeNumber || 0);
+        const liveWin = Number(cycle.winningTradeNumber || 0);
+        const psd = cycle.postStopDepth || null;
+        const eventualDepth = Number(psd?.wouldWinTradeNumber || 0);
 
-        if (cycle.status === 'WIN' && winN > 0 && winN <= 10) {
-            return winN <= 5 ? 'FAST_WIN' : 'NORMAL_WIN';
+        // Confirmed financial wins inside the live safety window.
+        if (cycle.status === 'WIN' && liveWin > 0 && liveWin <= 10) {
+            return liveWin <= 5 ? 'FAST_WIN' : 'NORMAL_WIN';
         }
 
-        if (cycle.status === 'WIN' && winN > 10) return 'TAIL_WIN';
+        // Depth-aware continuation classes from genuine FUTURE public ticks.
+        if (eventualDepth >= 11 && eventualDepth <= 15) return 'POST_STOP_11_15';
+        if (eventualDepth >= 16 && eventualDepth <= 20) return 'POST_STOP_16_20';
+        if (eventualDepth >= 21 && eventualDepth <= 30) return 'POST_STOP_21_30';
+        if (eventualDepth >= 31) return 'POST_STOP_31_PLUS';
 
-        const naturalTailReason =
+        const naturalCapReason =
             reason.includes('maximum trades') ||
             reason.includes('maximum cycle') ||
             reason.includes('tail risk');
 
-        if (n > 10 || naturalTailReason) return 'TAIL_STOP';
+        // A capped cycle without observed continuation is censored, not a known tail.
+        if (naturalCapReason) return 'CENSORED_STOP';
 
-        // Reconciliation/network/manual technical stops are excluded from the
-        // precursor model because they are not market tails.
+        // Reconciliation/network/manual stops are excluded from the market model.
         return 'TECHNICAL_STOP';
     },
 
     eligibleGroups(symbol) {
         const rows = window.cyclePerformance?.load(symbol) || [];
-        const enriched = rows.map(r => ({
-            cycle: r,
-            klass: r.tailClass || this.classifyCycle(r)
-        }));
+        const enriched = rows.map(r => {
+            const klass = this.classifyCycle(r);
+            // Keep stored class synchronized with the richer depth-aware taxonomy.
+            if (r && r.tailClass !== klass) r.tailClass = klass;
+            return { cycle: r, klass };
+        });
+
+        const normal = enriched.filter(x =>
+            x.klass === 'FAST_WIN' || x.klass === 'NORMAL_WIN'
+        );
+
+        const tails = enriched.filter(x =>
+            x.klass === 'POST_STOP_11_15' ||
+            x.klass === 'POST_STOP_16_20' ||
+            x.klass === 'POST_STOP_21_30' ||
+            x.klass === 'POST_STOP_31_PLUS'
+        );
 
         return {
-            normal: enriched.filter(x =>
-                x.klass === 'FAST_WIN' || x.klass === 'NORMAL_WIN'
-            ),
-            tails: enriched.filter(x =>
-                x.klass === 'TAIL_WIN' || x.klass === 'TAIL_STOP'
-            ),
+            normal,
+            tails,
+            post11_15: enriched.filter(x => x.klass === 'POST_STOP_11_15'),
+            post16_20: enriched.filter(x => x.klass === 'POST_STOP_16_20'),
+            post21_30: enriched.filter(x => x.klass === 'POST_STOP_21_30'),
+            post31plus: enriched.filter(x => x.klass === 'POST_STOP_31_PLUS'),
+            censored: enriched.filter(x => x.klass === 'CENSORED_STOP'),
             technical: enriched.filter(x => x.klass === 'TECHNICAL_STOP')
         };
     },
@@ -2919,33 +2939,110 @@ window.tailPrecursorLab = {
         };
     },
 
+    eventualDepth(cycle) {
+        if (!cycle) return null;
+        const liveWin = Number(cycle.winningTradeNumber || 0);
+        if (cycle.status === 'WIN' && liveWin > 0) return liveWin;
+
+        const post = Number(cycle.postStopDepth?.wouldWinTradeNumber || 0);
+        return post > 0 ? post : null;
+    },
+
     conditionalRecovery(symbol, depth) {
         const rows = window.cyclePerformance?.load(symbol) || [];
         const d = Math.max(1, Number(depth || 1));
 
-        // Only cycles that actually reached depth d were "at risk" at that point.
-        const atRisk = rows.filter(r => Number(r.trades?.length || 0) >= d);
+        // Use only market-resolved cycles. Technical stops and still-censored
+        // safety stops are excluded from both numerator and denominator.
+        const resolved = rows.filter(r => {
+            const klass = this.classifyCycle(r);
+            if (klass === 'TECHNICAL_STOP' || klass === 'CENSORED_STOP') return false;
+            return Number.isFinite(Number(this.eventualDepth(r)));
+        });
+
+        const atRisk = resolved.filter(r =>
+            Number(this.eventualDepth(r)) >= d
+        );
+
         if (!atRisk.length) {
-            return { n: 0, next1: null, next2: null, next4: null, tail10: null };
+            return {
+                n: 0,
+                next1: null,
+                next2: null,
+                next4: null,
+                deepTail: null
+            };
         }
 
-        const wonBy = (h) => atRisk.filter(r => {
-            const w = Number(r.winningTradeNumber || 0);
-            return r.status === 'WIN' && w >= d && w <= d + h;
+        const recoveredWithin = (h) => atRisk.filter(r => {
+            const w = Number(this.eventualDepth(r));
+            return w > d && w <= d + h;
         }).length / atRisk.length;
 
-        const tail10 = atRisk.filter(r => {
-            const klass = r.tailClass || this.classifyCycle(r);
-            return klass === 'TAIL_WIN' || klass === 'TAIL_STOP';
+        const deepTail = atRisk.filter(r => {
+            const w = Number(this.eventualDepth(r));
+            return w >= 21;
         }).length / atRisk.length;
 
         return {
             n: atRisk.length,
-            next1: wonBy(1),
-            next2: wonBy(2),
-            next4: wonBy(4),
-            tail10
+            next1: recoveredWithin(1),
+            next2: recoveredWithin(2),
+            next4: recoveredWithin(4),
+            deepTail
         };
+    },
+
+    trajectorySnapshotAt(cycle, depth) {
+        const targetDepth = Number(depth || 0);
+        const xs = Array.isArray(cycle?.tailTrajectory)
+            ? cycle.tailTrajectory
+            : [];
+
+        if (!xs.length) return cycle?.entryTailState || null;
+
+        // ENTRY for depth 0, otherwise latest snapshot at/before requested depth.
+        const eligible = xs.filter(s =>
+            Number(s?.tradeNumber || 0) <= targetDepth
+        );
+
+        if (!eligible.length) return xs[0] || null;
+        return eligible[eligible.length - 1];
+    },
+
+    featureStatsAtDepth(symbol, depth) {
+        const g = this.eligibleGroups(symbol);
+        const result = [];
+
+        for (const [key, label] of this.numericFeatures) {
+            const nv = g.normal
+                .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[key]))
+                .filter(Number.isFinite);
+
+            const tv = g.tails
+                .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[key]))
+                .filter(Number.isFinite);
+
+            if (nv.length < 3 || tv.length < 2) continue;
+
+            const nm = this.mean(nv);
+            const tm = this.mean(tv);
+            const pooled = this.sd(nv.concat(tv));
+            if (!Number.isFinite(pooled) || pooled <= 1e-12) continue;
+
+            result.push({
+                key,
+                label,
+                normalMean: nm,
+                tailMean: tm,
+                effect: (tm - nm) / pooled,
+                normalN: nv.length,
+                tailN: tv.length
+            });
+        }
+
+        result.sort((a,b) => Math.abs(b.effect) - Math.abs(a.effect));
+        return result;
     },
 
     ensurePanel() {
@@ -2969,10 +3066,16 @@ window.tailPrecursorLab = {
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
                 <span class="text-gray-400">Learning sample:</span>
-                <span id="tpl-sample" class="font-bold text-white">0 normal · 0 tails</span>
+                <span id="tpl-sample" class="font-bold text-white">0 normal · 0 resolved tails</span>
+
+                <span class="text-gray-400">Censored cap stops:</span>
+                <span id="tpl-censored" class="font-bold text-yellow-300">0</span>
 
                 <span class="text-gray-400">Technical stops excluded:</span>
                 <span id="tpl-tech" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Resolved depth classes:</span>
+                <span id="tpl-depth-classes" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Current tail state:</span>
                 <span id="tpl-state" class="font-bold text-yellow-300">LEARNING</span>
@@ -2995,15 +3098,30 @@ window.tailPrecursorLab = {
                 <span class="text-gray-400">Recover ≤ next 4:</span>
                 <span id="tpl-rec4" class="font-bold text-white">-</span>
 
-                <span class="text-gray-400">Observed tail rate at depth:</span>
+                <span class="text-gray-400">Observed deep-tail rate:</span>
                 <span id="tpl-taildepth" class="font-bold text-white">-</span>
             </div>
 
             <div class="mt-3">
                 <div class="text-gray-400 mb-1">Strongest observed entry differences:</div>
                 <div id="tpl-precursors" class="font-mono text-gray-200">
-                    Learning — more natural tails required.
+                    Learning — more resolved post-stop cycles required.
                 </div>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-1">Trajectory warning checkpoints:</div>
+                <div id="tpl-trajectory" class="font-mono text-gray-200">
+                    Waiting for enough resolved cycles.
+                </div>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+                <button id="downloadResearchReportBtn"
+                        onclick="downloadMatchStarResearchReport()"
+                        class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded">
+                    ⬇ DOWNLOAD RESEARCH REPORT
+                </button>
             </div>
 
             <div class="mt-2 text-gray-400" id="tpl-action">
@@ -3024,6 +3142,12 @@ window.tailPrecursorLab = {
             'UNKNOWN';
 
         const g = this.eligibleGroups(symbol);
+        // Persist richer class labels without changing the CPR-3 storage key.
+        try {
+            if (window.cyclePerformance?.historyBySymbol?.[symbol]) {
+                window.cyclePerformance.save(symbol);
+            }
+        } catch (_) {}
         const current = window.cyclePerformance?.current || null;
         const depth = Number(current?.trades?.length || 0);
 
@@ -3049,8 +3173,14 @@ window.tailPrecursorLab = {
             if (el) el.textContent = value;
         };
 
-        set('tpl-sample', `${g.normal.length} normal · ${g.tails.length} tails`);
+        set('tpl-sample', `${g.normal.length} normal · ${g.tails.length} resolved tails`);
+        set('tpl-censored', String(g.censored.length));
         set('tpl-tech', String(g.technical.length));
+        set(
+            'tpl-depth-classes',
+            `11–15 ${g.post11_15.length} · 16–20 ${g.post16_20.length} · ` +
+            `21–30 ${g.post21_30.length} · 31+ ${g.post31plus.length}`
+        );
         set('tpl-depth', String(depth));
 
         if (score.ready) {
@@ -3074,7 +3204,7 @@ window.tailPrecursorLab = {
         set('tpl-rec1', recovery.n ? `${pct(recovery.next1)} · n=${recovery.n}` : '-');
         set('tpl-rec2', recovery.n ? pct(recovery.next2) : '-');
         set('tpl-rec4', recovery.n ? pct(recovery.next4) : '-');
-        set('tpl-taildepth', recovery.n ? pct(recovery.tail10) : '-');
+        set('tpl-taildepth', recovery.n ? pct(recovery.deepTail) : '-');
 
         const p = document.getElementById('tpl-precursors');
         if (p) {
@@ -3085,8 +3215,37 @@ window.tailPrecursorLab = {
                     return `${e.label}: ${direction} · normal ${fmt(e.normalMean)} vs tail ${fmt(e.tailMean)} · effect ${Math.abs(e.effect).toFixed(2)}`;
                 }).join('<br>');
             } else {
-                p.textContent = 'Learning — at least 2 natural tails are needed even for a preliminary comparison.';
+                p.textContent = 'Learning — at least 2 resolved post-stop cycles are needed even for a preliminary comparison.';
             }
+        }
+
+        const traj = document.getElementById('tpl-trajectory');
+        if (traj) {
+            const checkpoints = [0, 3, 5, 7, 9];
+            const labels = {
+                0: 'Entry',
+                3: 'After trade 3',
+                5: 'After trade 5',
+                7: 'After trade 7',
+                9: 'After trade 9'
+            };
+
+            const rows = [];
+            for (const d of checkpoints) {
+                const best = this.featureStatsAtDepth(symbol, d)[0] || null;
+                if (!best) continue;
+
+                const dir = best.effect >= 0 ? '↑ in resolved tails' : '↓ in resolved tails';
+                rows.push(
+                    `${labels[d]}: ${best.label} ${dir} · ` +
+                    `normal ${Number(best.normalMean).toFixed(3)} vs tail ${Number(best.tailMean).toFixed(3)} · ` +
+                    `effect ${Math.abs(best.effect).toFixed(2)}`
+                );
+            }
+
+            traj.innerHTML = rows.length
+                ? rows.join('<br>')
+                : 'Waiting for enough resolved normal and post-stop cycles at comparable checkpoints.';
         }
     }
 };
@@ -3622,6 +3781,204 @@ window.cyclePerformance = {
 };
 
 // ============================================================================
+        // MATCHSTAR V16 — DOWNLOADABLE RESEARCH REPORT
+        // One JSON file contains the summary + full research histories so it can
+        // be uploaded back into ChatGPT without copy/pasting panels.
+        // ============================================================================
+
+        function safeClone(value) {
+            try {
+                return JSON.parse(JSON.stringify(value));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function buildMatchStarResearchReport() {
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                'UNKNOWN';
+
+            const cycleRows = window.cyclePerformance?.load(symbol) || [];
+            const cycleStats = window.cyclePerformance?.getStats(symbol) || null;
+            const groups = window.tailPrecursorLab?.eligibleGroups(symbol) || null;
+            const postResolved =
+                window.postStopDepthTracker?.loadResolved(symbol) || [];
+            const postStats =
+                window.postStopDepthTracker?.stats(symbol) || null;
+
+            const ntmState = window.nextTickModel?.state(symbol) || null;
+            const rec = window.digitIntelligenceEngine?.currentRecommendation || null;
+            const currentDigit =
+                (typeof sessionState !== 'undefined' && sessionState.sessionDigit !== null)
+                    ? Number(sessionState.sessionDigit)
+                    : Number(rec?.digit);
+
+            const prediction =
+                Number.isInteger(currentDigit) && window.nextTickModel?.getPrediction
+                    ? window.nextTickModel.getPrediction(symbol, currentDigit)
+                    : null;
+
+            let regime = null;
+            try {
+                regime = window.digitIntelligenceEngine?.computeRegimeStatus?.() || null;
+            } catch (_) {}
+
+            const trajectory = {};
+            for (const d of [0, 3, 5, 7, 9]) {
+                trajectory[String(d)] =
+                    window.tailPrecursorLab?.featureStatsAtDepth(symbol, d) || [];
+            }
+
+            const report = {
+                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V1',
+                generatedAt: new Date().toISOString(),
+                runtime: 'MATCHSTAR V16',
+                symbol,
+
+                liveState: {
+                    botRunning: !!window.isBotRunning,
+                    mode: (typeof sessionState !== 'undefined' ? sessionState.mode : null),
+                    sessionDigit:
+                        (typeof sessionState !== 'undefined' ? sessionState.sessionDigit : null),
+                    latestTick: safeClone(window.lastTick),
+                    tradeCount: Number(window.tradeCount || 0),
+                    currentStake: Number(window.currentStake || 0),
+                    currentBalance: Number(window.currentBalance || 0),
+                    sessionPnL: Number(window.netProfit || 0)
+                },
+
+                configuration: {
+                    baseStake: Number(document.getElementById('baseStake')?.value || window.baseStake || 0),
+                    multiplier: Number(document.getElementById('multiplier')?.value || window.multiplier || 0),
+                    maxTrades: Number(document.getElementById('maxTrades')?.value || window.maxTrades || 0),
+                    maxCycleTrades: Number(document.getElementById('maxCycleTrades')?.value || window.maxCycleTrades || 0),
+                    maxCycleExposure:
+                        typeof getTailDollarCap === 'function'
+                            ? Number(getTailDollarCap())
+                            : null,
+                    maxS20: Number(window.SURVIVAL_CFG?.maxS20 ?? NaN),
+                    evEntryThreshold: Number(window.EV_GATE_CONFIG?.minEdge ?? NaN),
+                    minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
+                },
+
+                nextTickResearch: {
+                    currentDigit:
+                        Number.isInteger(currentDigit) ? currentDigit : null,
+                    currentPrediction: safeClone(prediction),
+                    lastEvaluation: safeClone(window.nextTickModel?.lastEvaluation),
+                    shadowTicks: Number(ntmState?.shadowTicks || 0),
+                    topPickHits: Number(ntmState?.topPickHits || 0),
+                    topPickHitRate:
+                        Number(ntmState?.shadowTicks || 0) > 0
+                            ? Number(ntmState.topPickHits || 0) / Number(ntmState.shadowTicks)
+                            : null,
+                    brierScore:
+                        Number(ntmState?.shadowTicks || 0) > 0
+                            ? Number(ntmState.brierSum || 0) / Number(ntmState.shadowTicks)
+                            : null,
+                    regime: safeClone(regime),
+                    recommendation: safeClone(rec)
+                },
+
+                cyclePerformance: {
+                    stats: safeClone(cycleStats),
+                    currentCycle: safeClone(window.cyclePerformance?.current),
+                    history: safeClone(cycleRows)
+                },
+
+                tailPrecursorResearch: groups ? {
+                    counts: {
+                        normal: groups.normal.length,
+                        resolvedTails: groups.tails.length,
+                        postStop11to15: groups.post11_15.length,
+                        postStop16to20: groups.post16_20.length,
+                        postStop21to30: groups.post21_30.length,
+                        postStop31plus: groups.post31plus.length,
+                        censoredStops: groups.censored.length,
+                        technicalStops: groups.technical.length
+                    },
+                    entryFeatureDifferences:
+                        safeClone(window.tailPrecursorLab.featureStats(symbol)),
+                    trajectoryFeatureDifferences:
+                        safeClone(trajectory),
+                    currentEmpiricalTailScore:
+                        safeClone(
+                            window.tailPrecursorLab.empiricalTailScore(
+                                symbol,
+                                window.cyclePerformance?.current?.tailTrajectory?.slice(-1)?.[0] || null
+                            )
+                        )
+                } : null,
+
+                postStopDepthResearch: {
+                    stats: safeClone(postStats),
+                    activeWatches: safeClone(window.postStopDepthTracker?.active || []),
+                    resolvedCycles: safeClone(postResolved)
+                },
+
+                storageKeys: {
+                    cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
+                    forwardShadow: `matchstar_shadow_v1_${symbol}`,
+                    postStopDepth: `matchstar_poststop_depth_v1_${symbol}`
+                },
+
+                notes: [
+                    'Post-stop depth observations use future public ticks only and do not represent real trades after the safety stop.',
+                    'Capped cycles without an observed post-stop target are classified as censored rather than known tails.',
+                    'Technical stops are excluded from market-tail recovery statistics.',
+                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.'
+                ]
+            };
+
+            // Add a concise human-readable summary inside the JSON.
+            const ps = postStats || {};
+            const tc = report.tailPrecursorResearch?.counts || {};
+            report.humanSummary = [
+                `MatchStar V16 research report · ${symbol}`,
+                `Generated: ${report.generatedAt}`,
+                '',
+                `Cycles: ${cycleStats?.completed ?? 0} completed · ${cycleStats?.wins ?? 0} wins · ${cycleStats?.stopped ?? 0} stopped`,
+                `Tail research: ${tc.normal ?? 0} normal · ${tc.resolvedTails ?? 0} resolved post-stop tails · ${tc.censoredStops ?? 0} censored · ${tc.technicalStops ?? 0} technical`,
+                `Depth classes: 11–15 ${tc.postStop11to15 ?? 0} · 16–20 ${tc.postStop16to20 ?? 0} · 21–30 ${tc.postStop21to30 ?? 0} · 31+ ${tc.postStop31plus ?? 0}`,
+                `Post-stop resolved: ${ps.resolved ?? 0} · average depth ${Number.isFinite(ps.average) ? ps.average.toFixed(1) : '-'} · deepest ${ps.deepest ?? '-'}`,
+                `Forward shadow: ${ntmState?.shadowTicks ?? 0} ticks · top-pick hit ${report.nextTickResearch.topPickHitRate !== null ? (report.nextTickResearch.topPickHitRate * 100).toFixed(2) + '%' : '-'} · Brier ${report.nextTickResearch.brierScore !== null ? report.nextTickResearch.brierScore.toFixed(4) : '-'}`,
+                '',
+                'Upload this JSON file directly into ChatGPT for analysis.'
+            ].join('\n');
+
+            return report;
+        }
+
+        function downloadMatchStarResearchReport() {
+            const report = buildMatchStarResearchReport();
+            const json = JSON.stringify(report, null, 2);
+            const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+
+            const symbol = String(report.symbol || 'UNKNOWN').replace(/[^A-Za-z0-9_-]+/g, '_');
+            const stamp = new Date()
+                .toISOString()
+                .replace(/[:.]/g, '-');
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `matchstar-research-${symbol}-${stamp}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            log(
+                `📥 Research report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
+                `${report.postStopDepthResearch?.stats?.resolved || 0} resolved post-stop continuations`,
+                'SYSTEM'
+            );
+        }
+
+        // ============================================================================
         // MARTINGALE CALCULATOR FUNCTIONS
         // ============================================================================
         
@@ -5103,7 +5460,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V16 · minimizable UI · Post-Stop Depth Tracker FIXED for Max Trades · histories preserved · Deriv epoch-aligned · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · depth-aware tail taxonomy · trajectory research · downloadable report · histories preserved', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
