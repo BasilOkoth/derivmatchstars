@@ -5787,7 +5787,14 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             
             document.getElementById('baseStake').addEventListener('change', syncCalculatorWithMain);
             document.getElementById('multiplier').addEventListener('change', syncCalculatorWithMain);
-            document.getElementById('maxTrades').addEventListener('change', syncCalculatorWithMain);
+            document.getElementById('maxTrades').addEventListener('change', () => {
+                syncCalculatorWithMain();
+                window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+                window.maxCycleTrades = window.maxTrades;
+                window.TAIL_RISK_CONFIG.maxCycleLoss = null;
+                if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
+                if (typeof log === 'function') log(`🧯 Max Trades updated to ${window.maxTrades}; exposure cap recalculated automatically`, 'CONFIG');
+            });
             document.getElementById('calc_base_stake').addEventListener('change', () => {
                 document.getElementById('baseStake').value = document.getElementById('calc_base_stake').value;
             });
@@ -6684,13 +6691,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
 
         function getTailDollarCap() {
-            const input = document.getElementById('tail-max-loss-input');
-            const fromInput = Number(input?.value);
-            if (Number.isFinite(fromInput) && fromInput > 0) return fromInput;
-
-            const configured = Number(window.TAIL_RISK_CONFIG.maxCycleLoss);
-            if (Number.isFinite(configured) && configured > 0) return configured;
-
+            // FLEXIBLE MAX TRADES:
+            // The cycle exposure ceiling always follows the user's selected Max Trades.
+            // No stale saved $20.30 / 10-trade exposure cap can silently stop a longer cycle.
             return defaultTailDollarCap();
         }
 
@@ -6842,7 +6845,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 </div>
 
                 <div class="mt-3 flex items-center gap-2">
-                    <label for="tail-max-loss-input" class="text-gray-400">Max cycle exposure $</label>
+                    <label for="tail-max-loss-input" class="text-gray-400">Auto exposure for selected Max Trades $</label>
                     <input id="tail-max-loss-input" type="number" min="0.01" step="0.01"
                            class="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white" />
                     <span id="tail-cap-state" class="font-bold text-green-300">ACTIVE</span>
@@ -6859,17 +6862,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const input = document.getElementById('tail-max-loss-input');
             if (input) {
                 input.value = getTailDollarCap().toFixed(2);
-                input.addEventListener('change', () => {
-                    const v = Number(input.value);
-                    if (!Number.isFinite(v) || v <= 0) {
-                        input.value = getTailDollarCap().toFixed(2);
-                        return;
-                    }
-                    window.TAIL_RISK_CONFIG.maxCycleLoss = v;
-                    try { localStorage.setItem('matchstar_tail_max_loss', String(v)); } catch (_) {}
-                    renderTailRiskPanel();
-                    log(`🛡️ Tail dollar cap set to $${v.toFixed(2)}`, 'CONFIG');
-                });
+                input.readOnly = true;
+                input.title = 'Automatically calculated from Base Stake, Multiplier and Max Trades';
+                input.classList.add('opacity-70', 'cursor-not-allowed');
             }
         }
 
@@ -6900,12 +6895,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (state) state.textContent = window.TAIL_RISK_CONFIG.enabled ? 'ACTIVE' : 'OFF';
         }
 
-        try {
-            const storedTailCap = Number(localStorage.getItem('matchstar_tail_max_loss'));
-            if (Number.isFinite(storedTailCap) && storedTailCap > 0) {
-                window.TAIL_RISK_CONFIG.maxCycleLoss = storedTailCap;
-            }
-        } catch (_) {}
+        // Flexible Max Trades: ignore/remove any legacy fixed cycle-dollar cap.
+        try { localStorage.removeItem('matchstar_tail_max_loss'); } catch (_) {}
+        window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
@@ -7160,10 +7152,9 @@ window.isBotRunning = true;
             log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
             log(`🧯 User-selected cycle cap: ${window.maxTrades} trades`, 'SYSTEM');
 
-            if (!Number.isFinite(Number(window.TAIL_RISK_CONFIG.maxCycleLoss)) ||
-                Number(window.TAIL_RISK_CONFIG.maxCycleLoss) <= 0) {
-                window.TAIL_RISK_CONFIG.maxCycleLoss = defaultTailDollarCap();
-            }
+            // Recalculate from the user's CURRENT Max Trades every time START is pressed.
+            window.maxCycleTrades = window.maxTrades;
+            window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
             log(
                 `🛡️ Tail risk guard: ACTIVE | max cycle exposure $${getTailDollarCap().toFixed(2)} | ` +
