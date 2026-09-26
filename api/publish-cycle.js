@@ -66,24 +66,58 @@ function caption(c,type){
     '🚀 <b>Experience DigitMatchStar</b>',WEBSITE
   ].join('\n');
 }
+
+function envStatus(){
+  return {
+    TELEGRAM_BOT_TOKEN: Boolean(String(process.env.TELEGRAM_BOT_TOKEN || '').trim()),
+    TELEGRAM_ADMIN_CHAT_ID: Boolean(String(process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim()),
+    TELEGRAM_CHAT_ID: Boolean(String(process.env.TELEGRAM_CHAT_ID || '').trim()),
+    TELEGRAM_APPROVER_USER_IDS: Boolean(String(process.env.TELEGRAM_APPROVER_USER_IDS || '').trim()),
+    TELEGRAM_PUBLISH_ACCOUNT_IDS: Boolean(String(process.env.TELEGRAM_PUBLISH_ACCOUNT_IDS || '').trim())
+  };
+}
+
 async function sendApprovalPreview(text){
-  const token=process.env.TELEGRAM_BOT_TOKEN;
-  const adminChat=process.env.TELEGRAM_ADMIN_CHAT_ID;
-  if(!token||!adminChat) throw new Error('TELEGRAM_BOT_TOKEN or TELEGRAM_ADMIN_CHAT_ID is missing');
+  const token=String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const adminChat=String(process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim();
 
-  const preview = [
-    '🧾 <b>DigitMatchStar approval preview</b>',
-    'Review the result below before it is posted publicly.',
-    '',
-    text
-  ].join('\n');
+  if(!token){
+    const e=new Error('TELEGRAM_BOT_TOKEN is missing in this deployment');
+    e.status=500; throw e;
+  }
+  if(!adminChat){
+    const e=new Error('TELEGRAM_ADMIN_CHAT_ID is missing in this deployment');
+    e.status=500; throw e;
+  }
 
-  const r=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{
+  // Send the private review note as a SEPARATE message.
+  // It will never be copied to the public channel.
+  const noteResponse=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
       chat_id:adminChat,
-      text:preview,
+      text:'🧾 <b>DigitMatchStar approval preview</b>\nReview the result below before it is posted publicly.',
+      parse_mode:'HTML',
+      disable_web_page_preview:true
+    })
+  });
+
+  const noteData=await noteResponse.json().catch(()=>({}));
+  if(!noteResponse.ok||!noteData?.ok){
+    const e=new Error(`Telegram approval note failed: ${noteData?.description || `HTTP ${noteResponse.status}`}`);
+    e.status=502; throw e;
+  }
+
+  // Send the actual result as its own message with approval buttons.
+  // The approval endpoint copies THIS message only, so the private review note
+  // never appears in the public channel.
+  const resultResponse=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      chat_id:adminChat,
+      text,
       parse_mode:'HTML',
       disable_web_page_preview:true,
       reply_markup:{
@@ -97,36 +131,45 @@ async function sendApprovalPreview(text){
       }
     })
   });
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok||!d?.ok) throw new Error(d?.description||'Telegram approval preview failed');
-  return d.result;
+
+  const resultData=await resultResponse.json().catch(()=>({}));
+  if(!resultResponse.ok||!resultData?.ok){
+    const e=new Error(`Telegram approval preview failed: ${resultData?.description || `HTTP ${resultResponse.status}`}`);
+    e.status=502; throw e;
+  }
+
+  return resultData.result;
 }
-async function mediaWorker(payload){
-  const url=String(process.env.MEDIA_WORKER_URL||'').replace(/\/$/,'');
-  const secret=process.env.MEDIA_WORKER_SECRET;
-  if(!url||!secret) return {used:false};
-  try{
-    const r=await fetch(`${url}/publish`,{method:'POST',headers:{'Content-Type':'application/json','X-Publisher-Secret':secret},body:JSON.stringify(payload)});
-    const d=await r.json().catch(()=>({}));
-    return r.ok&&d?.published?{used:true,data:d}:{used:false,error:d?.detail||d?.error||`HTTP ${r.status}`};
-  }catch(e){ return {used:false,error:e.message}; }
-}
+
 module.exports=async function handler(req,res){
-  if(req.method!=='POST'){res.setHeader('Allow','POST');return res.status(405).json({error:'method_not_allowed'});}
+  // Safe diagnostic: reveals only whether required variables exist, never their values.
+  if(req.method==='GET'){
+    return res.status(200).json({ok:true,environment:envStatus()});
+  }
+
+  if(req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({error:'method_not_allowed'});
+  }
+
   try{
     const auth=String(req.headers.authorization||'');
     const token=auth.startsWith('Bearer ')?auth.slice(7).trim():'';
     if(!token) return res.status(401).json({error:'Missing Deriv bearer token'});
+
     const accountId=String(req.body?.account_id||'').trim();
     const account=await verify(token,accountId);
-    if(!allowed(accountId)) return res.status(403).json({error:'This account is not authorized to publish to the official channel'});
+
+    if(!allowed(accountId)){
+      return res.status(403).json({error:'This account is not authorized to publish to the official channel'});
+    }
+
     const c=normalise(req.body?.cycle);
     if(!c.id||!c.trades.length) return res.status(400).json({error:'Invalid or empty cycle'});
+
     const type=String(account?.account_type||'').toLowerCase()==='real'?'REAL':'DEMO';
     const text=caption(c,type);
 
-    // APPROVAL-FIRST MODE:
-    // Do not post publicly here. Send a private preview to the owner/admin.
     const preview=await sendApprovalPreview(text);
 
     return res.status(200).json({
@@ -137,5 +180,10 @@ module.exports=async function handler(req,res){
       cycleId:c.id,
       approvalMessageId:preview?.message_id||null
     });
-  }catch(e){ return res.status(e.status||500).json({error:e.message||'Publisher error'}); }
+  }catch(e){
+    return res.status(e.status||500).json({
+      error:e.message||'Publisher error',
+      environment:envStatus()
+    });
+  }
 };
