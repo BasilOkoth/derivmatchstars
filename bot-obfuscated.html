@@ -3010,6 +3010,70 @@ window.tailPrecursorLab = {
         return eligible[eligible.length - 1];
     },
 
+    percentileRank(values, x) {
+        const arr = (Array.isArray(values) ? values : [])
+            .map(Number)
+            .filter(Number.isFinite)
+            .sort((a,b) => a-b);
+
+        if (!arr.length || !Number.isFinite(Number(x))) return null;
+
+        const value = Number(x);
+        let below = 0;
+        let equal = 0;
+
+        for (const v of arr) {
+            if (v < value) below++;
+            else if (v === value) equal++;
+        }
+
+        // Mid-rank percentile handles ties more gracefully.
+        return ((below + 0.5 * equal) / arr.length) * 100;
+    },
+
+    currentCheckpointSnapshot(depth) {
+        const cycle = window.cyclePerformance?.current || null;
+        if (!cycle) return null;
+
+        return this.trajectorySnapshotAt(cycle, depth);
+    },
+
+    comparisonForFeature(symbol, depth, featureKey) {
+        const g = this.eligibleGroups(symbol);
+        const current = this.currentCheckpointSnapshot(depth);
+        const currentValue = Number(current?.[featureKey]);
+
+        if (!Number.isFinite(currentValue)) {
+            return {
+                currentValue: null,
+                normalMean: null,
+                tailMean: null,
+                normalPercentile: null,
+                tailPercentile: null,
+                normalN: 0,
+                tailN: 0
+            };
+        }
+
+        const normalValues = g.normal
+            .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[featureKey]))
+            .filter(Number.isFinite);
+
+        const tailValues = g.tails
+            .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[featureKey]))
+            .filter(Number.isFinite);
+
+        return {
+            currentValue,
+            normalMean: normalValues.length ? this.mean(normalValues) : null,
+            tailMean: tailValues.length ? this.mean(tailValues) : null,
+            normalPercentile: this.percentileRank(normalValues, currentValue),
+            tailPercentile: this.percentileRank(tailValues, currentValue),
+            normalN: normalValues.length,
+            tailN: tailValues.length
+        };
+    },
+
     featureStatsAtDepth(symbol, depth) {
         const g = this.eligibleGroups(symbol);
         const result = [];
@@ -3106,6 +3170,49 @@ window.tailPrecursorLab = {
                 <div class="text-gray-400 mb-1">Strongest observed entry differences:</div>
                 <div id="tpl-precursors" class="font-mono text-gray-200">
                     Learning — more resolved post-stop cycles required.
+                </div>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-2">Current trajectory research:</div>
+
+                <div class="mb-2 flex flex-wrap gap-2 items-center">
+                    <span class="text-gray-400">Compare at:</span>
+                    <select id="tpl-checkpoint"
+                            onchange="window.tailPrecursorLab && window.tailPrecursorLab.render()"
+                            class="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white">
+                        <option value="0">Entry</option>
+                        <option value="3">Trade 3</option>
+                        <option value="5">Trade 5</option>
+                        <option value="7">Trade 7</option>
+                        <option value="9">Trade 9</option>
+                    </select>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-[11px] border-collapse">
+                        <thead>
+                            <tr class="text-gray-400">
+                                <th class="text-left p-1 border-b border-gray-700">Metric</th>
+                                <th class="text-right p-1 border-b border-gray-700">Current</th>
+                                <th class="text-right p-1 border-b border-gray-700">Normal mean</th>
+                                <th class="text-right p-1 border-b border-gray-700">Resolved-tail mean</th>
+                                <th class="text-right p-1 border-b border-gray-700">%ile vs normal</th>
+                                <th class="text-right p-1 border-b border-gray-700">%ile vs tails</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tpl-research-table">
+                            <tr>
+                                <td colspan="6" class="p-2 text-gray-400">
+                                    Waiting for an active cycle and enough resolved history.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="tpl-research-note" class="mt-2 text-gray-400">
+                    Percentiles show where the current value sits relative to historical distributions.
                 </div>
             </div>
 
@@ -3216,6 +3323,55 @@ window.tailPrecursorLab = {
                 }).join('<br>');
             } else {
                 p.textContent = 'Learning — at least 2 resolved post-stop cycles are needed even for a preliminary comparison.';
+            }
+        }
+
+        const researchBody = document.getElementById('tpl-research-table');
+        if (researchBody) {
+            const checkpointEl = document.getElementById('tpl-checkpoint');
+            const depth = Number(checkpointEl?.value || 0);
+
+            const metrics = [
+                ['extendRatio', 'Extend ratio'],
+                ['gapP90', 'gap/P90'],
+                ['targetFreq20', 'Target freq 20']
+            ];
+
+            const fmt = (v, key) => {
+                if (!Number.isFinite(v)) return '-';
+                if (key === 'targetFreq20') return `${(v * 100).toFixed(1)}%`;
+                return Number(v).toFixed(3);
+            };
+
+            const fmtPctile = (v) =>
+                Number.isFinite(v) ? `${v.toFixed(1)}%` : '-';
+
+            const rows = [];
+
+            for (const [key, label] of metrics) {
+                const c = this.comparisonForFeature(symbol, depth, key);
+
+                rows.push(`
+                    <tr>
+                        <td class="p-1 border-b border-gray-800 text-gray-300">${label}</td>
+                        <td class="p-1 border-b border-gray-800 text-right font-bold text-cyan-300">${fmt(c.currentValue, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-gray-200">${fmt(c.normalMean, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-yellow-300">${fmt(c.tailMean, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-gray-200">${fmtPctile(c.normalPercentile)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-yellow-200">${fmtPctile(c.tailPercentile)}</td>
+                    </tr>
+                `);
+            }
+
+            researchBody.innerHTML = rows.join('');
+
+            const note = document.getElementById('tpl-research-note');
+            if (note) {
+                const g2 = this.eligibleGroups(symbol);
+                note.textContent =
+                    `Checkpoint: ${depth === 0 ? 'Entry' : 'Trade ' + depth} · ` +
+                    `${g2.normal.length} normal cycles · ${g2.tails.length} resolved-tail cycles · ` +
+                    `${g2.censored.length} censored cap stops excluded.`;
             }
         }
 
@@ -3826,9 +3982,20 @@ window.cyclePerformance = {
             } catch (_) {}
 
             const trajectory = {};
+            const currentComparisons = {};
+
             for (const d of [0, 3, 5, 7, 9]) {
                 trajectory[String(d)] =
                     window.tailPrecursorLab?.featureStatsAtDepth(symbol, d) || [];
+
+                currentComparisons[String(d)] = {
+                    extendRatio:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'extendRatio') || null,
+                    gapP90:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'gapP90') || null,
+                    targetFreq20:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'targetFreq20') || null
+                };
             }
 
             const report = {
@@ -3903,6 +4070,8 @@ window.cyclePerformance = {
                         safeClone(window.tailPrecursorLab.featureStats(symbol)),
                     trajectoryFeatureDifferences:
                         safeClone(trajectory),
+                    currentTrajectoryComparisons:
+                        safeClone(currentComparisons),
                     currentEmpiricalTailScore:
                         safeClone(
                             window.tailPrecursorLab.empiricalTailScore(
@@ -5460,7 +5629,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V16 · depth-aware tail taxonomy · trajectory research · downloadable report · histories preserved', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · live trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
