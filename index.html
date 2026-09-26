@@ -3,63 +3,144 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DigitMatchStars Pro™ - Official Deriv Trading Bot</title>
-  <meta name="description" content="Deriv trading bot with OAuth2 PKCE and Options API account selection.">
+  <title>DigitMatchStar | Premium Digit Match Trading Platform</title>
+  <meta name="description" content="DigitMatchStar is a premium Deriv Digit Match trading platform with smart market scanning, automated cycle management, live controls, and secure OAuth connection.">
 
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
 
   <style>
-    * { font-family: 'Inter', sans-serif; }
-    body {
-      background: linear-gradient(135deg,#0a0f1f,#0f172a);
-      color:#f8fafc;
+    :root{
+      --bg:#06110d;
+      --bg2:#091913;
+      --panel:rgba(255,255,255,.055);
+      --panel2:rgba(255,255,255,.085);
+      --line:rgba(255,255,255,.10);
+      --muted:#9cb0a7;
+      --text:#f6fbf8;
+      --green:#22c55e;
+      --green2:#16a34a;
+      --lime:#a3e635;
+      --gold:#d7b56d;
+      --danger:#ef4444;
+    }
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{
+      margin:0;
+      font-family:'Inter',sans-serif;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(34,197,94,.10), transparent 28%),
+        radial-gradient(circle at 85% 10%, rgba(215,181,109,.08), transparent 22%),
+        linear-gradient(180deg,#04100b 0%,#081710 45%,#050c09 100%);
+      color:var(--text);
       min-height:100vh;
+      overflow-x:hidden;
     }
-    .gradient-text {
-      background: linear-gradient(135deg,#10b981,#3b82f6,#8b5cf6);
-      -webkit-background-clip:text;
-      -webkit-text-fill-color:transparent;
+    .brand-font{font-family:'Manrope',sans-serif}
+    .container{width:min(1180px,92%);margin:0 auto}
+    .nav-shell{
+      position:fixed;top:18px;left:50%;transform:translateX(-50%);
+      width:min(1180px,92%);z-index:1000;
+      background:rgba(4,14,10,.78);backdrop-filter:blur(18px);
+      border:1px solid var(--line);border-radius:20px;
+      box-shadow:0 18px 50px rgba(0,0,0,.28)
     }
-    .glass-card {
-      background:rgba(255,255,255,.04);
-      backdrop-filter:blur(12px);
-      border:1px solid rgba(255,255,255,.1);
-      border-radius:20px;
+    .glass{
+      background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.035));
+      border:1px solid var(--line);backdrop-filter:blur(14px);
+      box-shadow:0 24px 80px rgba(0,0,0,.22)
     }
-    .btn-primary,.btn-secondary,.btn-danger {
-      padding:14px 28px;
-      border-radius:12px;
-      font-weight:700;
+    .eyebrow{
+      display:inline-flex;align-items:center;gap:.55rem;
+      padding:.55rem .9rem;border-radius:999px;
+      background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.22);
+      color:#b9f7cb;font-size:.82rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase
     }
-    .btn-primary { background:linear-gradient(135deg,#10b981,#059669); }
-    .btn-secondary { background:linear-gradient(135deg,#8b5cf6,#7c3aed); }
-    .btn-danger { background:linear-gradient(135deg,#ef4444,#dc2626); }
-    .modal {
-      display:none;
-      position:fixed;
-      inset:0;
-      background:rgba(0,0,0,.9);
-      z-index:9999;
-      align-items:center;
-      justify-content:center;
-      padding:16px;
+    .dot{width:8px;height:8px;border-radius:999px;background:var(--green);box-shadow:0 0 16px var(--green)}
+    .headline{
+      font-family:'Manrope',sans-serif;font-weight:800;letter-spacing:-.045em;
+      line-height:.97
     }
-    .modal-content {
-      background:linear-gradient(135deg,#0f172a,#0a0f1f);
-      padding:36px;
-      border-radius:24px;
-      max-width:560px;
-      width:100%;
-      border:1px solid rgba(255,255,255,.1);
+    .gradient-text{
+      background:linear-gradient(90deg,#ffffff 0%,#dff8e7 38%,#a3e635 100%);
+      -webkit-background-clip:text;background-clip:text;color:transparent
+    }
+    .subtle{color:var(--muted)}
+    .cta{
+      display:inline-flex;align-items:center;justify-content:center;gap:.7rem;
+      padding:1rem 1.35rem;border-radius:14px;
+      background:linear-gradient(135deg,var(--green),var(--green2));
+      color:white;font-weight:800;text-decoration:none;border:0;cursor:pointer;
+      box-shadow:0 16px 44px rgba(34,197,94,.22);
+      transition:.2s ease
+    }
+    .cta:hover{transform:translateY(-2px);box-shadow:0 20px 54px rgba(34,197,94,.28)}
+    .cta-secondary{
+      display:inline-flex;align-items:center;justify-content:center;gap:.7rem;
+      padding:1rem 1.35rem;border-radius:14px;
+      background:rgba(255,255,255,.05);color:#fff;
+      border:1px solid var(--line);font-weight:700;text-decoration:none;cursor:pointer
+    }
+    .metric{border-left:1px solid var(--line)}
+    .hero-orbit{
+      position:absolute;border-radius:999px;filter:blur(70px);opacity:.22;pointer-events:none
+    }
+    .hero-screen{
+      position:relative;border-radius:28px;padding:14px;
+      background:linear-gradient(160deg,rgba(255,255,255,.10),rgba(255,255,255,.02));
+      border:1px solid rgba(255,255,255,.12);box-shadow:0 40px 120px rgba(0,0,0,.45)
+    }
+    .screen-inner{
+      border-radius:22px;background:linear-gradient(180deg,#07120d,#091b13);
+      border:1px solid rgba(255,255,255,.08);overflow:hidden
+    }
+    .screen-bar{display:flex;gap:7px;padding:14px 16px;border-bottom:1px solid var(--line)}
+    .screen-bar span{width:8px;height:8px;border-radius:999px;background:#334139}
+    .trade-chip{
+      padding:.45rem .7rem;border-radius:10px;background:rgba(255,255,255,.055);
+      border:1px solid rgba(255,255,255,.075);font-size:.78rem;color:#cfe0d7
+    }
+    .feature-card{
+      border-radius:22px;padding:1.5rem;background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.025));
+      border:1px solid var(--line);transition:.2s ease
+    }
+    .feature-card:hover{transform:translateY(-4px);border-color:rgba(34,197,94,.24)}
+    .iconbox{
+      width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+      background:rgba(34,197,94,.10);border:1px solid rgba(34,197,94,.18);color:#bff8cf;font-weight:900
+    }
+    .section-line{height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent)}
+    .modal{
+      display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);
+      z-index:9999;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(8px)
+    }
+    .modal-content{
+      width:min(560px,100%);border-radius:24px;padding:28px;
+      background:linear-gradient(180deg,#0a1711,#08110d);
+      border:1px solid rgba(255,255,255,.12);box-shadow:0 30px 90px rgba(0,0,0,.55)
+    }
+    .mode-btn{
+      width:100%;display:flex;align-items:center;justify-content:space-between;
+      padding:1rem 1.05rem;border-radius:14px;border:1px solid var(--line);
+      background:rgba(255,255,255,.04);color:white;font-weight:700;cursor:pointer;text-align:left
+    }
+    .mode-btn:hover{border-color:rgba(34,197,94,.34);background:rgba(34,197,94,.06)}
+    .risk{
+      font-size:.78rem;line-height:1.6;color:#7f9389
+    }
+    @media (max-width:768px){
+      .nav-shell{top:10px}
+      .headline{letter-spacing:-.035em}
     }
   </style>
 
   <script>
     const CONFIG = {
       CLIENT_ID: "34uXWAMOwfAO5EtltnV4n",
-      REDIRECT_URI: "https://derivmatchstars.vercel.app/",
+      REDIRECT_URI: "https://www.digitmatchstar.com/",
       AFFILIATE_URL: "https://partner-tracking.deriv.com/click?a=20638&o=1&c=3&link_id=1",
       REFERRAL_CODE: "3655J683S288"
     };
@@ -89,7 +170,6 @@
 
     function saveSession(token, account, tokenData, mode) {
       const accountMode = String(account.account_type || mode || "").toUpperCase() === "REAL" ? "REAL" : "DEMO";
-
       localStorage.setItem("active_token", token);
       localStorage.setItem("derivToken", token);
       localStorage.setItem("bot_authenticated", "true");
@@ -101,11 +181,8 @@
       localStorage.setItem("deriv_client_id", CONFIG.CLIENT_ID);
       localStorage.setItem("auto_open_bot", "true");
 
-      if (accountMode === "REAL") {
-        localStorage.setItem("derivRealAccount", account.account_id);
-      } else {
-        localStorage.setItem("derivDemoAccount", account.account_id);
-      }
+      if (accountMode === "REAL") localStorage.setItem("derivRealAccount", account.account_id);
+      else localStorage.setItem("derivDemoAccount", account.account_id);
 
       if (tokenData?.token_type) localStorage.setItem("deriv_token_type", tokenData.token_type);
       if (tokenData?.expires_in) {
@@ -121,9 +198,7 @@
       });
 
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || data.error_description || "Could not retrieve Deriv Options accounts");
-      }
+      if (!response.ok) throw new Error(data.error || data.error_description || "Could not retrieve Deriv Options accounts");
       return normalizeAccounts(data);
     }
 
@@ -139,7 +214,6 @@
         history.replaceState({}, document.title, "/index.html");
         return;
       }
-
       if (!code) return;
 
       const expectedState = sessionStorage.getItem("deriv_oauth_state");
@@ -151,7 +225,6 @@
         history.replaceState({}, document.title, "/index.html");
         return;
       }
-
       if (!codeVerifier) {
         alert("OAuth session expired. Please connect again.");
         history.replaceState({}, document.title, "/index.html");
@@ -180,23 +253,16 @@
 
         if (status) status.textContent = "Loading your Deriv Options accounts...";
         const accounts = await getOptionsAccounts(tokenData.access_token);
-
-        if (!accounts.length) {
-          throw new Error("No Deriv Options trading account was returned for this login.");
-        }
+        if (!accounts.length) throw new Error("No Deriv Options trading account was returned for this login.");
 
         const wanted = requestedMode.toLowerCase();
-        const selected =
-          accounts.find(a => String(a.account_type || "").toLowerCase() === wanted) ||
-          accounts[0];
+        const selected = accounts.find(a => String(a.account_type || "").toLowerCase() === wanted) || accounts[0];
 
-        if (requestedMode === "REAL" &&
-            String(selected.account_type || "").toLowerCase() !== "real") {
+        if (requestedMode === "REAL" && String(selected.account_type || "").toLowerCase() !== "real") {
           throw new Error("No REAL Deriv Options account is available for this login.");
         }
 
         saveSession(tokenData.access_token, selected, tokenData, requestedMode);
-
         sessionStorage.removeItem("deriv_oauth_state");
         sessionStorage.removeItem("deriv_code_verifier");
         sessionStorage.removeItem("deriv_requested_mode");
@@ -253,41 +319,244 @@
 </head>
 
 <body>
-  <nav class="glass-card fixed top-6 left-1/2 -translate-x-1/2 w-[95%] max-w-6xl px-6 py-4 flex justify-between items-center">
-    <div class="flex items-center gap-3">
-      <div class="w-12 h-12 rounded-full bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center">
-        <i class="fas fa-robot text-white text-xl"></i>
-      </div>
-      <span class="text-2xl font-bold gradient-text">DigitMatchStars Pro™</span>
+  <div class="hero-orbit" style="width:420px;height:420px;background:#1fd167;top:-120px;left:-120px;"></div>
+  <div class="hero-orbit" style="width:360px;height:360px;background:#c7a45c;top:90px;right:-140px;"></div>
+
+  <nav class="nav-shell">
+    <div class="px-5 md:px-7 py-4 flex items-center justify-between">
+      <a href="#" class="flex items-center gap-3 no-underline text-white">
+        <div class="w-11 h-11 rounded-2xl flex items-center justify-center font-black text-lg"
+             style="background:linear-gradient(135deg,#22c55e,#0f8c49);box-shadow:0 10px 24px rgba(34,197,94,.22)">D</div>
+        <div>
+          <div class="brand-font font-extrabold text-lg leading-tight">DigitMatchStar</div>
+          <div class="text-[10px] uppercase tracking-[.25em] text-emerald-300/70">Premium Trading</div>
+        </div>
+      </a>
+      <button onclick="openModal()" class="cta !py-3 !px-5 text-sm">Start with DigitMatchStar</button>
     </div>
-    <button onclick="openModal()" class="btn-primary">Connect</button>
   </nav>
 
-  <section class="pt-44 pb-24 text-center px-6">
-    <h1 class="text-5xl md:text-7xl font-bold mb-6">
-      <span class="gradient-text">Deriv Options</span><br>Live Connection
-    </h1>
-    <p id="authStatus" class="text-gray-300 mb-8">
-      Connect securely using Deriv OAuth2. Choose demo or real explicitly.
-    </p>
-    <div class="flex flex-col sm:flex-row gap-4 justify-center">
-      <button onclick="startOAuth('DEMO')" class="btn-secondary text-lg">Connect DEMO</button>
-      <button onclick="startOAuth('REAL')" class="btn-danger text-lg">Connect REAL</button>
-      <button onclick="createAccount()" class="btn-primary text-lg">Create Deriv Account</button>
-    </div>
-  </section>
+  <main>
+    <section class="pt-40 md:pt-48 pb-20 md:pb-28">
+      <div class="container grid lg:grid-cols-2 gap-14 items-center">
+        <div>
+          <div class="eyebrow mb-7"><span class="dot"></span> Premium Deriv Digit Match Platform</div>
+          <h1 class="headline text-5xl md:text-7xl xl:text-[5.5rem] mb-7">
+            A smarter way to <span class="gradient-text">trade Digit Match.</span>
+          </h1>
+          <p class="text-lg md:text-xl subtle max-w-2xl leading-relaxed mb-8">
+            DigitMatchStar brings smart market scanning, automated cycle management, live account controls and a professional trading experience into one powerful platform.
+          </p>
+          <div class="flex flex-wrap items-center gap-4">
+            <button onclick="openModal()" class="cta text-base md:text-lg">
+              Start with DigitMatchStar
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+          <p id="authStatus" class="mt-4 text-sm text-emerald-100/60">
+            Secure Deriv OAuth connection • Demo and Real accounts supported
+          </p>
 
-  <div id="authModal" class="modal">
-    <div class="modal-content">
-      <button onclick="closeModal()" class="float-right text-white text-2xl">&times;</button>
-      <h2 class="text-3xl font-bold mb-4 text-center">Choose account mode</h2>
-      <p class="text-sm text-gray-400 mb-6 text-center">
-        REAL uses real funds. DEMO uses virtual funds.
-      </p>
-      <div class="space-y-4">
-        <button onclick="startOAuth('DEMO')" class="w-full btn-secondary">Connect DEMO account</button>
-        <button onclick="startOAuth('REAL')" class="w-full btn-danger">Connect REAL account</button>
+          <div class="mt-10 grid grid-cols-3 gap-0 max-w-2xl">
+            <div class="pr-5">
+              <div class="text-xl md:text-2xl font-extrabold">Smart</div>
+              <div class="text-xs subtle mt-1">Digit selection</div>
+            </div>
+            <div class="px-5 metric">
+              <div class="text-xl md:text-2xl font-extrabold">Live</div>
+              <div class="text-xs subtle mt-1">Cycle control</div>
+            </div>
+            <div class="pl-5 metric">
+              <div class="text-xl md:text-2xl font-extrabold">Secure</div>
+              <div class="text-xs subtle mt-1">OAuth access</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-screen">
+          <div class="screen-inner">
+            <div class="screen-bar"><span></span><span></span><span></span></div>
+            <div class="p-5 md:p-7">
+              <div class="flex items-center justify-between mb-6">
+                <div>
+                  <div class="text-xs uppercase tracking-[.2em] text-emerald-300/70">Live Trading Dashboard</div>
+                  <div class="text-2xl font-bold mt-2">Digit Match Engine</div>
+                </div>
+                <div class="trade-chip">Connected</div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-4 mb-4">
+                <div class="glass rounded-2xl p-5">
+                  <div class="text-xs subtle mb-2">Target Digit</div>
+                  <div class="text-5xl font-black text-emerald-300">5</div>
+                </div>
+                <div class="glass rounded-2xl p-5">
+                  <div class="text-xs subtle mb-2">Current Trade</div>
+                  <div class="text-5xl font-black">#4</div>
+                </div>
+              </div>
+
+              <div class="glass rounded-2xl p-5 mb-4">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <div class="text-xs subtle">Cycle Status</div>
+                    <div class="font-bold mt-1">Structured execution active</div>
+                  </div>
+                  <span class="trade-chip">AUTO</span>
+                </div>
+                <div class="h-2 bg-white/5 rounded-full overflow-hidden">
+                  <div class="h-full rounded-full" style="width:62%;background:linear-gradient(90deg,#22c55e,#a3e635)"></div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-3 gap-3">
+                <div class="trade-chip text-center">Smart Entry</div>
+                <div class="trade-chip text-center">Risk Limits</div>
+                <div class="trade-chip text-center">Live P/L</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+    </section>
+
+    <div class="container section-line"></div>
+
+    <section class="py-20 md:py-28">
+      <div class="container">
+        <div class="max-w-3xl mb-12">
+          <div class="eyebrow mb-5">Why DigitMatchStar</div>
+          <h2 class="headline text-4xl md:text-6xl mb-5">Everything you need in one trading screen.</h2>
+          <p class="text-lg subtle leading-relaxed">
+            No complicated setup. No switching between multiple tools. DigitMatchStar is built to make Digit Match trading clearer, faster and more structured from entry to exit.
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+          <div class="feature-card">
+            <div class="iconbox mb-5">01</div>
+            <h3 class="text-xl font-bold mb-3">Smart Digit Selection</h3>
+            <p class="subtle leading-relaxed text-sm">The platform monitors the market and helps identify the strongest current digit opportunity.</p>
+          </div>
+          <div class="feature-card">
+            <div class="iconbox mb-5">02</div>
+            <h3 class="text-xl font-bold mb-3">Automated Cycle Management</h3>
+            <p class="subtle leading-relaxed text-sm">Stake progression, trade counting and cycle handling are managed inside one controlled workflow.</p>
+          </div>
+          <div class="feature-card">
+            <div class="iconbox mb-5">03</div>
+            <h3 class="text-xl font-bold mb-3">Built-In Risk Controls</h3>
+            <p class="subtle leading-relaxed text-sm">Set clear limits for your cycle so the system follows a defined structure instead of trading without boundaries.</p>
+          </div>
+          <div class="feature-card">
+            <div class="iconbox mb-5">04</div>
+            <h3 class="text-xl font-bold mb-3">Demo & Real Accounts</h3>
+            <p class="subtle leading-relaxed text-sm">Start on Demo, learn the platform and move to a Real account only when you choose.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="pb-20 md:pb-28">
+      <div class="container">
+        <div class="glass rounded-[28px] p-7 md:p-12 grid lg:grid-cols-2 gap-10 items-center">
+          <div>
+            <div class="eyebrow mb-5">Built for serious users</div>
+            <h2 class="headline text-4xl md:text-5xl mb-5">From signal to execution in seconds.</h2>
+            <p class="text-lg subtle leading-relaxed mb-7">
+              DigitMatchStar keeps your market view, target digit, stake progression, cycle status and account information in one premium interface.
+            </p>
+            <button onclick="openModal()" class="cta">Start with DigitMatchStar →</button>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-4">
+            <div class="feature-card">
+              <div class="text-sm subtle mb-2">Market scanning</div>
+              <div class="text-3xl font-black">Live</div>
+            </div>
+            <div class="feature-card">
+              <div class="text-sm subtle mb-2">Trade controls</div>
+              <div class="text-3xl font-black">Built-in</div>
+            </div>
+            <div class="feature-card">
+              <div class="text-sm subtle mb-2">Account access</div>
+              <div class="text-3xl font-black">OAuth</div>
+            </div>
+            <div class="feature-card">
+              <div class="text-sm subtle mb-2">Trading modes</div>
+              <div class="text-3xl font-black">Demo + Real</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="pb-24 md:pb-32">
+      <div class="container">
+        <div class="text-center max-w-3xl mx-auto">
+          <div class="eyebrow mb-5">Get started</div>
+          <h2 class="headline text-4xl md:text-6xl mb-5">Trade with a platform built for control.</h2>
+          <p class="text-lg subtle leading-relaxed mb-8">
+            Connect your Deriv account securely and access the DigitMatchStar trading environment.
+          </p>
+          <button onclick="openModal()" class="cta text-lg">Start with DigitMatchStar →</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-white/10">
+    <div class="container py-8 flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
+      <div>
+        <div class="brand-font font-extrabold">DigitMatchStar</div>
+        <div class="text-xs subtle mt-1">Premium Digit Match trading platform</div>
+      </div>
+      <div class="risk md:max-w-2xl">
+        Trading involves risk. Past results do not guarantee future performance. Demo results use virtual funds. Real-account trading uses real funds.
+      </div>
+    </div>
+  </footer>
+
+  <div id="authModal" class="modal" onclick="if(event.target===this) closeModal()">
+    <div class="modal-content">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <div class="text-xs uppercase tracking-[.18em] text-emerald-300/70 mb-2">Start with DigitMatchStar</div>
+          <h2 class="text-2xl md:text-3xl font-extrabold">Choose how you want to connect</h2>
+        </div>
+        <button onclick="closeModal()" class="text-white/60 hover:text-white text-3xl leading-none">&times;</button>
+      </div>
+
+      <p class="subtle text-sm leading-relaxed mb-6">
+        Connect securely using your Deriv account. Demo uses virtual funds. Real uses real funds.
+      </p>
+
+      <div class="space-y-3">
+        <button onclick="startOAuth('DEMO')" class="mode-btn">
+          <span>
+            <span class="block text-sm text-emerald-300 mb-1">Recommended for first use</span>
+            <span class="text-lg">Connect Demo Account</span>
+          </span>
+          <span>→</span>
+        </button>
+
+        <button onclick="startOAuth('REAL')" class="mode-btn">
+          <span>
+            <span class="block text-sm text-white/50 mb-1">Real funds</span>
+            <span class="text-lg">Connect Real Account</span>
+          </span>
+          <span>→</span>
+        </button>
+      </div>
+
+      <div class="mt-6 pt-5 border-t border-white/10">
+        <p class="text-sm subtle mb-3">Don't have a Deriv account?</p>
+        <button onclick="createAccount()" class="cta-secondary w-full">Create Deriv Account</button>
+      </div>
+
+      <p class="risk mt-5">
+        By continuing, you acknowledge that trading can result in losses. DigitMatchStar does not guarantee profits.
+      </p>
     </div>
   </div>
 </body>
