@@ -693,6 +693,243 @@
 
     <script>
         // ============================================================================
+        // V16 UI ADD-ON — MINIMIZABLE PANELS + HISTORY VIEWER
+        // Trading logic and storage keys are intentionally unchanged.
+        // ============================================================================
+
+        function getPanelMinState(key, defaultMinimized = false) {
+            try {
+                const raw = localStorage.getItem(`matchstar_panel_min_${key}`);
+                if (raw === null) return !!defaultMinimized;
+                return raw === '1';
+            } catch (_) {
+                return !!defaultMinimized;
+            }
+        }
+
+        function setPanelMinState(key, minimized) {
+            try {
+                localStorage.setItem(`matchstar_panel_min_${key}`, minimized ? '1' : '0');
+            } catch (_) {}
+        }
+
+        function makePanelMinimizable(panel, options = {}) {
+            if (!panel || panel.dataset.minimizableReady === '1') return;
+
+            const key = options.key || panel.id || `panel-${Math.random().toString(36).slice(2)}`;
+            const title = options.title || 'Panel';
+            const icon = options.icon || '';
+            const defaultMinimized = !!options.defaultMinimized;
+
+            panel.dataset.minimizableReady = '1';
+
+            // Preserve every existing node exactly; only move them into a body wrapper.
+            const existingNodes = Array.from(panel.childNodes);
+            const body = document.createElement('div');
+            body.className = 'matchstar-min-body';
+            body.id = `${key}-min-body`;
+
+            existingNodes.forEach(node => body.appendChild(node));
+
+            const header = document.createElement('div');
+            header.className = 'flex items-center justify-between gap-2 mb-2 pb-1 border-b border-gray-700';
+
+            const heading = document.createElement('div');
+            heading.className = 'font-bold text-gray-200';
+            heading.textContent = `${icon ? icon + ' ' : ''}${title}`;
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded font-bold text-white';
+            btn.setAttribute('aria-controls', body.id);
+
+            header.appendChild(heading);
+            header.appendChild(btn);
+
+            panel.insertBefore(header, panel.firstChild);
+            panel.appendChild(body);
+
+            const apply = (minimized) => {
+                body.classList.toggle('hidden', minimized);
+                btn.textContent = minimized ? '+' : '−';
+                btn.title = minimized ? `Expand ${title}` : `Minimize ${title}`;
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                setPanelMinState(key, minimized);
+            };
+
+            let minimized = getPanelMinState(key, defaultMinimized);
+            apply(minimized);
+
+            btn.addEventListener('click', () => {
+                minimized = !minimized;
+                apply(minimized);
+            });
+        }
+
+        function initializeStaticMinimizablePanels() {
+            // Martingale already has its own minimizer, so do not wrap it again.
+
+            const marketOuter = document.querySelector('.lg\\:col-span-1 > .bg-gray-900.border.border-gray-700.rounded-xl');
+            if (marketOuter) {
+                makePanelMinimizable(marketOuter, {
+                    key: 'market-status-engine',
+                    title: 'MARKET STATUS & ENGINE',
+                    icon: '📊'
+                });
+            }
+
+            const tradeStatus = document.getElementById('trade-result-container');
+            if (tradeStatus) {
+                makePanelMinimizable(tradeStatus, {
+                    key: 'trade-status',
+                    title: 'TRADE STATUS',
+                    icon: '⚡',
+                    defaultMinimized: false
+                });
+            }
+
+            const logColumn = document.getElementById('log-column');
+            if (logColumn) {
+                makePanelMinimizable(logColumn, {
+                    key: 'live-log',
+                    title: 'LIVE LOG',
+                    icon: '🧾',
+                    defaultMinimized: true
+                });
+            }
+        }
+
+        function decorateDynamicPanels() {
+            const edge = document.getElementById('next-tick-edge-panel');
+            if (edge) {
+                makePanelMinimizable(edge, {
+                    key: 'next-tick-edge',
+                    title: 'NEXT-TICK EDGE ENGINE',
+                    icon: '🎯'
+                });
+            }
+
+            const cycle = document.getElementById('cycle-performance-panel');
+            if (cycle) {
+                makePanelMinimizable(cycle, {
+                    key: 'cycle-performance',
+                    title: 'CYCLE PERFORMANCE',
+                    icon: '🔁'
+                });
+            }
+
+            const risk = document.getElementById('tail-risk-panel');
+            if (risk) {
+                makePanelMinimizable(risk, {
+                    key: 'tail-risk',
+                    title: 'TAIL RISK CONTROL',
+                    icon: '🛡️'
+                });
+            }
+
+            const precursor = document.getElementById('tail-precursor-panel');
+            if (precursor) {
+                makePanelMinimizable(precursor, {
+                    key: 'tail-precursor',
+                    title: 'TAIL PRECURSOR LAB',
+                    icon: '🧬'
+                });
+            }
+        }
+
+        function ensureCycleHistoryPanel() {
+            if (document.getElementById('cycle-history-panel')) return;
+
+            const precursor =
+                document.getElementById('tail-precursor-panel') ||
+                document.getElementById('cycle-performance-panel');
+
+            if (!precursor || !precursor.parentElement) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'cycle-history-panel';
+            panel.className =
+                'mt-3 p-3 bg-gray-800 rounded-lg border border-cyan-500/30 text-xs';
+
+            panel.innerHTML = `
+                <div class="text-gray-400 mb-2">
+                    Uses the existing V16 CPR-3 history. Nothing is cleared or migrated.
+                </div>
+                <div id="cycle-history-summary" class="text-gray-300 mb-2">No history loaded.</div>
+                <div id="cycle-history-rows" class="space-y-1 max-h-72 overflow-y-auto"></div>
+            `;
+
+            precursor.parentElement.appendChild(panel);
+
+            makePanelMinimizable(panel, {
+                key: 'cycle-history',
+                title: 'CYCLE HISTORY',
+                icon: '🗂️',
+                defaultMinimized: true
+            });
+        }
+
+        function renderCycleHistoryPanel() {
+            ensureCycleHistoryPanel();
+
+            const summary = document.getElementById('cycle-history-summary');
+            const box = document.getElementById('cycle-history-rows');
+            if (!summary || !box || !window.cyclePerformance) return;
+
+            const symbol = window.cyclePerformance.getSymbol();
+            const rows = window.cyclePerformance.load(symbol) || [];
+            const recent = rows.slice(-20).reverse();
+
+            summary.textContent =
+                `${rows.length} saved V16 cycles for ${symbol} · showing latest ${recent.length}`;
+
+            if (!recent.length) {
+                box.innerHTML = '<div class="text-gray-500">No completed cycles saved yet.</div>';
+                return;
+            }
+
+            box.innerHTML = recent.map((r, idx) => {
+                const trades = Number(r?.trades?.length || 0);
+                const pnl = Number(r?.netPnL || 0);
+                const status = String(r?.status || 'UNKNOWN');
+                const klass = String(r?.tailClass || '-');
+                const digit = Number.isFinite(Number(r?.digit)) ? Number(r.digit) : '-';
+                const when = Number(r?.endedAt || r?.startedAt || 0);
+                const stamp = when ? new Date(when).toLocaleString() : '-';
+
+                return `
+                    <div class="grid grid-cols-6 gap-1 p-2 rounded bg-gray-900/70 border border-gray-700">
+                        <div class="text-gray-500">#${rows.length - idx}</div>
+                        <div class="${status === 'WIN' ? 'text-green-300' : 'text-yellow-300'}">${status}</div>
+                        <div class="text-white">${trades} trades</div>
+                        <div class="${pnl >= 0 ? 'text-green-300' : 'text-red-300'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</div>
+                        <div class="text-cyan-300">d${digit} · ${klass}</div>
+                        <div class="text-gray-500 truncate" title="${stamp}">${stamp}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Keep dynamic/minimized panels and history refreshed without changing
+        // any trading logic. MutationObserver only decorates UI elements.
+        function startMinimizablePanelObserver() {
+            const observer = new MutationObserver(() => {
+                decorateDynamicPanels();
+                if (window.cyclePerformance) {
+                    try { renderCycleHistoryPanel(); } catch (_) {}
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            setTimeout(() => {
+                initializeStaticMinimizablePanels();
+                decorateDynamicPanels();
+                try { renderCycleHistoryPanel(); } catch (_) {}
+            }, 0);
+        }
+
+        // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
         function getStoredDerivToken() {
@@ -3491,6 +3728,13 @@ window.cyclePerformance = {
         }
         if (window.tailPrecursorLab) {
             window.tailPrecursorLab.render();
+        }
+
+        if (typeof renderCycleHistoryPanel === 'function') {
+            renderCycleHistoryPanel();
+        }
+        if (typeof decorateDynamicPanels === 'function') {
+            decorateDynamicPanels();
         }
     }
 };
@@ -7260,6 +7504,13 @@ window.isBotRunning = true;
         };
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
+        // V16 UI add-on startup. Existing histories/localStorage keys are untouched.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startMinimizablePanelObserver, { once: true });
+        } else {
+            startMinimizablePanelObserver();
+        }
+
     </script>
 </body>
 </html>
