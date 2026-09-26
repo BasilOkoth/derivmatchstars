@@ -85,6 +85,26 @@
       border:1px solid var(--line);font-weight:700;text-decoration:none;cursor:pointer
     }
     .metric{border-left:1px solid var(--line)}
+
+    .telegram-btn{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:.55rem;
+      padding:.92rem 1.25rem;
+      border-radius:9999px;
+      border:1px solid rgba(56,189,248,.38);
+      background:rgba(14,165,233,.12);
+      color:#e0f2fe;
+      font-weight:800;
+      text-decoration:none;
+      transition:transform .15s ease, background .15s ease, border-color .15s ease;
+    }
+    .telegram-btn:hover{
+      transform:translateY(-2px);
+      background:rgba(14,165,233,.20);
+      border-color:rgba(56,189,248,.60);
+    }
     .hero-orbit{
       position:absolute;border-radius:999px;filter:blur(70px);opacity:.22;pointer-events:none
     }
@@ -332,7 +352,13 @@
           <div class="text-[10px] uppercase tracking-[.25em] text-emerald-300/70">Premium Trading</div>
         </div>
       </a>
-      <button onclick="openModal()" class="cta !py-3 !px-5 text-sm">Start with DigitMatchStar</button>
+      <div class="flex items-center gap-2">
+        <a href="https://t.me/digitmatchstar" target="_blank" rel="noopener noreferrer"
+           class="telegram-btn !py-3 !px-4 text-sm" aria-label="Join DigitMatchStar on Telegram">
+          ✈️ Telegram
+        </a>
+        <button onclick="openModal()" class="cta !py-3 !px-5 text-sm">Start with DigitMatchStar</button>
+      </div>
     </div>
   </nav>
 
@@ -352,6 +378,10 @@
               Start with DigitMatchStar
               <span aria-hidden="true">→</span>
             </button>
+            <a href="https://t.me/digitmatchstar" target="_blank" rel="noopener noreferrer"
+               class="telegram-btn text-base md:text-lg" aria-label="Join the DigitMatchStar Telegram channel">
+              ✈️ Join Telegram
+            </a>
           </div>
           <p id="authStatus" class="mt-4 text-sm text-emerald-100/60">
             Secure Deriv OAuth connection • Demo and Real accounts supported
@@ -499,7 +529,11 @@
           <p class="text-lg subtle leading-relaxed mb-8">
             Connect your Deriv account securely and access the DigitMatchStar trading environment.
           </p>
-          <button onclick="openModal()" class="cta text-lg">Start with DigitMatchStar →</button>
+          <div class="flex flex-wrap justify-center gap-4">
+            <button onclick="openModal()" class="cta text-lg">Start with DigitMatchStar →</button>
+            <a href="https://t.me/digitmatchstar" target="_blank" rel="noopener noreferrer"
+               class="telegram-btn text-lg">✈️ Join Telegram</a>
+          </div>
         </div>
       </div>
     </section>
@@ -511,6 +545,8 @@
         <div class="brand-font font-extrabold">DigitMatchStar</div>
         <div class="text-xs subtle mt-1">Premium Digit Match trading platform</div>
       </div>
+      <a href="https://t.me/digitmatchstar" target="_blank" rel="noopener noreferrer"
+         class="text-sm font-bold text-sky-300 hover:text-sky-200 no-underline">✈️ Telegram Community</a>
       <div class="risk md:max-w-2xl">
         Trading involves risk. Past results do not guarantee future performance. Demo results use virtual funds. Real-account trading uses real funds.
       </div>
