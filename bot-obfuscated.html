@@ -3031,16 +3031,46 @@ window.tailPrecursorLab = {
         return ((below + 0.5 * equal) / arr.length) * 100;
     },
 
-    currentCheckpointSnapshot(depth) {
-        const cycle = window.cyclePerformance?.current || null;
-        if (!cycle) return null;
+    researchReferenceCycle(symbol) {
+        // Prefer the currently active cycle. When trading has ended, keep the
+        // latest completed cycle as the research reference so the table/report
+        // does not go blank at the moment the most useful tail data arrives.
+        const current = window.cyclePerformance?.current || null;
+        if (current) {
+            return {
+                cycle: current,
+                source: 'ACTIVE',
+                label: 'Active cycle'
+            };
+        }
 
-        return this.trajectorySnapshotAt(cycle, depth);
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const latest = rows.length ? rows[rows.length - 1] : null;
+
+        if (!latest) {
+            return {
+                cycle: null,
+                source: 'NONE',
+                label: 'No cycle available'
+            };
+        }
+
+        return {
+            cycle: latest,
+            source: 'LAST_COMPLETED',
+            label: 'Last completed cycle'
+        };
+    },
+
+    currentCheckpointSnapshot(symbol, depth) {
+        const ref = this.researchReferenceCycle(symbol);
+        if (!ref.cycle) return null;
+        return this.trajectorySnapshotAt(ref.cycle, depth);
     },
 
     comparisonForFeature(symbol, depth, featureKey) {
         const g = this.eligibleGroups(symbol);
-        const current = this.currentCheckpointSnapshot(depth);
+        const current = this.currentCheckpointSnapshot(symbol, depth);
         const currentValue = Number(current?.[featureKey]);
 
         if (!Number.isFinite(currentValue)) {
@@ -3204,7 +3234,7 @@ window.tailPrecursorLab = {
                         <tbody id="tpl-research-table">
                             <tr>
                                 <td colspan="6" class="p-2 text-gray-400">
-                                    Waiting for an active cycle and enough resolved history.
+                                    Waiting for cycle history and enough resolved comparison data.
                                 </td>
                             </tr>
                         </tbody>
@@ -3212,7 +3242,10 @@ window.tailPrecursorLab = {
                 </div>
 
                 <div id="tpl-research-note" class="mt-2 text-gray-400">
-                    Percentiles show where the current value sits relative to historical distributions.
+                    Percentiles show where the reference cycle sits relative to historical distributions.
+                </div>
+                <div class="mt-1 text-[10px] text-cyan-300">
+                    Research values stay visible after trading stops. When no cycle is active, the latest completed cycle remains the reference, including its stored trajectory and post-stop tail observations.
                 </div>
             </div>
 
@@ -3368,10 +3401,17 @@ window.tailPrecursorLab = {
             const note = document.getElementById('tpl-research-note');
             if (note) {
                 const g2 = this.eligibleGroups(symbol);
+                const ref = this.researchReferenceCycle(symbol);
+                const refCycle = ref.cycle;
+                const refClass = refCycle ? this.classifyCycle(refCycle) : '-';
+                const refDigit = Number.isInteger(Number(refCycle?.digit)) ? Number(refCycle.digit) : '-';
+
                 note.textContent =
+                    `${ref.label} · target ${refDigit} · class ${refClass} · ` +
                     `Checkpoint: ${depth === 0 ? 'Entry' : 'Trade ' + depth} · ` +
                     `${g2.normal.length} normal cycles · ${g2.tails.length} resolved-tail cycles · ` +
                     `${g2.censored.length} censored cap stops excluded.`;
+
             }
         }
 
@@ -3983,6 +4023,9 @@ window.cyclePerformance = {
 
             const trajectory = {};
             const currentComparisons = {};
+            const researchReference =
+                window.tailPrecursorLab?.researchReferenceCycle(symbol) ||
+                { cycle: null, source: 'NONE', label: 'No cycle available' };
 
             for (const d of [0, 3, 5, 7, 9]) {
                 trajectory[String(d)] =
@@ -4072,11 +4115,31 @@ window.cyclePerformance = {
                         safeClone(trajectory),
                     currentTrajectoryComparisons:
                         safeClone(currentComparisons),
+                    referenceCycle: {
+                        source: researchReference.source,
+                        label: researchReference.label,
+                        cycle: safeClone(researchReference.cycle),
+                        class: researchReference.cycle
+                            ? window.tailPrecursorLab.classifyCycle(researchReference.cycle)
+                            : null,
+                        targetDigit: researchReference.cycle?.digit ?? null,
+                        tailDigits:
+                            safeClone(
+                                researchReference.cycle?.postStopDepth?.sequence ||
+                                researchReference.cycle?.postStopDepth?.digits ||
+                                researchReference.cycle?.postStopDepth?.observedDigits ||
+                                []
+                            )
+                    },
                     currentEmpiricalTailScore:
                         safeClone(
                             window.tailPrecursorLab.empiricalTailScore(
                                 symbol,
-                                window.cyclePerformance?.current?.tailTrajectory?.slice(-1)?.[0] || null
+                                (
+                                    researchReference.cycle?.tailTrajectory?.slice(-1)?.[0] ||
+                                    researchReference.cycle?.entryTailState ||
+                                    null
+                                )
                             )
                         )
                 } : null,
@@ -5629,7 +5692,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V16 · live trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · persistent trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
