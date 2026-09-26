@@ -457,7 +457,7 @@
                             </div>
                             <div>
                                 <div class="text-xs text-gray-300">Trades:</div>
-                                <div id="session_trades" class="text-sm font-bold text-yellow-400">0/10</div>
+                                <div id="session_trades" class="text-sm font-bold text-yellow-400">0/—</div>
                             </div>
                         </div>
                     </div>
@@ -602,7 +602,7 @@
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
                         <input type="number" id="maxTrades" value="10" min="1" step="1" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Choose your own cycle limit. Not fixed at 10.</p>
+                        <p class="text-[10px] text-gray-500 mt-1">Choose any whole-number cycle limit. There is no fixed 10-trade cap.</p>
                     </div>
 
                     <!-- Max Trades is now the single user-defined cycle cap -->
@@ -3475,9 +3475,26 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
-        const accountId = localStorage.getItem('active_account') || localStorage.getItem('derivAccount');
-        if (!token || !accountId) return;
+        const token = (typeof getStoredDerivToken === 'function')
+            ? getStoredDerivToken()
+            : (localStorage.getItem('active_token') ||
+               localStorage.getItem('derivToken') ||
+               localStorage.getItem('derivTokenDemo') ||
+               localStorage.getItem('derivTokenReal'));
+
+        const accountId = (typeof getStoredDerivAccount === 'function')
+            ? getStoredDerivAccount()
+            : (localStorage.getItem('active_account') ||
+               localStorage.getItem('derivAccount') ||
+               localStorage.getItem('derivDemoAccount') ||
+               localStorage.getItem('derivRealAccount'));
+
+        if (!token || !accountId) {
+            const msg = `📣 Telegram publish skipped: missing ${!token ? 'token' : 'account ID'}`;
+            console.warn('[MatchStar Publisher]', msg);
+            if (typeof log === 'function') log(msg, 'WARNING');
+            return;
+        }
 
         const payload = {
             account_id: accountId,
@@ -3521,11 +3538,19 @@ window.matchstarPublisher = {
                 if (typeof log === 'function') {
                     log(`📣 Official result published | ${cycle.status}`, 'SYSTEM');
                 }
-            } else if (response.status !== 403) {
-                console.warn('[MatchStar Publisher]', data?.error || `HTTP ${response.status}`);
+            } else {
+                const errorText = data?.error || `HTTP ${response.status}`;
+                console.warn('[MatchStar Publisher]', errorText);
+                if (typeof log === 'function') {
+                    log(`📣 Telegram publish failed (${response.status}): ${errorText}`, 'WARNING');
+                }
             }
         } catch (err) {
-            console.warn('[MatchStar Publisher]', err?.message || err);
+            const errorText = err?.message || String(err);
+            console.warn('[MatchStar Publisher]', errorText);
+            if (typeof log === 'function') {
+                log(`📣 Telegram publish error: ${errorText}`, 'WARNING');
+            }
         }
     }
 };
@@ -4739,7 +4764,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.currentStake = 1.0;
         window.multiplier = 1.15;
         window.maxTrades = 10;
-        window.maxCycleTrades = 10;
+        window.maxCycleTrades = window.maxTrades;
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
@@ -7059,7 +7084,7 @@ window.executionLock = true;
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
+            window.maxCycleTrades = window.maxTrades;
 
             if (winOrLoss === 'win') {
                 window.lastTradeWon = true;
@@ -7097,7 +7122,7 @@ window.executionLock = true;
             }
             
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
+            window.maxCycleTrades = window.maxTrades;
             
             const token = getStoredDerivToken();
             if (!token) {
@@ -8105,7 +8130,7 @@ window.isBotRunning = true;
         // Reset all state
         function resetAllState() {
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = parseInt(document.getElementById('maxCycleTrades')?.value) || 10;
+            window.maxCycleTrades = window.maxTrades;
             window.cycleRotations = 0;
             
             updateStake('initial');
