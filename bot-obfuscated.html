@@ -352,6 +352,15 @@
   .trade-actions #toggleButton,.trade-actions #s20Button{width:100%!important}
 }
 
+
+        /* === DIGITMATCH ELIGIBLE MARKET SCANNER === */
+        .edge-monitor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+        .edge-market-card{background:rgba(17,24,39,.86);border:1px solid rgba(107,114,128,.45);border-radius:10px;padding:10px}
+        .edge-market-card.best{border-color:rgba(34,197,94,.75);box-shadow:0 0 0 1px rgba(34,197,94,.12),0 8px 24px rgba(0,0,0,.18)}
+        .edge-score-bar{height:6px;border-radius:999px;background:#374151;overflow:hidden;margin-top:6px}
+        .edge-score-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#64748b,#22c55e)}
+        .edge-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;border:1px solid rgba(148,163,184,.25);background:rgba(30,41,59,.75)}
+
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -466,6 +475,28 @@
             
             <!-- MIDDLE COLUMN: MAIN CONTROLS -->
             <div class="lg:col-span-2">
+
+                <!-- DIGITMATCH ELIGIBLE MARKET SCANNER -->
+                <div id="edge-market-scanner" class="mb-6 p-4 bg-gray-900 rounded-xl border border-cyan-500/50 shadow-lg">
+                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
+                        <h2 class="text-lg font-bold text-cyan-400">🛰️ DIGITMATCH MARKET EDGE MONITOR</h2>
+                        <span id="edge-scanner-status" class="edge-pill text-yellow-300">Discovering eligible markets…</span>
+                        <button id="edge-use-best" type="button"
+                                class="ml-auto px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                                disabled>Use Best Market</button>
+                    </div>
+                    <div class="text-[11px] text-gray-400 mb-3">
+                        Only symbols returned by Deriv as supporting <b>DIGITMATCH</b> are shown.
+                        The score is a research ranking from observed digit-gap behaviour, P5/P10, tail risk and sample support — not a guaranteed or verified trading edge.
+                    </div>
+                    <div id="edge-best-summary" class="mb-3 p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300">
+                        Waiting for enough ticks to compare eligible markets…
+                    </div>
+                    <div id="edge-monitor-grid" class="edge-monitor-grid">
+                        <div class="text-xs text-gray-500">Loading eligible DIGITMATCH symbols…</div>
+                    </div>
+                </div>
+
                 <!-- MARTINGALE CALCULATOR -->
                 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
                     <h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
@@ -3533,7 +3564,17 @@ window.matchstarPublisher = {
                 body: JSON.stringify(payload)
             });
             const data = await response.json().catch(() => ({}));
-            if (response.ok && data?.published) {
+
+            // Approval-first publisher:
+            // HTTP 200 + pendingApproval means the private preview was delivered
+            // successfully and is waiting for owner approval. It is NOT a failure.
+            if (response.ok && data?.pendingApproval) {
+                this.remember(cycle.id);
+                if (typeof log === 'function') {
+                    log(`📣 Telegram approval preview sent privately | ${cycle.status} | awaiting approval`, 'SYSTEM');
+                }
+            } else if (response.ok && data?.published) {
+                // Backward compatibility with direct-public publishing.
                 this.remember(cycle.id);
                 if (typeof log === 'function') {
                     log(`📣 Official result published | ${cycle.status}`, 'SYSTEM');
@@ -5522,6 +5563,368 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
 
 
+
+        // ============================================================================
+        // DIGITMATCH ELIGIBLE SYMBOL DISCOVERY + MULTI-SYMBOL RESEARCH EDGE MONITOR
+        // Scanner never buys contracts. It only watches public market data.
+        // ============================================================================
+        window.digitMatchScanner = {
+            eligible: new Map(),
+            states: new Map(),
+            maxDigits: 700,
+            minSupport: 20,
+            best: null,
+            scanStarted: false,
+
+            symbolCode(item) {
+                return item?.underlying_symbol || item?.symbol || null;
+            },
+
+            symbolName(item) {
+                return item?.underlying_symbol_name || item?.display_name || this.symbolCode(item) || 'Unknown';
+            },
+
+            ensureState(symbol, name = symbol) {
+                if (!this.states.has(symbol)) {
+                    this.states.set(symbol, {
+                        symbol, name, digits: [],
+                        score: null, bestDigit: null, metrics: null,
+                        ticks: 0, updatedAt: 0
+                    });
+                }
+                const s = this.states.get(symbol);
+                if (name) s.name = name;
+                return s;
+            },
+
+            setEligible(items) {
+                const rows = [];
+                for (const item of (Array.isArray(items) ? items : [])) {
+                    const symbol = this.symbolCode(item);
+                    if (!symbol) continue;
+                    rows.push({
+                        symbol,
+                        name: this.symbolName(item),
+                        pipSize: item?.pip_size ?? item?.pip ?? null,
+                        market: item?.market || '',
+                        submarket: item?.submarket || ''
+                    });
+                }
+
+                rows.sort((a,b) => a.name.localeCompare(b.name));
+                this.eligible.clear();
+
+                for (const row of rows) {
+                    this.eligible.set(row.symbol, row);
+                    this.ensureState(row.symbol, row.name);
+                }
+
+                this.populateSelector(rows);
+                this.render();
+                return rows;
+            },
+
+            populateSelector(rows) {
+                const sel = document.getElementById('symbol');
+                if (!sel || !rows.length) return;
+
+                const previous = sel.value;
+                sel.innerHTML = '';
+
+                const groups = new Map();
+                for (const r of rows) {
+                    const key = r.submarket || r.market || 'Eligible DIGITMATCH';
+                    if (!groups.has(key)) groups.set(key, []);
+                    groups.get(key).push(r);
+                }
+
+                for (const [groupName, list] of groups.entries()) {
+                    const og = document.createElement('optgroup');
+                    og.label = String(groupName)
+                        .replace(/_/g,' ')
+                        .replace(/\b\w/g, c => c.toUpperCase());
+
+                    for (const r of list) {
+                        const opt = document.createElement('option');
+                        opt.value = r.symbol;
+                        opt.textContent = r.name;
+                        og.appendChild(opt);
+                    }
+                    sel.appendChild(og);
+                }
+
+                if (rows.some(r => r.symbol === previous)) sel.value = previous;
+                else {
+                    const preferred = rows.find(r => r.symbol === 'R_10') || rows[0];
+                    sel.value = preferred.symbol;
+                }
+
+                const note = document.getElementById('symbol-eligibility-note');
+                if (note) {
+                    note.textContent = `${rows.length} Deriv symbol${rows.length===1?'':'s'} currently confirmed for DIGITMATCH`;
+                }
+            },
+
+            processHistory(symbol, prices, pipSize = null) {
+                if (!this.eligible.has(symbol) || !Array.isArray(prices)) return;
+                const s = this.ensureState(symbol, this.eligible.get(symbol)?.name || symbol);
+                s.digits = [];
+
+                const fakeTick = pipSize ? {symbol, pip_size:pipSize} : {symbol};
+                for (const quote of prices.slice(-this.maxDigits)) {
+                    const d = getLastDigitFromQuote(quote, fakeTick, symbol);
+                    if (Number.isInteger(d) && d >= 0 && d <= 9) s.digits.push(d);
+                }
+
+                s.ticks = s.digits.length;
+                s.updatedAt = Date.now();
+                if (s.digits.length >= 60) this.evaluateState(s);
+            },
+
+            processTick(tick) {
+                const symbol = tick?.symbol || tick?.underlying_symbol;
+                if (!symbol || !this.eligible.has(symbol)) return;
+
+                const formatted = canonicalTickString(tick.quote, tick, symbol);
+                if (!formatted) return;
+                const digit = Number.parseInt(formatted[formatted.length - 1], 10);
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+
+                const s = this.ensureState(symbol, this.eligible.get(symbol)?.name || symbol);
+                s.digits.push(digit);
+                if (s.digits.length > this.maxDigits) s.digits.shift();
+                s.ticks++;
+                s.updatedAt = Date.now();
+
+                if (s.digits.length >= 60) this.evaluateState(s);
+                if (s.ticks % 8 === 0) this.render();
+            },
+
+            gapMetrics(digits, digit) {
+                const positions = [];
+                for (let i=0;i<digits.length;i++) if (digits[i]===digit) positions.push(i);
+                if (positions.length < 8) return null;
+
+                const gaps = [];
+                for (let i=1;i<positions.length;i++) {
+                    const g = positions[i] - positions[i-1] - 1;
+                    if (g >= 0) gaps.push(g);
+                }
+                if (gaps.length < 7) return null;
+
+                const currentGap = digits.length - 1 - positions[positions.length - 1];
+                const atRisk = gaps.filter(L => L >= currentGap);
+                if (atRisk.length < 5) return null;
+
+                const hitWithin = (k) => atRisk.filter(L => L <= currentGap + k).length / atRisk.length;
+                const p1 = hitWithin(1);
+                const p5 = hitWithin(5);
+                const p10 = hitWithin(10);
+                const s20 = atRisk.filter(L => L > currentGap + 20).length / atRisk.length;
+                const rem = atRisk.map(L => Math.max(0, L-currentGap));
+                const etm = rem.reduce((a,b)=>a+b,0) / Math.max(rem.length,1);
+
+                return {
+                    digit, currentGap, p1, p5, p10, s20, etm,
+                    support: atRisk.length, totalGapSupport: gaps.length
+                };
+            },
+
+            scoreMetrics(m) {
+                if (!m) return 0;
+
+                const supportConfidence = Math.min(1, m.support / 60);
+                const tailQuality = Math.max(0, 1 - m.s20);
+                const etmQuality = Math.max(0, 1 - Math.min(m.etm, 20) / 20);
+
+                const raw =
+                    0.40 * m.p10 +
+                    0.22 * m.p5 +
+                    0.13 * m.p1 +
+                    0.12 * tailQuality +
+                    0.08 * supportConfidence +
+                    0.05 * etmQuality;
+
+                const reliabilityPenalty = m.support < this.minSupport
+                    ? Math.max(0.45, m.support / this.minSupport)
+                    : 1;
+
+                return Math.max(0, Math.min(100, raw * 100 * reliabilityPenalty));
+            },
+
+            evaluateState(s) {
+                let best = null;
+
+                for (let d=0; d<=9; d++) {
+                    const metrics = this.gapMetrics(s.digits, d);
+                    if (!metrics) continue;
+
+                    const score = this.scoreMetrics(metrics);
+                    const candidate = {digit:d, score, metrics};
+
+                    if (!best || candidate.score > best.score) best = candidate;
+                }
+
+                if (best) {
+                    s.score = best.score;
+                    s.bestDigit = best.digit;
+                    s.metrics = best.metrics;
+                }
+
+                this.rankBest();
+            },
+
+            rankBest() {
+                let best = null;
+
+                for (const s of this.states.values()) {
+                    if (!Number.isFinite(s.score) || !s.metrics) continue;
+
+                    if (!best || s.score > best.score) {
+                        best = {
+                            symbol:s.symbol,
+                            name:s.name,
+                            score:s.score,
+                            digit:s.bestDigit,
+                            metrics:s.metrics
+                        };
+                    }
+                }
+
+                this.best = best;
+                return best;
+            },
+
+            requestScannerData() {
+                if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+                if (!this.eligible.size || this.scanStarted) return;
+
+                this.scanStarted = true;
+                let count = 0;
+
+                for (const [symbol] of this.eligible.entries()) {
+                    sendMarketRequest({
+                        ticks_history:symbol,
+                        count:Math.min(this.maxDigits, 600),
+                        end:'latest',
+                        style:'ticks',
+                        req_id:marketNextReqId(),
+                        passthrough:{matchstar_scanner:true,symbol}
+                    });
+
+                    sendMarketRequest({
+                        ticks:symbol,
+                        subscribe:1,
+                        req_id:marketNextReqId(),
+                        passthrough:{matchstar_scanner:true,symbol}
+                    });
+
+                    count++;
+                }
+
+                const status = document.getElementById('edge-scanner-status');
+                if (status) {
+                    status.textContent = `Monitoring ${count} eligible market${count===1?'':'s'}`;
+                    status.className = 'edge-pill text-green-300';
+                }
+
+                log(`🛰️ Edge monitor started across ${count} Deriv-confirmed DIGITMATCH symbols`, 'ENGINE');
+            },
+
+            useBest() {
+                const best = this.best;
+                if (!best) return;
+
+                if (window.isBotRunning) {
+                    alert('Stop the bot before changing to the scanner-recommended market.');
+                    return;
+                }
+
+                const selector = document.getElementById('symbol');
+                if (!selector || !Array.from(selector.options).some(o => o.value === best.symbol)) return;
+
+                selector.value = best.symbol;
+                document.getElementById('predictedDigit').value = best.digit;
+                restartPublicMarketForSymbol();
+
+                log(`🛰️ Scanner selected ${best.name} + digit ${best.digit} | research score ${best.score.toFixed(1)}`, 'ENGINE');
+                updateTradeStatus(
+                    'RESEARCH PICK',
+                    `${best.name} · digit ${best.digit}`,
+                    `Research score ${best.score.toFixed(1)}/100 — review before trading`,
+                    'normal'
+                );
+            },
+
+            render() {
+                const grid = document.getElementById('edge-monitor-grid');
+                const summary = document.getElementById('edge-best-summary');
+                const button = document.getElementById('edge-use-best');
+                if (!grid || !summary) return;
+
+                const rows = Array.from(this.states.values())
+                    .filter(s => Number.isFinite(s.score) && s.metrics)
+                    .sort((a,b) => b.score - a.score);
+
+                if (!rows.length) {
+                    grid.innerHTML = '<div class="text-xs text-gray-500">Collecting enough digit history to rank markets…</div>';
+                    summary.textContent = 'Waiting for enough ticks to compare eligible markets…';
+                    if (button) button.disabled = true;
+                    return;
+                }
+
+                const best = this.rankBest();
+                if (best) {
+                    const m = best.metrics;
+                    summary.innerHTML =
+                        `<div class="flex flex-wrap gap-x-4 gap-y-1 items-center">` +
+                        `<span class="font-bold text-green-300">Best research setup: ${best.name}</span>` +
+                        `<span>Digit <b class="text-white">${best.digit}</b></span>` +
+                        `<span>Score <b class="text-cyan-300">${best.score.toFixed(1)}/100</b></span>` +
+                        `<span>P5 <b>${(m.p5*100).toFixed(0)}%</b></span>` +
+                        `<span>P10 <b>${(m.p10*100).toFixed(0)}%</b></span>` +
+                        `<span>S20 <b>${(m.s20*100).toFixed(0)}%</b></span>` +
+                        `<span>ETM <b>${m.etm.toFixed(1)}</b></span>` +
+                        `<span>Support <b>${m.support}</b></span>` +
+                        `</div>` +
+                        `<div class="text-[10px] text-gray-500 mt-1">Research ranking only. Highest-ranked does not mean profitable or guaranteed.</div>`;
+
+                    if (button) button.disabled = false;
+                }
+
+                grid.innerHTML = rows.slice(0,24).map((s,index)=>{
+                    const m=s.metrics;
+                    const badge =
+                        s.score>=75 && m.support>=this.minSupport ? 'WATCH' :
+                        s.score>=60 ? 'OBSERVE' : 'WEAK';
+
+                    return `<div class="edge-market-card ${index===0?'best':''}">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <div class="font-bold text-sm text-white">${s.name}</div>
+                                <div class="text-[10px] text-gray-500">${s.symbol}</div>
+                            </div>
+                            <span class="edge-pill ${index===0?'text-green-300':'text-gray-300'}">${badge}</span>
+                        </div>
+                        <div class="mt-2 flex items-end justify-between">
+                            <div class="text-xs text-gray-400">Research Edge Score</div>
+                            <div class="text-lg font-black ${index===0?'text-green-300':'text-cyan-300'}">${s.score.toFixed(1)}</div>
+                        </div>
+                        <div class="edge-score-bar"><div class="edge-score-fill" style="width:${Math.max(2,Math.min(100,s.score)).toFixed(1)}%"></div></div>
+                        <div class="grid grid-cols-3 gap-1 mt-2 text-[10px]">
+                            <span>Digit <b class="text-white">${s.bestDigit}</b></span>
+                            <span>P5 <b>${(m.p5*100).toFixed(0)}%</b></span>
+                            <span>P10 <b>${(m.p10*100).toFixed(0)}%</b></span>
+                            <span>S20 <b>${(m.s20*100).toFixed(0)}%</b></span>
+                            <span>ETM <b>${m.etm.toFixed(1)}</b></span>
+                            <span>n <b>${m.support}</b></span>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+        };
+
+
         // ============================================================================
         // PUBLIC MARKET DATA CONNECTION
         // ONLINE status + AI warm-up work before START BOT.
@@ -5549,10 +5952,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             sendMarketRequest({
                 active_symbols: "brief",
+                contract_type: ["DIGITMATCH"],
                 req_id: marketNextReqId()
             });
 
-            log('🔢 Requesting Deriv symbol precision metadata (pip_size)', 'SYSTEM');
+            log('🔢 Requesting Deriv DIGITMATCH-eligible symbols + precision metadata', 'SYSTEM');
         }
 
         function handleActiveSymbolsMetadata(data) {
@@ -5576,6 +5980,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             } else {
                 log(`⚠️ Loaded precision metadata for ${loaded} symbols, but current symbol metadata was not found`, 'WARNING');
             }
+
+            const eligibleRows = window.digitMatchScanner?.setEligible(items) || [];
+            log(`✅ Deriv confirmed ${eligibleRows.length} active symbol${eligibleRows.length===1?'':'s'} supporting DIGITMATCH`, 'SYSTEM');
+            setTimeout(() => window.digitMatchScanner?.requestScannerData(), 120);
         }
 
         function requestPublicWarmupTicks(symbol) {
@@ -5643,6 +6051,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
 
             window.marketIsConnecting = true;
+            if (window.digitMatchScanner) window.digitMatchScanner.scanStarted = false;
             updateConnectionStatus();
             log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
 
@@ -5690,18 +6099,49 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     }
 
                     if (data.msg_type === 'history' && data.history?.prices) {
+                        const historySymbol =
+                            data?.passthrough?.symbol ||
+                            data?.echo_req?.passthrough?.symbol ||
+                            data?.echo_req?.ticks_history ||
+                            null;
+
+                        const isScannerHistory =
+                            data?.passthrough?.matchstar_scanner ||
+                            data?.echo_req?.passthrough?.matchstar_scanner;
+
+                        if (isScannerHistory && historySymbol) {
+                            const precision = window.tickFormat?.pipSizeBySymbol?.[historySymbol]?.pipSize || null;
+                            window.digitMatchScanner?.processHistory(historySymbol, data.history.prices, precision);
+                            window.digitMatchScanner?.render();
+                            return;
+                        }
+
                         window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
                         log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
                         return;
                     }
 
                     if (data.msg_type === 'tick' && data.tick) {
-                        handleTick(data.tick);
+                        const selectedSymbol = document.getElementById('symbol')?.value;
+                        const tickSymbol = data.tick?.symbol || data.tick?.underlying_symbol;
+
+                        window.digitMatchScanner?.processTick(data.tick);
+
+                        if (!tickSymbol || tickSymbol === selectedSymbol) {
+                            handleTick(data.tick);
+                        }
                         return;
                     }
 
                     if (data.tick?.quote !== undefined) {
-                        handleTick(data.tick);
+                        const selectedSymbol = document.getElementById('symbol')?.value;
+                        const tickSymbol = data.tick?.symbol || data.tick?.underlying_symbol;
+
+                        window.digitMatchScanner?.processTick(data.tick);
+
+                        if (!tickSymbol || tickSymbol === selectedSymbol) {
+                            handleTick(data.tick);
+                        }
                         return;
                     }
 
@@ -5828,6 +6268,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const symbolControl = document.getElementById('symbol');
             if (symbolControl) {
                 symbolControl.addEventListener('change', restartPublicMarketForSymbol);
+            }
+
+            const edgeBestBtn = document.getElementById('edge-use-best');
+            if (edgeBestBtn) {
+                edgeBestBtn.addEventListener('click', () => window.digitMatchScanner?.useBest());
             }
             
             document.getElementById('predictedDigit').addEventListener('change', function() {
