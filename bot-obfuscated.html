@@ -3456,6 +3456,80 @@ window.tailPrecursorLab = {
 // MATCHSTAR V16 — CYCLE PERFORMANCE RECORDER + PRECURSOR TRAJECTORY
 // ============================================================================
 
+
+/* === DigitMatchStar official result publisher === */
+window.matchstarPublisher = {
+    storageKey: 'matchstar_published_cycle_ids_v1',
+    publishedIds() {
+        try {
+            const rows = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
+            return Array.isArray(rows) ? rows : [];
+        } catch (_) { return []; }
+    },
+    remember(id) {
+        if (!id) return;
+        const rows = this.publishedIds();
+        if (!rows.includes(id)) rows.push(id);
+        try { localStorage.setItem(this.storageKey, JSON.stringify(rows.slice(-500))); } catch (_) {}
+    },
+    async publishCycle(cycle) {
+        if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
+
+        const token = localStorage.getItem('active_token') || localStorage.getItem('derivToken');
+        const accountId = localStorage.getItem('active_account') || localStorage.getItem('derivAccount');
+        if (!token || !accountId) return;
+
+        const payload = {
+            account_id: accountId,
+            cycle: {
+                id: cycle.id,
+                symbol: cycle.symbol,
+                digit: cycle.digit,
+                startedAt: cycle.startedAt,
+                endedAt: cycle.endedAt,
+                status: cycle.status,
+                finalReason: cycle.finalReason,
+                winningTradeNumber: cycle.winningTradeNumber,
+                totalInvestment: cycle.totalInvestment,
+                totalPayout: cycle.totalPayout,
+                netPnL: cycle.netPnL,
+                maxStake: cycle.maxStake,
+                trades: Array.isArray(cycle.trades) ? cycle.trades.map(t => ({
+                    tradeNumber: t.tradeNumber,
+                    digit: t.digit,
+                    stake: t.stake,
+                    result: t.result,
+                    finalDigit: t.finalDigit,
+                    payout: t.payout,
+                    profit: t.profit
+                })) : []
+            }
+        };
+
+        try {
+            const response = await fetch('/api/publish-cycle', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json().catch(() => ({}));
+            if (response.ok && data?.published) {
+                this.remember(cycle.id);
+                if (typeof log === 'function') {
+                    log(`📣 Official result published | ${cycle.status}`, 'SYSTEM');
+                }
+            } else if (response.status !== 403) {
+                console.warn('[MatchStar Publisher]', data?.error || `HTTP ${response.status}`);
+            }
+        } catch (err) {
+            console.warn('[MatchStar Publisher]', err?.message || err);
+        }
+    }
+};
+
 window.cyclePerformance = {
     version: 'CPR-3',
     current: null,
@@ -3722,6 +3796,9 @@ window.cyclePerformance = {
         );
 
         window.tailPrecursorLab.render();
+
+        // Fire-and-forget publisher; never blocks trading.
+        try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
 
         const sessionLedgerPnL =
             Number(window.pnlTracker?.totalPayout || 0) -
