@@ -693,6 +693,126 @@
 
     <script>
         // ============================================================================
+        // UI ONLY — MINIMIZABLE PANELS
+        // No trading logic, cycle logic, or existing history storage is changed.
+        // ============================================================================
+
+        function getPanelMinimizedState(key, fallback = false) {
+            try {
+                const saved = localStorage.getItem(`matchstar_panel_min_${key}`);
+                return saved === null ? !!fallback : saved === '1';
+            } catch (_) {
+                return !!fallback;
+            }
+        }
+
+        function savePanelMinimizedState(key, minimized) {
+            try {
+                localStorage.setItem(`matchstar_panel_min_${key}`, minimized ? '1' : '0');
+            } catch (_) {}
+        }
+
+        function makePanelMinimizable(panel, options = {}) {
+            if (!panel || panel.dataset.matchstarMinReady === '1') return;
+
+            const key = options.key || panel.id || 'panel';
+            const defaultMinimized = !!options.defaultMinimized;
+            const children = Array.from(panel.children);
+            if (!children.length) return;
+
+            const header = children[0];
+            const body = document.createElement('div');
+            body.className = 'matchstar-min-body';
+            body.id = `${key}-min-body`;
+
+            children.slice(1).forEach(node => body.appendChild(node));
+            panel.appendChild(body);
+
+            if (!header.classList.contains('flex')) {
+                header.classList.add('flex', 'items-center', 'gap-2');
+            }
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className =
+                'ml-auto shrink-0 text-xs bg-gray-700 hover:bg-gray-600 ' +
+                'px-2 py-1 rounded font-bold text-white';
+            btn.setAttribute('aria-controls', body.id);
+            header.appendChild(btn);
+
+            let minimized = getPanelMinimizedState(key, defaultMinimized);
+
+            const applyState = () => {
+                body.classList.toggle('hidden', minimized);
+                btn.textContent = minimized ? '+' : '−';
+                btn.title = minimized ? 'Expand panel' : 'Minimize panel';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                savePanelMinimizedState(key, minimized);
+            };
+
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                minimized = !minimized;
+                applyState();
+            });
+
+            panel.dataset.matchstarMinReady = '1';
+            applyState();
+        }
+
+        function initializeStaticMinimizablePanels() {
+            const marketPanel = document.querySelector(
+                '.lg\\:col-span-1 > .bg-gray-900.border.border-gray-700.rounded-xl'
+            );
+            if (marketPanel) {
+                makePanelMinimizable(marketPanel, { key: 'market-engine' });
+            }
+
+            const tradeStatus = document.getElementById('trade-result-container');
+            if (tradeStatus) {
+                makePanelMinimizable(tradeStatus, { key: 'trade-status' });
+            }
+
+            const logColumn = document.getElementById('log-column');
+            if (logColumn) {
+                makePanelMinimizable(logColumn, {
+                    key: 'live-log',
+                    defaultMinimized: true
+                });
+            }
+        }
+
+        function decorateDynamicMinimizablePanels() {
+            const configs = [
+                ['next-tick-edge-panel', 'next-tick-edge'],
+                ['cycle-performance-panel', 'cycle-performance'],
+                ['tail-risk-panel', 'tail-risk'],
+                ['tail-precursor-panel', 'tail-precursor'],
+                ['post-stop-depth-panel', 'post-stop-depth']
+            ];
+
+            for (const [id, key] of configs) {
+                const panel = document.getElementById(id);
+                if (panel) makePanelMinimizable(panel, { key });
+            }
+        }
+
+        function startMinimizablePanelUI() {
+            initializeStaticMinimizablePanels();
+            decorateDynamicMinimizablePanels();
+
+            const observer = new MutationObserver(() => {
+                decorateDynamicMinimizablePanels();
+            });
+
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
         function getStoredDerivToken() {
@@ -3492,6 +3612,12 @@ window.cyclePerformance = {
         if (window.tailPrecursorLab) {
             window.tailPrecursorLab.render();
         }
+        if (window.postStopDepthTracker) {
+            window.postStopDepthTracker.render();
+        }
+        if (typeof decorateDynamicMinimizablePanels === 'function') {
+            decorateDynamicMinimizablePanels();
+        }
     }
 };
 
@@ -4927,6 +5053,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 // DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
+            startMinimizablePanelUI();
             runCanonicalDigitSelfTest();
             setTimeout(() => {
                 window.nextTickModel.ensurePanel();
@@ -4976,7 +5103,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V16 · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · minimizable UI · Post-Stop Depth Tracker · histories preserved · Deriv epoch-aligned · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -5287,6 +5414,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
 
+            // Post-stop depth research uses only future public ticks and never
+            // enters the proposal/buy path.
+            if (window.postStopDepthTracker) {
+                window.postStopDepthTracker.onPublicTick(tickData);
+            }
+
             // Resolve the current one-tick contract against this tick immediately.
             const fastResult = observeActiveContractTick(tickData);
 
@@ -5393,6 +5526,428 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
         
         // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
+        // ============================================================================
+        // MATCHSTAR V16 — POST-STOP DEPTH TRACKER
+        // After the live safety stop, keep watching the SAME target digit on
+        // FUTURE PUBLIC TICKS ONLY. No proposals. No buys. No stake changes.
+        // ============================================================================
+
+        window.postStopDepthTracker = {
+            version: 'PSD-1',
+            active: [],
+            maxStored: 500,
+
+            getSymbol() {
+                return (
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+            },
+
+            storageKey(symbol = this.getSymbol()) {
+                return `matchstar_poststop_depth_v1_${symbol}`;
+            },
+
+            isRiskCapReason(reason) {
+                const r = String(reason || '').toLowerCase();
+                return (
+                    r.includes('tail risk') ||
+                    r.includes('maximum cycle trades') ||
+                    r.includes('maximum cycle dollar exposure')
+                );
+            },
+
+            loadResolved(symbol = this.getSymbol()) {
+                try {
+                    const raw = localStorage.getItem(this.storageKey(symbol));
+                    const parsed = raw ? JSON.parse(raw) : [];
+                    return Array.isArray(parsed) ? parsed : [];
+                } catch (_) {
+                    return [];
+                }
+            },
+
+            saveResolved(symbol, rows) {
+                try {
+                    localStorage.setItem(
+                        this.storageKey(symbol),
+                        JSON.stringify((rows || []).slice(-this.maxStored))
+                    );
+                } catch (_) {}
+            },
+
+            startFromCurrentCycle(reason, snapshot = null) {
+                const cycle = window.cyclePerformance?.current;
+                if (!cycle || !Array.isArray(cycle.trades) || !cycle.trades.length) return null;
+                if (!this.isRiskCapReason(reason)) return null;
+
+                if (this.active.some(x => String(x.cycleId) === String(cycle.id))) {
+                    return this.active.find(x => String(x.cycleId) === String(cycle.id));
+                }
+
+                const stopDepth = Number(cycle.trades.length || snapshot?.currentTrades || 0);
+                const targetDigit = Number(cycle.digit);
+                const symbol = cycle.symbol || this.getSymbol();
+
+                if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) {
+                    return null;
+                }
+
+                const tracker = {
+                    id: `psd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    cycleId: cycle.id,
+                    symbol,
+                    targetDigit,
+                    stopDepth,
+                    stopReason: String(reason || 'Tail risk stop'),
+                    stoppedAt: Date.now(),
+                    stoppedEpoch: Number(window.lastTick?.raw?.epoch || 0) || null,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    resolvedAt: null,
+                    resolvedEpoch: null,
+                    status: 'TRACKING',
+                    digits: [],
+                    stateSnapshots: []
+                };
+
+                // This placeholder is saved into the EXISTING CPR-3 cycle record
+                // when stopBot() finalizes the live cycle.
+                cycle.postStopDepth = {
+                    status: 'TRACKING',
+                    targetDigit,
+                    stopDepth,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    stoppedAt: tracker.stoppedAt,
+                    stoppedEpoch: tracker.stoppedEpoch,
+                    digits: []
+                };
+
+                this.active.push(tracker);
+
+                log(
+                    `🔭 POST-STOP TRACKING START | cycle ${cycle.id} | target ${targetDigit} | ` +
+                    `live stopped @ trade ${stopDepth} | next eligible public tick = hypothetical trade ${stopDepth + 1} | NO MONEY`,
+                    'ENGINE'
+                );
+
+                this.render();
+                return tracker;
+            },
+
+            findStoredCycle(symbol, cycleId) {
+                const rows = window.cyclePerformance?.load(symbol) || [];
+                const row = rows.find(r => String(r.id) === String(cycleId));
+                return { rows, row };
+            },
+
+            syncIntoCycleHistory(tracker) {
+                if (!tracker || !window.cyclePerformance) return;
+
+                const { rows, row } = this.findStoredCycle(
+                    tracker.symbol,
+                    tracker.cycleId
+                );
+
+                if (!row) return;
+
+                row.postStopDepth = {
+                    status: tracker.status,
+                    targetDigit: tracker.targetDigit,
+                    stopDepth: tracker.stopDepth,
+                    postStopTicks: tracker.postStopTicks,
+                    wouldWinTradeNumber: tracker.wouldWinTradeNumber,
+                    stoppedAt: tracker.stoppedAt,
+                    resolvedAt: tracker.resolvedAt,
+                    stoppedEpoch: tracker.stoppedEpoch,
+                    resolvedEpoch: tracker.resolvedEpoch,
+                    stopReason: tracker.stopReason,
+                    digits: tracker.digits.slice(),
+                    stateSnapshots: tracker.stateSnapshots.slice()
+                };
+
+                window.cyclePerformance.historyBySymbol[tracker.symbol] = rows;
+                window.cyclePerformance.save(tracker.symbol);
+            },
+
+            captureState(targetDigit, impliedTrade) {
+                try {
+                    if (window.tailPrecursorLab?.captureState) {
+                        return window.tailPrecursorLab.captureState(
+                            Number(targetDigit),
+                            'POST_STOP_TICK',
+                            Number(impliedTrade)
+                        );
+                    }
+                } catch (_) {}
+                return null;
+            },
+
+            onPublicTick(tickData) {
+                if (!tickData || !this.active.length) return;
+
+                const symbol =
+                    tickData?.raw?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+
+                const digit = Number(tickData.digit);
+                const epoch = Number(tickData?.raw?.epoch || 0) || null;
+                const remaining = [];
+
+                for (const tracker of this.active) {
+                    if (!tracker || tracker.status !== 'TRACKING') continue;
+
+                    if (
+                        tracker.symbol &&
+                        tracker.symbol !== 'UNKNOWN' &&
+                        symbol &&
+                        symbol !== 'UNKNOWN' &&
+                        tracker.symbol !== symbol
+                    ) {
+                        remaining.push(tracker);
+                        continue;
+                    }
+
+                    // Do not count the same tick that triggered the live stop.
+                    if (
+                        tracker.stoppedEpoch &&
+                        epoch &&
+                        epoch <= tracker.stoppedEpoch
+                    ) {
+                        remaining.push(tracker);
+                        continue;
+                    }
+
+                    tracker.postStopTicks += 1;
+                    const impliedTrade =
+                        tracker.stopDepth + tracker.postStopTicks;
+                    const matched =
+                        digit === Number(tracker.targetDigit);
+
+                    tracker.digits.push({
+                        postStopTick: tracker.postStopTicks,
+                        impliedTrade,
+                        digit,
+                        matched,
+                        epoch,
+                        at: Date.now()
+                    });
+
+                    const state = this.captureState(
+                        tracker.targetDigit,
+                        impliedTrade
+                    );
+
+                    if (state) {
+                        tracker.stateSnapshots.push({
+                            postStopTick: tracker.postStopTicks,
+                            impliedTrade,
+                            state
+                        });
+                    }
+
+                    if (matched) {
+                        tracker.status = 'RESOLVED';
+                        tracker.wouldWinTradeNumber = impliedTrade;
+                        tracker.resolvedAt = Date.now();
+                        tracker.resolvedEpoch = epoch;
+
+                        this.syncIntoCycleHistory(tracker);
+
+                        const resolved = this.loadResolved(tracker.symbol);
+                        resolved.push(JSON.parse(JSON.stringify(tracker)));
+                        this.saveResolved(tracker.symbol, resolved);
+
+                        log(
+                            `🔭 POST-STOP RESOLVED | cycle ${tracker.cycleId} | target ${tracker.targetDigit} | ` +
+                            `appeared ${tracker.postStopTicks} tick(s) after live stop | ` +
+                            `would have matched @ trade ${impliedTrade} | NO MONEY TRADED`,
+                            'ENGINE'
+                        );
+
+                        continue;
+                    }
+
+                    this.syncIntoCycleHistory(tracker);
+                    remaining.push(tracker);
+                }
+
+                this.active = remaining;
+                this.render();
+            },
+
+            stats(symbol = this.getSymbol()) {
+                const rows = this.loadResolved(symbol);
+                const depths = rows
+                    .map(x => Number(x.wouldWinTradeNumber))
+                    .filter(Number.isFinite);
+
+                const bucket = (lo, hi) => depths.filter(d => d >= lo && d <= hi).length;
+
+                return {
+                    resolved: depths.length,
+                    active: this.active.filter(x =>
+                        x.symbol === symbol || symbol === 'UNKNOWN'
+                    ).length,
+                    average: depths.length
+                        ? depths.reduce((a, b) => a + b, 0) / depths.length
+                        : null,
+                    deepest: depths.length ? Math.max(...depths) : null,
+                    win11to15: bucket(11, 15),
+                    win16to20: bucket(16, 20),
+                    win21plus: depths.filter(d => d >= 21).length,
+                    rows
+                };
+            },
+
+            ensurePanel() {
+                if (document.getElementById('post-stop-depth-panel')) return;
+
+                const anchor =
+                    document.getElementById('tail-precursor-panel') ||
+                    document.getElementById('tail-risk-panel') ||
+                    document.getElementById('cycle-performance-panel');
+
+                if (!anchor || !anchor.parentElement) return;
+
+                const panel = document.createElement('div');
+                panel.id = 'post-stop-depth-panel';
+                panel.className =
+                    'mt-3 p-3 bg-gray-800 rounded-lg border border-sky-500/30 text-xs';
+
+                panel.innerHTML = `
+                    <div class="font-bold text-sky-300 mb-1">🔭 POST-STOP DEPTH TRACKER</div>
+                    <div class="text-gray-400 mb-2">
+                        When live trading stops at the cycle safety cap, the same target digit is followed on future public ticks only. No purchases.
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">Active watches:</span>
+                        <span id="psd-active" class="font-bold text-cyan-300">0</span>
+
+                        <span class="text-gray-400">Resolved stopped cycles:</span>
+                        <span id="psd-resolved" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Average would-win trade:</span>
+                        <span id="psd-average" class="font-bold text-white">-</span>
+
+                        <span class="text-gray-400">Deepest observed:</span>
+                        <span id="psd-deepest" class="font-bold text-yellow-300">-</span>
+
+                        <span class="text-gray-400">Would win 11–15:</span>
+                        <span id="psd-11-15" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 16–20:</span>
+                        <span id="psd-16-20" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 21+:</span>
+                        <span id="psd-21plus" class="font-bold text-white">0</span>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Current watch:</div>
+                        <div id="psd-live" class="font-mono text-gray-200">
+                            Waiting for a risk-capped cycle.
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Latest resolved sequence:</div>
+                        <div id="psd-latest" class="font-mono text-gray-200">-</div>
+                    </div>
+                `;
+
+                anchor.parentElement.appendChild(panel);
+
+                if (typeof makePanelMinimizable === 'function') {
+                    makePanelMinimizable(panel, {
+                        key: 'post-stop-depth'
+                    });
+                }
+            },
+
+            render() {
+                this.ensurePanel();
+
+                const symbol = this.getSymbol();
+                const s = this.stats(symbol);
+
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set('psd-active', String(s.active));
+                set('psd-resolved', String(s.resolved));
+                set(
+                    'psd-average',
+                    Number.isFinite(s.average)
+                        ? `Trade ${s.average.toFixed(1)}`
+                        : '-'
+                );
+                set(
+                    'psd-deepest',
+                    Number.isFinite(s.deepest)
+                        ? `Trade ${s.deepest}`
+                        : '-'
+                );
+                set('psd-11-15', String(s.win11to15));
+                set('psd-16-20', String(s.win16to20));
+                set('psd-21plus', String(s.win21plus));
+
+                const live = document.getElementById('psd-live');
+                if (live) {
+                    const current =
+                        this.active.find(x => x.symbol === symbol) ||
+                        this.active[0];
+
+                    if (current) {
+                        const digits = current.digits
+                            .slice(-25)
+                            .map(x => x.digit)
+                            .join(' ');
+
+                        live.textContent =
+                            `target ${current.targetDigit} | stopped @${current.stopDepth} | ` +
+                            `${current.postStopTicks} post-stop ticks | ` +
+                            `current implied depth ${current.stopDepth + current.postStopTicks}` +
+                            (digits ? ` | digits: ${digits}` : '');
+                    } else {
+                        live.textContent = 'No active post-stop watch.';
+                    }
+                }
+
+                const latest = document.getElementById('psd-latest');
+                if (latest) {
+                    const rows = s.rows
+                        .slice()
+                        .sort((a, b) =>
+                            Number(b.resolvedAt || 0) -
+                            Number(a.resolvedAt || 0)
+                        );
+
+                    const row = rows[0];
+
+                    if (row) {
+                        const seq = (row.digits || [])
+                            .map(x => x.digit)
+                            .join(' ');
+
+                        latest.textContent =
+                            `stopped @${row.stopDepth} → target ${row.targetDigit} appeared after ` +
+                            `${row.postStopTicks} tick(s) → would win @${row.wouldWinTradeNumber}` +
+                            (seq ? ` | sequence: ${seq}` : '');
+                    } else {
+                        latest.textContent = '-';
+                    }
+                }
+            }
+        };
+
         // ============================================================================
         // MATCHSTAR V15 — TAIL RISK MEASUREMENT + HARD CYCLE GUARDS
         // ============================================================================
@@ -5508,6 +6063,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     `Exposure frozen at $${s.exposure.toFixed(2)}`,
                     'loss'
                 );
+                window.postStopDepthTracker.startFromCurrentCycle(
+                    'Tail risk: maximum cycle trades reached',
+                    s
+                );
                 stopBot('Tail risk: maximum cycle trades reached');
                 return;
             }
@@ -5521,6 +6080,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 `Projected exposure $${s.nextLossExposure.toFixed(2)} exceeds cap $${s.dollarCap.toFixed(2)}`,
                 `Current exposure frozen at $${s.exposure.toFixed(2)}`,
                 'loss'
+            );
+            window.postStopDepthTracker.startFromCurrentCycle(
+                'Tail risk: maximum cycle dollar exposure reached',
+                s
             );
             stopBot('Tail risk: maximum cycle dollar exposure reached');
         }
