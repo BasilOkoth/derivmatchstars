@@ -33,15 +33,36 @@ function normalise(c){
 }
 function caption(c,type){
   const win=c.status==='WIN', n=c.trades.length, account=type==='REAL'?'REAL ACCOUNT':'DEMO ACCOUNT';
+  const pnl=cash(c.netPnL);
+
+  if(win){
+    return [
+      `⭐ <b>DIGITMATCHSTAR — ${account}</b>`,'',
+      `📈 <b>${market(c.symbol)}</b>`,
+      `🎯 Target digit: <b>${Number.isFinite(c.digit)?c.digit:'-'}</b>`,
+      `✅ <b>MATCHED AT TRADE ${c.winningTradeNumber||n}</b>`,
+      `🟢 <b>PROFIT: ${pnl}</b>`,
+      `💵 Total stake: <b>$${c.totalInvestment.toFixed(2)}</b>`,'',
+      type==='REAL'?'Real-money result. Trading involves risk.':'Demo result using virtual funds.',
+      '⚠️ <b>Start on Demo to understand how DigitMatchStar works, how cycles behave, and how the risk controls operate before considering real-money use.</b>',
+      'Trading involves risk, and past results do not guarantee future performance.','',
+      'ℹ️ <b>Affiliate disclosure:</b> DigitMatchStar participates in the Deriv affiliate/partner programme and may earn a commission when eligible users register or trade through our partner links.','',
+      '🚀 <b>Experience DigitMatchStar</b>',WEBSITE
+    ].join('\n');
+  }
+
   return [
     `⭐ <b>DIGITMATCHSTAR — ${account}</b>`,'',
     `📈 <b>${market(c.symbol)}</b>`,
     `🎯 Target digit: <b>${Number.isFinite(c.digit)?c.digit:'-'}</b>`,
-    win?`✅ <b>MATCHED AT TRADE ${c.winningTradeNumber||n}</b>`:`⛔ <b>CYCLE STOPPED AT TRADE ${n}</b>`,
-    `💰 Cycle P/L: <b>${cash(c.netPnL)}</b>`,
+    `🛑 <b>CYCLE STOPPED AFTER ${n} TRADE${n===1?'':'S'}</b>`,
+    `🔴 <b>Cycle P/L: ${pnl}</b>`,
     `💵 Total stake: <b>$${c.totalInvestment.toFixed(2)}</b>`,'',
-    type==='REAL'?'Real-money result. Trading involves risk.':'Demo result using virtual funds.',
-    'Past results do not guarantee future performance.','',
+    `The selected digit did not match within the configured trade limit.`,
+    `The bot stopped at the selected risk limit; no additional live contracts were placed.`,'',
+    '⚠️ <b>Use Demo first to understand how DigitMatchStar works, how cycles behave, and how the risk controls operate before considering real-money use.</b>',
+    'Choose limits you can afford to lose. Trading involves risk, and past results do not guarantee future performance.','',
+    'ℹ️ <b>Affiliate disclosure:</b> DigitMatchStar participates in the Deriv affiliate/partner programme and may earn a commission when eligible users register or trade through our partner links.','',
     '🚀 <b>Experience DigitMatchStar</b>',WEBSITE
   ].join('\n');
 }
