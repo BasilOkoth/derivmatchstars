@@ -484,16 +484,21 @@
                         <button id="edge-use-best" type="button"
                                 class="ml-auto px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
                                 disabled>Use Best Market</button>
+                        <button id="edge-scanner-minimize" type="button"
+                                class="px-2.5 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold"
+                                aria-expanded="true" title="Minimize edge monitor">−</button>
                     </div>
-                    <div class="text-[11px] text-gray-400 mb-3">
-                        Only symbols returned by Deriv as supporting <b>DIGITMATCH</b> are shown.
-                        The score is a research ranking from observed digit-gap behaviour, P5/P10, tail risk and sample support — not a guaranteed or verified trading edge.
-                    </div>
-                    <div id="edge-best-summary" class="mb-3 p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300">
-                        Waiting for enough ticks to compare eligible markets…
-                    </div>
-                    <div id="edge-monitor-grid" class="edge-monitor-grid">
-                        <div class="text-xs text-gray-500">Loading eligible DIGITMATCH symbols…</div>
+                    <div id="edge-scanner-body">
+                        <div class="text-[11px] text-gray-400 mb-3">
+                            Only symbols returned by Deriv as supporting <b>DIGITMATCH</b> are shown.
+                            The score is a research ranking from observed digit-gap behaviour, P5/P10, tail risk and sample support — not a guaranteed or verified trading edge.
+                        </div>
+                        <div id="edge-best-summary" class="mb-3 p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300">
+                            Waiting for enough ticks to compare eligible markets…
+                        </div>
+                        <div id="edge-monitor-grid" class="edge-monitor-grid">
+                            <div class="text-xs text-gray-500">Loading eligible DIGITMATCH symbols…</div>
+                        </div>
                     </div>
                 </div>
 
@@ -6273,6 +6278,32 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const edgeBestBtn = document.getElementById('edge-use-best');
             if (edgeBestBtn) {
                 edgeBestBtn.addEventListener('click', () => window.digitMatchScanner?.useBest());
+            }
+
+            const edgeScannerMinBtn = document.getElementById('edge-scanner-minimize');
+            const edgeScannerBody = document.getElementById('edge-scanner-body');
+            if (edgeScannerMinBtn && edgeScannerBody) {
+                let minimized = false;
+                try {
+                    minimized = localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
+                } catch (_) {}
+
+                const applyEdgeScannerState = () => {
+                    edgeScannerBody.classList.toggle('hidden', minimized);
+                    edgeScannerMinBtn.textContent = minimized ? '+' : '−';
+                    edgeScannerMinBtn.title = minimized ? 'Expand edge monitor' : 'Minimize edge monitor';
+                    edgeScannerMinBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                    try {
+                        localStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
+                    } catch (_) {}
+                };
+
+                edgeScannerMinBtn.addEventListener('click', () => {
+                    minimized = !minimized;
+                    applyEdgeScannerState();
+                });
+
+                applyEdgeScannerState();
             }
             
             document.getElementById('predictedDigit').addEventListener('change', function() {
