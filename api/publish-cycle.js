@@ -66,15 +66,40 @@ function caption(c,type){
     '🚀 <b>Experience DigitMatchStar</b>',WEBSITE
   ].join('\n');
 }
-async function telegramText(text){
-  const token=process.env.TELEGRAM_BOT_TOKEN, chat=process.env.TELEGRAM_CHAT_ID;
-  if(!token||!chat) throw new Error('Telegram environment variables are missing');
+async function sendApprovalPreview(text){
+  const token=process.env.TELEGRAM_BOT_TOKEN;
+  const adminChat=process.env.TELEGRAM_ADMIN_CHAT_ID;
+  if(!token||!adminChat) throw new Error('TELEGRAM_BOT_TOKEN or TELEGRAM_ADMIN_CHAT_ID is missing');
+
+  const preview = [
+    '🧾 <b>DigitMatchStar approval preview</b>',
+    'Review the result below before it is posted publicly.',
+    '',
+    text
+  ].join('\n');
+
   const r=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({chat_id:chat,text,parse_mode:'HTML',reply_markup:{inline_keyboard:[[{text:'🚀 Open DigitMatchStar',url:WEBSITE}]]}})
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      chat_id:adminChat,
+      text:preview,
+      parse_mode:'HTML',
+      disable_web_page_preview:true,
+      reply_markup:{
+        inline_keyboard:[
+          [
+            {text:'✅ APPROVE & PUBLISH',callback_data:'dms:approve'},
+            {text:'❌ REJECT',callback_data:'dms:reject'}
+          ],
+          [{text:'🚀 Open DigitMatchStar',url:WEBSITE}]
+        ]
+      }
+    })
   });
   const d=await r.json().catch(()=>({}));
-  if(!r.ok||!d?.ok) throw new Error(d?.description||'Telegram send failed');
+  if(!r.ok||!d?.ok) throw new Error(d?.description||'Telegram approval preview failed');
+  return d.result;
 }
 async function mediaWorker(payload){
   const url=String(process.env.MEDIA_WORKER_URL||'').replace(/\/$/,'');
@@ -99,8 +124,18 @@ module.exports=async function handler(req,res){
     if(!c.id||!c.trades.length) return res.status(400).json({error:'Invalid or empty cycle'});
     const type=String(account?.account_type||'').toLowerCase()==='real'?'REAL':'DEMO';
     const text=caption(c,type);
-    const media=await mediaWorker({accountType:type,accountId,cycle:c,caption:text,website:WEBSITE});
-    if(!media.used) await telegramText(text);
-    return res.status(200).json({published:true,format:media.used?'video':'text',accountType:type,cycleId:c.id,mediaError:media.error||null});
+
+    // APPROVAL-FIRST MODE:
+    // Do not post publicly here. Send a private preview to the owner/admin.
+    const preview=await sendApprovalPreview(text);
+
+    return res.status(200).json({
+      published:false,
+      pendingApproval:true,
+      format:'text',
+      accountType:type,
+      cycleId:c.id,
+      approvalMessageId:preview?.message_id||null
+    });
   }catch(e){ return res.status(e.status||500).json({error:e.message||'Publisher error'}); }
 };
