@@ -314,16 +314,6 @@
             transform: scale(1.02);
             box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
         }
-
-        /* V18 compact/minimizable research panels */
-        .v18-collapse-btn {
-            margin-left:auto; padding:2px 8px; border-radius:6px;
-            background:#374151; color:#e5e7eb; font-size:11px; font-weight:700;
-        }
-        .v18-collapse-btn:hover { background:#4b5563; }
-        .v18-panel-header { display:flex; align-items:center; gap:.5rem; }
-        .v18-collapsed > :not(.v18-panel-header) { display:none !important; }
-        .v18-collapsed { padding-bottom:.65rem !important; }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -690,9 +680,7 @@
 
         <!-- LOG AREA -->
         <div id="log-column" class="w-full flex flex-col">
-            <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1 flex items-center">Live Log
-                <button type="button" class="v18-collapse-btn" onclick="toggleV18Element('log-area', this)">−</button>
-            </h2>
+            <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Log</h2>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
 [00:00:00] 🤖 Deriv Bot Initialized
 [00:00:00] 📊 Ready to connect to live market
@@ -2223,7 +2211,6 @@ window.nextTickModel = {
             window.EV_GATE_CONFIG.enabled &&
             (
                 mode === 'ai' ||
-                mode === 'recovery' ||
                 (mode === 'instant' && window.EV_GATE_CONFIG.applyToInstant)
             );
 
@@ -2234,11 +2221,6 @@ window.nextTickModel = {
             if (!model?.ready) {
                 approved = false;
                 reason = 'NEXT_TICK_MODEL_NOT_READY';
-            } else if (mode === 'recovery' && expectedValue <= 0) {
-                // V18: every recovery contract must independently have positive live EV.
-                // Waiting does not count as a trade and no money is placed at risk.
-                approved = false;
-                reason = 'RECOVERY_NON_POSITIVE_EV';
             } else if (edge < window.EV_GATE_CONFIG.minEdge) {
                 approved = false;
                 reason = 'EDGE_BELOW_THRESHOLD';
@@ -2494,6 +2476,59 @@ window.tailPrecursorLab = {
     researchTargetCycles: 100,
     shadowHorizonTrades: 20,
     activeShadows: [],
+
+    shadowStorageKey(symbol) {
+        return `matchstar_active_shadows_v1_${symbol || 'UNKNOWN'}`;
+    },
+
+    saveActiveShadows(symbol = null) {
+        try {
+            const grouped = {};
+            for (const s of (this.activeShadows || [])) {
+                const sym = s.symbol || symbol || 'UNKNOWN';
+                (grouped[sym] ||= []).push(s);
+            }
+            for (const [sym, rows] of Object.entries(grouped)) {
+                localStorage.setItem(this.shadowStorageKey(sym), JSON.stringify(rows));
+            }
+            if (symbol && !grouped[symbol]) {
+                localStorage.setItem(this.shadowStorageKey(symbol), JSON.stringify([]));
+            }
+        } catch (e) {
+            console.warn('Could not persist active shadows', e);
+        }
+    },
+
+    restoreActiveShadows(symbol) {
+        try {
+            const raw = localStorage.getItem(this.shadowStorageKey(symbol));
+            const rows = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(rows)) return;
+            const known = new Set((this.activeShadows || []).map(x => String(x.cycleId)));
+            for (const s of rows) {
+                if (!s || (s.status !== 'ACTIVE' && s.status !== 'PENDING')) continue;
+                if (known.has(String(s.cycleId))) continue;
+                this.activeShadows.push(s);
+            }
+        } catch (e) {
+            console.warn('Could not restore active shadows', e);
+        }
+    },
+
+    restoreAllActiveShadows() {
+        try {
+            const prefix = 'matchstar_active_shadows_v1_';
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (!k || !k.startsWith(prefix)) continue;
+                const sym = k.slice(prefix.length);
+                this.restoreActiveShadows(sym);
+            }
+        } catch (e) {
+            console.warn('Could not restore shadow continuations', e);
+        }
+        this.render();
+    },
 
     loadResearchSettings() {
         try {
@@ -2916,6 +2951,7 @@ window.tailPrecursorLab = {
         c.shadowContinuation = JSON.parse(JSON.stringify(shadow));
         c.tailClass = 'CENSORED';
         this.activeShadows.push(shadow);
+        this.saveActiveShadows(shadow.symbol);
 
         log(
             `👻 SHADOW CONTINUATION START | cycle ${c.id} | digit ${shadow.digit} | live stopped at ${liveDepth} | observing ${liveDepth + 1}→${horizon} with NO PURCHASES`,
@@ -3004,6 +3040,7 @@ window.tailPrecursorLab = {
         }
 
         this.activeShadows = stillActive;
+        this.saveActiveShadows();
         this.render();
     },
 
@@ -3028,17 +3065,17 @@ window.tailPrecursorLab = {
         panel.innerHTML = `
             <div class="font-bold text-fuchsia-300 mb-1">🧬 TAIL PRECURSOR LAB</div>
             <div class="text-gray-400 mb-2">
-                Forward-only research · learns what is different before natural tails
+                Forward-only research · tail = target digit first returns after trade 10, or fails to return by shadow horizon
             </div>
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                <span class="text-gray-400">Learning sample:</span>
+                <span class="text-gray-400">Resolved sample:</span>
                 <span id="tpl-sample" class="font-bold text-white">0 normal · 0 tails</span>
 
-                <span class="text-gray-400">Censored / shadow pending:</span>
+                <span class="text-gray-400">Censored / awaiting tail resolution:</span>
                 <span id="tpl-censored" class="font-bold text-yellow-300">0</span>
 
-                <span class="text-gray-400">Active shadow continuations:</span>
+                <span class="text-gray-400">Active post-cap shadow tracking:</span>
                 <span id="tpl-shadow-active" class="font-bold text-cyan-300">0</span>
 
                 <span class="text-gray-400">Technical stops excluded:</span>
@@ -3047,7 +3084,7 @@ window.tailPrecursorLab = {
                 <span class="text-gray-400">Research progress:</span>
                 <span id="tpl-progress" class="font-bold text-white">0 / 100 resolved cycles</span>
 
-                <span class="text-gray-400">Current tail state:</span>
+                <span class="text-gray-400">Tail model state:</span>
                 <span id="tpl-state" class="font-bold text-yellow-300">LEARNING</span>
 
                 <span class="text-gray-400">Empirical tail score:</span>
@@ -3224,6 +3261,7 @@ window.tailPrecursorLab = {
 
 
 window.tailPrecursorLab.loadResearchSettings();
+window.tailPrecursorLab.restoreAllActiveShadows();
 
 // ============================================================================
 // MATCHSTAR V17 — CYCLE PERFORMANCE RECORDER + PRECURSOR + SHADOW CONTINUATION
@@ -3606,7 +3644,7 @@ window.cyclePerformance = {
             'mt-3 p-3 bg-gray-800 rounded-lg border border-purple-500/30 text-xs';
 
         panel.innerHTML = `
-            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Clean V17+ research history · censored cycles resolved by no-money shadow continuation</div>
+            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Clean tail-research history · censored cycles resolved by no-money shadow continuation</div>
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
                 <span class="text-gray-400">Current cycle:</span>
@@ -5229,7 +5267,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V17 · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V18-T · TAIL RESEARCH · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -5555,7 +5593,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     return;
                 }
 
-                log('⚡ RECOVERY V18: requesting a fresh quote for the next tick; purchase requires positive live EV', 'TRADE');
+                log('⚡ FAST RECOVERY V5: placing next contract immediately on this loss tick for the NEXT market tick', 'TRADE');
                 processTickImmediately(tickData);
                 playAudioFeedback('TICK');
             } else if (
@@ -5803,7 +5841,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             panel.innerHTML = `
                 <div class="font-bold text-red-300 mb-2">🛡️ TAIL RISK CONTROL</div>
                 <div class="mb-2 text-gray-300">
-                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V17</span>
+                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V18-T · TAIL RESEARCH</span>
                     <span class="mx-1">·</span>
                     <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
                 </div>
@@ -6593,24 +6631,6 @@ window.isBotRunning = true;
                 ) {
                     clearSessionDigitLock(`ENTRY_EV:${evaluation.reason}`);
                 }
-                return;
-            }
-
-            if (isRecovery && !evaluation.approved) {
-                rollbackUnsentTrade(pending.stake);
-                log(
-                    `🟡 RECOVERY EV WAIT: ${evaluation.reason} | P ${(evaluation.modelProbability * 100).toFixed(2)}% | ` +
-                    `BE ${(evaluation.breakEvenProbability * 100).toFixed(2)}% | ` +
-                    `edge ${evaluation.edge >= 0 ? '+' : ''}${(evaluation.edge * 100).toFixed(2)} pp | ` +
-                    `EV ${evaluation.expectedValue >= 0 ? '+' : ''}$${evaluation.expectedValue.toFixed(3)} | no money at risk`,
-                    'ENGINE'
-                );
-                updateTradeStatus(
-                    'RECOVERY EV WAIT 🟡',
-                    `Digit ${pending.predictedDigit} · next stake $${Number(pending.stake).toFixed(2)} · EV $${evaluation.expectedValue.toFixed(3)}`,
-                    'No contract purchased · re-evaluating on the next fresh tick',
-                    'normal'
-                );
                 return;
             }
 
@@ -7557,56 +7577,6 @@ window.isBotRunning = true;
         };
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
-
-
-        // ============================================================================
-        // MATCHSTAR V18 — COMPACT / MINIMIZABLE RESEARCH INTERFACE
-        // ============================================================================
-        function toggleV18Element(id, button) {
-            const el = document.getElementById(id);
-            if (!el) return;
-            const hidden = el.classList.toggle('hidden');
-            if (button) button.textContent = hidden ? '+' : '−';
-        }
-
-        function makeV18PanelCollapsible(panel) {
-            if (!panel || panel.dataset.v18Collapsible === '1') return;
-            const first = panel.firstElementChild;
-            if (!first) return;
-            panel.dataset.v18Collapsible = '1';
-            first.classList.add('v18-panel-header');
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'v18-collapse-btn';
-            btn.textContent = '−';
-            btn.title = 'Minimize / expand panel';
-            btn.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const collapsed = panel.classList.toggle('v18-collapsed');
-                btn.textContent = collapsed ? '+' : '−';
-            });
-            first.appendChild(btn);
-        }
-
-        function installV18CompactPanels() {
-            ['next-tick-edge-panel','cycle-performance-panel','tail-risk-panel','tail-precursor-panel']
-                .forEach(id => makeV18PanelCollapsible(document.getElementById(id)));
-        }
-
-        const v18PanelObserver = new MutationObserver(installV18CompactPanels);
-        v18PanelObserver.observe(document.body, { childList: true, subtree: true });
-        installV18CompactPanels();
-
-        // Start with the large Martingale calculator minimized to keep the execution UI compact.
-        setTimeout(() => {
-            const calc = document.getElementById('calculatorContent');
-            const icon = document.getElementById('calcToggleIcon');
-            if (calc && !calc.classList.contains('hidden')) {
-                calc.classList.add('hidden');
-                if (icon) icon.textContent = '+';
-            }
-        }, 0);
     </script>
 </body>
 </html>
