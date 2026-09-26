@@ -5103,7 +5103,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V16 · minimizable UI · Post-Stop Depth Tracker · histories preserved · Deriv epoch-aligned · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · minimizable UI · Post-Stop Depth Tracker FIXED for Max Trades · histories preserved · Deriv epoch-aligned · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -5554,7 +5554,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 return (
                     r.includes('tail risk') ||
                     r.includes('maximum cycle trades') ||
-                    r.includes('maximum cycle dollar exposure')
+                    r.includes('maximum cycle dollar exposure') ||
+                    r.includes('maximum trades reached')
                 );
             },
 
@@ -5826,6 +5827,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     </div>
 
                     <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">Tracker status:</span>
+                        <span id="psd-status" class="font-bold text-cyan-300">READY</span>
+
                         <span class="text-gray-400">Active watches:</span>
                         <span id="psd-active" class="font-bold text-cyan-300">0</span>
 
@@ -5881,6 +5885,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     if (el) el.textContent = value;
                 };
 
+                set(
+                    'psd-status',
+                    s.active > 0
+                        ? 'TRACKING FUTURE TICKS'
+                        : 'READY · waiting for capped cycle'
+                );
                 set('psd-active', String(s.active));
                 set('psd-resolved', String(s.resolved));
                 set(
@@ -5912,10 +5922,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                             .join(' ');
 
                         live.textContent =
-                            `target ${current.targetDigit} | stopped @${current.stopDepth} | ` +
-                            `${current.postStopTicks} post-stop ticks | ` +
-                            `current implied depth ${current.stopDepth + current.postStopTicks}` +
-                            (digits ? ` | digits: ${digits}` : '');
+                            `TRACKING target ${current.targetDigit} | LIVE STOP @ trade ${current.stopDepth} | ` +
+                            `observed ${current.postStopTicks} future tick(s) | ` +
+                            `next hypothetical trade ${current.stopDepth + current.postStopTicks + 1}` +
+                            (digits ? ` | after-stop digits: ${digits}` : '');
                     } else {
                         live.textContent = 'No active post-stop watch.';
                     }
@@ -6505,7 +6515,22 @@ window.isBotRunning = true;
         // STOP BOT - CRITICAL FUNCTION
         function stopBot(reason) {
             if (!window.isBotRunning) return;
-            
+
+            // Start the no-money post-stop watch BEFORE archiving the live cycle.
+            // This catches the normal "Maximum trades reached" path too.
+            if (
+                window.postStopDepthTracker &&
+                window.cyclePerformance?.current &&
+                window.postStopDepthTracker.isRiskCapReason(reason)
+            ) {
+                window.postStopDepthTracker.startFromCurrentCycle(
+                    reason,
+                    typeof tailRiskSnapshot === 'function'
+                        ? tailRiskSnapshot()
+                        : null
+                );
+            }
+
             window.isBotRunning = false;
             window.nextTradeAllowed = false;
             window.stopAfterWin = false;
