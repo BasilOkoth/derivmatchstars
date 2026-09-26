@@ -2473,79 +2473,6 @@ window.tailPrecursorLab = {
     minTailForModel: 5,
     neighborCount: 12,
 
-    researchTargetCycles: 100,
-    shadowHorizonTrades: 20,
-    activeShadows: [],
-
-    shadowStorageKey(symbol) {
-        return `matchstar_active_shadows_v1_${symbol || 'UNKNOWN'}`;
-    },
-
-    saveActiveShadows(symbol = null) {
-        try {
-            const grouped = {};
-            for (const s of (this.activeShadows || [])) {
-                const sym = s.symbol || symbol || 'UNKNOWN';
-                (grouped[sym] ||= []).push(s);
-            }
-            for (const [sym, rows] of Object.entries(grouped)) {
-                localStorage.setItem(this.shadowStorageKey(sym), JSON.stringify(rows));
-            }
-            if (symbol && !grouped[symbol]) {
-                localStorage.setItem(this.shadowStorageKey(symbol), JSON.stringify([]));
-            }
-        } catch (e) {
-            console.warn('Could not persist active shadows', e);
-        }
-    },
-
-    restoreActiveShadows(symbol) {
-        try {
-            const raw = localStorage.getItem(this.shadowStorageKey(symbol));
-            const rows = raw ? JSON.parse(raw) : [];
-            if (!Array.isArray(rows)) return;
-            const known = new Set((this.activeShadows || []).map(x => String(x.cycleId)));
-            for (const s of rows) {
-                if (!s || (s.status !== 'ACTIVE' && s.status !== 'PENDING')) continue;
-                if (known.has(String(s.cycleId))) continue;
-                this.activeShadows.push(s);
-            }
-        } catch (e) {
-            console.warn('Could not restore active shadows', e);
-        }
-    },
-
-    restoreAllActiveShadows() {
-        try {
-            const prefix = 'matchstar_active_shadows_v1_';
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (!k || !k.startsWith(prefix)) continue;
-                const sym = k.slice(prefix.length);
-                this.restoreActiveShadows(sym);
-            }
-        } catch (e) {
-            console.warn('Could not restore shadow continuations', e);
-        }
-        this.render();
-    },
-
-    loadResearchSettings() {
-        try {
-            const target = Number(localStorage.getItem('matchstar_research_target_cycles'));
-            const horizon = Number(localStorage.getItem('matchstar_shadow_horizon_trades'));
-            if (Number.isFinite(target) && target >= 10) this.researchTargetCycles = Math.floor(target);
-            if (Number.isFinite(horizon) && horizon >= 11 && horizon <= 200) this.shadowHorizonTrades = Math.floor(horizon);
-        } catch (_) {}
-    },
-
-    saveResearchSettings() {
-        try {
-            localStorage.setItem('matchstar_research_target_cycles', String(this.researchTargetCycles));
-            localStorage.setItem('matchstar_shadow_horizon_trades', String(this.shadowHorizonTrades));
-        } catch (_) {}
-    },
-
     numericFeatures: [
         ['aiScore', 'AI score'],
         ['p10', 'P10'],
@@ -2688,8 +2615,6 @@ window.tailPrecursorLab = {
         const n = Number(cycle.trades?.length || 0);
         const reason = String(cycle.finalReason || '').toLowerCase();
         const winN = Number(cycle.winningTradeNumber || 0);
-        const shadow = cycle.shadowContinuation || null;
-        const shadowWinN = Number(shadow?.winningTradeNumber || 0);
 
         if (cycle.status === 'WIN' && winN > 0 && winN <= 10) {
             return winN <= 5 ? 'FAST_WIN' : 'NORMAL_WIN';
@@ -2697,19 +2622,15 @@ window.tailPrecursorLab = {
 
         if (cycle.status === 'WIN' && winN > 10) return 'TAIL_WIN';
 
-        if (shadow?.status === 'WIN' && shadowWinN > 10) return 'TAIL_WIN';
-        if (shadow?.status === 'NO_MATCH_TO_HORIZON') return 'TAIL_STOP';
-        if (shadow?.status === 'ACTIVE' || shadow?.status === 'PENDING') return 'CENSORED';
+        const naturalTailReason =
+            reason.includes('maximum trades') ||
+            reason.includes('maximum cycle') ||
+            reason.includes('tail risk');
 
-        const riskCapped =
-            reason.includes('tail risk') ||
-            reason.includes('maximum cycle trades') ||
-            reason.includes('maximum cycle dollar') ||
-            reason.includes('maximum trades');
+        if (n > 10 || naturalTailReason) return 'TAIL_STOP';
 
-        if (riskCapped) return 'CENSORED';
-        if (n > 10) return 'TAIL_STOP';
-
+        // Reconciliation/network/manual technical stops are excluded from the
+        // precursor model because they are not market tails.
         return 'TECHNICAL_STOP';
     },
 
@@ -2727,7 +2648,6 @@ window.tailPrecursorLab = {
             tails: enriched.filter(x =>
                 x.klass === 'TAIL_WIN' || x.klass === 'TAIL_STOP'
             ),
-            censored: enriched.filter(x => x.klass === 'CENSORED'),
             technical: enriched.filter(x => x.klass === 'TECHNICAL_STOP')
         };
     },
@@ -2883,33 +2803,15 @@ window.tailPrecursorLab = {
         const rows = window.cyclePerformance?.load(symbol) || [];
         const d = Math.max(1, Number(depth || 1));
 
-        const resolved = rows.filter(r => {
-            const klass = r.tailClass || this.classifyCycle(r);
-            return klass !== 'CENSORED' && klass !== 'TECHNICAL_STOP';
-        });
-
-        const effectiveDepth = (r) => Math.max(
-            Number(r.trades?.length || 0),
-            Number(r.shadowContinuation?.winningTradeNumber || 0),
-            Number(r.shadowContinuation?.horizon || 0)
-        );
-
-        const atRisk = resolved.filter(r => effectiveDepth(r) >= d);
+        // Only cycles that actually reached depth d were "at risk" at that point.
+        const atRisk = rows.filter(r => Number(r.trades?.length || 0) >= d);
         if (!atRisk.length) {
             return { n: 0, next1: null, next2: null, next4: null, tail10: null };
         }
 
-        const effectiveWin = (r) => {
-            if (r.status === 'WIN') return Number(r.winningTradeNumber || 0);
-            if (r.shadowContinuation?.status === 'WIN') {
-                return Number(r.shadowContinuation.winningTradeNumber || 0);
-            }
-            return 0;
-        };
-
         const wonBy = (h) => atRisk.filter(r => {
-            const w = effectiveWin(r);
-            return w >= d && w <= d + h;
+            const w = Number(r.winningTradeNumber || 0);
+            return r.status === 'WIN' && w >= d && w <= d + h;
         }).length / atRisk.length;
 
         const tail10 = atRisk.filter(r => {
@@ -2924,129 +2826,6 @@ window.tailPrecursorLab = {
             next4: wonBy(4),
             tail10
         };
-    },
-
-    startShadowContinuation(reason = 'Risk cap') {
-        const c = window.cyclePerformance?.current;
-        if (!c || !Array.isArray(c.trades) || !c.trades.length) return null;
-
-        const liveDepth = Number(c.trades.length || 0);
-        const horizon = Math.max(liveDepth + 1, Number(this.shadowHorizonTrades || 20));
-
-        const shadow = {
-            cycleId: c.id,
-            symbol: c.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
-            digit: Number(c.digit),
-            liveDepth,
-            horizon,
-            reason,
-            status: 'ACTIVE',
-            startedAt: Date.now(),
-            endedAt: null,
-            ticksObserved: 0,
-            winningTradeNumber: null,
-            shadowTrades: []
-        };
-
-        c.shadowContinuation = JSON.parse(JSON.stringify(shadow));
-        c.tailClass = 'CENSORED';
-        this.activeShadows.push(shadow);
-        this.saveActiveShadows(shadow.symbol);
-
-        log(
-            `👻 SHADOW CONTINUATION START | cycle ${c.id} | digit ${shadow.digit} | live stopped at ${liveDepth} | observing ${liveDepth + 1}→${horizon} with NO PURCHASES`,
-            'ENGINE'
-        );
-
-        this.render();
-        return shadow;
-    },
-
-    updateStoredCycleFromShadow(shadow) {
-        if (!shadow) return;
-        const rows = window.cyclePerformance?.load(shadow.symbol) || [];
-        const row = rows.find(r => String(r.id) === String(shadow.cycleId));
-        if (!row) return;
-
-        row.shadowContinuation = JSON.parse(JSON.stringify(shadow));
-        row.tailClass = this.classifyCycle(row);
-        window.cyclePerformance.historyBySymbol[shadow.symbol] = rows;
-        window.cyclePerformance.save(shadow.symbol);
-    },
-
-    processShadowTick(tickData) {
-        if (!tickData || !this.activeShadows.length) return;
-
-        const stillActive = [];
-
-        for (const shadow of this.activeShadows) {
-            if (!shadow || shadow.status !== 'ACTIVE') continue;
-
-            const symbol =
-                tickData?.raw?.symbol ||
-                document.getElementById('symbol')?.value ||
-                window.tickFormat?.symbol ||
-                'UNKNOWN';
-
-            if (shadow.symbol !== 'UNKNOWN' && symbol !== shadow.symbol) {
-                stillActive.push(shadow);
-                continue;
-            }
-
-            const tradeNumber = shadow.liveDepth + shadow.ticksObserved + 1;
-            const observedDigit = Number(tickData.digit);
-            const matched = observedDigit === Number(shadow.digit);
-
-            shadow.ticksObserved += 1;
-            shadow.shadowTrades.push({
-                tradeNumber,
-                observedDigit,
-                targetDigit: Number(shadow.digit),
-                matched,
-                epoch: Number(tickData?.raw?.epoch || 0),
-                at: Date.now(),
-                state: this.captureState(
-                    Number(shadow.digit),
-                    matched ? 'SHADOW_MATCH' : 'SHADOW_LOSS',
-                    tradeNumber
-                )
-            });
-
-            if (matched) {
-                shadow.status = 'WIN';
-                shadow.winningTradeNumber = tradeNumber;
-                shadow.endedAt = Date.now();
-                log(
-                    `👻 SHADOW RESULT | cycle ${shadow.cycleId} would recover at trade ${tradeNumber} | digit ${shadow.digit} | NO MONEY TRADED`,
-                    'ENGINE'
-                );
-                this.updateStoredCycleFromShadow(shadow);
-                continue;
-            }
-
-            if (tradeNumber >= shadow.horizon) {
-                shadow.status = 'NO_MATCH_TO_HORIZON';
-                shadow.endedAt = Date.now();
-                log(
-                    `👻 SHADOW TRUE TAIL | cycle ${shadow.cycleId} had no match through trade ${shadow.horizon} | digit ${shadow.digit} | NO MONEY TRADED`,
-                    'ENGINE'
-                );
-                this.updateStoredCycleFromShadow(shadow);
-                continue;
-            }
-
-            this.updateStoredCycleFromShadow(shadow);
-            stillActive.push(shadow);
-        }
-
-        this.activeShadows = stillActive;
-        this.saveActiveShadows();
-        this.render();
-    },
-
-    resolvedResearchCycles(symbol) {
-        const g = this.eligibleGroups(symbol);
-        return g.normal.length + g.tails.length;
     },
 
     ensurePanel() {
@@ -3065,26 +2844,17 @@ window.tailPrecursorLab = {
         panel.innerHTML = `
             <div class="font-bold text-fuchsia-300 mb-1">🧬 TAIL PRECURSOR LAB</div>
             <div class="text-gray-400 mb-2">
-                Forward-only research · tail = target digit first returns after trade 10, or fails to return by shadow horizon
+                Forward-only research · learns what is different before natural tails
             </div>
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                <span class="text-gray-400">Resolved sample:</span>
+                <span class="text-gray-400">Learning sample:</span>
                 <span id="tpl-sample" class="font-bold text-white">0 normal · 0 tails</span>
-
-                <span class="text-gray-400">Censored / awaiting tail resolution:</span>
-                <span id="tpl-censored" class="font-bold text-yellow-300">0</span>
-
-                <span class="text-gray-400">Active post-cap shadow tracking:</span>
-                <span id="tpl-shadow-active" class="font-bold text-cyan-300">0</span>
 
                 <span class="text-gray-400">Technical stops excluded:</span>
                 <span id="tpl-tech" class="font-bold text-white">0</span>
 
-                <span class="text-gray-400">Research progress:</span>
-                <span id="tpl-progress" class="font-bold text-white">0 / 100 resolved cycles</span>
-
-                <span class="text-gray-400">Tail model state:</span>
+                <span class="text-gray-400">Current tail state:</span>
                 <span id="tpl-state" class="font-bold text-yellow-300">LEARNING</span>
 
                 <span class="text-gray-400">Empirical tail score:</span>
@@ -3109,16 +2879,6 @@ window.tailPrecursorLab = {
                 <span id="tpl-taildepth" class="font-bold text-white">-</span>
             </div>
 
-            <div class="mt-3 grid grid-cols-2 gap-2 items-center">
-                <label class="text-gray-400" for="tpl-target-input">Research target cycles:</label>
-                <input id="tpl-target-input" type="number" min="10" max="5000" step="10"
-                       class="w-28 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white" />
-
-                <label class="text-gray-400" for="tpl-horizon-input">Shadow horizon (trades):</label>
-                <input id="tpl-horizon-input" type="number" min="11" max="200" step="1"
-                       class="w-28 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white" />
-            </div>
-
             <div class="mt-3">
                 <div class="text-gray-400 mb-1">Strongest observed entry differences:</div>
                 <div id="tpl-precursors" class="font-mono text-gray-200">
@@ -3132,39 +2892,6 @@ window.tailPrecursorLab = {
         `;
 
         anchor.parentElement.appendChild(panel);
-
-        const targetInput = document.getElementById('tpl-target-input');
-        const horizonInput = document.getElementById('tpl-horizon-input');
-
-        if (targetInput) {
-            targetInput.value = String(this.researchTargetCycles);
-            targetInput.addEventListener('change', () => {
-                const v = Math.floor(Number(targetInput.value));
-                if (Number.isFinite(v) && v >= 10 && v <= 5000) {
-                    this.researchTargetCycles = v;
-                    this.saveResearchSettings();
-                    log(`🧬 Research target set to ${v} resolved cycles`, 'CONFIG');
-                } else {
-                    targetInput.value = String(this.researchTargetCycles);
-                }
-                this.render();
-            });
-        }
-
-        if (horizonInput) {
-            horizonInput.value = String(this.shadowHorizonTrades);
-            horizonInput.addEventListener('change', () => {
-                const v = Math.floor(Number(horizonInput.value));
-                if (Number.isFinite(v) && v >= 11 && v <= 200) {
-                    this.shadowHorizonTrades = v;
-                    this.saveResearchSettings();
-                    log(`👻 Shadow continuation horizon set to trade ${v}`, 'CONFIG');
-                } else {
-                    horizonInput.value = String(this.shadowHorizonTrades);
-                }
-                this.render();
-            });
-        }
     },
 
     render() {
@@ -3203,23 +2930,8 @@ window.tailPrecursorLab = {
         };
 
         set('tpl-sample', `${g.normal.length} normal · ${g.tails.length} tails`);
-        set('tpl-censored', String(g.censored.length));
-        set('tpl-shadow-active', String(this.activeShadows.length));
         set('tpl-tech', String(g.technical.length));
         set('tpl-depth', String(depth));
-
-        const resolved = this.resolvedResearchCycles(symbol);
-        set('tpl-progress', `${resolved} / ${this.researchTargetCycles} resolved cycles`);
-
-        const targetInput = document.getElementById('tpl-target-input');
-        if (targetInput && document.activeElement !== targetInput) {
-            targetInput.value = String(this.researchTargetCycles);
-        }
-
-        const horizonInput = document.getElementById('tpl-horizon-input');
-        if (horizonInput && document.activeElement !== horizonInput) {
-            horizonInput.value = String(this.shadowHorizonTrades);
-        }
 
         if (score.ready) {
             const pct = score.score * 100;
@@ -3260,15 +2972,12 @@ window.tailPrecursorLab = {
 };
 
 
-window.tailPrecursorLab.loadResearchSettings();
-window.tailPrecursorLab.restoreAllActiveShadows();
-
 // ============================================================================
-// MATCHSTAR V17 — CYCLE PERFORMANCE RECORDER + PRECURSOR + SHADOW CONTINUATION
+// MATCHSTAR V16 — CYCLE PERFORMANCE RECORDER + PRECURSOR TRAJECTORY
 // ============================================================================
 
 window.cyclePerformance = {
-    version: 'CPR-4',
+    version: 'CPR-3',
     current: null,
     historyBySymbol: {},
     maxStoredCyclesPerSymbol: 500,
@@ -3282,7 +2991,7 @@ window.cyclePerformance = {
     },
 
     storageKey(symbol = this.getSymbol()) {
-        return `matchstar_cycle_history_v4_${symbol}`;
+        return `matchstar_cycle_history_v3_${symbol}`;
     },
 
     load(symbol = this.getSymbol()) {
@@ -3644,7 +3353,7 @@ window.cyclePerformance = {
             'mt-3 p-3 bg-gray-800 rounded-lg border border-purple-500/30 text-xs';
 
         panel.innerHTML = `
-            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Clean tail-research history · censored cycles resolved by no-money shadow continuation</div>
+            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Clean V16+ research history · precursor trajectories enabled</div>
 
             <div class="grid grid-cols-2 gap-x-2 gap-y-1">
                 <span class="text-gray-400">Current cycle:</span>
@@ -5267,7 +4976,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             });
             
             log('🤖 Bot ready', 'SYSTEM');
-            log('🚀 Runtime: MATCHSTAR V18-T · TAIL RESEARCH · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · hard tail-risk guards · clean cycle history · Deriv epoch-aligned · P90 protected', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -5578,10 +5287,6 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
 
-            if (window.tailPrecursorLab) {
-                window.tailPrecursorLab.processShadowTick(tickData);
-            }
-
             // Resolve the current one-tick contract against this tick immediately.
             const fastResult = observeActiveContractTick(tickData);
 
@@ -5731,7 +5436,6 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         function getCurrentCycleExposure() {
             const c = window.cyclePerformance?.current;
             if (c) return Number(c.totalInvestment || 0);
-            if (!window.isBotRunning) return 0;
             return window.cycleHasPurchasedContract
                 ? Number(window.pnlTracker?.totalInvestment || 0)
                 : 0;
@@ -5740,7 +5444,6 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         function getCurrentCycleTradeCount() {
             const c = window.cyclePerformance?.current;
             if (c) return Number(c.trades?.length || 0);
-            if (!window.isBotRunning) return 0;
             return window.cycleHasPurchasedContract ? Number(window.tradeCount || 0) : 0;
         }
 
@@ -5802,11 +5505,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 updateTradeStatus(
                     'TAIL RISK STOP 🛡️',
                     `Cycle cap reached: ${s.currentTrades}/${s.maxCycleTrades} trades`,
-                    `Live money stops here · shadow research continues`,
+                    `Exposure frozen at $${s.exposure.toFixed(2)}`,
                     'loss'
-                );
-                window.tailPrecursorLab.startShadowContinuation(
-                    'Tail risk: maximum cycle trades reached'
                 );
                 stopBot('Tail risk: maximum cycle trades reached');
                 return;
@@ -5819,11 +5519,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             updateTradeStatus(
                 'TAIL RISK STOP 🛡️',
                 `Projected exposure $${s.nextLossExposure.toFixed(2)} exceeds cap $${s.dollarCap.toFixed(2)}`,
-                `Live money stops here · shadow research continues`,
+                `Current exposure frozen at $${s.exposure.toFixed(2)}`,
                 'loss'
-            );
-            window.tailPrecursorLab.startShadowContinuation(
-                'Tail risk: maximum cycle dollar exposure reached'
             );
             stopBot('Tail risk: maximum cycle dollar exposure reached');
         }
@@ -5841,7 +5538,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             panel.innerHTML = `
                 <div class="font-bold text-red-300 mb-2">🛡️ TAIL RISK CONTROL</div>
                 <div class="mb-2 text-gray-300">
-                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V18-T · TAIL RESEARCH</span>
+                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V16</span>
                     <span class="mx-1">·</span>
                     <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
                 </div>
@@ -6212,10 +5909,6 @@ window.isBotRunning = true;
                 `≥${window.tailPrecursorLab.minTailForModel} natural tails`,
                 'ENGINE'
             );
-            log(
-                `👻 Shadow continuation: NO-MONEY | horizon trade ${window.tailPrecursorLab.shadowHorizonTrades} | research target ${window.tailPrecursorLab.researchTargetCycles} resolved cycles`,
-                'ENGINE'
-            );
             window.tailPrecursorLab.render();
 
             log('🔐 Trading credential loaded', 'SYSTEM');
@@ -6301,16 +5994,6 @@ window.isBotRunning = true;
             // Ensure PnL is updated one more time before showing final status
             const finalPnL = updatePnL();
             log(`💰 Final PnL: ${finalPnL >= 0 ? '+' : ''}$${finalPnL.toFixed(2)}`, 'PNL');
-
-            // Ready-state reset: preserve final P/L, but clear stale recovery exposure.
-            window.cycleHasPurchasedContract = false;
-            window.currentStake = Number(window.baseStake || 1);
-            window.martingaleStep = 0;
-            window.cycleLosses = 0;
-            const stakeElem = document.getElementById('metricCurrentStake');
-            if (stakeElem) stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
-            if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
-            if (window.tailPrecursorLab) window.tailPrecursorLab.render();
             
             updateTradeStatus(
                 'STOPPED',
