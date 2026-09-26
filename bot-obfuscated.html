@@ -493,7 +493,7 @@
                                 
                                 <div>
                                     <label class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                                    <input type="number" id="calc_max_trades" value="10" min="1" max="100" 
+                                    <input type="number" id="calc_max_trades" value="10" min="1" step="1" 
                                         class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
                                 </div>
                                 
@@ -600,15 +600,16 @@
                     <!-- Max Trades -->
                     <div>
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="10" min="1" max="100" 
+                        <input type="number" id="maxTrades" value="10" min="1" step="1" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
+                        <p class="text-[10px] text-gray-500 mt-1">Choose your own cycle limit. Not fixed at 10.</p>
                     </div>
 
-                    <!-- Max Cycle Trades (Progression Cap) -->
-                    <div>
-                        <label for="maxCycleTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Cycle Trades</label>
-                        <input type="number" id="maxCycleTrades" value="10" min="1" max="50"
-                            class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
+                    <!-- Max Trades is now the single user-defined cycle cap -->
+                    <div class="flex items-end">
+                        <p class="text-[11px] leading-relaxed text-gray-400">
+                            Max Trades is user-defined and controls the full cycle. Higher values can increase exposure sharply.
+                        </p>
                     </div>
                     
                     <!-- Mode Toggle - ONLY INSTANT AND AI AUTO -->
@@ -4067,7 +4068,7 @@ window.cyclePerformance = {
                     baseStake: Number(document.getElementById('baseStake')?.value || window.baseStake || 0),
                     multiplier: Number(document.getElementById('multiplier')?.value || window.multiplier || 0),
                     maxTrades: Number(document.getElementById('maxTrades')?.value || window.maxTrades || 0),
-                    maxCycleTrades: Number(document.getElementById('maxCycleTrades')?.value || window.maxCycleTrades || 0),
+                    maxCycleTrades: Number(document.getElementById('maxTrades')?.value || window.maxTrades || 0),
                     maxCycleExposure:
                         typeof getTailDollarCap === 'function'
                             ? Number(getTailDollarCap())
@@ -4660,7 +4661,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.baseStake = 1.0;
         window.currentStake = 1.0;
         window.multiplier = 1.15;
-        window.maxTrades = 20;
+        window.maxTrades = 10;
         window.maxCycleTrades = 10;
         window.cycleRotations = 0;
         window.tradeCount = 0;
@@ -6576,7 +6577,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         function defaultTailDollarCap() {
             const base = Number(document.getElementById('baseStake')?.value || window.baseStake || 1);
             const mult = Number(document.getElementById('multiplier')?.value || window.multiplier || 1.15);
-            const hardTrades = Number(document.getElementById('maxCycleTrades')?.value || window.maxCycleTrades || 10);
+            const hardTrades = Number(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
             return projectedProgressionExposure(base, mult, hardTrades);
         }
 
@@ -6610,7 +6611,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const nextStake = Number(window.currentStake || window.baseStake || 0);
             const nextLossExposure = Number((exposure + nextStake).toFixed(2));
             const dollarCap = getTailDollarCap();
-            const maxCycleTrades = Number(window.maxCycleTrades || 10);
+            const maxCycleTrades = Number(window.maxTrades || window.maxCycleTrades || 10);
             const currentTrades = getCurrentCycleTradeCount();
 
             return {
@@ -6657,12 +6658,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             if (verdict.reason === 'MAX_CYCLE_TRADES') {
                 log(
-                    `🛡️ TAIL STOP | hard cycle cap ${s.maxCycleTrades} trades reached | exposure $${s.exposure.toFixed(2)} | no further recovery contract`,
+                    `🛡️ TAIL STOP | selected cycle cap ${s.maxCycleTrades} trades reached | exposure $${s.exposure.toFixed(2)} | no further recovery contract`,
                     'CRITICAL'
                 );
                 updateTradeStatus(
                     'TAIL RISK STOP 🛡️',
-                    `Cycle cap reached: ${s.currentTrades}/${s.maxCycleTrades} trades`,
+                    `User-selected cycle cap reached: ${s.currentTrades}/${s.maxCycleTrades} trades`,
                     `Exposure frozen at $${s.exposure.toFixed(2)}`,
                     'loss'
                 );
@@ -7055,7 +7056,7 @@ window.isBotRunning = true;
             log('🚀 Starting bot...', 'SYSTEM');
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
             log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
-            log(`🧯 Max Cycle Trades HARD CAP: ${window.maxCycleTrades}`, 'SYSTEM');
+            log(`🧯 User-selected cycle cap: ${window.maxTrades} trades`, 'SYSTEM');
 
             if (!Number.isFinite(Number(window.TAIL_RISK_CONFIG.maxCycleLoss)) ||
                 Number(window.TAIL_RISK_CONFIG.maxCycleLoss) <= 0) {
