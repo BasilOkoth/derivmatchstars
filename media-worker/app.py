@@ -1,4 +1,4 @@
-import os, io, json, wave, math, random, hmac, hashlib, base64, tempfile, subprocess, re, gc
+import os, json, wave, math, hmac, hashlib, base64, tempfile, subprocess, re, gc
 from pathlib import Path
 from datetime import datetime, timezone
 from array import array
@@ -9,11 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.8.1 Compact Screen-First")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.0")
 
-# Browser uploads come directly from DigitMatchStar to Render.
-# CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
-# and `uvicorn main:app`.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -27,92 +24,84 @@ app.add_middleware(
     max_age=86400,
 )
 
-
 W, H = 1080, 1920
-BG=(5,13,9); WHITE=(247,250,248); MUTED=(150,170,159)
-GREEN=(34,197,94); GREEN2=(74,222,128); RED=(239,68,68); GOLD=(215,181,109); CYAN=(34,211,238)
-LINE=(43,73,57); PANEL=(11,26,19); PANEL2=(8,19,14)
+BG = (5, 13, 9)
+WHITE = (247, 250, 248)
+MUTED = (150, 170, 159)
+GREEN2 = (74, 222, 128)
+RED = (239, 68, 68)
+GOLD = (215, 181, 109)
+CYAN = (34, 211, 238)
+LINE = (43, 73, 57)
 
-VIDEO_WELL = dict(x=90, y=530, w=900, h=860)
+# Full screen is deliberately landscape within the portrait video.
+# Nothing in the captured browser viewport is cropped.
+SCREEN = dict(x=42, y=206, w=996, h=620)
+STATUS = dict(x=42, y=852, w=996, h=190)
+PROGRESS = dict(x=42, y=1068, w=996, h=164)
+METRIC_TOP = 1258
+METRIC_BOTTOM = 1496
 
-# v4.7: design at 720x1280 in Pillow, encode at 720x1280 to stay inside
-# Render's 512 MB memory ceiling. All generated PNG assets are downscaled
-# before FFmpeg touches them.
-OUT_W, OUT_H = 720, 1280
-SCALE_720 = OUT_W / W
-OUT_VIDEO_WELL = {
-    "x": round(VIDEO_WELL["x"] * SCALE_720),
-    "y": round(VIDEO_WELL["y"] * SCALE_720),
-    "w": round(VIDEO_WELL["w"] * SCALE_720),
-    "h": round(VIDEO_WELL["h"] * SCALE_720),
-}
-
-def downscale_png_720(path: Path):
-    with Image.open(path) as im:
-        if im.size != (OUT_W, OUT_H):
-            im = im.resize((OUT_W, OUT_H), Image.Resampling.LANCZOS)
-            im.save(path, optimize=True)
+X264 = [
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-profile:v", "high",
+    "-pix_fmt", "yuv420p",
+    "-threads", "2",
+    "-x264-params", "ref=1:bframes=0:rc-lookahead=0:sync-lookahead=0",
+]
 
 
 def font(size: int, bold: bool=False):
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
     ]
-    for p in paths:
+    for p in candidates:
         if Path(p).exists():
             return ImageFont.truetype(p, size=size)
     return ImageFont.load_default()
 
-FONT_REG_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_BOLD_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-def center(d, t, y, ff, fill=WHITE):
-    b = d.textbbox((0,0), str(t), font=ff)
-    d.text(((W-(b[2]-b[0]))//2, y), str(t), font=ff, fill=fill)
+def center(d, value, y, ff, fill=WHITE):
+    value = str(value)
+    b = d.textbbox((0,0), value, font=ff)
+    d.text(((W - (b[2]-b[0]))/2, y), value, font=ff, fill=fill)
 
-def right(d, t, x, y, ff, fill=WHITE):
-    b = d.textbbox((0,0), str(t), font=ff)
-    d.text((x-(b[2]-b[0]), y), str(t), font=ff, fill=fill)
 
-def money(v):
-    n=float(v or 0)
-    return f"{'+' if n>=0 else '-'}${abs(n):.2f}"
+def right(d, value, x, y, ff, fill=WHITE):
+    value = str(value)
+    b = d.textbbox((0,0), value, font=ff)
+    d.text((x-(b[2]-b[0]), y), value, font=ff, fill=fill)
 
-def probe_media(ffmpeg_path: str, media_path: Path):
-    """Return (duration_seconds, has_audio) using ffmpeg itself."""
+
+def fit_font(d, value, max_width, start=36, minimum=15, bold=True):
+    value = str(value)
+    for size in range(start, minimum-1, -1):
+        ff = font(size, bold)
+        b = d.textbbox((0,0), value, font=ff)
+        if b[2]-b[0] <= max_width:
+            return ff
+    return font(minimum, bold)
+
+
+def money(value):
     try:
-        r = subprocess.run(
-            [str(ffmpeg_path), "-hide_banner", "-i", str(media_path)],
-            capture_output=True, text=True
-        )
-        text = (r.stderr or "") + "\n" + (r.stdout or "")
-
-        duration = 10.0
-        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
-        if m:
-            hh, mm, ss = m.groups()
-            duration = max(
-                0.2,
-                int(hh) * 3600 + int(mm) * 60 + float(ss)
-            )
-
-        has_audio = bool(re.search(r"Stream #.*Audio:", text))
-        return duration, has_audio
+        n = float(value or 0)
     except Exception:
-        return 10.0, False
+        n = 0.0
+    return f"{'+' if n >= 0 else '-'}${abs(n):.2f}"
 
-def run_ffmpeg(cmd, stage: str):
-    """Run FFmpeg and preserve the real error in Render logs."""
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        print(f"[FFMPEG:{stage}] FAILED rc={r.returncode}", flush=True)
-        print(r.stderr[-12000:], flush=True)
-        raise RuntimeError(f"FFmpeg failed at stage: {stage}")
-    return r
 
-def sanitize_text(s: str) -> str:
-    return str(s).replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'").replace(",", r"\,")
+def plain_money(value):
+    try:
+        return f"${float(value or 0):,.2f}"
+    except Exception:
+        return "$0.00"
+
 
 def decode_ticket(token: str):
     try:
@@ -124,11 +113,12 @@ def decode_ticket(token: str):
             raise ValueError("bad signature")
         payload = json.loads(base64.urlsafe_b64decode(body + "=" * ((4-len(body)%4)%4)))
         now = int(datetime.now(timezone.utc).timestamp())
-        if int(payload.get("exp",0)) < now:
+        if int(payload.get("exp", 0)) < now:
             raise ValueError("expired")
         return payload
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid or expired live-capture ticket")
+
 
 def safe_json(raw: str):
     try:
@@ -136,905 +126,559 @@ def safe_json(raw: str):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid cycle JSON")
 
-def hook_variant(cycle: dict):
-    cid = str(cycle.get("id") or "")
-    seed = int(hashlib.sha1(cid.encode()).hexdigest()[:8], 16) if cid else random.randint(1,9999)
-    random.seed(seed)
-    win = str(cycle.get("status") or "").upper() == "WIN"
-    n = len(cycle.get("trades") or [])
-    hit = cycle.get("winningTradeNumber") or n
-    options_win = [
-        ("REAL BOT. REAL CYCLE.", "Watch the actual screen go from entry to match."),
-        ("WATCH THE BOT HIT THE DIGIT.", f"It matched on trade {hit}."),
-        ("THIS IS LIVE EVIDENCE.", "The central video is the real DigitMatchStar tab."),
-        ("CAN THE BOT MATCH BEFORE THE LIMIT?", f"Here is the actual result: MATCH on trade {hit}.")
-    ]
-    options_stop = [
-        ("REAL BOT. REAL CYCLE.", "This one reached the stop limit."),
-        ("THIS IS LIVE EVIDENCE.", "The central video is the real DigitMatchStar tab."),
-        ("CAN THE BOT MATCH BEFORE THE LIMIT?", "Watch how the cycle ended at the risk limit."),
-        ("ACTUAL SCREEN RECORDING.", "This result was recorded from the live tab.")
-    ]
-    return random.choice(options_win if win else options_stop)
 
-def build_frame(cycle: dict, account_type: str, website: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
+def run_ffmpeg(cmd, stage: str):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[FFMPEG:{stage}] FAILED rc={r.returncode}", flush=True)
+        print((r.stderr or "")[-12000:], flush=True)
+        raise RuntimeError(f"FFmpeg failed at stage: {stage}")
+    return r
+
+
+def probe_media(ffmpeg: str, media: Path):
+    r = subprocess.run([ffmpeg, "-hide_banner", "-i", str(media)], capture_output=True, text=True)
+    txt = (r.stderr or "") + "\n" + (r.stdout or "")
+    duration = None
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", txt)
+    if m:
+        hh, mm, ss = m.groups()
+        duration = int(hh)*3600 + int(mm)*60 + float(ss)
+    has_audio = bool(re.search(r"Stream #.*Audio:", txt))
+    return duration, has_audio
+
+
+def build_intro(cycle, account_type, out):
+    im = Image.new("RGB", (W,H), BG)
     d = ImageDraw.Draw(im)
+    d.ellipse((-280,-250,560,570), fill=(7,48,29))
+    d.ellipse((760,-20,1360,650), fill=(48,39,13))
+    center(d, "DIGITMATCHSTAR", 330, font(72,True), GREEN2)
+    center(d, "TRADING IN PROGRESS", 445, font(48,True), WHITE)
+    center(d, "Premium guided trading capture", 525, font(28,True), MUTED)
 
-    d.ellipse((-260,-200,500,520), fill=(7,48,28))
-    d.ellipse((750,10,1320,620), fill=(47,38,12))
-    d.rounded_rectangle((42,42,1038,1878), radius=54, outline=(25,48,35), width=2)
-
-    d.text((70,70), "DIGITMATCHSTAR", font=font(42,True), fill=GREEN2)
-    d.text((70,130), "ULTRA-PREMIUM LIVE EVIDENCE", font=font(21,True), fill=CYAN)
-
-    acct="REAL ACCOUNT" if account_type=="REAL" else "DEMO ACCOUNT"
-    d.rounded_rectangle((70,198,1010,316), radius=28, fill=PANEL2, outline=LINE, width=2)
-    d.text((108,236), acct, font=font(23,True), fill=GOLD if account_type=="REAL" else GREEN2)
+    acct = "REAL ACCOUNT" if account_type == "REAL" else "DEMO ACCOUNT"
     market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
-    right(d, market, 972, 234, font(24,True), WHITE)
+    digit = str(cycle.get("digit") or cycle.get("targetDigit") or "-")
 
-    d.rounded_rectangle((70,342,1010,470), radius=28, fill=PANEL, outline=LINE, width=2)
-    d.text((108,380), "TARGET DIGIT", font=font(22,True), fill=MUTED)
-    d.text((334,360), str(cycle.get("digit","-")), font=font(60,True), fill=GREEN2)
+    d.rounded_rectangle((170,690,910,970), radius=46, fill=(10,25,18), outline=LINE, width=3)
+    center(d, acct, 758, font(30,True), GOLD if account_type == "REAL" else GREEN2)
+    center(d, market, 835, font(32,True), WHITE)
+    center(d, f"Target digit {digit}", 905, font(30,True), CYAN)
 
+    center(d, "Full browser capture · guided status · real bot audio", 1230, font(28,True), WHITE)
+    center(d, "Trading involves risk.", 1495, font(21), MUTED)
+    im.save(out)
+
+
+def build_outro(cycle, website, out):
+    im = Image.new("RGB", (W,H), BG)
+    d = ImageDraw.Draw(im)
+    d.ellipse((-250,-220,530,560), fill=(8,50,30))
     win = str(cycle.get("status") or "").upper() == "WIN"
     n = len(cycle.get("trades") or [])
-    result = f"MATCHED · TRADE {cycle.get('winningTradeNumber') or n}" if win else f"STOPPED · {n} TRADES"
-    right(d, result, 970, 378, font(28,True), GREEN2 if win else RED)
-
-    d.rounded_rectangle((VIDEO_WELL["x"], VIDEO_WELL["y"], VIDEO_WELL["x"]+VIDEO_WELL["w"], VIDEO_WELL["y"]+VIDEO_WELL["h"]),
-                        radius=34, fill=(2,6,4), outline=(56,92,71), width=3)
-    d.text((VIDEO_WELL["x"]+20, VIDEO_WELL["y"]+20), "ACTUAL BOT SCREEN", font=font(18,True), fill=MUTED)
-
-    # lower panel
-    d.rounded_rectangle((70,1442,1010,1688), radius=32, fill=PANEL, outline=LINE, width=2)
-    d.text((108,1482), "CYCLE P/L", font=font(24), fill=MUTED)
-    pnl = float(cycle.get("netPnL") or 0)
-    d.text((108,1524), money(pnl), font=font(58,True), fill=GREEN2 if pnl>=0 else RED)
-    d.text((595,1482), "TOTAL STAKE", font=font(24), fill=MUTED)
-    d.text((595,1526), f"${float(cycle.get('totalInvestment') or 0):.2f}", font=font(36,True), fill=WHITE)
-
-    d.line((70,1732,1010,1732), fill=LINE, width=2)
-    d.text((70,1768), "Recorded live from the DigitMatchStar tab", font=font(18,True), fill=MUTED)
-    right(d, website.replace("https://",""), 1010, 1768, font(18,True), GREEN2)
-    center(d, "Past results do not guarantee future performance.", 1830, font(17), MUTED)
-    im.save(out)
-
-def build_intro(cycle: dict, account_type: str, out: Path):
-    headline, sub = hook_variant(cycle)
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-    d.ellipse((-300,-300,560,560), fill=(8,48,28))
-    d.ellipse((730,0,1350,650), fill=(47,38,12))
-    center(d, "DIGITMATCHSTAR", 330, font(66,True), GREEN2)
-    center(d, headline, 440, font(44,True), WHITE)
-    center(d, sub, 525, font(25), MUTED)
-    d.rounded_rectangle((220,730,860,900), radius=84, fill=(11,33,22), outline=(44,116,74), width=3)
-    center(d, "● LIVE SCREEN RECORDING", 788, font(30,True), CYAN)
-    center(d, str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match"), 1035, font(30,True), WHITE)
-    center(d, f"Target digit {cycle.get('digit','-')}", 1092, font(27), GREEN2)
-    center(d, "The actual trading screen appears in the next scene.", 1370, font(24,True), WHITE)
-    center(d, "Trading involves risk.", 1450, font(20), MUTED)
-    im.save(out)
-
-def build_outro(cycle: dict, website: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-    d.ellipse((-260,-220,520,550), fill=(9,50,29))
-    status = str(cycle.get("status") or "").upper()
-    win = status == "WIN"
-    n = len(cycle.get("trades") or [])
-    center(d, "CYCLE COMPLETE", 320, font(34,True), MUTED)
-    center(d, "MATCHED" if win else "STOPPED", 435, font(90,True), GREEN2 if win else RED)
+    center(d, "CYCLE COMPLETE", 320, font(38,True), MUTED)
+    center(d, "DIGIT MATCHED" if win else "CYCLE STOPPED", 450, font(82,True), GREEN2 if win else RED)
     if win:
-        center(d, f"TRADE {cycle.get('winningTradeNumber') or n}", 555, font(48,True), WHITE)
-    center(d, money(cycle.get("netPnL",0)), 735, font(104,True), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED)
-    center(d, "Actual screen recording placed in a premium vertical format", 980, font(27,True), WHITE)
-    center(d, "Built for TikTok, Reels and Telegram", 1040, font(25), MUTED)
-    center(d, website.replace("https://",""), 1225, font(38,True), GREEN2)
-    center(d, "Past results do not guarantee future performance.", 1510, font(20), MUTED)
+        center(d, f"TRADE {cycle.get('winningTradeNumber') or n}", 575, font(50,True), WHITE)
+    center(d, money(cycle.get("netPnL",0)), 760, font(110,True), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED)
+    center(d, website.replace("https://",""), 1115, font(42,True), GREEN2)
+    center(d, "Past results do not guarantee future performance.", 1510, font(21), MUTED)
     im.save(out)
 
-def trade_times(cycle: dict, raw_duration: float):
-    start_ms = float(cycle.get("startedAt") or 0) or None
-    trades = cycle.get("trades") or []
+
+def default_event(cycle):
+    digit = cycle.get("digit") or cycle.get("targetDigit") or "-"
+    return {
+        "type":"capture_ready",
+        "title":"TRADING SCREEN READY",
+        "subtitle":f"Target digit {digit}",
+        "atMs":0,
+        "targetDigit":digit,
+        "tradeCount":0,
+        "stake":cycle.get("baseStake", cycle.get("stake", 0)),
+        "pnl":0,
+    }
+
+
+def guided_segments(cycle, raw_duration):
+    events = cycle.get("captureEvents") or []
     rows = []
-    for i, t in enumerate(trades[:12]):
-        if start_ms and t.get("purchasedAt"):
-            ts = max(0.0, (float(t["purchasedAt"]) - start_ms) / 1000.0)
-        else:
-            ts = min(raw_duration * 0.8, i * max(0.5, raw_duration / max(1, len(trades)+1)))
-        if start_ms and t.get("settledAt"):
-            te = max(ts + 0.2, (float(t["settledAt"]) - start_ms) / 1000.0)
-        else:
-            te = min(raw_duration, ts + 0.8)
-        rows.append({
-            "idx": i+1,
-            "start": round(max(0.0, min(ts, raw_duration)), 3),
-            "end": round(max(0.0, min(te, raw_duration)), 3),
-            "result": str(t.get("result") or "").upper() or "MISS"
+    for e in events:
+        try:
+            at = max(0.0, float(e.get("atMs", 0))/1000.0)
+        except Exception:
+            continue
+        if raw_duration is not None:
+            at = min(at, raw_duration)
+        rows.append({**e, "_at":at})
+    rows.sort(key=lambda x: x["_at"])
+
+    if not rows:
+        rows = [default_event(cycle)]
+        rows[0]["_at"] = 0.0
+
+    # Remove near-identical adjacent statuses.
+    compact = []
+    for e in rows:
+        key = (
+            str(e.get("title","")),
+            str(e.get("subtitle","")),
+            int(e.get("tradeCount") or 0),
+            str(e.get("targetDigit",""))
+        )
+        if compact and compact[-1]["_key"] == key:
+            continue
+        compact.append({**e, "_key":key})
+
+    duration = raw_duration if raw_duration and raw_duration > 0.2 else max(10.0, compact[-1]["_at"] + 2.0)
+    segments = []
+    for i, e in enumerate(compact):
+        start = e["_at"]
+        end = compact[i+1]["_at"] if i+1 < len(compact) else duration
+        if end <= start:
+            end = min(duration, start + 0.25)
+        if end - start < 0.08:
+            continue
+        segments.append({
+            "start":start,
+            "end":end,
+            "duration":end-start,
+            "event":e
         })
-    return rows
 
-def build_overlay_filter(cycle: dict, raw_duration: float):
-    """
-    Render-portable animated trade progress rail.
-    IMPORTANT: no text-overlay filter; Render's bundled FFmpeg lacks text-overlay.
-    """
-    pieces = []
-    x0 = round(120 * SCALE_720)
-    gap = round(68 * SCALE_720)
-    y = round(1328 * SCALE_720)
-    bar_w = round(54 * SCALE_720)
+    if not segments:
+        segments = [{"start":0.0,"end":duration,"duration":duration,"event":default_event(cycle)}]
 
-    rows = trade_times(cycle, raw_duration)
-    for i, row in enumerate(rows):
-        x = x0 + i * gap
-        start = row["start"]
-        end = max(row["start"] + 0.12, row["end"])
-        final_color = "0x22c55e@0.92" if row["result"] == "WIN" else "0xef4444@0.92"
+    return segments, duration
 
-        pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=white@0.06:t=fill"
-        )
-        pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:"
-            f"color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'"
-        )
-        pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:"
-            f"color={final_color}:t=fill:enable='gte(t,{end})'"
-        )
 
-    # Return a harmless filter when there are no trade boxes.
-    return ",".join(pieces) if pieces else "null"
+def progress_state(cycle, event):
+    trades = cycle.get("trades") or []
+    current = int(event.get("tradeCount") or 0)
+    event_type = str(event.get("type") or "")
+    states = []
+    for i in range(max(10, min(12, max(len(trades), current)))):
+        trade_no = i + 1
+        if trade_no < current:
+            result = str((trades[i] if i < len(trades) else {}).get("result") or "LOSS").upper()
+            states.append("win" if result == "WIN" else "loss")
+        elif trade_no == current and current > 0:
+            if event_type in {"matched","cycle_win","win_confirmed"}:
+                states.append("win")
+            elif event_type in {"loss_confirmed"}:
+                states.append("loss")
+            else:
+                states.append("active")
+        else:
+            states.append("pending")
+    return states
 
-def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
-    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
 
-    overlay_filter = build_overlay_filter(cycle, raw_duration)
-    full_live = td / "live_full.mp4"
+def build_live_frame(cycle, account_type, website, event, out):
+    im = Image.new("RGB", (W,H), BG)
+    d = ImageDraw.Draw(im)
 
-    cmd_full = [
-        ffmpeg, "-y",
-        "-i", str(raw_video),
-        "-loop", "1", "-i", str(frame_png),
-        "-filter_complex",
-        (
-            f"[0:v]scale={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
-            f"pad={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
-            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
-            f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
-        ),
-        "-map", "[outv]",
-        *LOWMEM_X264,
-        "-movflags", "+faststart",
-        "-an",
-        str(full_live)
-    ]
-    run_ffmpeg(cmd_full, "full_live")
+    d.ellipse((-240,-200,480,510), fill=(6,43,26))
+    d.ellipse((780,-30,1370,620), fill=(48,38,12))
+    d.rounded_rectangle((24,24,1056,1896), radius=44, outline=(24,52,37), width=2)
 
-    # Focus replay from the end of the actual capture.
-    # Text labels are intentionally NOT drawn with FFmpeg because Render's
-    # static imageio-ffmpeg binary does not include text-overlay.
-    focus_live = td / "live_focus.mp4"
-    zoom_start = max(0.0, raw_duration - 1.4)
-    zoom_duration = min(1.4, raw_duration)
+    # Header only. No "actual trading screen" label.
+    d.rounded_rectangle((42,42,1038,176), radius=30, fill=(9,22,16), outline=LINE, width=2)
+    d.text((68,66), "DIGITMATCHSTAR", font=font(43,True), fill=GREEN2)
+    d.text((68,118), "TRADING IN PROGRESS", font=font(24,True), fill=WHITE)
 
-    cmd_focus = [
-        ffmpeg, "-y",
-        "-ss", str(zoom_start),
-        "-t", str(zoom_duration),
-        "-i", str(raw_video),
-        "-loop", "1", "-i", str(frame_png),
-        "-filter_complex",
-        (
-            f"[0:v]scale=787:753:force_original_aspect_ratio=increase,"
-            f"crop={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(iw-{OUT_VIDEO_WELL['w']})/2:(ih-{OUT_VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1,"
-            f"fps=30,format=yuv420p[outv]"
-        ),
-        "-map", "[outv]",
-        *LOWMEM_X264,
-        "-movflags", "+faststart",
-        "-an",
-        str(focus_live)
-    ]
-    run_ffmpeg(cmd_focus, "focus_replay")
+    target = event.get("targetDigit")
+    if target is None:
+        target = cycle.get("digit") or cycle.get("targetDigit") or "-"
+    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
+    acct = "REAL" if account_type == "REAL" else "DEMO"
 
-    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
+    def chip(x,y,w,h,label,color):
+        d.rounded_rectangle((x,y,x+w,y+h), radius=16, fill=(12,29,22), outline=LINE, width=1)
+        ff = fit_font(d, label, w-22, start=18, minimum=13, bold=True)
+        bb = d.textbbox((0,0), str(label), font=ff)
+        d.text((x+(w-(bb[2]-bb[0]))/2, y+(h-(bb[3]-bb[1]))/2-1), str(label), font=ff, fill=color)
 
-def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
-    cmd = [
-        ffmpeg, "-y",
-        "-loop", "1",
-        "-t", str(duration),
-        "-i", str(image_path),
-        "-vf",
-        f"fps=30,format=yuv420p,"
-        f"fade=t=in:st=0:d=0.15,"
-        f"fade=t=out:st={max(0.1, duration-0.18)}:d=0.18",
-        *LOWMEM_X264,
-        "-movflags", "+faststart",
-        "-an",
-        str(out)
-    ]
-    run_ffmpeg(cmd, f"image_clip:{image_path.name}")
+    chip(660,60,120,42,acct,GOLD if account_type=="REAL" else GREEN2)
+    chip(792,60,220,42,f"TARGET {target}",CYAN)
+    chip(660,112,352,38,market[:30],WHITE)
 
-def build_soundtrack(total_duration: float, live_start: float, live_end: float, is_win: bool, out_wav: Path):
-    """
-    Low-memory soundtrack builder.
-    Uses a compact int16 array instead of millions of Python float objects.
-    """
-    sr = 32000
-    samples = max(1, int(total_duration * sr))
-    data = array("h", [0]) * samples
+    # Browser-like full screen template.
+    x,y,w,h = SCREEN["x"],SCREEN["y"],SCREEN["w"],SCREEN["h"]
+    d.rounded_rectangle((x-6,y-6,x+w+6,y+h+6), radius=32, fill=(3,8,5), outline=(54,92,71), width=3)
+    d.rounded_rectangle((x,y,x+w,y+h), radius=28, fill=(13,19,30), outline=(36,49,62), width=2)
+    d.rounded_rectangle((x+16,y+14,x+w-16,y+62), radius=18, fill=(19,26,39), outline=(46,60,78), width=1)
+    for idx,c in enumerate([(255,95,86),(255,189,46),(39,201,63)]):
+        cx = x+34+idx*27
+        d.ellipse((cx,y+28,cx+14,y+42),fill=c)
+    d.rounded_rectangle((x+126,y+20,x+w-28,y+56), radius=15, fill=(9,18,29), outline=(48,63,83), width=1)
+    d.text((x+150,y+28),"digitmatchstar.com",font=font(18,True),fill=(220,235,228))
+    d.rounded_rectangle((x+w-112,y+22,x+w-34,y+54), radius=13, fill=(17,55,35), outline=(44,116,74), width=1)
+    d.text((x+w-92,y+30),"LIVE",font=font(16,True),fill=GREEN2)
 
-    def add_tone(start, dur, freq, amp=0.18):
-        a = max(0, int(start * sr))
-        b = min(samples, int((start + dur) * sr))
-        if b <= a:
-            return
-        peak = int(32767 * amp)
-        for i in range(a, b):
-            t = (i - a) / sr
-            attack = min(1.0, t / 0.03)
-            release = min(1.0, max(0.0, (dur - t) / 0.05))
-            env = attack * release
-            v = data[i] + int(peak * env * math.sin(2 * math.pi * freq * t))
-            data[i] = max(-32768, min(32767, v))
+    # Status panel
+    sx,sy,sw,sh = STATUS["x"],STATUS["y"],STATUS["w"],STATUS["h"]
+    d.rounded_rectangle((sx,sy,sx+sw,sy+sh), radius=28, fill=(8,19,14), outline=LINE, width=2)
+    d.text((sx+28,sy+20),"BOT STATUS",font=font(20,True),fill=MUTED)
 
-    def add_tick(start, dur=0.05, freq=1500, amp=0.08):
-        add_tone(start, dur, freq, amp)
+    title = str(event.get("title") or "TRADING IN PROGRESS")
+    subtitle = str(event.get("subtitle") or "")
+    etype = str(event.get("type") or "").lower()
+    accent = GREEN2
+    if "loss" in etype or "stop" in etype:
+        accent = RED
+    elif "entry" in etype or "recovery" in etype:
+        accent = GOLD
+    elif "scan" in etype or "verify" in etype:
+        accent = CYAN
 
-    add_tone(0.18, 0.16, 440, 0.11)
-    add_tone(0.43, 0.18, 660, 0.10)
-    add_tone(0.68, 0.22, 880, 0.10)
+    d.ellipse((sx+28,sy+69,sx+48,sy+89),fill=accent)
+    title_ff = fit_font(d,title,sw-120,start=30,minimum=18,bold=True)
+    d.text((sx+64,sy+60),title,font=title_ff,fill=accent)
+    sub_ff = fit_font(d,subtitle,sw-120,start=20,minimum=15,bold=False)
+    d.text((sx+64,sy+112),subtitle[:100],font=sub_ff,fill=(218,229,223))
 
-    t = live_start + 0.35
-    while t < live_end - 0.35:
-        add_tick(t)
-        t += 0.7
+    # Progress
+    px,py,pw,ph = PROGRESS["x"],PROGRESS["y"],PROGRESS["w"],PROGRESS["h"]
+    d.rounded_rectangle((px,py,px+pw,py+ph), radius=28, fill=(8,19,14), outline=LINE, width=2)
+    d.text((px+28,py+18),"TRADE PROGRESS",font=font(20,True),fill=WHITE)
+    d.text((px+28,py+50),"Grey = pending · orange = active · red = miss · green = match",font=font(15),fill=MUTED)
+
+    states = progress_state(cycle,event)
+    box_w = 64
+    gap = 16
+    total_w = len(states)*box_w + (len(states)-1)*gap
+    start_x = px + (pw-total_w)/2
+    by = py+91
+    for i,s in enumerate(states):
+        bx = start_x + i*(box_w+gap)
+        col = {
+            "pending":(28,44,35),
+            "active":(245,158,11),
+            "loss":RED,
+            "win":GREEN2
+        }[s]
+        d.rounded_rectangle((bx,by,bx+box_w,by+46), radius=12, fill=col, outline=(68,90,76), width=1)
+        ff = font(18,True)
+        label = str(i+1)
+        bb=d.textbbox((0,0),label,font=ff)
+        d.text((bx+(box_w-(bb[2]-bb[0]))/2,by+11),label,font=ff,fill=WHITE)
+
+    # Live metrics from event snapshot.
+    pnl = event.get("pnl",0)
+    stake = event.get("stake",0)
+    count = int(event.get("tradeCount") or 0)
+    xs=[42,382,722]
+    labels=["CYCLE P/L","CURRENT STAKE","TRADES"]
+    values=[money(pnl),plain_money(stake),str(count)]
+    colors=[GREEN2 if float(pnl or 0)>=0 else RED,WHITE,WHITE]
+    sizes=[48,46,62]
+    for i in range(3):
+        cx=xs[i]
+        d.rounded_rectangle((cx,METRIC_TOP,cx+296,METRIC_BOTTOM),radius=28,fill=(10,24,18),outline=LINE,width=2)
+        d.text((cx+22,METRIC_TOP+22),labels[i],font=font(19,True),fill=MUTED)
+        d.text((cx+22,METRIC_TOP+86),values[i],font=font(sizes[i],True),fill=colors[i])
+
+    # Helpful current digit strip.
+    current_digit = event.get("currentDigit")
+    current_tick = str(event.get("currentTick") or "")
+    d.rounded_rectangle((42,1524,1038,1628), radius=26, fill=(8,19,14), outline=LINE, width=2)
+    d.text((70,1548),"LIVE MARKET",font=font(18,True),fill=MUTED)
+    market_text = f"Current digit: {current_digit if current_digit is not None else '-'}"
+    if current_tick:
+        market_text += f"  ·  Tick {current_tick}"
+    d.text((70,1581),market_text,font=fit_font(d,market_text,930,start=27,minimum=17,bold=True),fill=WHITE)
+
+    d.text((46,1680),"Full captured browser viewport · no interface crop",font=font(18),fill=MUTED)
+    right(d,website.replace("https://",""),1034,1678,font(19,True),GREEN2)
+    center(d,"Past results do not guarantee future performance.",1740,font(17),MUTED)
+
+    im.save(out)
+
+
+def image_clip(ffmpeg, image, duration, out):
+    duration=max(0.08,float(duration))
+    run_ffmpeg([
+        ffmpeg,"-y","-loop","1","-t",f"{duration:.3f}","-i",str(image),
+        "-vf","fps=30,format=yuv420p",
+        *X264,"-movflags","+faststart","-an",str(out)
+    ],f"image:{image.name}")
+
+
+def build_layout_timeline(ffmpeg, cycle, account_type, website, raw_duration, td):
+    segments, duration = guided_segments(cycle,raw_duration)
+    clips=[]
+    for i,seg in enumerate(segments):
+        png=td/f"guided_{i:03d}.png"
+        mp4=td/f"guided_{i:03d}.mp4"
+        build_live_frame(cycle,account_type,website,seg["event"],png)
+        image_clip(ffmpeg,png,seg["duration"],mp4)
+        clips.append(mp4)
+
+    concat=td/"layout_concat.txt"
+    concat.write_text("".join(f"file '{p.as_posix()}'\n" for p in clips))
+    layout=td/"layout.mp4"
+    run_ffmpeg([
+        ffmpeg,"-y","-f","concat","-safe","0","-i",str(concat),
+        "-c","copy","-movflags","+faststart",str(layout)
+    ],"layout-concat")
+    return layout,duration
+
+
+def build_live_video(ffmpeg, raw, layout, duration, out):
+    # Inner browser viewport: preserve complete source, no crop.
+    ix=SCREEN["x"]+18
+    iy=SCREEN["y"]+78
+    iw=SCREEN["w"]-36
+    ih=SCREEN["h"]-96
+
+    ratio=f"{iw}/{ih}"
+    filter_complex=(
+        f"[0:v]scale='if(gt(a,{ratio}),{iw},-2)':'if(gt(a,{ratio}),-2,{ih})',setsar=1,"
+        f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2:color=0x05090d[screen];"
+        f"[1:v][screen]overlay={ix}:{iy}:shortest=1,fps=30,format=yuv420p[outv]"
+    )
+
+    run_ffmpeg([
+        ffmpeg,"-y","-i",str(raw),"-i",str(layout),
+        "-filter_complex",filter_complex,
+        "-map","[outv]",*X264,"-movflags","+faststart","-an",str(out)
+    ],"full-screen-guided")
+
+
+def build_focus_replay(ffmpeg, raw, cycle, account_type, website, duration, td, out):
+    # Gentle replay; still preserves the full captured viewport.
+    event=(cycle.get("captureEvents") or [default_event(cycle)])[-1]
+    frame=td/"focus_frame.png"
+    event={**event,"title":"FOCUS REPLAY","subtitle":"Rewatching the final trading moment"}
+    build_live_frame(cycle,account_type,website,event,frame)
+
+    replay_duration=min(1.6,max(0.8,duration))
+    start=max(0.0,duration-replay_duration)
+
+    ix=SCREEN["x"]+18
+    iy=SCREEN["y"]+78
+    iw=SCREEN["w"]-36
+    ih=SCREEN["h"]-96
+    ratio=f"{iw}/{ih}"
+    filter_complex=(
+        f"[0:v]scale='if(gt(a,{ratio}),{iw},-2)':'if(gt(a,{ratio}),-2,{ih})',setsar=1,"
+        f"pad={iw}:{ih}:(ow-iw)/2:(oh-ih)/2:color=0x05090d[screen];"
+        f"[1:v][screen]overlay={ix}:{iy}:shortest=1,fps=30,format=yuv420p[outv]"
+    )
+    run_ffmpeg([
+        ffmpeg,"-y","-ss",f"{start:.3f}","-t",f"{replay_duration:.3f}","-i",str(raw),
+        "-loop","1","-i",str(frame),
+        "-filter_complex",filter_complex,
+        "-map","[outv]",*X264,"-movflags","+faststart","-an",str(out)
+    ],"focus-replay")
+    return replay_duration
+
+
+def build_soundtrack(total_duration, live_start, live_end, is_win, out):
+    sr=32000
+    samples=max(1,int(total_duration*sr))
+    data=array("h",[0])*samples
+
+    def add_tone(start,dur,freq,amp=0.08):
+        a=max(0,int(start*sr))
+        b=min(samples,int((start+dur)*sr))
+        peak=int(32767*amp)
+        for i in range(a,b):
+            t=(i-a)/sr
+            env=min(1.0,t/0.02)*min(1.0,max(0.0,(dur-t)/0.04))
+            val=data[i]+int(peak*env*math.sin(2*math.pi*freq*t))
+            data[i]=max(-32768,min(32767,val))
+
+    add_tone(0.12,0.12,440,0.07)
+    add_tone(0.34,0.14,660,0.07)
+
+    t=live_start+0.5
+    while t<live_end-0.3:
+        add_tone(t,0.035,1400,0.025)
+        t+=0.9
 
     if is_win:
-        add_tone(max(0.0, live_end - 0.05), 0.12, 740, 0.13)
-        add_tone(max(0.0, live_end + 0.10), 0.14, 988, 0.13)
-        add_tone(max(0.0, live_end + 0.26), 0.18, 1244, 0.13)
-    else:
-        add_tone(max(0.0, live_end + 0.05), 0.22, 220, 0.11)
-        add_tone(max(0.0, live_end + 0.30), 0.26, 196, 0.11)
+        add_tone(live_end-0.02,0.12,740,0.09)
+        add_tone(live_end+0.12,0.16,988,0.09)
 
-    add_tone(max(0.0, total_duration - 0.55), 0.28, 392 if is_win else 262, 0.06)
-
-    with wave.open(str(out_wav), "wb") as wf:
+    with wave.open(str(out),"wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sr)
-        # Write in chunks to avoid a second full-size audio copy in memory.
-        chunk = 16000
-        for i in range(0, len(data), chunk):
+        chunk=16000
+        for i in range(0,len(data),chunk):
             wf.writeframes(data[i:i+chunk].tobytes())
-
     del data
 
 
-LOWMEM_X264 = [
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-crf", "23",
-    "-profile:v", "high",
-    "-pix_fmt", "yuv420p",
-    "-threads", "1",
-    "-x264-params", "ref=1:bframes=0:rc-lookahead=0:sync-lookahead=0",
-]
+def compose_guided(raw,cycle,account_type,website,out):
+    ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory() as t:
+        td=Path(t)
 
-def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str, out_video: Path):
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    with tempfile.TemporaryDirectory() as td_raw:
-        td = Path(td_raw)
-        frame = td / "frame.png"
-        intro = td / "intro.png"
-        outro = td / "outro.png"
-        build_frame(cycle, account_type, website, frame)
-        build_intro(cycle, account_type, intro)
-        build_outro(cycle, website, outro)
-        downscale_png_720(frame)
-        downscale_png_720(intro)
-        downscale_png_720(outro)
-        gc.collect()
+        raw_duration,raw_has_audio=probe_media(ffmpeg,raw)
+        if not raw_duration:
+            events=cycle.get("captureEvents") or []
+            if events:
+                raw_duration=max(3.0,max(float(e.get("atMs",0) or 0) for e in events)/1000.0+2.0)
+            else:
+                raw_duration=12.0
 
-        intro_v = td / "intro.mp4"
-        outro_v = td / "outro.mp4"
-        image_clip(ffmpeg, intro, 1.10, intro_v)
-        image_clip(ffmpeg, outro, 1.65, outro_v)
+        intro_png=td/"intro.png"
+        outro_png=td/"outro.png"
+        build_intro(cycle,account_type,intro_png)
+        build_outro(cycle,website,outro_png)
 
-        full_live, focus_live, raw_duration, focus_duration, raw_has_audio = render_live_sections(raw_video, frame, cycle, ffmpeg, td)
+        intro=td/"intro.mp4"
+        outro=td/"outro.mp4"
+        image_clip(ffmpeg,intro_png,0.8,intro)
+        image_clip(ffmpeg,outro_png,1.25,outro)
 
-        concat_list = td / "concat.txt"
-        concat_list.write_text(
-            f"file '{intro_v.as_posix()}'\n"
-            f"file '{full_live.as_posix()}'\n"
-            f"file '{focus_live.as_posix()}'\n"
-            f"file '{outro_v.as_posix()}'\n"
+        layout,duration=build_layout_timeline(ffmpeg,cycle,account_type,website,raw_duration,td)
+        live=td/"live.mp4"
+        build_live_video(ffmpeg,raw,layout,duration,live)
+
+        focus=td/"focus.mp4"
+        focus_duration=build_focus_replay(ffmpeg,raw,cycle,account_type,website,duration,td,focus)
+
+        concat=td/"all.txt"
+        concat.write_text(
+            f"file '{intro.as_posix()}'\n"
+            f"file '{live.as_posix()}'\n"
+            f"file '{focus.as_posix()}'\n"
+            f"file '{outro.as_posix()}'\n"
         )
-        silent_video = td / "silent.mp4"
+        silent=td/"silent.mp4"
         run_ffmpeg([
-            ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(silent_video)
-        ], "concat-copy")
+            ffmpeg,"-y","-f","concat","-safe","0","-i",str(concat),
+            "-c","copy","-movflags","+faststart",str(silent)
+        ],"final-concat")
 
-        total_duration = 1.10 + raw_duration + focus_duration + 1.65
-        live_start = 1.10
-        live_end = 1.10 + raw_duration + focus_duration
-        sound = td / "sound.wav"
-        build_soundtrack(total_duration, live_start, live_end, str(cycle.get("status") or "").upper() == "WIN", sound)
-        gc.collect()
+        total=0.8+duration+focus_duration+1.25
+        sound=td/"sound.wav"
+        build_soundtrack(total,0.8,0.8+duration+focus_duration,
+                         str(cycle.get("status") or "").upper()=="WIN",sound)
 
         if raw_has_audio:
-            # Preserve the actual DigitMatchStar tab audio (ticks, win sounds, etc.)
-            # underneath the premium sound design. The live capture begins after
-            # the 1.10s branded intro.
             run_ffmpeg([
-                ffmpeg, "-y",
-                "-i", str(silent_video),
-                "-i", str(sound),
-                "-i", str(raw_video),
+                ffmpeg,"-y","-i",str(silent),"-i",str(sound),"-i",str(raw),
                 "-filter_complex",
-                (
-                    "[1:a]volume=0.22[sfx];"
-                    "[2:a]adelay=1100|1100,volume=1.0[bot];"
-                    "[sfx][bot]amix=inputs=2:duration=longest:dropout_transition=1[aout]"
-                ),
-                "-map", "0:v:0",
-                "-map", "[aout]",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-threads", "1",
-                "-shortest",
-                "-movflags", "+faststart",
-                str(out_video)
-            ], "final-audio-mix")
+                "[1:a]volume=0.20[sfx];"
+                "[2:a]adelay=800|800,volume=1.0[bot];"
+                "[sfx][bot]amix=inputs=2:duration=longest:dropout_transition=1[aout]",
+                "-map","0:v:0","-map","[aout]",
+                "-c:v","copy","-c:a","aac","-b:a","160k",
+                "-shortest","-movflags","+faststart",str(out)
+            ],"audio-mix")
         else:
             run_ffmpeg([
-                ffmpeg, "-y", "-i", str(silent_video), "-i", str(sound),
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-                "-threads", "1",
-                "-shortest",
-                "-movflags", "+faststart", str(out_video)
-            ], "final-audio")
+                ffmpeg,"-y","-i",str(silent),"-i",str(sound),
+                "-c:v","copy","-c:a","aac","-b:a","128k",
+                "-shortest","-movflags","+faststart",str(out)
+            ],"audio")
+
+        gc.collect()
+
 
 async def send_video(video: Path, caption: str, chat: str):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    token=os.environ.get("TELEGRAM_BOT_TOKEN","")
     if not token or not chat:
         raise RuntimeError("Telegram is not configured")
-    async with httpx.AsyncClient(timeout=240) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         with video.open("rb") as fh:
-            r = await client.post(
+            r=await client.post(
                 f"https://api.telegram.org/bot{token}/sendVideo",
                 data={
-                    "chat_id": chat,
-                    "caption": caption[:950],
-                    "parse_mode": "HTML",
-                    "supports_streaming": "true"
+                    "chat_id":chat,
+                    "caption":caption[:950],
+                    "parse_mode":"HTML",
+                    "supports_streaming":"true"
                 },
-                files={"video": (video.name, fh, "video/mp4")}
+                files={"video":(video.name,fh,"video/mp4")}
             )
-        d = r.json()
-        if not r.is_success or not d.get("ok"):
-            raise RuntimeError(d.get("description") or "sendVideo failed")
-        return d["result"]
+        data=r.json()
+        if not r.is_success or not data.get("ok"):
+            raise RuntimeError(data.get("description") or "sendVideo failed")
+        return data["result"]
+
+
+@app.get("/")
+def root():
+    return {"ok":True,"version":"premium-guided-v5.0"}
+
 
 @app.get("/health")
 def health():
     return {
-        "ok": True,
-        "version": "ultra-premium-live-v4.8.1-compact",
-        "cors": True,
-        "telegramConfigured": bool(
+        "ok":True,
+        "version":"premium-guided-v5.0",
+        "cors":True,
+        "telegramConfigured":bool(
             os.environ.get("TELEGRAM_BOT_TOKEN") and
             os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
         )
     }
 
+
 @app.post("/compose-live")
 async def compose_live_endpoint(
-    video: UploadFile = File(...),
-    ticket: str = Form(...),
-    cycle: str = Form(...),
-    website: str = Form("https://www.digitmatchstar.com")
+    video: UploadFile=File(...),
+    ticket: str=Form(...),
+    cycle: str=Form(...),
+    website: str=Form("https://www.digitmatchstar.com")
 ):
-    claims = decode_ticket(ticket)
-    c = safe_json(cycle)
+    claims=decode_ticket(ticket)
+    c=safe_json(cycle)
 
     if str(c.get("id") or "") != str(claims.get("cycleId") or ""):
-        raise HTTPException(status_code=400, detail="Cycle id does not match upload ticket")
+        raise HTTPException(status_code=400,detail="Cycle id does not match upload ticket")
 
-    admin = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+    admin=os.environ.get("TELEGRAM_ADMIN_CHAT_ID","")
     if not admin:
-        raise HTTPException(status_code=500, detail="TELEGRAM_ADMIN_CHAT_ID is missing")
+        raise HTTPException(status_code=500,detail="TELEGRAM_ADMIN_CHAT_ID is missing")
 
-    with tempfile.TemporaryDirectory() as td_raw:
-        td = Path(td_raw)
-        raw = td / "capture.webm"
-        total = 0
+    with tempfile.TemporaryDirectory() as t:
+        td=Path(t)
+        raw=td/"capture.webm"
+        total=0
         with raw.open("wb") as out:
             while True:
-                chunk = await video.read(1024 * 1024)
+                chunk=await video.read(1024*1024)
                 if not chunk:
                     break
-                total += len(chunk)
-                if total > 120 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Live capture is too large")
+                total+=len(chunk)
+                if total>150*1024*1024:
+                    raise HTTPException(status_code=413,detail="Live capture is too large")
                 out.write(chunk)
 
-        # normalize helpful fields
-        c["marketName"] = c.get("marketName") or c.get("symbol") or "Digit Match"
+        c["marketName"]=c.get("marketName") or c.get("symbol") or "Digit Match"
 
-        final = td / "digitmatchstar-ultra-premium-live.mp4"
-        compose_ultra(raw, c, str(claims.get("accountType") or "DEMO"), website, final)
+        final=td/"digitmatchstar-premium-guided.mp4"
+        compose_guided(raw,c,str(claims.get("accountType") or "DEMO"),website,final)
 
-        msg = await send_video(
+        msg=await send_video(
             final,
-            "🔥 <b>DIGITMATCHSTAR PREMIUM LIVE VIDEO</b>\n"
-            "Actual DigitMatchStar screen capture inside a premium vertical TikTok/Telegram format.\n"
-            "Includes hook, progress rail, focus replay and audio sting.\n"
+            "🎥 <b>DIGITMATCHSTAR PREMIUM GUIDED VIDEO</b>\n"
+            "Full browser capture with guided bot-status timeline, trade progress and real tab audio.\n"
             "Review before posting.",
             admin
         )
 
     return {
-        "ok": True,
-        "privateTelegramMessageId": msg.get("message_id"),
-        "format": "720x1280-h264-aac",
-        "source": "actual-screen-capture",
-        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable", "low-memory", "720p"]
+        "ok":True,
+        "privateTelegramMessageId":msg.get("message_id"),
+        "format":"1080x1920-h264-aac",
+        "source":"full-browser-capture",
+        "version":"premium-guided-v5.0",
+        "features":[
+            "full-screen-preserved",
+            "guided-status-timeline",
+            "trade-progress",
+            "live-metrics",
+            "focus-replay",
+            "bot-tab-audio",
+            "telegram-delivery"
+        ]
     }
-
-
-# === Render-portable compositor overrides v4.4 ===
-# Avoid FFmpeg text-overlay because the imageio static FFmpeg build does not include it.
-
-def _run_ffmpeg(cmd, stage: str):
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or '')[-6000:]
-        print(f'[FFMPEG:{stage}] failed rc={r.returncode}\\n{tail}', flush=True)
-        raise RuntimeError(f'FFmpeg {stage} failed: {tail[-1200:]}')
-    return r
-
-_build_frame_v43 = build_frame
-
-def build_frame(cycle: dict, account_type: str, website: str, out: Path):
-    _build_frame_v43(cycle, account_type, website, out)
-
-
-def build_hud(cycle: dict, out: Path, focus: bool=False):
-    im = Image.new('RGBA', (W, H), (0,0,0,0))
-    d = ImageDraw.Draw(im)
-    if focus:
-        d.text((126,580), 'FOCUS REPLAY', font=font(28,True), fill=(134,239,172,255))
-        d.text((126,615), 'Watch the final moment again', font=font(18,True), fill=(255,255,255,220))
-    else:
-        d.text((140,582), 'LIVE CYCLE', font=font(26,True), fill=(255,255,255,242))
-        d.text((770,1300), 'TRADE PROGRESS', font=font(20,True), fill=(255,255,255,215))
-        trades = cycle.get('trades') or []
-        x0, gap, y = 120, 68, 1360
-        for i, _ in enumerate(trades[:12]):
-            label = str(i+1)
-            ff = font(15,True)
-            b = d.textbbox((0,0), label, font=ff)
-            tw = b[2]-b[0]
-            d.text((x0+i*gap + (54-tw)//2, y), label, font=ff, fill=(255,255,255,220))
-    im.save(out)
-    downscale_png_720(out)
-
-
-def build_overlay_filter(cycle: dict, raw_duration: float):
-    pieces = []
-    x0, gap, y, bar_w = (round(120*SCALE_720), round(68*SCALE_720), round(1328*SCALE_720), round(54*SCALE_720))
-    rows = trade_times(cycle, raw_duration)
-    for i, row in enumerate(rows):
-        x = x0 + i * gap
-        start = row['start']
-        end = max(row['start'] + 0.12, row['end'])
-        final_color = '0x22c55e@0.92' if row['result'] == 'WIN' else '0xef4444@0.92'
-        pieces.append(f'drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=white@0.06:t=fill')
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color={final_color}:t=fill:enable='gte(t,{end})'")
-    return ','.join(pieces) if pieces else 'null'
-
-
-def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
-    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
-    hud = td / 'hud.png'
-    focus_hud = td / 'focus_hud.png'
-    build_hud(cycle, hud, False)
-    build_hud(cycle, focus_hud, True)
-
-    overlay_filter = build_overlay_filter(cycle, raw_duration)
-    full_live = td / 'live_full.mp4'
-    cmd_full = [
-        ffmpeg, '-y', '-i', str(raw_video), '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(hud),
-        '-filter_complex',
-        (
-            f"[0:v]scale={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
-            f"pad={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
-            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
-            f"[base]{overlay_filter}[progress];"
-            f"[progress][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
-        ),
-        '-map', '[outv]', *LOWMEM_X264, '-movflags', '+faststart', '-an', str(full_live)
-    ]
-    _run_ffmpeg(cmd_full, 'live-full')
-
-    focus_live = td / 'live_focus.mp4'
-    zoom_start = max(0.0, raw_duration - 1.4)
-    zoom_duration = min(1.4, raw_duration)
-    cmd_focus = [
-        ffmpeg, '-y', '-ss', str(zoom_start), '-t', str(zoom_duration), '-i', str(raw_video),
-        '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(focus_hud),
-        '-filter_complex',
-        (
-            f"[0:v]scale=787:753:force_original_aspect_ratio=increase,"
-            f"crop={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(iw-{OUT_VIDEO_WELL['w']})/2:(ih-{OUT_VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
-            f"[base][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
-        ),
-        '-map', '[outv]', *LOWMEM_X264, '-movflags', '+faststart', '-an', str(focus_live)
-    ]
-    _run_ffmpeg(cmd_focus, 'focus-replay')
-    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
-
-
-def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
-    fade_out = max(0.10, duration - 0.18)
-    cmd = [
-        ffmpeg, '-y', '-loop', '1', '-t', str(duration), '-i', str(image_path),
-        '-vf', f'fps=30,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st={fade_out}:d=0.18',
-        *LOWMEM_X264, '-movflags', '+faststart', '-an', str(out)
-    ]
-    _run_ffmpeg(cmd, 'image-clip')
-
-
-# =========================
-# v4.8 Compact screen-first overrides
-# =========================
-
-COMPACT_VIDEO_WELL = dict(x=48, y=248, w=984, h=1164)
-OUT_COMPACT_VIDEO_WELL = {
-    "x": round(COMPACT_VIDEO_WELL["x"] * SCALE_720),
-    "y": round(COMPACT_VIDEO_WELL["y"] * SCALE_720),
-    "w": round(COMPACT_VIDEO_WELL["w"] * SCALE_720),
-    "h": round(COMPACT_VIDEO_WELL["h"] * SCALE_720),
-}
-
-def build_intro(cycle: dict, account_type: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-    d.ellipse((-300,-280,560,560), fill=(8,48,28))
-    d.ellipse((760,-40,1350,620), fill=(47,38,12))
-
-    center(d, "DIGITMATCHSTAR", 360, font(68, True), GREEN2)
-    center(d, "TRADING IN PROGRESS", 455, font(46, True), WHITE)
-
-    acct = "REAL ACCOUNT" if account_type == "REAL" else "DEMO ACCOUNT"
-    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
-    digit = str(cycle.get("digit") or "-")
-
-    d.rounded_rectangle((180, 650, 900, 930), radius=46, fill=(10,25,18), outline=LINE, width=3)
-    center(d, acct, 730, font(28, True), GOLD if account_type == "REAL" else GREEN2)
-    center(d, market, 800, font(30, True), WHITE)
-    center(d, f"Target digit {digit}", 865, font(28), CYAN)
-
-    center(d, "The actual trading screen appears next.", 1150, font(28, True), WHITE)
-    center(d, "Captured from the real bot tab and formatted for sharing.", 1215, font(22), MUTED)
-    center(d, "Trading involves risk.", 1450, font(20), MUTED)
-    im.save(out)
-    downscale_png_720(out)
-
-def build_outro(cycle: dict, website: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-    d.ellipse((-260,-220,520,550), fill=(9,50,29))
-    status = str(cycle.get("status") or "").upper()
-    win = status == "WIN"
-    n = len(cycle.get("trades") or [])
-
-    center(d, "CYCLE COMPLETE", 320, font(36, True), MUTED)
-    center(d, "MATCHED" if win else "STOPPED", 440, font(92, True), GREEN2 if win else RED)
-    if win:
-        center(d, f"TRADE {cycle.get('winningTradeNumber') or n}", 560, font(48, True), WHITE)
-    center(d, money(cycle.get("netPnL", 0)), 740, font(104, True), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED)
-    center(d, "Actual trading screen recorded from DigitMatchStar", 1000, font(28, True), WHITE)
-    center(d, website.replace("https://",""), 1140, font(40, True), GREEN2)
-    center(d, "Past results do not guarantee future performance.", 1505, font(20), MUTED)
-    im.save(out)
-    downscale_png_720(out)
-
-def build_frame(cycle: dict, account_type: str, website: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-
-    # Background accents
-    d.ellipse((-260,-220,520,520), fill=(7,48,28))
-    d.ellipse((760,-30,1350,640), fill=(47,38,12))
-    d.rounded_rectangle((28,28,1052,1892), radius=46, outline=(24,50,36), width=2)
-
-    # Compact header
-    d.rounded_rectangle((42,42,1038,210), radius=34, fill=(9,22,17), outline=LINE, width=2)
-    d.text((74,70), "DIGITMATCHSTAR", font=font(40, True), fill=GREEN2)
-    d.text((74,122), "TRADING IN PROGRESS", font=font(25, True), fill=WHITE)
-
-    acct = "REAL" if account_type == "REAL" else "DEMO"
-    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
-    digit = str(cycle.get("digit") or "-")
-    status = str(cycle.get("status") or "").upper()
-    win = status == "WIN"
-    n = len(cycle.get("trades") or [])
-
-    # Compact info chips
-    chips = [
-        (560, 70, 180, 54, acct, GOLD if account_type == "REAL" else GREEN2, (12,30,22)),
-        (754, 70, 240, 54, f"Digit {digit}", CYAN, (12,30,22)),
-        (560, 132, 434, 50, market[:30], WHITE, (12,30,22)),
-    ]
-    for x, y, w, h, label, color, fill in chips:
-        d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=fill, outline=LINE, width=1)
-        center(d, label, y + h//2 - 11, font(20, True), color)  # temporary centered against canvas
-        # overwrite with left aligned inside chip for wide market field
-        if w > 250:
-            d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=fill, outline=LINE, width=1)
-            d.text((x+18, y+12), label, font=font(18, True), fill=color)
-        else:
-            bb = d.textbbox((0,0), label, font=font(20, True))
-            tw = bb[2]-bb[0]
-            th = bb[3]-bb[1]
-            d.text((x + (w-tw)/2, y + (h-th)/2 - 2), label, font=font(20, True), fill=color)
-
-    result_label = f"MATCHED · TRADE {cycle.get('winningTradeNumber') or n}" if win else f"STOPPED · {n} TRADES"
-    d.rounded_rectangle((42, 214, 1038, 268), radius=22, fill=(10,25,18), outline=LINE, width=1)
-    d.text((74, 228), "ACTUAL TRADING SCREEN", font=font(20, True), fill=MUTED)
-    right(d, result_label, 1004, 226, font(22, True), GREEN2 if win else RED)
-
-    # Actual screen area takes visual priority
-    x = COMPACT_VIDEO_WELL["x"]
-    y = COMPACT_VIDEO_WELL["y"]
-    w = COMPACT_VIDEO_WELL["w"]
-    h = COMPACT_VIDEO_WELL["h"]
-    d.rounded_rectangle((x-6, y-6, x+w+6, y+h+6), radius=30, fill=(3,7,5), outline=(54,92,71), width=3)
-    d.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(1,4,3), outline=(22,40,31), width=2)
-
-    # Progress area: very compact, immediately under the screen
-    d.rounded_rectangle((42, 1438, 1038, 1556), radius=28, fill=(8,19,14), outline=LINE, width=2)
-    d.text((72, 1464), "TRADES", font=font(22, True), fill=WHITE)
-    d.text((72, 1500), "Trading in progress", font=font(18), fill=MUTED)
-    right(d, "PROGRESS", 1000, 1466, font(20, True), MUTED)
-
-    # Compact bottom metrics
-    metric_y1, metric_y2 = 1580, 1768
-    card_w = 312
-    gap = 20
-    xs = [42, 42 + card_w + gap, 42 + 2*(card_w + gap)]
-    metrics = [
-        ("CYCLE P/L", money(cycle.get("netPnL", 0)), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED),
-        ("TOTAL STAKE", money(cycle.get("totalStake", cycle.get("stake", 0))), WHITE),
-        ("TRADES", str(n), WHITE),
-    ]
-    for i, (title, value, color) in enumerate(metrics):
-        cx = xs[i]
-        d.rounded_rectangle((cx, metric_y1, cx+card_w, metric_y2), radius=28, fill=(10,24,18), outline=LINE, width=2)
-        d.text((cx+24, metric_y1+24), title, font=font(19, True), fill=MUTED)
-        d.text((cx+24, metric_y1+76), value, font=font(44 if i != 2 else 56, True), fill=color)
-
-    # Thin footer
-    d.text((46, 1818), "Recorded from the DigitMatchStar tab", font=font(18), fill=MUTED)
-    right(d, website.replace("https://",""), 1032, 1816, font(18, True), GREEN2)
-    center(d, "Past results do not guarantee future performance.", 1860, font(16), MUTED)
-
-    im.save(out)
-    downscale_png_720(out)
-
-def build_hud(cycle: dict, out: Path, focus: bool=False):
-    im = Image.new("RGBA", (W, H), (0,0,0,0))
-    d = ImageDraw.Draw(im)
-
-    if focus:
-        d.text((76, 266), "FOCUS REPLAY", font=font(26, True), fill=(134,239,172,255))
-        d.text((76, 302), "Final moment replay", font=font(18, True), fill=(255,255,255,220))
-    else:
-        d.text((190, 1466), "1", font=font(14, True), fill=(255,255,255,235))  # harmless fallback when no trades
-
-        trades = cycle.get("trades") or []
-        x0, gap, y = 210, 74, 1502
-        d.text((210, 1464), "1", font=font(1), fill=(0,0,0,0))  # no-op to keep PNG non-empty
-
-        for i, _ in enumerate(trades[:12]):
-            label = str(i+1)
-            ff = font(15, True)
-            b = d.textbbox((0,0), label, font=ff)
-            tw = b[2]-b[0]
-            d.text((x0 + i*gap + (60-tw)//2, y), label, font=ff, fill=(255,255,255,220))
-
-    im.save(out)
-    downscale_png_720(out)
-
-def build_overlay_filter(cycle: dict, raw_duration: float):
-    pieces = []
-    x0 = round(210 * SCALE_720)
-    gap = round(74 * SCALE_720)
-    y = round(1478 * SCALE_720)
-    bar_w = round(60 * SCALE_720)
-    bar_h = round(26 * SCALE_720)
-
-    rows = trade_times(cycle, raw_duration)
-    for i, row in enumerate(rows):
-        x = x0 + i * gap
-        start = row["start"]
-        end = max(row["start"] + 0.12, row["end"])
-        final_color = "0x22c55e@0.92" if row["result"] == "WIN" else "0xef4444@0.92"
-
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color=white@0.06:t=fill")
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color={final_color}:t=fill:enable='gte(t,{end})'")
-
-    return ",".join(pieces) if pieces else "null"
-
-def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
-    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
-
-    overlay_filter = build_overlay_filter(cycle, raw_duration)
-    full_live = td / "live_full.mp4"
-
-    # Fill the screen-first well aggressively so the real bot view is large and clear.
-    cmd_full = [
-        ffmpeg, "-y",
-        "-i", str(raw_video),
-        "-loop", "1", "-i", str(frame_png),
-        "-filter_complex",
-        (
-            f"[0:v]scale={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:(iw-{OUT_COMPACT_VIDEO_WELL['w']})/2:(ih-{OUT_COMPACT_VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={OUT_COMPACT_VIDEO_WELL['x']}:{OUT_COMPACT_VIDEO_WELL['y']}:shortest=1[base];"
-            f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
-        ),
-        "-map", "[outv]",
-        *LOWMEM_X264,
-        "-movflags", "+faststart",
-        "-an",
-        str(full_live)
-    ]
-    run_ffmpeg(cmd_full, "full_live_compact")
-
-    focus_live = td / "live_focus.mp4"
-    zoom_start = max(0.0, raw_duration - 1.35)
-    zoom_duration = min(1.35, raw_duration)
-
-    # Focus replay zooms slightly more tightly on the core bot area.
-    zoom_w = int(OUT_COMPACT_VIDEO_WELL['w'] * 1.18)
-    zoom_h = int(OUT_COMPACT_VIDEO_WELL['h'] * 1.08)
-
-    cmd_focus = [
-        ffmpeg, "-y",
-        "-ss", str(zoom_start),
-        "-t", str(zoom_duration),
-        "-i", str(raw_video),
-        "-loop", "1", "-i", str(frame_png),
-        "-filter_complex",
-        (
-            f"[0:v]scale={zoom_w}:{zoom_h}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:(iw-{OUT_COMPACT_VIDEO_WELL['w']})/2:(ih-{OUT_COMPACT_VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={OUT_COMPACT_VIDEO_WELL['x']}:{OUT_COMPACT_VIDEO_WELL['y']}:shortest=1,"
-            f"fps=30,format=yuv420p[outv]"
-        ),
-        "-map", "[outv]",
-        *LOWMEM_X264,
-        "-movflags", "+faststart",
-        "-an",
-        str(focus_live)
-    ]
-    run_ffmpeg(cmd_focus, "focus_replay_compact")
-
-    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
-
-
-# -------------------------
-# v4.8.1 final compact-frame corrections
-# -------------------------
-
-def _plain_money(v):
-    try:
-        return f"${abs(float(v or 0.0)):,.2f}"
-    except Exception:
-        return "$0.00"
-
-def build_frame(cycle: dict, account_type: str, website: str, out: Path):
-    im = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(im)
-
-    d.ellipse((-260,-220,520,520), fill=(7,48,28))
-    d.ellipse((760,-30,1350,640), fill=(47,38,12))
-    d.rounded_rectangle((28,28,1052,1892), radius=46, outline=(24,50,36), width=2)
-
-    # Header
-    d.rounded_rectangle((42,42,1038,210), radius=34, fill=(9,22,17), outline=LINE, width=2)
-    d.text((72,68), "DIGITMATCHSTAR", font=font(42, True), fill=GREEN2)
-    d.text((72,122), "TRADING IN PROGRESS", font=font(24, True), fill=WHITE)
-
-    acct = "REAL" if account_type == "REAL" else "DEMO"
-    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
-    digit = str(cycle.get("digit") or "-")
-    status = str(cycle.get("status") or "").upper()
-    win = status == "WIN"
-    n = len(cycle.get("trades") or [])
-
-    def chip(x, y, w, h, label, color):
-        d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=(12,30,22), outline=LINE, width=1)
-        d.text((x+16, y+12), label, font=font(18, True), fill=color)
-
-    chip(520, 64, 180, 52, acct, GOLD if account_type == "REAL" else GREEN2)
-    chip(718, 64, 238, 52, f"Digit {digit}", CYAN)
-    chip(520, 126, 436, 52, market[:28], WHITE)
-
-    d.rounded_rectangle((42, 214, 1038, 268), radius=22, fill=(10,25,18), outline=LINE, width=1)
-    d.text((72, 228), "ACTUAL TRADING SCREEN", font=font(20, True), fill=MUTED)
-    result_label = f"MATCHED · TRADE {cycle.get('winningTradeNumber') or n}" if win else f"STOPPED · {n} TRADES"
-    right(d, result_label, 1006, 226, font(22, True), GREEN2 if win else RED)
-
-    # Main screen well
-    x = COMPACT_VIDEO_WELL["x"]; y = COMPACT_VIDEO_WELL["y"]; w = COMPACT_VIDEO_WELL["w"]; h = COMPACT_VIDEO_WELL["h"]
-    d.rounded_rectangle((x-6, y-6, x+w+6, y+h+6), radius=30, fill=(3,7,5), outline=(54,92,71), width=3)
-    d.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(1,4,3), outline=(22,40,31), width=2)
-
-    # Compact progress row
-    d.rounded_rectangle((42, 1438, 1038, 1556), radius=28, fill=(8,19,14), outline=LINE, width=2)
-    d.text((70, 1462), "TRADES", font=font(22, True), fill=WHITE)
-    d.text((70, 1498), "Trading in progress", font=font(18), fill=MUTED)
-    right(d, "PROGRESS", 1000, 1464, font(19, True), MUTED)
-
-    # Compact bottom cards
-    metric_y1, metric_y2 = 1580, 1768
-    card_w = 312
-    gap = 20
-    xs = [42, 42 + card_w + gap, 42 + 2*(card_w + gap)]
-    metrics = [
-        ("CYCLE P/L", money(cycle.get("netPnL", 0)), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED),
-        ("TOTAL STAKE", _plain_money(cycle.get("totalStake", cycle.get("stake", 0))), WHITE),
-        ("TRADES", str(n), WHITE),
-    ]
-    sizes = [44, 44, 58]
-    for i, (title, value, color) in enumerate(metrics):
-        cx = xs[i]
-        d.rounded_rectangle((cx, metric_y1, cx+card_w, metric_y2), radius=28, fill=(10,24,18), outline=LINE, width=2)
-        d.text((cx+22, metric_y1+22), title, font=font(19, True), fill=MUTED)
-        d.text((cx+22, metric_y1+76), value, font=font(sizes[i], True), fill=color)
-
-    d.text((44, 1818), "Recorded from the DigitMatchStar tab", font=font(18), fill=MUTED)
-    right(d, website.replace("https://",""), 1032, 1816, font(18, True), GREEN2)
-    center(d, "Past results do not guarantee future performance.", 1860, font(16), MUTED)
-
-    im.save(out)
-    downscale_png_720(out)
-
-def build_hud(cycle: dict, out: Path, focus: bool=False):
-    im = Image.new("RGBA", (W, H), (0,0,0,0))
-    d = ImageDraw.Draw(im)
-
-    if focus:
-        d.text((76, 266), "FOCUS REPLAY", font=font(26, True), fill=(134,239,172,255))
-        d.text((76, 302), "Final moment replay", font=font(18, True), fill=(255,255,255,220))
-    else:
-        trades = cycle.get("trades") or []
-        x0, gap, y = 210, 74, 1502
-        for i, _ in enumerate(trades[:12]):
-            label = str(i + 1)
-            ff = font(15, True)
-            b = d.textbbox((0,0), label, font=ff)
-            tw = b[2] - b[0]
-            d.text((x0 + i*gap + (60-tw)//2, y), label, font=ff, fill=(255,255,255,220))
-
-    im.save(out)
-    downscale_png_720(out)
