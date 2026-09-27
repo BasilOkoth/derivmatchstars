@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.6 Low-Memory")
+app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.8.1 Compact Screen-First")
 
 # Browser uploads come directly from DigitMatchStar to Render.
 # CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
@@ -34,6 +34,25 @@ GREEN=(34,197,94); GREEN2=(74,222,128); RED=(239,68,68); GOLD=(215,181,109); CYA
 LINE=(43,73,57); PANEL=(11,26,19); PANEL2=(8,19,14)
 
 VIDEO_WELL = dict(x=90, y=530, w=900, h=860)
+
+# v4.7: design at 720x1280 in Pillow, encode at 720x1280 to stay inside
+# Render's 512 MB memory ceiling. All generated PNG assets are downscaled
+# before FFmpeg touches them.
+OUT_W, OUT_H = 720, 1280
+SCALE_720 = OUT_W / W
+OUT_VIDEO_WELL = {
+    "x": round(VIDEO_WELL["x"] * SCALE_720),
+    "y": round(VIDEO_WELL["y"] * SCALE_720),
+    "w": round(VIDEO_WELL["w"] * SCALE_720),
+    "h": round(VIDEO_WELL["h"] * SCALE_720),
+}
+
+def downscale_png_720(path: Path):
+    with Image.open(path) as im:
+        if im.size != (OUT_W, OUT_H):
+            im = im.resize((OUT_W, OUT_H), Image.Resampling.LANCZOS)
+            im.save(path, optimize=True)
+
 
 def font(size: int, bold: bool=False):
     paths = [
@@ -244,10 +263,10 @@ def build_overlay_filter(cycle: dict, raw_duration: float):
     IMPORTANT: no text-overlay filter; Render's bundled FFmpeg lacks text-overlay.
     """
     pieces = []
-    x0 = 120
-    gap = 68
-    y = 1328
-    bar_w = 54
+    x0 = round(120 * SCALE_720)
+    gap = round(68 * SCALE_720)
+    y = round(1328 * SCALE_720)
+    bar_w = round(54 * SCALE_720)
 
     rows = trade_times(cycle, raw_duration)
     for i, row in enumerate(rows):
@@ -257,14 +276,14 @@ def build_overlay_filter(cycle: dict, raw_duration: float):
         final_color = "0x22c55e@0.92" if row["result"] == "WIN" else "0xef4444@0.92"
 
         pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=white@0.06:t=fill"
+            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=white@0.06:t=fill"
         )
         pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:"
+            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:"
             f"color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'"
         )
         pieces.append(
-            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:"
+            f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:"
             f"color={final_color}:t=fill:enable='gte(t,{end})'"
         )
 
@@ -283,9 +302,9 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
         "-loop", "1", "-i", str(frame_png),
         "-filter_complex",
         (
-            f"[0:v]scale={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
-            f"pad={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
-            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
+            f"[0:v]scale={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
+            f"pad={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
+            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
             f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
         ),
         "-map", "[outv]",
@@ -311,8 +330,8 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
         "-loop", "1", "-i", str(frame_png),
         "-filter_complex",
         (
-            f"[0:v]scale=1180:1130:force_original_aspect_ratio=increase,"
-            f"crop={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(iw-{VIDEO_WELL['w']})/2:(ih-{VIDEO_WELL['h']})/2[screen];"
+            f"[0:v]scale=787:753:force_original_aspect_ratio=increase,"
+            f"crop={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(iw-{OUT_VIDEO_WELL['w']})/2:(ih-{OUT_VIDEO_WELL['h']})/2[screen];"
             f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1,"
             f"fps=30,format=yuv420p[outv]"
         ),
@@ -402,12 +421,12 @@ def build_soundtrack(total_duration: float, live_start: float, live_end: float, 
 
 LOWMEM_X264 = [
     "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "21",
+    "-preset", "ultrafast",
+    "-crf", "23",
     "-profile:v", "high",
     "-pix_fmt", "yuv420p",
     "-threads", "1",
-    "-x264-params", "ref=1:bframes=0",
+    "-x264-params", "ref=1:bframes=0:rc-lookahead=0:sync-lookahead=0",
 ]
 
 def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str, out_video: Path):
@@ -420,6 +439,9 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
         build_frame(cycle, account_type, website, frame)
         build_intro(cycle, account_type, intro)
         build_outro(cycle, website, outro)
+        downscale_png_720(frame)
+        downscale_png_720(intro)
+        downscale_png_720(outro)
         gc.collect()
 
         intro_v = td / "intro.mp4"
@@ -510,7 +532,7 @@ async def send_video(video: Path, caption: str, chat: str):
 def health():
     return {
         "ok": True,
-        "version": "ultra-premium-live-v4.6-lowmem",
+        "version": "ultra-premium-live-v4.8.1-compact",
         "cors": True,
         "telegramConfigured": bool(
             os.environ.get("TELEGRAM_BOT_TOKEN") and
@@ -567,9 +589,9 @@ async def compose_live_endpoint(
     return {
         "ok": True,
         "privateTelegramMessageId": msg.get("message_id"),
-        "format": "1080x1920-h264-aac",
+        "format": "720x1280-h264-aac",
         "source": "actual-screen-capture",
-        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable", "low-memory"]
+        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable", "low-memory", "720p"]
     }
 
 
@@ -608,20 +630,21 @@ def build_hud(cycle: dict, out: Path, focus: bool=False):
             tw = b[2]-b[0]
             d.text((x0+i*gap + (54-tw)//2, y), label, font=ff, fill=(255,255,255,220))
     im.save(out)
+    downscale_png_720(out)
 
 
 def build_overlay_filter(cycle: dict, raw_duration: float):
     pieces = []
-    x0, gap, y, bar_w = 120, 68, 1328, 54
+    x0, gap, y, bar_w = (round(120*SCALE_720), round(68*SCALE_720), round(1328*SCALE_720), round(54*SCALE_720))
     rows = trade_times(cycle, raw_duration)
     for i, row in enumerate(rows):
         x = x0 + i * gap
         start = row['start']
         end = max(row['start'] + 0.12, row['end'])
         final_color = '0x22c55e@0.92' if row['result'] == 'WIN' else '0xef4444@0.92'
-        pieces.append(f'drawbox=x={x}:y={y}:w={bar_w}:h=28:color=white@0.06:t=fill')
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color={final_color}:t=fill:enable='gte(t,{end})'")
+        pieces.append(f'drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=white@0.06:t=fill')
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={round(28*SCALE_720)}:color={final_color}:t=fill:enable='gte(t,{end})'")
     return ','.join(pieces) if pieces else 'null'
 
 
@@ -638,9 +661,9 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
         ffmpeg, '-y', '-i', str(raw_video), '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(hud),
         '-filter_complex',
         (
-            f"[0:v]scale={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
-            f"pad={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
-            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
+            f"[0:v]scale={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
+            f"pad={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
+            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
             f"[base]{overlay_filter}[progress];"
             f"[progress][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
         ),
@@ -656,9 +679,9 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
         '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(focus_hud),
         '-filter_complex',
         (
-            f"[0:v]scale=1180:1130:force_original_aspect_ratio=increase,"
-            f"crop={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(iw-{VIDEO_WELL['w']})/2:(ih-{VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
+            f"[0:v]scale=787:753:force_original_aspect_ratio=increase,"
+            f"crop={OUT_VIDEO_WELL['w']}:{OUT_VIDEO_WELL['h']}:(iw-{OUT_VIDEO_WELL['w']})/2:(ih-{OUT_VIDEO_WELL['h']})/2[screen];"
+            f"[1:v][screen]overlay={OUT_VIDEO_WELL['x']}:{OUT_VIDEO_WELL['y']}:shortest=1[base];"
             f"[base][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
         ),
         '-map', '[outv]', *LOWMEM_X264, '-movflags', '+faststart', '-an', str(focus_live)
@@ -675,3 +698,343 @@ def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
         *LOWMEM_X264, '-movflags', '+faststart', '-an', str(out)
     ]
     _run_ffmpeg(cmd, 'image-clip')
+
+
+# =========================
+# v4.8 Compact screen-first overrides
+# =========================
+
+COMPACT_VIDEO_WELL = dict(x=48, y=248, w=984, h=1164)
+OUT_COMPACT_VIDEO_WELL = {
+    "x": round(COMPACT_VIDEO_WELL["x"] * SCALE_720),
+    "y": round(COMPACT_VIDEO_WELL["y"] * SCALE_720),
+    "w": round(COMPACT_VIDEO_WELL["w"] * SCALE_720),
+    "h": round(COMPACT_VIDEO_WELL["h"] * SCALE_720),
+}
+
+def build_intro(cycle: dict, account_type: str, out: Path):
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+    d.ellipse((-300,-280,560,560), fill=(8,48,28))
+    d.ellipse((760,-40,1350,620), fill=(47,38,12))
+
+    center(d, "DIGITMATCHSTAR", 360, font(68, True), GREEN2)
+    center(d, "TRADING IN PROGRESS", 455, font(46, True), WHITE)
+
+    acct = "REAL ACCOUNT" if account_type == "REAL" else "DEMO ACCOUNT"
+    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
+    digit = str(cycle.get("digit") or "-")
+
+    d.rounded_rectangle((180, 650, 900, 930), radius=46, fill=(10,25,18), outline=LINE, width=3)
+    center(d, acct, 730, font(28, True), GOLD if account_type == "REAL" else GREEN2)
+    center(d, market, 800, font(30, True), WHITE)
+    center(d, f"Target digit {digit}", 865, font(28), CYAN)
+
+    center(d, "The actual trading screen appears next.", 1150, font(28, True), WHITE)
+    center(d, "Captured from the real bot tab and formatted for sharing.", 1215, font(22), MUTED)
+    center(d, "Trading involves risk.", 1450, font(20), MUTED)
+    im.save(out)
+    downscale_png_720(out)
+
+def build_outro(cycle: dict, website: str, out: Path):
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+    d.ellipse((-260,-220,520,550), fill=(9,50,29))
+    status = str(cycle.get("status") or "").upper()
+    win = status == "WIN"
+    n = len(cycle.get("trades") or [])
+
+    center(d, "CYCLE COMPLETE", 320, font(36, True), MUTED)
+    center(d, "MATCHED" if win else "STOPPED", 440, font(92, True), GREEN2 if win else RED)
+    if win:
+        center(d, f"TRADE {cycle.get('winningTradeNumber') or n}", 560, font(48, True), WHITE)
+    center(d, money(cycle.get("netPnL", 0)), 740, font(104, True), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED)
+    center(d, "Actual trading screen recorded from DigitMatchStar", 1000, font(28, True), WHITE)
+    center(d, website.replace("https://",""), 1140, font(40, True), GREEN2)
+    center(d, "Past results do not guarantee future performance.", 1505, font(20), MUTED)
+    im.save(out)
+    downscale_png_720(out)
+
+def build_frame(cycle: dict, account_type: str, website: str, out: Path):
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+
+    # Background accents
+    d.ellipse((-260,-220,520,520), fill=(7,48,28))
+    d.ellipse((760,-30,1350,640), fill=(47,38,12))
+    d.rounded_rectangle((28,28,1052,1892), radius=46, outline=(24,50,36), width=2)
+
+    # Compact header
+    d.rounded_rectangle((42,42,1038,210), radius=34, fill=(9,22,17), outline=LINE, width=2)
+    d.text((74,70), "DIGITMATCHSTAR", font=font(40, True), fill=GREEN2)
+    d.text((74,122), "TRADING IN PROGRESS", font=font(25, True), fill=WHITE)
+
+    acct = "REAL" if account_type == "REAL" else "DEMO"
+    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
+    digit = str(cycle.get("digit") or "-")
+    status = str(cycle.get("status") or "").upper()
+    win = status == "WIN"
+    n = len(cycle.get("trades") or [])
+
+    # Compact info chips
+    chips = [
+        (560, 70, 180, 54, acct, GOLD if account_type == "REAL" else GREEN2, (12,30,22)),
+        (754, 70, 240, 54, f"Digit {digit}", CYAN, (12,30,22)),
+        (560, 132, 434, 50, market[:30], WHITE, (12,30,22)),
+    ]
+    for x, y, w, h, label, color, fill in chips:
+        d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=fill, outline=LINE, width=1)
+        center(d, label, y + h//2 - 11, font(20, True), color)  # temporary centered against canvas
+        # overwrite with left aligned inside chip for wide market field
+        if w > 250:
+            d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=fill, outline=LINE, width=1)
+            d.text((x+18, y+12), label, font=font(18, True), fill=color)
+        else:
+            bb = d.textbbox((0,0), label, font=font(20, True))
+            tw = bb[2]-bb[0]
+            th = bb[3]-bb[1]
+            d.text((x + (w-tw)/2, y + (h-th)/2 - 2), label, font=font(20, True), fill=color)
+
+    result_label = f"MATCHED · TRADE {cycle.get('winningTradeNumber') or n}" if win else f"STOPPED · {n} TRADES"
+    d.rounded_rectangle((42, 214, 1038, 268), radius=22, fill=(10,25,18), outline=LINE, width=1)
+    d.text((74, 228), "ACTUAL TRADING SCREEN", font=font(20, True), fill=MUTED)
+    right(d, result_label, 1004, 226, font(22, True), GREEN2 if win else RED)
+
+    # Actual screen area takes visual priority
+    x = COMPACT_VIDEO_WELL["x"]
+    y = COMPACT_VIDEO_WELL["y"]
+    w = COMPACT_VIDEO_WELL["w"]
+    h = COMPACT_VIDEO_WELL["h"]
+    d.rounded_rectangle((x-6, y-6, x+w+6, y+h+6), radius=30, fill=(3,7,5), outline=(54,92,71), width=3)
+    d.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(1,4,3), outline=(22,40,31), width=2)
+
+    # Progress area: very compact, immediately under the screen
+    d.rounded_rectangle((42, 1438, 1038, 1556), radius=28, fill=(8,19,14), outline=LINE, width=2)
+    d.text((72, 1464), "TRADES", font=font(22, True), fill=WHITE)
+    d.text((72, 1500), "Trading in progress", font=font(18), fill=MUTED)
+    right(d, "PROGRESS", 1000, 1466, font(20, True), MUTED)
+
+    # Compact bottom metrics
+    metric_y1, metric_y2 = 1580, 1768
+    card_w = 312
+    gap = 20
+    xs = [42, 42 + card_w + gap, 42 + 2*(card_w + gap)]
+    metrics = [
+        ("CYCLE P/L", money(cycle.get("netPnL", 0)), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED),
+        ("TOTAL STAKE", money(cycle.get("totalStake", cycle.get("stake", 0))), WHITE),
+        ("TRADES", str(n), WHITE),
+    ]
+    for i, (title, value, color) in enumerate(metrics):
+        cx = xs[i]
+        d.rounded_rectangle((cx, metric_y1, cx+card_w, metric_y2), radius=28, fill=(10,24,18), outline=LINE, width=2)
+        d.text((cx+24, metric_y1+24), title, font=font(19, True), fill=MUTED)
+        d.text((cx+24, metric_y1+76), value, font=font(44 if i != 2 else 56, True), fill=color)
+
+    # Thin footer
+    d.text((46, 1818), "Recorded from the DigitMatchStar tab", font=font(18), fill=MUTED)
+    right(d, website.replace("https://",""), 1032, 1816, font(18, True), GREEN2)
+    center(d, "Past results do not guarantee future performance.", 1860, font(16), MUTED)
+
+    im.save(out)
+    downscale_png_720(out)
+
+def build_hud(cycle: dict, out: Path, focus: bool=False):
+    im = Image.new("RGBA", (W, H), (0,0,0,0))
+    d = ImageDraw.Draw(im)
+
+    if focus:
+        d.text((76, 266), "FOCUS REPLAY", font=font(26, True), fill=(134,239,172,255))
+        d.text((76, 302), "Final moment replay", font=font(18, True), fill=(255,255,255,220))
+    else:
+        d.text((190, 1466), "1", font=font(14, True), fill=(255,255,255,235))  # harmless fallback when no trades
+
+        trades = cycle.get("trades") or []
+        x0, gap, y = 210, 74, 1502
+        d.text((210, 1464), "1", font=font(1), fill=(0,0,0,0))  # no-op to keep PNG non-empty
+
+        for i, _ in enumerate(trades[:12]):
+            label = str(i+1)
+            ff = font(15, True)
+            b = d.textbbox((0,0), label, font=ff)
+            tw = b[2]-b[0]
+            d.text((x0 + i*gap + (60-tw)//2, y), label, font=ff, fill=(255,255,255,220))
+
+    im.save(out)
+    downscale_png_720(out)
+
+def build_overlay_filter(cycle: dict, raw_duration: float):
+    pieces = []
+    x0 = round(210 * SCALE_720)
+    gap = round(74 * SCALE_720)
+    y = round(1478 * SCALE_720)
+    bar_w = round(60 * SCALE_720)
+    bar_h = round(26 * SCALE_720)
+
+    rows = trade_times(cycle, raw_duration)
+    for i, row in enumerate(rows):
+        x = x0 + i * gap
+        start = row["start"]
+        end = max(row["start"] + 0.12, row["end"])
+        final_color = "0x22c55e@0.92" if row["result"] == "WIN" else "0xef4444@0.92"
+
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color=white@0.06:t=fill")
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h={bar_h}:color={final_color}:t=fill:enable='gte(t,{end})'")
+
+    return ",".join(pieces) if pieces else "null"
+
+def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
+    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
+
+    overlay_filter = build_overlay_filter(cycle, raw_duration)
+    full_live = td / "live_full.mp4"
+
+    # Fill the screen-first well aggressively so the real bot view is large and clear.
+    cmd_full = [
+        ffmpeg, "-y",
+        "-i", str(raw_video),
+        "-loop", "1", "-i", str(frame_png),
+        "-filter_complex",
+        (
+            f"[0:v]scale={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:(iw-{OUT_COMPACT_VIDEO_WELL['w']})/2:(ih-{OUT_COMPACT_VIDEO_WELL['h']})/2[screen];"
+            f"[1:v][screen]overlay={OUT_COMPACT_VIDEO_WELL['x']}:{OUT_COMPACT_VIDEO_WELL['y']}:shortest=1[base];"
+            f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
+        ),
+        "-map", "[outv]",
+        *LOWMEM_X264,
+        "-movflags", "+faststart",
+        "-an",
+        str(full_live)
+    ]
+    run_ffmpeg(cmd_full, "full_live_compact")
+
+    focus_live = td / "live_focus.mp4"
+    zoom_start = max(0.0, raw_duration - 1.35)
+    zoom_duration = min(1.35, raw_duration)
+
+    # Focus replay zooms slightly more tightly on the core bot area.
+    zoom_w = int(OUT_COMPACT_VIDEO_WELL['w'] * 1.18)
+    zoom_h = int(OUT_COMPACT_VIDEO_WELL['h'] * 1.08)
+
+    cmd_focus = [
+        ffmpeg, "-y",
+        "-ss", str(zoom_start),
+        "-t", str(zoom_duration),
+        "-i", str(raw_video),
+        "-loop", "1", "-i", str(frame_png),
+        "-filter_complex",
+        (
+            f"[0:v]scale={zoom_w}:{zoom_h}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_COMPACT_VIDEO_WELL['w']}:{OUT_COMPACT_VIDEO_WELL['h']}:(iw-{OUT_COMPACT_VIDEO_WELL['w']})/2:(ih-{OUT_COMPACT_VIDEO_WELL['h']})/2[screen];"
+            f"[1:v][screen]overlay={OUT_COMPACT_VIDEO_WELL['x']}:{OUT_COMPACT_VIDEO_WELL['y']}:shortest=1,"
+            f"fps=30,format=yuv420p[outv]"
+        ),
+        "-map", "[outv]",
+        *LOWMEM_X264,
+        "-movflags", "+faststart",
+        "-an",
+        str(focus_live)
+    ]
+    run_ffmpeg(cmd_focus, "focus_replay_compact")
+
+    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
+
+
+# -------------------------
+# v4.8.1 final compact-frame corrections
+# -------------------------
+
+def _plain_money(v):
+    try:
+        return f"${abs(float(v or 0.0)):,.2f}"
+    except Exception:
+        return "$0.00"
+
+def build_frame(cycle: dict, account_type: str, website: str, out: Path):
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+
+    d.ellipse((-260,-220,520,520), fill=(7,48,28))
+    d.ellipse((760,-30,1350,640), fill=(47,38,12))
+    d.rounded_rectangle((28,28,1052,1892), radius=46, outline=(24,50,36), width=2)
+
+    # Header
+    d.rounded_rectangle((42,42,1038,210), radius=34, fill=(9,22,17), outline=LINE, width=2)
+    d.text((72,68), "DIGITMATCHSTAR", font=font(42, True), fill=GREEN2)
+    d.text((72,122), "TRADING IN PROGRESS", font=font(24, True), fill=WHITE)
+
+    acct = "REAL" if account_type == "REAL" else "DEMO"
+    market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
+    digit = str(cycle.get("digit") or "-")
+    status = str(cycle.get("status") or "").upper()
+    win = status == "WIN"
+    n = len(cycle.get("trades") or [])
+
+    def chip(x, y, w, h, label, color):
+        d.rounded_rectangle((x, y, x+w, y+h), radius=18, fill=(12,30,22), outline=LINE, width=1)
+        d.text((x+16, y+12), label, font=font(18, True), fill=color)
+
+    chip(520, 64, 180, 52, acct, GOLD if account_type == "REAL" else GREEN2)
+    chip(718, 64, 238, 52, f"Digit {digit}", CYAN)
+    chip(520, 126, 436, 52, market[:28], WHITE)
+
+    d.rounded_rectangle((42, 214, 1038, 268), radius=22, fill=(10,25,18), outline=LINE, width=1)
+    d.text((72, 228), "ACTUAL TRADING SCREEN", font=font(20, True), fill=MUTED)
+    result_label = f"MATCHED · TRADE {cycle.get('winningTradeNumber') or n}" if win else f"STOPPED · {n} TRADES"
+    right(d, result_label, 1006, 226, font(22, True), GREEN2 if win else RED)
+
+    # Main screen well
+    x = COMPACT_VIDEO_WELL["x"]; y = COMPACT_VIDEO_WELL["y"]; w = COMPACT_VIDEO_WELL["w"]; h = COMPACT_VIDEO_WELL["h"]
+    d.rounded_rectangle((x-6, y-6, x+w+6, y+h+6), radius=30, fill=(3,7,5), outline=(54,92,71), width=3)
+    d.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(1,4,3), outline=(22,40,31), width=2)
+
+    # Compact progress row
+    d.rounded_rectangle((42, 1438, 1038, 1556), radius=28, fill=(8,19,14), outline=LINE, width=2)
+    d.text((70, 1462), "TRADES", font=font(22, True), fill=WHITE)
+    d.text((70, 1498), "Trading in progress", font=font(18), fill=MUTED)
+    right(d, "PROGRESS", 1000, 1464, font(19, True), MUTED)
+
+    # Compact bottom cards
+    metric_y1, metric_y2 = 1580, 1768
+    card_w = 312
+    gap = 20
+    xs = [42, 42 + card_w + gap, 42 + 2*(card_w + gap)]
+    metrics = [
+        ("CYCLE P/L", money(cycle.get("netPnL", 0)), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED),
+        ("TOTAL STAKE", _plain_money(cycle.get("totalStake", cycle.get("stake", 0))), WHITE),
+        ("TRADES", str(n), WHITE),
+    ]
+    sizes = [44, 44, 58]
+    for i, (title, value, color) in enumerate(metrics):
+        cx = xs[i]
+        d.rounded_rectangle((cx, metric_y1, cx+card_w, metric_y2), radius=28, fill=(10,24,18), outline=LINE, width=2)
+        d.text((cx+22, metric_y1+22), title, font=font(19, True), fill=MUTED)
+        d.text((cx+22, metric_y1+76), value, font=font(sizes[i], True), fill=color)
+
+    d.text((44, 1818), "Recorded from the DigitMatchStar tab", font=font(18), fill=MUTED)
+    right(d, website.replace("https://",""), 1032, 1816, font(18, True), GREEN2)
+    center(d, "Past results do not guarantee future performance.", 1860, font(16), MUTED)
+
+    im.save(out)
+    downscale_png_720(out)
+
+def build_hud(cycle: dict, out: Path, focus: bool=False):
+    im = Image.new("RGBA", (W, H), (0,0,0,0))
+    d = ImageDraw.Draw(im)
+
+    if focus:
+        d.text((76, 266), "FOCUS REPLAY", font=font(26, True), fill=(134,239,172,255))
+        d.text((76, 302), "Final moment replay", font=font(18, True), fill=(255,255,255,220))
+    else:
+        trades = cycle.get("trades") or []
+        x0, gap, y = 210, 74, 1502
+        for i, _ in enumerate(trades[:12]):
+            label = str(i + 1)
+            ff = font(15, True)
+            b = d.textbbox((0,0), label, font=ff)
+            tw = b[2] - b[0]
+            d.text((x0 + i*gap + (60-tw)//2, y), label, font=ff, fill=(255,255,255,220))
+
+    im.save(out)
+    downscale_png_720(out)

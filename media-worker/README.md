@@ -1,18 +1,12 @@
-# DigitMatchStar Media Worker v4.6 Low-Memory
+# DigitMatchStar Media Worker v4.8.1 Compact Screen-First
 
-Designed for Render instances with a 512 MB RAM limit.
+Refined compact layout:
+- Actual trading screen is much larger
+- Dead space reduced
+- "TRADING IN PROGRESS" replaces "live evidence"
+- Bottom stats are tighter
+- Header chips corrected and compact
+- Keeps 720x1280 output and low-memory worker path
 
-Key changes
-- Keeps 1080x1920 output.
-- H.264 uses veryfast preset, CRF 21, 1 thread, ref=1, bframes=0.
-- Concat stage uses stream copy instead of a second full H.264 re-encode.
-- Soundtrack uses compact int16 storage instead of Python float objects.
-- Soundtrack writes WAV in chunks.
-- Major FFmpeg stages are still sequential and logged.
-- Final video audio mix copies the already-encoded video stream.
-- Same CORS, ticket, Telegram, progress rail, focus replay and bot-tab audio behavior.
-
-Render
-Root Directory: media-worker
-Build: pip install -r requirements.txt
-Start: uvicorn app:app --host 0.0.0.0 --port $PORT
+Health endpoint should report:
+ultra-premium-live-v4.8.1-compact
