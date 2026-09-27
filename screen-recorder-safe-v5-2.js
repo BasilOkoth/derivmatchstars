@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.7-dynamic-pnl-win-hold';
+  const VERSION = '5.8-tick-compare-exact-pnl';
 
   const state = {
     displayStream: null,
@@ -31,6 +31,8 @@
     lastTradeCount: 0,
     lastTargetDigit: null,
     lastActiveContractId: null,
+    lastCurrentDigit: null,
+    lastCurrentTick: '',
     savedView: null,
     capturePrepared: false,
     stopPending: false
@@ -349,7 +351,8 @@
     };
     const fp = JSON.stringify([
       type, title, subtitle,
-      event.tradeCount, event.targetDigit,
+      event.tradeCount, event.targetDigit, event.currentDigit, event.currentTick,
+      event.pnl, event.stake,
       event.activeContractId, event.result, event.status, event.action
     ]);
     if (fp === state.lastFingerprint) return;
@@ -384,7 +387,7 @@
       return ['scanning', 'SCANNING DIGITS...', 'Reading live ticks and analysing digits'];
     }
     if (/READY|LOCKED/.test(joined) && s.targetDigit !== null) {
-      return ['target_locked', `TARGET DIGIT IDENTIFIED: ${s.targetDigit}`, 'Digit selected and locked for monitoring'];
+      return ['target_locked', `TARGET DIGIT LOCKED: ${s.targetDigit}`, 'This is the digit the bot is trying to match'];
     }
     if (/MAX TRADES|STOP LIMIT|BOT STOPPED/.test(joined)) {
       return ['stopped', 'STOP LIMIT REACHED', `Cycle ended after ${s.tradeCount} trade(s)`];
@@ -396,12 +399,39 @@
     if (!state.captureStartedAt) return;
     const s = snapshot();
 
+    // Every new streaming digit becomes a visible target-vs-tick comparison.
+    if (
+      s.currentDigit !== null &&
+      (
+        s.currentDigit !== state.lastCurrentDigit ||
+        (s.currentTick && s.currentTick !== state.lastCurrentTick)
+      )
+    ) {
+      state.lastCurrentDigit = s.currentDigit;
+      state.lastCurrentTick = s.currentTick;
+
+      if (s.targetDigit !== null) {
+        const matched = Number(s.currentDigit) === Number(s.targetDigit);
+        addEvent(
+          matched ? 'tick_match' : 'tick_compare',
+          `TARGET ${s.targetDigit}  VS  TICK ${s.currentDigit}`,
+          matched ? 'MATCH DETECTED' : 'No match · checking next streaming tick',
+          {
+            targetDigit: s.targetDigit,
+            currentDigit: s.currentDigit,
+            currentTick: s.currentTick,
+            pnl: readBotPnl()
+          }
+        );
+      }
+    }
+
     if (s.targetDigit !== null && s.targetDigit !== state.lastTargetDigit) {
       state.lastTargetDigit = s.targetDigit;
       addEvent(
         'target_selected',
-        `TARGET DIGIT IDENTIFIED: ${s.targetDigit}`,
-        'Digit selected and locked for monitoring',
+        `TARGET DIGIT LOCKED: ${s.targetDigit}`,
+        'This is the digit the bot is trying to match',
         { targetDigit:s.targetDigit }
       );
     }
@@ -516,6 +546,8 @@
     state.lastTradeCount = Number(window.tradeCount || 0);
     state.lastTargetDigit = null;
     state.lastActiveContractId = window.activeContract?.contractId ?? null;
+    state.lastCurrentDigit = snapshot().currentDigit;
+    state.lastCurrentTick = snapshot().currentTick;
 
     addEvent('capture_ready', 'TRADING SCREEN READY', 'Waiting for the next cycle');
     observeGuidedEvents();

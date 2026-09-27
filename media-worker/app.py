@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.7")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -338,7 +338,11 @@ def guided_segments(cycle, raw_duration):
             str(e.get("title","")),
             str(e.get("subtitle","")),
             int(e.get("tradeCount") or 0),
-            str(e.get("targetDigit",""))
+            str(e.get("targetDigit","")),
+            str(e.get("currentDigit","")),
+            str(e.get("currentTick","")),
+            round(float(e.get("pnl",0) or 0), 2),
+            round(float(e.get("stake",0) or 0), 2)
         )
         if compact and compact[-1]["_key"] == key:
             continue
@@ -412,9 +416,11 @@ def build_live_frame(cycle, account_type, website, event, out):
         bb = d.textbbox((0,0), str(label), font=ff)
         d.text((x+(w-(bb[2]-bb[0]))/2, y+(h-(bb[3]-bb[1]))/2-1), str(label), font=ff, fill=color)
 
-    chip(656,54,120,42,acct,GOLD if account_type=="REAL" else GREEN2)
-    chip(788,54,242,42,f"TARGET {target}",CYAN)
-    chip(656,104,374,38,market[:32],WHITE)
+    chip(650,54,112,42,acct,GOLD if account_type=="REAL" else GREEN2)
+    d.rounded_rectangle((776,48,1032,108), radius=18, fill=(9,34,35), outline=CYAN, width=3)
+    d.text((792,60),"TARGET DIGIT",font=font(17,True),fill=MUTED)
+    d.text((970,53),str(target),font=font(40,True),fill=CYAN)
+    chip(650,112,382,36,market[:32],WHITE)
 
     # Browser-like screen template: larger and visually closer
     x,y,w,h = SCREEN["x"],SCREEN["y"],SCREEN["w"],SCREEN["h"]
@@ -436,7 +442,11 @@ def build_live_frame(cycle, account_type, website, event, out):
     subtitle = str(event.get("subtitle") or "")
     etype = str(event.get("type") or "").lower()
     accent = GREEN2
-    if "loss" in etype or "stop" in etype:
+    if etype == "tick_match":
+        accent = GREEN2
+    elif etype == "tick_compare":
+        accent = CYAN
+    elif "loss" in etype or "stop" in etype:
         accent = RED
     elif "entry" in etype or "recovery" in etype:
         accent = GOLD
@@ -445,10 +455,27 @@ def build_live_frame(cycle, account_type, website, event, out):
 
     d.text((sx+24,sy+16),"BOT STATUS",font=font(18,True),fill=MUTED)
     d.ellipse((sx+24,sy+58,sx+42,sy+76),fill=accent)
-    title_ff = fit_font(d,title,sw-80,start=32,minimum=18,bold=True)
+    if etype == "target_selected":
+        title = f"TARGET DIGIT LOCKED: {event.get('targetDigit','-')}"
+        subtitle = "This is the digit the bot is trying to match"
+        accent = CYAN
+    title_ff = fit_font(d,title,sw-80,start=34 if etype=="target_selected" else 32,minimum=18,bold=True)
     d.text((sx+56,sy+46),title,font=title_ff,fill=accent)
     sub_ff = fit_font(d,subtitle,sw-80,start=20,minimum=14,bold=False)
     d.text((sx+56,sy+96),subtitle[:100],font=sub_ff,fill=(218,229,223))
+
+    if etype in {"tick_compare","tick_match"}:
+        tdigit = event.get("targetDigit","-")
+        cdigit = event.get("currentDigit","-")
+        d.rounded_rectangle((sx+590,sy+28,sx+740,sy+126),radius=20,fill=(10,31,34),outline=CYAN,width=2)
+        d.rounded_rectangle((sx+790,sy+28,sx+940,sy+126),radius=20,fill=(8,40,24) if etype=="tick_match" else (28,22,12),outline=GREEN2 if etype=="tick_match" else GOLD,width=3)
+        d.text((sx+612,sy+34),"TARGET",font=font(15,True),fill=MUTED)
+        d.text((sx+812,sy+34),"TICK",font=font(15,True),fill=MUTED)
+        bf=font(48,True)
+        bt=d.textbbox((0,0),str(tdigit),font=bf)
+        bc=d.textbbox((0,0),str(cdigit),font=bf)
+        d.text((sx+665-(bt[2]-bt[0])/2,sy+58),str(tdigit),font=bf,fill=CYAN)
+        d.text((sx+865-(bc[2]-bc[0])/2,sy+58),str(cdigit),font=bf,fill=GREEN2 if etype=="tick_match" else GOLD)
 
     # Progress
     px,py,pw,ph = PROGRESS["x"],PROGRESS["y"],PROGRESS["w"],PROGRESS["h"]
@@ -753,11 +780,7 @@ def moderation_links(item_id: str):
 
 
 def moderation_caption():
-    return (
-        "🎥 <b>DIGITMATCHSTAR PREMIUM GUIDED VIDEO</b>\n"
-        "Preview pending moderation.\n"
-        "Use the approve/reject links below."
-    )
+    return "🎥 <b>DIGITMATCHSTAR PREMIUM GUIDED VIDEO</b>"
 
 
 def public_caption():
@@ -800,14 +823,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.7"}
+    return {"ok":True,"version":"premium-guided-v5.8"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.7",
+        "version":"premium-guided-v5.8",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -916,7 +939,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.7",
+        "version":"premium-guided-v5.8",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
