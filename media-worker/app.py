@@ -1,13 +1,31 @@
-import os, io, json, wave, math, random, hmac, hashlib, base64, tempfile, subprocess
+import os, io, json, wave, math, random, hmac, hashlib, base64, tempfile, subprocess, re
 from pathlib import Path
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4")
+app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.3")
+
+# Browser uploads come directly from DigitMatchStar to Render.
+# CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
+# and `uvicorn main:app`.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://www.digitmatchstar.com",
+        "https://digitmatchstar.com",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
+)
+
 
 W, H = 1080, 1920
 BG=(5,13,9); WHITE=(247,250,248); MUTED=(150,170,159)
@@ -41,19 +59,28 @@ def money(v):
     n=float(v or 0)
     return f"{'+' if n>=0 else '-'}${abs(n):.2f}"
 
-def ffprobe_duration(ffmpeg_path: str, video_path: Path) -> float:
-    probe = Path(ffmpeg_path).with_name("ffprobe")
-    if not probe.exists():
-        return 10.0
+def probe_media(ffmpeg_path: str, media_path: Path):
+    """Return (duration_seconds, has_audio) using ffmpeg itself."""
     try:
-        r=subprocess.run(
-            [str(probe), "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-            capture_output=True, text=True, check=True
+        r = subprocess.run(
+            [str(ffmpeg_path), "-hide_banner", "-i", str(media_path)],
+            capture_output=True, text=True
         )
-        return max(1.0, float(r.stdout.strip()))
+        text = (r.stderr or "") + "\n" + (r.stdout or "")
+
+        duration = 10.0
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+        if m:
+            hh, mm, ss = m.groups()
+            duration = max(
+                0.2,
+                int(hh) * 3600 + int(mm) * 60 + float(ss)
+            )
+
+        has_audio = bool(re.search(r"Stream #.*Audio:", text))
+        return duration, has_audio
     except Exception:
-        return 10.0
+        return 10.0, False
 
 def sanitize_text(s: str) -> str:
     return str(s).replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'").replace(",", r"\,")
@@ -236,7 +263,7 @@ def build_overlay_filter(cycle: dict, raw_duration: float):
     return ",".join(pieces)
 
 def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
-    raw_duration = ffprobe_duration(ffmpeg, raw_video)
+    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
 
     overlay_filter = build_overlay_filter(cycle, raw_duration)
     full_live = td / "live_full.mp4"
@@ -280,7 +307,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
         str(focus_live)
     ]
     subprocess.run(cmd_focus, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return full_live, focus_live, raw_duration, zoom_duration
+    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
 
 def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
     subprocess.run([
@@ -357,7 +384,7 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
         image_clip(ffmpeg, intro, 1.10, intro_v)
         image_clip(ffmpeg, outro, 1.65, outro_v)
 
-        full_live, focus_live, raw_duration, focus_duration = render_live_sections(raw_video, frame, cycle, ffmpeg, td)
+        full_live, focus_live, raw_duration, focus_duration, raw_has_audio = render_live_sections(raw_video, frame, cycle, ffmpeg, td)
 
         concat_list = td / "concat.txt"
         concat_list.write_text(
@@ -380,11 +407,36 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
         sound = td / "sound.wav"
         build_soundtrack(total_duration, live_start, live_end, str(cycle.get("status") or "").upper() == "WIN", sound)
 
-        subprocess.run([
-            ffmpeg, "-y", "-i", str(silent_video), "-i", str(sound),
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
-            "-movflags", "+faststart", str(out_video)
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if raw_has_audio:
+            # Preserve the actual DigitMatchStar tab audio (ticks, win sounds, etc.)
+            # underneath the premium sound design. The live capture begins after
+            # the 1.10s branded intro.
+            subprocess.run([
+                ffmpeg, "-y",
+                "-i", str(silent_video),
+                "-i", str(sound),
+                "-i", str(raw_video),
+                "-filter_complex",
+                (
+                    "[1:a]volume=0.22[sfx];"
+                    "[2:a]adelay=1100|1100,volume=1.0[bot];"
+                    "[sfx][bot]amix=inputs=2:duration=longest:dropout_transition=1[aout]"
+                ),
+                "-map", "0:v:0",
+                "-map", "[aout]",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "160k",
+                "-shortest",
+                "-movflags", "+faststart",
+                str(out_video)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run([
+                ffmpeg, "-y", "-i", str(silent_video), "-i", str(sound),
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
+                "-movflags", "+faststart", str(out_video)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 async def send_video(video: Path, caption: str, chat: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -409,7 +461,15 @@ async def send_video(video: Path, caption: str, chat: str):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "ultra-premium-live-v4"}
+    return {
+        "ok": True,
+        "version": "ultra-premium-live-v4.3",
+        "cors": True,
+        "telegramConfigured": bool(
+            os.environ.get("TELEGRAM_BOT_TOKEN") and
+            os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
+        )
+    }
 
 @app.post("/compose-live")
 async def compose_live_endpoint(
@@ -450,7 +510,7 @@ async def compose_live_endpoint(
 
         msg = await send_video(
             final,
-            "🔥 <b>ULTRA-PREMIUM LIVE-EVIDENCE VIDEO</b>\n"
+            "🔥 <b>DIGITMATCHSTAR PREMIUM LIVE VIDEO</b>\n"
             "Actual DigitMatchStar screen capture inside a premium vertical TikTok/Telegram format.\n"
             "Includes hook, progress rail, focus replay and audio sting.\n"
             "Review before posting.",
@@ -462,5 +522,5 @@ async def compose_live_endpoint(
         "privateTelegramMessageId": msg.get("message_id"),
         "format": "1080x1920-h264-aac",
         "source": "actual-screen-capture",
-        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "synthetic-soundtrack"]
+        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design"]
     }
