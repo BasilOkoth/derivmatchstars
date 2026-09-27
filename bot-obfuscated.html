@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
+    <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -8048,7 +8049,14 @@ window.isBotRunning = true;
                 'PNL'
             );
 
-            if (!isRecovery && !evaluation.approved) {
+            // V18 TIMING FIX:
+            // INSTANT mode means exactly that: do not veto the entry on model edge.
+            // AI AUTO keeps the model/EV gate.
+            if (
+                !isRecovery &&
+                pending.executionMode === 'ai' &&
+                !evaluation.approved
+            ) {
                 rollbackUnsentTrade(pending.stake);
                 log(
                     `🧱 ENTRY EV VETO: ${evaluation.reason} | no contract purchased | trade count unchanged`,
@@ -8060,16 +8068,21 @@ window.isBotRunning = true;
                     `Edge ${(evaluation.edge * 100).toFixed(2)} pp · threshold -1.00 pp · no trade counted`,
                     'normal'
                 );
-                if (
-                    pending.executionMode === 'ai' &&
-                    typeof clearSessionDigitLock === 'function'
-                ) {
+                if (typeof clearSessionDigitLock === 'function') {
                     clearSessionDigitLock(`ENTRY_EV:${evaluation.reason}`);
                 }
                 return;
             }
 
-            if (isRecovery && recoveryNet <= 0) {
+            // V18 TIMING FIX:
+            // Recovery quote veto remains an AI AUTO safety/selection rule.
+            // INSTANT mode continues the user-selected recovery sequence without
+            // pausing for a "viable quote" gate.
+            if (
+                isRecovery &&
+                pending.executionMode === 'ai' &&
+                recoveryNet <= 0
+            ) {
                 rollbackUnsentTrade(pending.stake);
                 log(
                     `🧱 RECOVERY QUOTE VETO: cycle net if win ${recoveryNet.toFixed(2)} | recovery paused`,
@@ -8615,7 +8628,50 @@ window.isBotRunning = true;
             }
 
             if (!window.activeContract && window.isBotRunning && !window.stopAfterWin) {
-                updateTradeStatus('LOSS CONFIRMED', `Contract ${contractId} reconciled`, `Recovery continues at $${window.currentStake.toFixed(2)}`, 'loss');
+                updateTradeStatus(
+                    'LOSS CONFIRMED',
+                    `Contract ${contractId} reconciled`,
+                    `Recovery continues at $${window.currentStake.toFixed(2)}`,
+                    'loss'
+                );
+
+                // V18 BACK-TO-BACK TICK FIX:
+                // V17 correctly waits for authoritative Deriv settlement, but the
+                // old code then waited for ANOTHER public tick before even sending
+                // the next proposal. That introduced a visible skipped-tick delay.
+                //
+                // In INSTANT mode, as soon as Deriv confirms LOSS we immediately
+                // send the next proposal/buy using the latest known tick as the
+                // trigger. The new 1-tick contract is therefore armed BEFORE the
+                // next market tick wherever network latency allows.
+                //
+                // We still never overlap an unsettled contract: this runs only
+                // after activeContract is cleared above.
+                if (
+                    sessionState.mode === 'instant' &&
+                    window.tradeCount < window.maxTrades &&
+                    window.lastTick &&
+                    !window.executionLock &&
+                    window.nextTradeAllowed
+                ) {
+                    queueMicrotask(() => {
+                        if (
+                            window.isBotRunning &&
+                            !window.stopAfterWin &&
+                            sessionState.mode === 'instant' &&
+                            !window.activeContract &&
+                            !window.executionLock &&
+                            window.nextTradeAllowed &&
+                            window.tradeCount < window.maxTrades
+                        ) {
+                            log(
+                                '⚡ V18 INSTANT RECOVERY: Deriv confirmed LOSS · arming next 1-tick contract immediately before the next market tick',
+                                'TRADE'
+                            );
+                            processTickImmediately(window.lastTick);
+                        }
+                    });
+                }
             }
         }
 
