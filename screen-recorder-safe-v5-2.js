@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.8-tick-compare-exact-pnl';
+  const VERSION = '5.9-locked-target-final-pnl';
 
   const state = {
     displayStream: null,
@@ -33,6 +33,8 @@
     lastActiveContractId: null,
     lastCurrentDigit: null,
     lastCurrentTick: '',
+    lockedTradeTarget: null,
+    finalizingCycle: false,
     savedView: null,
     capturePrepared: false,
     stopPending: false
@@ -319,14 +321,14 @@
   }
 
   function snapshot() {
-    const target = Number(document.getElementById('predictedDigit')?.value);
+    const target = Number(state.lockedTradeTarget);
     const mode = window.sessionState?.mode ||
       (document.getElementById('mode_ai')?.classList.contains('bg-green-600') ? 'ai' : 'instant');
 
     return {
       atMs: state.captureStartedAt ? Math.max(0, Date.now() - state.captureStartedAt) : 0,
       mode: String(mode || ''),
-      targetDigit: Number.isFinite(target) ? target : null,
+      targetDigit: Number.isFinite(target) && target >= 0 && target <= 9 ? target : null,
       currentDigit: numberFromText(text('metricLastDigit')),
       currentTick: text('metricLiveTick'),
       tradeCount: Number(window.tradeCount ?? numberFromText(text('metricTradeCount')) ?? 0),
@@ -366,7 +368,11 @@
     const joined = `${s.result} ${s.status} ${s.action}`.toUpperCase();
 
     if (/WIN CONFIRMED|DIGIT MATCH|FAST MATCH|MATCHED/.test(joined)) {
-      return ['matched', 'DIGIT MATCHED', `Target digit ${s.targetDigit ?? '-'} matched`];
+      return [
+        'matched',
+        'DIGIT MATCHED',
+        `Trade ${Math.max(1, s.tradeCount)} matched target ${s.targetDigit ?? '-'} · waiting for final cycle P/L`
+      ];
     }
     if (/LOSS CONFIRMED|RECONCILED LOSS/.test(joined)) {
       return ['loss_confirmed', 'NO MATCH · RECOVERY READY', `Trade ${s.tradeCount} confirmed as a miss`];
@@ -393,6 +399,137 @@
       return ['stopped', 'STOP LIMIT REACHED', `Cycle ended after ${s.tradeCount} trade(s)`];
     }
     return null;
+  }
+
+
+  function lockActualTradingTarget(current = null) {
+    if (state.lockedTradeTarget !== null) return state.lockedTradeTarget;
+
+    const activeDigit = Number(window.activeContract?.predictedDigit);
+    const cycleDigit = Number(current?.digit ?? currentCycle()?.digit);
+
+    const actual = Number.isFinite(activeDigit) && activeDigit >= 0 && activeDigit <= 9
+      ? activeDigit
+      : (
+          Number.isFinite(cycleDigit) && cycleDigit >= 0 && cycleDigit <= 9
+            ? cycleDigit
+            : null
+        );
+
+    if (actual === null) return null;
+
+    state.lockedTradeTarget = actual;
+    state.lastTargetDigit = actual;
+
+    addEvent(
+      'target_selected',
+      `TARGET DIGIT LOCKED: ${actual}`,
+      'Confirmed cycle target · this digit stays fixed until the cycle ends',
+      { targetDigit: actual }
+    );
+
+    return actual;
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function waitForBotPnl(targetPnl, timeoutMs = 2800) {
+    const target = Number(targetPnl);
+    if (!Number.isFinite(target)) return readBotPnl();
+
+    const started = Date.now();
+    let stable = 0;
+    let last = readBotPnl();
+
+    while (Date.now() - started < timeoutMs) {
+      last = readBotPnl();
+      if (Math.abs(last - target) < 0.01) {
+        stable += 1;
+        if (stable >= 3) return last;
+      } else {
+        stable = 0;
+      }
+      await wait(120);
+    }
+
+    return last;
+  }
+
+  async function finalizeCyclePresentation(completed) {
+    if (!completed || state.finalizingCycle) return;
+    state.finalizingCycle = true;
+    state.lastCompletedCycle = completed;
+
+    const won = String(completed.status || '').toUpperCase() === 'WIN';
+    const completedNet = Number(completed.netPnL ?? readBotPnl() ?? 0);
+    const totalInvestment = Number(completed.totalInvestment ?? 0);
+    const totalPayout = Number(completed.totalPayout ?? 0);
+    const trades = Array.isArray(completed.trades) ? completed.trades : [];
+
+    const winningTrade =
+      trades.find(t => String(t.result || '').toUpperCase() === 'WIN') ||
+      trades[trades.length - 1] ||
+      {};
+
+    const winningTradeNumber = Number(
+      completed.winningTradeNumber ??
+      winningTrade.tradeNumber ??
+      trades.length ??
+      0
+    );
+
+    const winningProfit = Number(
+      winningTrade.profit ??
+      completed.winningProfit ??
+      0
+    );
+
+    const winningStake = Number(
+      winningTrade.stake ??
+      winningTrade.buyPrice ??
+      0
+    );
+
+    const lossesBeforeWin = Math.max(0, totalInvestment - winningStake);
+
+    // Do not show the FINAL cycle result until the bot P/L has caught up.
+    const visibleFinalPnl = await waitForBotPnl(completedNet, 2800);
+    const syncedPnl =
+      Math.abs(Number(visibleFinalPnl) - completedNet) < 0.01
+        ? Number(visibleFinalPnl)
+        : completedNet;
+
+    addEvent(
+      won ? 'cycle_win' : 'cycle_stopped',
+      won
+        ? (syncedPnl >= 0 ? 'LOSSES RECOVERED' : 'CYCLE FINALIZED')
+        : 'CYCLE COMPLETE',
+      won
+        ? `Trade ${winningTradeNumber} matched target ${state.lockedTradeTarget ?? completed.digit ?? '-'} · final cycle P/L ${syncedPnl >= 0 ? '+' : '-'}$${Math.abs(syncedPnl).toFixed(2)}`
+        : `Cycle ended after ${trades.length} trade(s) · final P/L ${syncedPnl >= 0 ? '+' : '-'}$${Math.abs(syncedPnl).toFixed(2)}`,
+      {
+        pnl: syncedPnl,
+        cycleNetPnl: completedNet,
+        totalInvestment,
+        totalPayout,
+        winningProfit,
+        winningTradeNumber,
+        winningStake,
+        lossesBeforeWin,
+        recoveredLosses: won && syncedPnl >= 0,
+        tradeCount: trades.length,
+        targetDigit: state.lockedTradeTarget ?? completed.digit ?? null
+      }
+    );
+
+    // Let viewers read the synchronized final result.
+    await wait(3800);
+
+    if (state.recorder?.state === 'recording') {
+      stopRecorderCleanly();
+    }
   }
 
   function observeGuidedEvents() {
@@ -426,15 +563,6 @@
       }
     }
 
-    if (s.targetDigit !== null && s.targetDigit !== state.lastTargetDigit) {
-      state.lastTargetDigit = s.targetDigit;
-      addEvent(
-        'target_selected',
-        `TARGET DIGIT LOCKED: ${s.targetDigit}`,
-        'This is the digit the bot is trying to match',
-        { targetDigit:s.targetDigit }
-      );
-    }
 
     if (s.tradeCount > state.lastTradeCount) {
       state.lastTradeCount = s.tradeCount;
@@ -546,6 +674,9 @@
     state.lastTradeCount = Number(window.tradeCount || 0);
     state.lastTargetDigit = null;
     state.lastActiveContractId = window.activeContract?.contractId ?? null;
+    state.lockedTradeTarget = null;
+    state.finalizingCycle = false;
+    state.lastTargetDigit = null;
     state.lastCurrentDigit = snapshot().currentDigit;
     state.lastCurrentTick = snapshot().currentTick;
 
@@ -574,17 +705,22 @@
   }
 
   function observeCycle() {
-    observeGuidedEvents();
-
     const current = currentCycle();
+
+    // Only the actual cycle/contract can establish the target shown in the video.
+    if (current || window.activeContract?.contractId) {
+      lockActualTradingTarget(current);
+    }
+
+    observeGuidedEvents();
 
     if (current && !state.lastSeenCurrent) {
       state.lastSeenCurrent = true;
       state.activeCycleId = cycleId(current);
       addEvent(
         'cycle_started',
-        'SCANNING DIGITS...',
-        'Cycle started · reading live market ticks'
+        `TARGET ${state.lockedTradeTarget ?? current.digit ?? '-'} ACTIVE`,
+        'Confirmed trading target · comparing each new streaming tick'
       );
       return;
     }
@@ -595,45 +731,23 @@
       if (state.activeCycleId) {
         const completed = findCompletedCycle(state.activeCycleId);
         if (completed) {
-          state.lastCompletedCycle = completed;
-          const won = String(completed.status || '').toUpperCase() === 'WIN';
-          const completedNet = Number(completed.netPnL ?? readBotPnl() ?? 0);
-          const totalInvestment = Number(completed.totalInvestment ?? 0);
-          const totalPayout = Number(completed.totalPayout ?? 0);
-          const trades = Array.isArray(completed.trades) ? completed.trades : [];
-          const winningTrade = trades.find(t => String(t.result || '').toUpperCase() === 'WIN') || trades[trades.length - 1] || {};
-          const winningProfit = Number(winningTrade.profit ?? completed.winningProfit ?? 0);
-          const lossesBeforeWin = Math.max(
-            0,
-            totalInvestment - Number(winningTrade.stake ?? winningTrade.buyPrice ?? 0)
-          );
-
-          addEvent(
-            won ? 'cycle_win' : 'cycle_stopped',
-            won ? (completedNet >= 0 ? 'LOSSES RECOVERED' : 'DIGIT MATCHED') : 'CYCLE COMPLETE',
-            won
-              ? (completedNet >= 0
-                  ? `One winning trade recovered the earlier losses · cycle +$${completedNet.toFixed(2)}`
-                  : `Winning trade +$${Math.max(0, winningProfit).toFixed(2)} · cycle P/L -$${Math.abs(completedNet).toFixed(2)}`)
-              : `Cycle ended after ${trades.length} trade(s)`,
-            {
-              pnl: completedNet,
-              cycleNetPnl: completedNet,
-              totalInvestment,
-              totalPayout,
-              winningProfit,
-              lossesBeforeWin,
-              recoveredLosses: won && completedNet >= 0,
-              tradeCount: trades.length
+          finalizeCyclePresentation(completed).catch(error => {
+            console.error('[DMS v5.9] final cycle presentation failed:', error);
+            setTimeout(() => {
+              if (state.recorder?.state === 'recording') stopRecorderCleanly();
+            }, 3800);
+          });
+        } else {
+          // Give history a moment to populate, then try again.
+          setTimeout(() => {
+            const retry = findCompletedCycle(state.activeCycleId);
+            if (retry) {
+              finalizeCyclePresentation(retry).catch(console.error);
+            } else if (state.recorder?.state === 'recording') {
+              stopRecorderCleanly();
             }
-          );
+          }, 700);
         }
-
-        setTimeout(() => {
-          if (state.recorder?.state === 'recording') {
-            stopRecorderCleanly();
-          }
-        }, 3600);
       }
     }
   }

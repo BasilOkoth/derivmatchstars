@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.8")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.9")
 
 app.add_middleware(
     CORSMiddleware,
@@ -530,15 +530,31 @@ def build_live_frame(cycle, account_type, website, event, out):
         losses = float(event.get("lossesBeforeWin",0) or 0)
         win_profit = float(event.get("winningProfit",0) or 0)
         d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(7,43,25),outline=GREEN2,width=3)
-        center(d,"ONE WIN RECOVERED THE EARLIER LOSSES",1370,font(31,True),GREEN2)
-        detail = f"Earlier losses ${losses:.2f}  →  winning trade +${win_profit:.2f}  →  cycle {money(pnl)}"
-        center(d, detail, 1424, fit_font(d, detail, 920, 24, 16, True), WHITE)
-    elif str(event.get("type") or "") in {"cycle_win","matched","win_confirmed"}:
+        trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
+        tdigit = event.get("targetDigit","-")
+        center(d,"ONE WIN RECOVERED THE EARLIER LOSSES",1362,font(31,True),GREEN2)
+        match_line = f"Trade {trade_no} matched target {tdigit}"
+        center(d, match_line, 1404, font(24,True), WHITE)
+        detail = f"Earlier losses ${losses:.2f}  →  win +${win_profit:.2f}  →  final cycle {money(pnl)}"
+        center(d, detail, 1448, fit_font(d, detail, 920, 23, 15, True), WHITE)
+    elif str(event.get("type") or "") == "matched":
+        trade_no = int(event.get("tradeCount") or 0)
+        tdigit = event.get("targetDigit","-")
+        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
+        center(d,"DIGIT MATCHED",1368,font(38,True),GREEN2)
+        detail = f"Trade {trade_no} matched target {tdigit}"
+        center(d, detail, 1420, fit_font(d, detail, 900, 29, 18, True), WHITE)
+        center(d,"Waiting for the bot's final Cycle P/L to update…",1462,font(18,True),MUTED)
+    elif str(event.get("type") or "") in {"cycle_win","win_confirmed"}:
+        trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
+        tdigit = event.get("targetDigit","-")
         win_profit = float(event.get("winningProfit",0) or 0)
-        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=2)
-        center(d,"DIGIT MATCHED",1372,font(34,True),GREEN2)
-        detail = f"Winning trade +${win_profit:.2f} · final cycle P/L {money(pnl)}"
-        center(d, detail, 1430, fit_font(d, detail, 900, 25, 17, True), WHITE)
+        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
+        center(d,"FINAL CYCLE RESULT",1366,font(31,True),GREEN2)
+        detail = f"Trade {trade_no} matched target {tdigit} · winning trade +${win_profit:.2f}"
+        center(d, detail, 1410, fit_font(d, detail, 930, 25, 16, True), WHITE)
+        final_line = f"Final Cycle P/L {money(pnl)}"
+        center(d, final_line, 1456, font(31,True), GREEN2 if pnl >= 0 else RED)
     center(d,"Educational content only · Trading involves risk.",1665,font(17),MUTED)
 
     # Slight sharpening to keep overlay crisp.
@@ -823,14 +839,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.8"}
+    return {"ok":True,"version":"premium-guided-v5.9"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.8",
+        "version":"premium-guided-v5.9",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -939,7 +955,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.8",
+        "version":"premium-guided-v5.9",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
