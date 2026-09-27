@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
+    <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -8262,7 +8263,7 @@ window.isBotRunning = true;
                 stakeElem.className = 'text-lg font-bold text-white';
             }
 
-            log(`⚡ FAST LOSS V5: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
+            log(`✅ DERIV-CONFIRMED LOSS: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
         }
 
         function freezeForPossibleWin(contract, observedDigit) {
@@ -8349,17 +8350,15 @@ window.isBotRunning = true;
 
             const result = observeActiveContractTick(buffered);
 
-            if (window.isBotRunning && result?.fastLoss && !window.stopAfterWin) {
-                if (window.tradeCount >= window.maxTrades) {
-                    window.nextTradeAllowed = false;
-                    log(`🛑 Max trades reached (${window.maxTrades}) after aligned fast loss`, 'CRITICAL');
-                    stopBot('Maximum trades reached');
-                    return;
-                }
-
-                log('⚡ ALIGNED FAST RECOVERY: first buffered public tick strictly after Deriv contract start', 'TRADE');
-                processTickImmediately(buffered);
-                playAudioFeedback('TICK');
+            // SAFETY FIX V17:
+            // Public ticks are observational only. Recovery is never launched here.
+            // The contract remains locked until handleOpenContractUpdate() receives
+            // authoritative Deriv settlement.
+            if (result?.handled && !result?.fastWin) {
+                log(
+                    '⏳ Settlement tick observed · waiting for Deriv confirmation before any recovery trade',
+                    'TRADE'
+                );
             }
         }
 
@@ -8394,15 +8393,30 @@ window.isBotRunning = true;
                 return { handled: true, fastLoss: false, fastWin: true };
             }
 
-            applyFastLossProgression(ac);
-            ac.status = 'FAST_LOSS_AWAITING_SETTLEMENT';
+            // SAFETY FIX V17:
+            // A public tick can suggest a loss, but it is NOT authoritative enough
+            // to advance martingale or place the next recovery contract.
+            // Keep this contract active and freeze new entries until Deriv confirms
+            // the actual settlement outcome.
+            ac.fastOutcome = 'POSSIBLE_LOSS';
+            ac.fastOutcomeAt = Date.now();
+            ac.status = 'POSSIBLE_LOSS_AWAITING_DERIV';
 
-            window.activeContract = null;
-            window.executionLock = false;
-            window.nextTradeAllowed = true;
+            window.executionLock = true;
+            window.nextTradeAllowed = false;
 
-            updateTradeStatus('FAST LOSS', `Digit ${ac.observedDigit} ≠ ${ac.predictedDigit}`, `Placing next trade at $${window.currentStake.toFixed(2)}`, 'loss');
-            return { handled: true, fastLoss: true, fastWin: false };
+            log(
+                `⏳ POSSIBLE LOSS: contract ${ac.contractId} observed digit ${ac.observedDigit} ≠ ${ac.predictedDigit}. Waiting for authoritative Deriv settlement before progression.`,
+                'TRADE'
+            );
+            updateTradeStatus(
+                'VERIFYING RESULT',
+                `Observed digit ${ac.observedDigit} ≠ ${ac.predictedDigit}`,
+                'Waiting for Deriv settlement · no recovery trade yet',
+                'trade'
+            );
+
+            return { handled: true, fastLoss: false, fastWin: false };
         }
 
         function getContractFinalDigit(contract) {
@@ -8560,6 +8574,21 @@ window.isBotRunning = true;
                 return;
             }
 
+            // SAFETY FIX V17:
+            // If this settlement arrives after the cycle has already been finalized,
+            // clean up the contract but never advance martingale or reopen trading.
+            if (!window.cyclePerformance?.current) {
+                log(
+                    `🧹 LATE SETTLEMENT IGNORED FOR PROGRESSION | Contract ${contractId} | outcome LOSS | cycle already finalized`,
+                    'WARNING'
+                );
+                window.settlementLedger.delete(contractId);
+                if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
+                    window.activeContract = null;
+                }
+                return;
+            }
+
             window.stats.losses = (window.stats.losses || 0) + 1;
             window.lastTradeResult = 'loss';
             window.lastTradeWon = false;
@@ -8574,6 +8603,7 @@ window.isBotRunning = true;
                 actualProfit
             );
 
+            // Progression is now applied ONLY after authoritative Deriv LOSS.
             if (!ac.progressionApplied) applyFastLossProgression(ac);
 
             window.settlementLedger.delete(contractId);
