@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.3")
+app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.4")
 
 # Browser uploads come directly from DigitMatchStar to Render.
 # CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
@@ -312,7 +312,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
 def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
     subprocess.run([
         ffmpeg, "-y", "-loop", "1", "-t", str(duration), "-i", str(image_path),
-        "-vf", f"fps=30,format=yuv420p,fade=t=in:st=0:d=.15,fade=t=out:st={max(.1,duration-.18)}:d=.18",
+        "-vf", f"fps=30,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st={max(.1,duration-.18)}:d=0.18",
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(out)
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -463,7 +463,7 @@ async def send_video(video: Path, caption: str, chat: str):
 def health():
     return {
         "ok": True,
-        "version": "ultra-premium-live-v4.3",
+        "version": "ultra-premium-live-v4.4",
         "cors": True,
         "telegramConfigured": bool(
             os.environ.get("TELEGRAM_BOT_TOKEN") and
@@ -524,3 +524,110 @@ async def compose_live_endpoint(
         "source": "actual-screen-capture",
         "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design"]
     }
+
+
+# === Render-portable compositor overrides v4.4 ===
+# Avoid FFmpeg drawtext because the imageio static FFmpeg build does not include it.
+
+def _run_ffmpeg(cmd, stage: str):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or '')[-6000:]
+        print(f'[FFMPEG:{stage}] failed rc={r.returncode}\\n{tail}', flush=True)
+        raise RuntimeError(f'FFmpeg {stage} failed: {tail[-1200:]}')
+    return r
+
+_build_frame_v43 = build_frame
+
+def build_frame(cycle: dict, account_type: str, website: str, out: Path):
+    _build_frame_v43(cycle, account_type, website, out)
+
+
+def build_hud(cycle: dict, out: Path, focus: bool=False):
+    im = Image.new('RGBA', (W, H), (0,0,0,0))
+    d = ImageDraw.Draw(im)
+    if focus:
+        d.text((126,580), 'FOCUS REPLAY', font=font(28,True), fill=(134,239,172,255))
+        d.text((126,615), 'Watch the final moment again', font=font(18,True), fill=(255,255,255,220))
+    else:
+        d.text((140,582), 'LIVE CYCLE', font=font(26,True), fill=(255,255,255,242))
+        d.text((770,1300), 'TRADE PROGRESS', font=font(20,True), fill=(255,255,255,215))
+        trades = cycle.get('trades') or []
+        x0, gap, y = 120, 68, 1360
+        for i, _ in enumerate(trades[:12]):
+            label = str(i+1)
+            ff = font(15,True)
+            b = d.textbbox((0,0), label, font=ff)
+            tw = b[2]-b[0]
+            d.text((x0+i*gap + (54-tw)//2, y), label, font=ff, fill=(255,255,255,220))
+    im.save(out)
+
+
+def build_overlay_filter(cycle: dict, raw_duration: float):
+    pieces = []
+    x0, gap, y, bar_w = 120, 68, 1328, 54
+    rows = trade_times(cycle, raw_duration)
+    for i, row in enumerate(rows):
+        x = x0 + i * gap
+        start = row['start']
+        end = max(row['start'] + 0.12, row['end'])
+        final_color = '0x22c55e@0.92' if row['result'] == 'WIN' else '0xef4444@0.92'
+        pieces.append(f'drawbox=x={x}:y={y}:w={bar_w}:h=28:color=white@0.06:t=fill')
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
+        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color={final_color}:t=fill:enable='gte(t,{end})'")
+    return ','.join(pieces) if pieces else 'null'
+
+
+def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
+    raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
+    hud = td / 'hud.png'
+    focus_hud = td / 'focus_hud.png'
+    build_hud(cycle, hud, False)
+    build_hud(cycle, focus_hud, True)
+
+    overlay_filter = build_overlay_filter(cycle, raw_duration)
+    full_live = td / 'live_full.mp4'
+    cmd_full = [
+        ffmpeg, '-y', '-i', str(raw_video), '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(hud),
+        '-filter_complex',
+        (
+            f"[0:v]scale={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
+            f"pad={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(ow-iw)/2:(oh-ih)/2:color=black[screen];"
+            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
+            f"[base]{overlay_filter}[progress];"
+            f"[progress][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
+        ),
+        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(full_live)
+    ]
+    _run_ffmpeg(cmd_full, 'live-full')
+
+    focus_live = td / 'live_focus.mp4'
+    zoom_start = max(0.0, raw_duration - 1.4)
+    zoom_duration = min(1.4, raw_duration)
+    cmd_focus = [
+        ffmpeg, '-y', '-ss', str(zoom_start), '-t', str(zoom_duration), '-i', str(raw_video),
+        '-loop', '1', '-i', str(frame_png), '-loop', '1', '-i', str(focus_hud),
+        '-filter_complex',
+        (
+            f"[0:v]scale=1180:1130:force_original_aspect_ratio=increase,"
+            f"crop={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(iw-{VIDEO_WELL['w']})/2:(ih-{VIDEO_WELL['h']})/2[screen];"
+            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
+            f"[base][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
+        ),
+        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+        '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(focus_live)
+    ]
+    _run_ffmpeg(cmd_focus, 'focus-replay')
+    return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
+
+
+def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
+    fade_out = max(0.10, duration - 0.18)
+    cmd = [
+        ffmpeg, '-y', '-loop', '1', '-t', str(duration), '-i', str(image_path),
+        '-vf', f'fps=30,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st={fade_out}:d=0.18',
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-profile:v', 'high',
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(out)
+    ]
+    _run_ffmpeg(cmd, 'image-clip')

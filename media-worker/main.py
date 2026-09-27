@@ -1,2 +1,2 @@
 from app import app
-# Compatibility entrypoint. CORS is already configured inside app.py.
+# Compatibility entrypoint. CORS is configured inside app.py.
