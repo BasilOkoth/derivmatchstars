@@ -6,6 +6,7 @@
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
+    <!-- V19 stream-sync: aligned streaming tick drives recovery; settlement reconciles in background; execution sound only -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -6612,9 +6613,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                     return;
                 }
 
-                log('⚡ FAST RECOVERY V5: placing next contract immediately on this loss tick for the NEXT market tick', 'TRADE');
+                log('⚡ STREAM-SYNC RECOVERY: arming next contract now for the NEXT streaming tick', 'TRADE');
                 processTickImmediately(tickData);
-                playAudioFeedback('TICK');
             } else if (
                 window.isBotRunning &&
                 !fastResult?.handled &&
@@ -6622,7 +6622,6 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 !window.stopAfterWin
             ) {
                 addTickToQueue(tickData);
-                playAudioFeedback('TICK');
             }
 
             // Update connection status UI
@@ -8406,30 +8405,35 @@ window.isBotRunning = true;
                 return { handled: true, fastLoss: false, fastWin: true };
             }
 
-            // SAFETY FIX V17:
-            // A public tick can suggest a loss, but it is NOT authoritative enough
-            // to advance martingale or place the next recovery contract.
-            // Keep this contract active and freeze new entries until Deriv confirms
-            // the actual settlement outcome.
-            ac.fastOutcome = 'POSSIBLE_LOSS';
+            // V19 STREAM-SYNC:
+            // For a 1-tick DIGITMATCH contract, the first correctly aligned public
+            // streaming tick after the contract start is the trading tick we follow.
+            // A miss immediately advances recovery and arms the next contract for
+            // the NEXT streaming tick. Deriv settlement still reconciles in the
+            // background, but it no longer blocks the live tick pipeline.
+            ac.fastOutcome = 'LOSS';
             ac.fastOutcomeAt = Date.now();
-            ac.status = 'POSSIBLE_LOSS_AWAITING_DERIV';
+            ac.status = 'FAST_LOSS_STREAM_CONFIRMED';
 
-            window.executionLock = true;
-            window.nextTradeAllowed = false;
+            if (!ac.progressionApplied) {
+                applyFastLossProgression(ac);
+            }
+
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
 
             log(
-                `⏳ POSSIBLE LOSS: contract ${ac.contractId} observed digit ${ac.observedDigit} ≠ ${ac.predictedDigit}. Waiting for authoritative Deriv settlement before progression.`,
-                'TRADE'
+                `⚡ STREAM LOSS | Contract ${ac.contractId} | tick digit ${ac.observedDigit} ≠ target ${ac.predictedDigit} | recovery arms now`,
+                'LOSS'
             );
             updateTradeStatus(
-                'VERIFYING RESULT',
-                `Observed digit ${ac.observedDigit} ≠ ${ac.predictedDigit}`,
-                'Waiting for Deriv settlement · no recovery trade yet',
-                'trade'
+                'NO MATCH',
+                `Digit ${ac.observedDigit} ≠ target ${ac.predictedDigit}`,
+                `Arming next trade at $${window.currentStake.toFixed(2)} for the next streaming tick`,
+                'loss'
             );
 
-            return { handled: true, fastLoss: false, fastWin: false };
+            return { handled: true, fastLoss: true, fastWin: false };
         }
 
         function getContractFinalDigit(contract) {
@@ -8634,45 +8638,10 @@ window.isBotRunning = true;
                     `Recovery continues at $${window.currentStake.toFixed(2)}`,
                     'loss'
                 );
-
-                // V18 BACK-TO-BACK TICK FIX:
-                // V17 correctly waits for authoritative Deriv settlement, but the
-                // old code then waited for ANOTHER public tick before even sending
-                // the next proposal. That introduced a visible skipped-tick delay.
-                //
-                // In INSTANT mode, as soon as Deriv confirms LOSS we immediately
-                // send the next proposal/buy using the latest known tick as the
-                // trigger. The new 1-tick contract is therefore armed BEFORE the
-                // next market tick wherever network latency allows.
-                //
-                // We still never overlap an unsettled contract: this runs only
-                // after activeContract is cleared above.
-                if (
-                    sessionState.mode === 'instant' &&
-                    window.tradeCount < window.maxTrades &&
-                    window.lastTick &&
-                    !window.executionLock &&
-                    window.nextTradeAllowed
-                ) {
-                    queueMicrotask(() => {
-                        if (
-                            window.isBotRunning &&
-                            !window.stopAfterWin &&
-                            sessionState.mode === 'instant' &&
-                            !window.activeContract &&
-                            !window.executionLock &&
-                            window.nextTradeAllowed &&
-                            window.tradeCount < window.maxTrades
-                        ) {
-                            log(
-                                '⚡ V18 INSTANT RECOVERY: Deriv confirmed LOSS · arming next 1-tick contract immediately before the next market tick',
-                                'TRADE'
-                            );
-                            processTickImmediately(window.lastTick);
-                        }
-                    });
-                }
-            }
+                // V19 STREAM-SYNC:
+                // Do not launch recovery from settlement. Recovery was already
+                // armed from the aligned streaming tick. Settlement is now
+                // reconciliation-only for progression timing.
         }
 
         function onTradeComplete(isSuccess = true) {
