@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '6.0-trade1-actual-target';
+  const VERSION = '6.1.1-capture-button-fixed';
 
   const state = {
     displayStream: null,
@@ -649,6 +649,120 @@
           stake: s.stake
         }
       );
+    }
+  }
+
+  async function enableCapture() {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      status('Use desktop Chrome/Edge', 'bad');
+      return;
+    }
+    if (state.recorder?.state === 'recording') {
+      status('Already recording', 'warn');
+      return;
+    }
+
+    prepareCaptureView();
+
+    try {
+      status('Choose this tab + Share tab audio…', 'info');
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: { ideal:30, max:30 },
+          width: { ideal:2560 },
+          height: { ideal:1440 }
+        },
+        audio: {
+          echoCancellation:false,
+          noiseSuppression:false,
+          autoGainControl:false
+        },
+        preferCurrentTab:true,
+        selfBrowserSurface:'include',
+        surfaceSwitching:'include',
+        systemAudio:'include'
+      });
+
+      if (!stream.getAudioTracks().length) {
+        stream.getTracks().forEach(t => t.stop());
+        status('Enable Share tab audio and retry', 'bad');
+        restoreCaptureView();
+        alert(
+          'DigitMatchStar Premium Capture needs tab audio.\n\n' +
+          'Choose the DigitMatchStar tab and enable "Share tab audio".'
+        );
+        return;
+      }
+
+      state.displayStream = stream;
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        if (state.recorder?.state === 'recording') {
+          stopRecorderCleanly();
+        }
+        state.displayStream = null;
+        restorePanel();
+        restoreCaptureView();
+      });
+
+      // Allow the visual-only zoom/scroll position to settle.
+      await new Promise(resolve => setTimeout(resolve, 450));
+      startSessionRecorder();
+    } catch (error) {
+      console.warn('[DMS v5] capture permission failed:', error);
+      status('Capture not enabled', 'bad');
+      restoreCaptureView();
+    }
+  }
+
+  function startSessionRecorder() {
+    if (!state.displayStream) return;
+
+    const options = {
+      videoBitsPerSecond: 12_000_000,
+      audioBitsPerSecond: 160_000
+    };
+    const mime = supportedMime();
+    if (mime) options.mimeType = mime;
+
+    state.chunks = [];
+    state.captureStartedAt = Date.now();
+    state.activeCycleId = null;
+    state.lastCompletedCycle = null;
+    state.lastSeenCurrent = !!currentCycle();
+    state.events = [];
+    state.stopPending = false;
+    state.lastFingerprint = '';
+    state.lastTradeCount = Number(window.tradeCount || 0);
+    state.lastTargetDigit = null;
+    state.lastActiveContractId = window.activeContract?.contractId ?? null;
+    state.lockedTradeTarget = null;
+    state.finalizingCycle = false;
+    state.lastTargetDigit = null;
+    state.lastCurrentDigit = snapshot().currentDigit;
+    state.lastCurrentTick = snapshot().currentTick;
+
+    addEvent('capture_ready', 'TRADING SCREEN READY', 'Waiting for the next cycle');
+    observeGuidedEvents();
+
+    try {
+      const recorder = new MediaRecorder(state.displayStream, options);
+      state.recorder = recorder;
+      recorder.ondataavailable = event => {
+        if (event.data?.size) state.chunks.push(event.data);
+      };
+      recorder.onerror = event => console.warn('[DMS v5] recorder error:', event);
+      recorder.onstop = finalizeRecording;
+
+      hidePanelFromCapture();
+      recorder.start(1000);
+
+      console.log('🎥 DigitMatchStar v5 guided capture started. Trading logic untouched.');
+    } catch (error) {
+      restorePanel();
+      restoreCaptureView();
+      console.warn('[DMS v5] recorder start failed:', error);
+      status('Recorder could not start', 'bad');
     }
   }
 
