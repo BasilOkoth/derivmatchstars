@@ -1,22 +1,17 @@
-# DigitMatchStar Media Worker v4.4
+# DigitMatchStar Media Worker v4.5
 
-This fixes the Render HTTP 500 seen at /compose-live.
+This release is specifically for the Render FFmpeg build.
 
-Root causes reproduced with the same imageio-ffmpeg 7.0.2 binary:
-1. FFmpeg 7 rejects fade duration values written as `.15` and `.18`.
-2. The bundled static FFmpeg does not provide the `drawtext` filter.
+Confirmed fixes:
+- no FFmpeg `drawtext` filter anywhere
+- fade durations use `0.15` and `0.18`
+- FFmpeg errors are printed to Render logs with a stage name
+- trade progress animation remains via `drawbox`
+- focus replay remains
+- bot-tab audio + premium audio mixing remains
+- premium 1080x1920 output remains
 
-Fixes:
-- Fade durations now use `0.15` and `0.18`.
-- All video text/HUD rendering is done with Pillow PNG overlays.
-- FFmpeg still handles scaling, crop, overlay, animated progress boxes, concat, H.264 and audio.
-- FFmpeg stderr is captured and printed to Render logs on future failures.
-- Tested successfully against the actual uploaded DigitMatchStar WebM.
+Replace `media-worker/app.py` with this file and redeploy Render.
 
-Render:
-Root Directory: media-worker
-Build: pip install -r requirements.txt
-Start: uvicorn app:app --host 0.0.0.0 --port $PORT
-
-Replace media-worker/app.py with this v4.4 file.
-main.py may remain as provided.
+Health endpoint should report:
+`ultra-premium-live-v4.5`

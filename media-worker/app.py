@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.4")
+app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.5")
 
 # Browser uploads come directly from DigitMatchStar to Render.
 # CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
@@ -81,6 +81,15 @@ def probe_media(ffmpeg_path: str, media_path: Path):
         return duration, has_audio
     except Exception:
         return 10.0, False
+
+def run_ffmpeg(cmd, stage: str):
+    """Run FFmpeg and preserve the real error in Render logs."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[FFMPEG:{stage}] FAILED rc={r.returncode}", flush=True)
+        print(r.stderr[-12000:], flush=True)
+        raise RuntimeError(f"FFmpeg failed at stage: {stage}")
+    return r
 
 def sanitize_text(s: str) -> str:
     return str(s).replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'").replace(",", r"\,")
@@ -229,12 +238,15 @@ def trade_times(cycle: dict, raw_duration: float):
     return rows
 
 def build_overlay_filter(cycle: dict, raw_duration: float):
+    """
+    Render-portable animated trade progress rail.
+    IMPORTANT: no text-overlay filter; Render's bundled FFmpeg lacks text-overlay.
+    """
     pieces = []
     x0 = 120
     gap = 68
     y = 1328
     bar_w = 54
-    fontfile = FONT_BOLD_PATH if Path(FONT_BOLD_PATH).exists() else FONT_REG_PATH
 
     rows = trade_times(cycle, raw_duration)
     for i, row in enumerate(rows):
@@ -243,32 +255,31 @@ def build_overlay_filter(cycle: dict, raw_duration: float):
         end = max(row["start"] + 0.12, row["end"])
         final_color = "0x22c55e@0.92" if row["result"] == "WIN" else "0xef4444@0.92"
 
-        # base shadow visible from t=0
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=white@0.06:t=fill")
-        # active interval
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'")
-        # final state from end onwards
-        pieces.append(f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color={final_color}:t=fill:enable='gte(t,{end})'")
-        # label
         pieces.append(
-            f"drawtext=fontfile='{fontfile}':text='{row['idx']}':x={x+18}:y={y+4}:fontsize=16:fontcolor=white:enable='gte(t,{max(0.0, start-0.05)})'"
+            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:color=white@0.06:t=fill"
+        )
+        pieces.append(
+            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:"
+            f"color=0xf59e0b@0.95:t=fill:enable='between(t,{start},{end})'"
+        )
+        pieces.append(
+            f"drawbox=x={x}:y={y}:w={bar_w}:h=28:"
+            f"color={final_color}:t=fill:enable='gte(t,{end})'"
         )
 
-    pieces.append(
-        f"drawtext=fontfile='{fontfile}':text='LIVE CYCLE':x=140:y=582:fontsize=26:fontcolor=white@0.95"
-    )
-    pieces.append(
-        f"drawtext=fontfile='{fontfile}':text='TRADE PROGRESS':x=770:y=1300:fontsize=20:fontcolor=white@0.85"
-    )
-    return ",".join(pieces)
+    # Return a harmless filter when there are no trade boxes.
+    return ",".join(pieces) if pieces else "null"
 
 def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: str, td: Path):
     raw_duration, raw_has_audio = probe_media(ffmpeg, raw_video)
 
     overlay_filter = build_overlay_filter(cycle, raw_duration)
     full_live = td / "live_full.mp4"
+
     cmd_full = [
-        ffmpeg, "-y", "-i", str(raw_video), "-loop", "1", "-i", str(frame_png),
+        ffmpeg, "-y",
+        "-i", str(raw_video),
+        "-loop", "1", "-i", str(frame_png),
         "-filter_complex",
         (
             f"[0:v]scale={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:force_original_aspect_ratio=decrease,"
@@ -277,45 +288,71 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
             f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
         ),
         "-map", "[outv]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "18",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-an",
         str(full_live)
     ]
-    subprocess.run(cmd_full, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run_ffmpeg(cmd_full, "full_live")
 
-    # Focus zoom section from late in the clip.
+    # Focus replay from the end of the actual capture.
+    # Text labels are intentionally NOT drawn with FFmpeg because Render's
+    # static imageio-ffmpeg binary does not include text-overlay.
     focus_live = td / "live_focus.mp4"
     zoom_start = max(0.0, raw_duration - 1.4)
     zoom_duration = min(1.4, raw_duration)
+
     cmd_focus = [
-        ffmpeg, "-y", "-ss", str(zoom_start), "-t", str(zoom_duration),
-        "-i", str(raw_video), "-loop", "1", "-i", str(frame_png),
+        ffmpeg, "-y",
+        "-ss", str(zoom_start),
+        "-t", str(zoom_duration),
+        "-i", str(raw_video),
+        "-loop", "1", "-i", str(frame_png),
         "-filter_complex",
         (
             f"[0:v]scale=1180:1130:force_original_aspect_ratio=increase,"
             f"crop={VIDEO_WELL['w']}:{VIDEO_WELL['h']}:(iw-{VIDEO_WELL['w']})/2:(ih-{VIDEO_WELL['h']})/2[screen];"
-            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
-            f"[base]drawtext=fontfile='{FONT_BOLD_PATH if Path(FONT_BOLD_PATH).exists() else FONT_REG_PATH}':"
-            f"text='FOCUS REPLAY':x=126:y=580:fontsize=28:fontcolor={ '0x86efac' },"
-            f"drawtext=fontfile='{FONT_BOLD_PATH if Path(FONT_BOLD_PATH).exists() else FONT_REG_PATH}':"
-            f"text='Watch the final moment again':x=126:y=615:fontsize=18:fontcolor=white@0.85,"
+            f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1,"
             f"fps=30,format=yuv420p[outv]"
         ),
         "-map", "[outv]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "18",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-an",
         str(focus_live)
     ]
-    subprocess.run(cmd_focus, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run_ffmpeg(cmd_focus, "focus_replay")
+
     return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
 
 def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
-    subprocess.run([
-        ffmpeg, "-y", "-loop", "1", "-t", str(duration), "-i", str(image_path),
-        "-vf", f"fps=30,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st={max(.1,duration-.18)}:d=0.18",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high",
-        "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(out)
-    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = [
+        ffmpeg, "-y",
+        "-loop", "1",
+        "-t", str(duration),
+        "-i", str(image_path),
+        "-vf",
+        f"fps=30,format=yuv420p,"
+        f"fade=t=in:st=0:d=0.15,"
+        f"fade=t=out:st={max(0.1, duration-0.18)}:d=0.18",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "18",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-an",
+        str(out)
+    ]
+    run_ffmpeg(cmd, f"image_clip:{image_path.name}")
 
 def build_soundtrack(total_duration: float, live_start: float, live_end: float, is_win: bool, out_wav: Path):
     sr = 44100
@@ -463,7 +500,7 @@ async def send_video(video: Path, caption: str, chat: str):
 def health():
     return {
         "ok": True,
-        "version": "ultra-premium-live-v4.4",
+        "version": "ultra-premium-live-v4.5",
         "cors": True,
         "telegramConfigured": bool(
             os.environ.get("TELEGRAM_BOT_TOKEN") and
@@ -522,12 +559,12 @@ async def compose_live_endpoint(
         "privateTelegramMessageId": msg.get("message_id"),
         "format": "1080x1920-h264-aac",
         "source": "actual-screen-capture",
-        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design"]
+        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable"]
     }
 
 
 # === Render-portable compositor overrides v4.4 ===
-# Avoid FFmpeg drawtext because the imageio static FFmpeg build does not include it.
+# Avoid FFmpeg text-overlay because the imageio static FFmpeg build does not include it.
 
 def _run_ffmpeg(cmd, stage: str):
     r = subprocess.run(cmd, capture_output=True, text=True)
