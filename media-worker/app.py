@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.4")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,10 +42,10 @@ CYAN = (34, 211, 238)
 LINE = (43, 73, 57)
 
 # Screen gets more real estate now; status is more compact.
-SCREEN = dict(x=18, y=188, w=1044, h=760)
-STATUS = dict(x=42, y=978, w=996, h=154)
-PROGRESS = dict(x=42, y=1148, w=996, h=144)
-METRIC_TOP = 1314
+SCREEN = dict(x=10, y=170, w=1060, h=860)
+STATUS = dict(x=42, y=1052, w=996, h=134)
+PROGRESS = dict(x=42, y=1200, w=996, h=126)
+METRIC_TOP = 1342
 METRIC_BOTTOM = 1516
 
 X264 = [
@@ -200,34 +200,29 @@ def build_intro(cycle, account_type, out):
 def build_outro_frame(cycle, website, typed_site, out):
     im = Image.new("RGB", (W,H), BG)
     d = ImageDraw.Draw(im)
-    d.ellipse((-250,-220,530,560), fill=(8,50,30))
-    win = str(cycle.get("status") or "").upper() == "WIN"
-    n = len(cycle.get("trades") or [])
-    center(d, "CYCLE COMPLETE", 260, font(36,True), MUTED)
-    center(d, "DIGIT MATCHED" if win else "CYCLE STOPPED", 370, font(76,True), GREEN2 if win else RED)
-    if win:
-        center(d, f"TRADE {cycle.get('winningTradeNumber') or n}", 485, font(46,True), WHITE)
-    center(d, money(cycle.get("netPnL",0)), 630, font(102,True), GREEN2 if float(cycle.get("netPnL",0) or 0) >= 0 else RED)
 
-    cta1 = env("CTA_LINE_1", "Follow for more guided trading content")
-    cta2 = env("CTA_LINE_2", "Watch, learn, then demo first")
-    cta3 = env("CTA_LINE_3", "Educational content only · Trade responsibly")
-    center(d, cta1, 900, font(36,True), WHITE)
-    center(d, cta2, 970, font(30,True), CYAN)
-    center(d, cta3, 1032, font(22), MUTED)
+    d.ellipse((-260,-260,600,600), fill=(7,48,29))
+    d.ellipse((760,0,1370,720), fill=(48,39,13))
 
-    # Website CTA with typewriter effect.
-    d.rounded_rectangle((210, 1130, 870, 1288), radius=42, fill=(12,40,26), outline=(74,222,128), width=3)
-    center(d, "VISIT DIGITMATCHSTAR", 1166, font(28,True), WHITE)
+    center(d, "DIGITMATCHSTAR", 300, font(74,True), GREEN2)
+    center(d, "WATCH · LEARN · DEMO FIRST", 420, font(36,True), WHITE)
 
-    # Animated typing line: caller renders a sequence of partial strings.
+    d.rounded_rectangle((155, 650, 925, 955), radius=54, fill=(10,29,19), outline=(74,222,128), width=4)
+    center(d, "VISIT", 710, font(30,True), MUTED)
+    center(d, "DIGITMATCHSTAR", 765, font(48,True), WHITE)
+
+    site_label = website.replace("https://","").replace("http://","").rstrip("/")
     shown = typed_site if typed_site else ""
     cursor = "▌"
     site_line = shown + cursor
-    ff = fit_font(d, site_line, 580, start=34, minimum=22, bold=True)
-    center(d, site_line, 1220, ff, GREEN2)
+    ff = fit_font(d, site_line, 660, start=44, minimum=26, bold=True)
+    center(d, site_line, 850, ff, GREEN2)
 
-    center(d, "No guaranteed returns. Past results do not guarantee future performance.", 1498, font(20), MUTED)
+    center(d, "Follow for more guided trading content", 1110, font(34,True), WHITE)
+    center(d, "Educational content only · Trade responsibly", 1190, font(24), CYAN)
+
+    # This is the final frame of the video. No slide follows it.
+    center(d, "No guaranteed returns. Trading involves risk.", 1510, font(20), MUTED)
     im.save(out)
 
 
@@ -248,7 +243,7 @@ def build_typed_outro(ffmpeg, cycle, website, td, out):
 
     # Keep the animation readable and not too slow.
     total_type_time = 1.05
-    hold_time = 0.75
+    hold_time = 1.15
     min_step = 0.035
     step = max(min_step, total_type_time / max(1, len(site_label)))
 
@@ -468,19 +463,7 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.rounded_rectangle((cx,METRIC_TOP,cx+296,METRIC_BOTTOM),radius=24,fill=(10,24,18),outline=LINE,width=2)
         d.text((cx+22,METRIC_TOP+18),labels[i],font=font(18,True),fill=MUTED)
         d.text((cx+22,METRIC_TOP+74),values[i],font=font(sizes[i],True),fill=colors[i])
-
-    # Useful market strip
-    current_digit = event.get("currentDigit")
-    current_tick = str(event.get("currentTick") or "")
-    d.rounded_rectangle((42,1540,1038,1634), radius=24, fill=(8,19,14), outline=LINE, width=2)
-    market_text = f"Current digit: {current_digit if current_digit is not None else '-'}"
-    if current_tick:
-        market_text += f"  ·  Tick {current_tick}"
-    d.text((68,1570), market_text, font=fit_font(d, market_text, 920, start=30, minimum=18, bold=True), fill=WHITE)
-
-    d.text((46,1688),"Educational content only · not financial advice",font=font(18),fill=MUTED)
-    right(d,website.replace("https://",""),1034,1688,font(18,True),GREEN2)
-    center(d,"No guaranteed returns. Past results do not guarantee future performance.",1746,font(17),MUTED)
+    center(d,"Educational content only · Trading involves risk.",1690,font(17),MUTED)
 
     # Slight sharpening to keep overlay crisp.
     im = im.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
@@ -697,8 +680,16 @@ async def send_video(chat: str, video: Path, caption: str):
         )
 
 
-async def send_message(chat: str, text: str):
-    return await tg_request("sendMessage", data={"chat_id":chat, "text":text[:4000], "parse_mode":"HTML", "disable_web_page_preview":"true"})
+async def send_message(chat: str, text: str, reply_markup=None):
+    data = {
+        "chat_id": chat,
+        "text": text[:4000],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true"
+    }
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup)
+    return await tg_request("sendMessage", data=data)
 
 
 def moderation_links(item_id: str):
@@ -760,14 +751,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.4"}
+    return {"ok":True,"version":"premium-guided-v5.5"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.4",
+        "version":"premium-guided-v5.5",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -853,10 +844,15 @@ async def compose_live_endpoint(
         msg=await send_video(admin, final, moderation_caption())
         await send_message(
             admin,
-            "Review this preview:\n"
-            f"✅ Approve: {approve_url}\n"
-            f"❌ Reject: {reject_url}\n\n"
-            "Website CTA included: https://www.digitmatchstar.com\nSuggested CTA is non-promissory, educational, and risk-aware."
+            "Review this preview and choose an action:",
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {"text": "✅ Approve", "url": approve_url},
+                        {"text": "❌ Reject", "url": reject_url}
+                    ]
+                ]
+            }
         )
 
     return {
@@ -864,7 +860,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.4",
+        "version":"premium-guided-v5.5",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
