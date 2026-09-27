@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.9")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.10")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,11 +42,11 @@ CYAN = (34, 211, 238)
 LINE = (43, 73, 57)
 
 # Screen gets more real estate now; status is more compact.
-SCREEN = dict(x=10, y=170, w=1060, h=560)
-STATUS = dict(x=42, y=750, w=996, h=164)
-PROGRESS = dict(x=42, y=932, w=996, h=142)
-METRIC_TOP = 1092
-METRIC_BOTTOM = 1320
+SCREEN = dict(x=10, y=236, w=1060, h=540)
+STATUS = dict(x=42, y=798, w=996, h=164)
+PROGRESS = dict(x=42, y=980, w=996, h=142)
+METRIC_TOP = 1140
+METRIC_BOTTOM = 1368
 
 X264 = [
     "-c:v", "libx264",
@@ -422,6 +422,18 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.text((970,53),str(target),font=font(40,True),fill=CYAN)
     chip(650,112,382,36,market[:32],WHITE)
 
+    # Persistent fixed target indicator. This does not change with later AI
+    # recommendations and remains visible throughout the active cycle.
+    if target != "-":
+        d.rounded_rectangle((44,158,1036,222), radius=20, fill=(7,29,29), outline=CYAN, width=3)
+        d.text((68,176),"LOCKED TARGET",font=font(18,True),fill=MUTED)
+        d.text((250,164),str(target),font=font(42,True),fill=CYAN)
+        d.text((318,178),"Fixed for this cycle",font=font(19,True),fill=WHITE)
+        if int(event.get("tradeCount") or 0) < 1:
+            d.text((714,178),"Comparison starts at Trade 1",font=font(16,True),fill=GOLD)
+        else:
+            d.text((754,178),f"Trade {int(event.get('tradeCount') or 0)} active",font=font(17,True),fill=GREEN2)
+
     # Browser-like screen template: larger and visually closer
     x,y,w,h = SCREEN["x"],SCREEN["y"],SCREEN["w"],SCREEN["h"]
     d.rounded_rectangle((x-6,y-6,x+w+6,y+h+6), radius=32, fill=(3,8,5), outline=(54,92,71), width=3)
@@ -457,7 +469,7 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.ellipse((sx+24,sy+58,sx+42,sy+76),fill=accent)
     if etype == "target_selected":
         title = f"TARGET DIGIT LOCKED: {event.get('targetDigit','-')}"
-        subtitle = "This is the digit the bot is trying to match"
+        subtitle = "Fixed target for this cycle · comparison begins when Trade 1 starts"
         accent = CYAN
     title_ff = fit_font(d,title,sw-80,start=34 if etype=="target_selected" else 32,minimum=18,bold=True)
     d.text((sx+56,sy+46),title,font=title_ff,fill=accent)
@@ -467,10 +479,12 @@ def build_live_frame(cycle, account_type, website, event, out):
     if etype in {"tick_compare","tick_match"}:
         tdigit = event.get("targetDigit","-")
         cdigit = event.get("currentDigit","-")
+        trade_no = max(1, int(event.get("tradeCount") or 1))
+        d.text((sx+470,sy+16),f"TRADE {trade_no}",font=font(18,True),fill=GREEN2 if etype=="tick_match" else GOLD)
         d.rounded_rectangle((sx+590,sy+28,sx+740,sy+126),radius=20,fill=(10,31,34),outline=CYAN,width=2)
         d.rounded_rectangle((sx+790,sy+28,sx+940,sy+126),radius=20,fill=(8,40,24) if etype=="tick_match" else (28,22,12),outline=GREEN2 if etype=="tick_match" else GOLD,width=3)
         d.text((sx+612,sy+34),"TARGET",font=font(15,True),fill=MUTED)
-        d.text((sx+812,sy+34),"TICK",font=font(15,True),fill=MUTED)
+        d.text((sx+800,sy+34),"LAST DIGIT",font=font(15,True),fill=MUTED)
         bf=font(48,True)
         bt=d.textbbox((0,0),str(tdigit),font=bf)
         bc=d.textbbox((0,0),str(cdigit),font=bf)
@@ -839,14 +853,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.9"}
+    return {"ok":True,"version":"premium-guided-v5.10"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.9",
+        "version":"premium-guided-v5.10",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -955,7 +969,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.9",
+        "version":"premium-guided-v5.10",
         "features":[
             "full-screen-preserved",
             "clearer-screen",

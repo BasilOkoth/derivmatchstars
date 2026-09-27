@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.9-locked-target-final-pnl';
+  const VERSION = '5.10-persistent-target-trade-gated-compare';
 
   const state = {
     displayStream: null,
@@ -424,7 +424,7 @@
     addEvent(
       'target_selected',
       `TARGET DIGIT LOCKED: ${actual}`,
-      'Confirmed cycle target · this digit stays fixed until the cycle ends',
+      'Confirmed cycle target · fixed on screen · comparison starts at Trade 1',
       { targetDigit: actual }
     );
 
@@ -536,8 +536,17 @@
     if (!state.captureStartedAt) return;
     const s = snapshot();
 
-    // Every new streaming digit becomes a visible target-vs-tick comparison.
+    // Keep the actual target fixed, but only begin target-vs-last-digit
+    // comparisons AFTER real trading has started (Trade 1 or later).
+    const tradingHasStarted = (
+      Number(s.tradeCount || 0) >= 1 ||
+      !!window.activeContract?.contractId ||
+      !!window.cycleHasPurchasedContract
+    );
+
     if (
+      tradingHasStarted &&
+      s.targetDigit !== null &&
       s.currentDigit !== null &&
       (
         s.currentDigit !== state.lastCurrentDigit ||
@@ -547,20 +556,26 @@
       state.lastCurrentDigit = s.currentDigit;
       state.lastCurrentTick = s.currentTick;
 
-      if (s.targetDigit !== null) {
-        const matched = Number(s.currentDigit) === Number(s.targetDigit);
-        addEvent(
-          matched ? 'tick_match' : 'tick_compare',
-          `TARGET ${s.targetDigit}  VS  TICK ${s.currentDigit}`,
-          matched ? 'MATCH DETECTED' : 'No match · checking next streaming tick',
-          {
-            targetDigit: s.targetDigit,
-            currentDigit: s.currentDigit,
-            currentTick: s.currentTick,
-            pnl: readBotPnl()
-          }
-        );
-      }
+      const matched = Number(s.currentDigit) === Number(s.targetDigit);
+      addEvent(
+        matched ? 'tick_match' : 'tick_compare',
+        `TARGET ${s.targetDigit}  VS  LAST DIGIT ${s.currentDigit}`,
+        matched
+          ? `MATCH DETECTED · Trade ${Math.max(1, s.tradeCount)}`
+          : `Trade ${Math.max(1, s.tradeCount)} · waiting for next streaming digit`,
+        {
+          targetDigit: s.targetDigit,
+          currentDigit: s.currentDigit,
+          currentTick: s.currentTick,
+          pnl: readBotPnl(),
+          tradeCount: Math.max(1, Number(s.tradeCount || 0))
+        }
+      );
+    } else if (!tradingHasStarted) {
+      // Before Trade 1, track the latest visible digit silently so no stale
+      // pre-trade digit is used as the first comparison once trading begins.
+      state.lastCurrentDigit = s.currentDigit;
+      state.lastCurrentTick = s.currentTick;
     }
 
 
