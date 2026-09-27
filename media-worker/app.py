@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 from array import array
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.10")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,11 +42,11 @@ CYAN = (34, 211, 238)
 LINE = (43, 73, 57)
 
 # Screen gets more real estate now; status is more compact.
-SCREEN = dict(x=10, y=236, w=1060, h=540)
-STATUS = dict(x=42, y=798, w=996, h=164)
-PROGRESS = dict(x=42, y=980, w=996, h=142)
-METRIC_TOP = 1140
-METRIC_BOTTOM = 1368
+SCREEN = dict(x=10, y=170, w=1060, h=560)
+STATUS = dict(x=42, y=750, w=996, h=164)
+PROGRESS = dict(x=42, y=932, w=996, h=142)
+METRIC_TOP = 1092
+METRIC_BOTTOM = 1320
 
 X264 = [
     "-c:v", "libx264",
@@ -422,18 +422,6 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.text((970,53),str(target),font=font(40,True),fill=CYAN)
     chip(650,112,382,36,market[:32],WHITE)
 
-    # Persistent fixed target indicator. This does not change with later AI
-    # recommendations and remains visible throughout the active cycle.
-    if target != "-":
-        d.rounded_rectangle((44,158,1036,222), radius=20, fill=(7,29,29), outline=CYAN, width=3)
-        d.text((68,176),"LOCKED TARGET",font=font(18,True),fill=MUTED)
-        d.text((250,164),str(target),font=font(42,True),fill=CYAN)
-        d.text((318,178),"Fixed for this cycle",font=font(19,True),fill=WHITE)
-        if int(event.get("tradeCount") or 0) < 1:
-            d.text((714,178),"Comparison starts at Trade 1",font=font(16,True),fill=GOLD)
-        else:
-            d.text((754,178),f"Trade {int(event.get('tradeCount') or 0)} active",font=font(17,True),fill=GREEN2)
-
     # Browser-like screen template: larger and visually closer
     x,y,w,h = SCREEN["x"],SCREEN["y"],SCREEN["w"],SCREEN["h"]
     d.rounded_rectangle((x-6,y-6,x+w+6,y+h+6), radius=32, fill=(3,8,5), outline=(54,92,71), width=3)
@@ -467,9 +455,13 @@ def build_live_frame(cycle, account_type, website, event, out):
 
     d.text((sx+24,sy+16),"BOT STATUS",font=font(18,True),fill=MUTED)
     d.ellipse((sx+24,sy+58,sx+42,sy+76),fill=accent)
-    if etype == "target_selected":
-        title = f"TARGET DIGIT LOCKED: {event.get('targetDigit','-')}"
-        subtitle = "Fixed target for this cycle · comparison begins when Trade 1 starts"
+    if etype == "target_locked":
+        title = f"TARGET DIGIT: {event.get('targetDigit','-')}"
+        subtitle = f"Confirmed from Trade {max(1, int(event.get('tradeCount') or 1))} · fixed for this cycle"
+        accent = CYAN
+    elif etype == "scanning":
+        title = "SCANNING DIGITS..."
+        subtitle = "Waiting for Trade 1 to confirm the actual target"
         accent = CYAN
     title_ff = fit_font(d,title,sw-80,start=34 if etype=="target_selected" else 32,minimum=18,bold=True)
     d.text((sx+56,sy+46),title,font=title_ff,fill=accent)
@@ -479,12 +471,10 @@ def build_live_frame(cycle, account_type, website, event, out):
     if etype in {"tick_compare","tick_match"}:
         tdigit = event.get("targetDigit","-")
         cdigit = event.get("currentDigit","-")
-        trade_no = max(1, int(event.get("tradeCount") or 1))
-        d.text((sx+470,sy+16),f"TRADE {trade_no}",font=font(18,True),fill=GREEN2 if etype=="tick_match" else GOLD)
         d.rounded_rectangle((sx+590,sy+28,sx+740,sy+126),radius=20,fill=(10,31,34),outline=CYAN,width=2)
         d.rounded_rectangle((sx+790,sy+28,sx+940,sy+126),radius=20,fill=(8,40,24) if etype=="tick_match" else (28,22,12),outline=GREEN2 if etype=="tick_match" else GOLD,width=3)
         d.text((sx+612,sy+34),"TARGET",font=font(15,True),fill=MUTED)
-        d.text((sx+800,sy+34),"LAST DIGIT",font=font(15,True),fill=MUTED)
+        d.text((sx+812,sy+34),"LAST DIGIT",font=font(15,True),fill=MUTED)
         bf=font(48,True)
         bt=d.textbbox((0,0),str(tdigit),font=bf)
         bc=d.textbbox((0,0),str(cdigit),font=bf)
@@ -798,14 +788,51 @@ async def send_message(chat: str, text: str, reply_markup=None):
     return await tg_request("sendMessage", data=data)
 
 
-def moderation_links(item_id: str):
-    exp = int(datetime.now(timezone.utc).timestamp()) + 7*24*3600
-    approve_token = sign_token({"kind":"moderate","action":"approve","item":item_id,"exp":exp})
-    reject_token = sign_token({"kind":"moderate","action":"reject","item":item_id,"exp":exp})
-    base = env("PUBLIC_BASE_URL", "https://digitmatchstar-media-worker.onrender.com").rstrip("/")
+async def answer_callback(callback_query_id: str, text: str = ""):
+    data = {"callback_query_id": callback_query_id}
+    if text:
+        data["text"] = text[:180]
+    try:
+        return await tg_request("answerCallbackQuery", data=data)
+    except Exception as exc:
+        print(f"[TG] answerCallbackQuery failed: {exc}", flush=True)
+        return None
+
+
+async def edit_message_reply_markup(chat_id: str, message_id: int, reply_markup=None):
+    data = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reply_markup": json.dumps(reply_markup or {"inline_keyboard": []})
+    }
+    try:
+        return await tg_request("editMessageReplyMarkup", data=data)
+    except Exception as exc:
+        print(f"[TG] editMessageReplyMarkup failed: {exc}", flush=True)
+        return None
+
+
+async def edit_message_text(chat_id: str, message_id: int, text: str):
+    data = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text[:4000],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true"
+    }
+    try:
+        return await tg_request("editMessageText", data=data)
+    except Exception as exc:
+        print(f"[TG] editMessageText failed: {exc}", flush=True)
+        return None
+
+
+def moderation_callbacks(item_id: str):
+    # Telegram callback_data is limited to 64 bytes.
+    # Keep it short and opaque; the actual file stays server-side.
     return (
-        f"{base}/moderate?t={approve_token}",
-        f"{base}/moderate?t={reject_token}",
+        f"approve:{item_id}",
+        f"reject:{item_id}",
     )
 
 
@@ -853,54 +880,98 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.10"}
+    return {"ok":True,"version":"premium-guided-v6.1"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.10",
+        "version":"premium-guided-v6.1",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
             env("TELEGRAM_ADMIN_CHAT_ID")
         ),
         "approvalConfigured":bool(env("MAIN_CHANNEL_CHAT_ID")),
+        "telegramWebhookUrl": env("PUBLIC_BASE_URL", "https://digitmatchstar-media-worker.onrender.com").rstrip("/") + "/telegram-webhook",
     }
 
 
-@app.get("/moderate", response_class=HTMLResponse)
-async def moderate(t: str = Query(...)):
-    payload = decode_token(t)
-    if payload.get("kind") != "moderate":
-        raise HTTPException(status_code=403, detail="Invalid moderation token")
-    action = payload.get("action")
-    item_id = str(payload.get("item") or "")
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request):
+    """
+    Telegram inline-button moderation.
+    One tap in Telegram approves or rejects; no browser link is opened.
+    """
+    update = await request.json()
+    cq = update.get("callback_query") or {}
+    if not cq:
+        return {"ok": True}
+
+    callback_id = str(cq.get("id") or "")
+    data = str(cq.get("data") or "")
+    message = cq.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    message_id = int(message.get("message_id") or 0)
+
+    admin_chat = str(env("TELEGRAM_ADMIN_CHAT_ID", ""))
+    if admin_chat and chat_id != admin_chat:
+        await answer_callback(callback_id, "Not authorized.")
+        return {"ok": True}
+
+    if ":" not in data:
+        await answer_callback(callback_id, "Invalid action.")
+        return {"ok": True}
+
+    action, item_id = data.split(":", 1)
     if action not in {"approve", "reject"} or not item_id:
-        raise HTTPException(status_code=400, detail="Invalid moderation request")
+        await answer_callback(callback_id, "Invalid action.")
+        return {"ok": True}
 
-    item_dir, data, video = load_pending_item(item_id)
+    try:
+        item_dir, meta, video = load_pending_item(item_id)
+    except HTTPException:
+        await answer_callback(callback_id, "This preview is no longer available.")
+        return {"ok": True}
 
-    if data.get("status") != "pending":
-        return HTMLResponse(f"<h2>Already processed</h2><p>Item status: {html.escape(str(data.get('status')))}</p>")
+    current_status = str(meta.get("status") or "pending")
+    if current_status != "pending":
+        await answer_callback(callback_id, f"Already {current_status}.")
+        await edit_message_reply_markup(chat_id, message_id, {"inline_keyboard": []})
+        return {"ok": True}
 
-    admin_chat = env("TELEGRAM_ADMIN_CHAT_ID", "")
     if action == "reject":
-        set_pending_status(item_dir, data, "rejected")
-        if admin_chat:
-            await send_message(admin_chat, f"❌ Preview rejected\nID: <code>{item_id}</code>")
-        return HTMLResponse("<h2>Rejected</h2><p>The preview was rejected and will not be posted.</p>")
+        set_pending_status(item_dir, meta, "rejected")
+        await answer_callback(callback_id, "Rejected.")
+        await edit_message_text(
+            chat_id,
+            message_id,
+            f"❌ <b>REJECTED</b>\n<code>{item_id}</code>"
+        )
+        return {"ok": True}
 
     channel = env("MAIN_CHANNEL_CHAT_ID", "")
     if not channel:
-        raise HTTPException(status_code=500, detail="MAIN_CHANNEL_CHAT_ID is missing")
+        await answer_callback(callback_id, "MAIN_CHANNEL_CHAT_ID is missing.")
+        return {"ok": True}
 
-    await send_video(channel, video, public_caption())
-    set_pending_status(item_dir, data, "approved")
-    if admin_chat:
-        await send_message(admin_chat, f"✅ Preview approved and posted\nID: <code>{item_id}</code>")
-    return HTMLResponse("<h2>Approved</h2><p>The video has been posted to the main channel.</p>")
+    try:
+        await send_video(channel, video, public_caption())
+    except Exception as exc:
+        print(f"[TG] approved-post failed: {exc}", flush=True)
+        await answer_callback(callback_id, "Posting failed. Check Render logs.")
+        return {"ok": True}
+
+    set_pending_status(item_dir, meta, "approved")
+    await answer_callback(callback_id, "Approved and posted.")
+    await edit_message_text(
+        chat_id,
+        message_id,
+        f"✅ <b>APPROVED & POSTED</b>\n<code>{item_id}</code>"
+    )
+    return {"ok": True}
 
 
 @app.post("/compose-live")
@@ -948,7 +1019,7 @@ async def compose_live_endpoint(
 
         item_id = f"{claims.get('cycleId')}-{int(datetime.now(timezone.utc).timestamp())}"
         save_pending_item(item_id, final, c, website)
-        approve_url, reject_url = moderation_links(item_id)
+        approve_cb, reject_cb = moderation_callbacks(item_id)
 
         msg=await send_video(admin, final, moderation_caption())
         await send_message(
@@ -957,8 +1028,8 @@ async def compose_live_endpoint(
             reply_markup={
                 "inline_keyboard": [
                     [
-                        {"text": "✅ Approve", "url": approve_url},
-                        {"text": "❌ Reject", "url": reject_url}
+                        {"text": "✅ Approve", "callback_data": approve_cb},
+                        {"text": "❌ Reject", "callback_data": reject_cb}
                     ]
                 ]
             }
@@ -969,7 +1040,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.10",
+        "version":"premium-guided-v6.1",
         "features":[
             "full-screen-preserved",
             "clearer-screen",

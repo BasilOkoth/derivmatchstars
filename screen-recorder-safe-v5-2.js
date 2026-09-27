@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.10-persistent-target-trade-gated-compare';
+  const VERSION = '6.0-trade1-actual-target';
 
   const state = {
     displayStream: null,
@@ -35,6 +35,8 @@
     lastCurrentTick: '',
     lockedTradeTarget: null,
     finalizingCycle: false,
+    tradingStarted: false,
+    lockedTradeNumber: 0,
     savedView: null,
     capturePrepared: false,
     stopPending: false
@@ -371,7 +373,7 @@
       return [
         'matched',
         'DIGIT MATCHED',
-        `Trade ${Math.max(1, s.tradeCount)} matched target ${s.targetDigit ?? '-'} · waiting for final cycle P/L`
+        `Trade ${Math.max(1, s.tradeCount)} matched target ${state.lockedTradeTarget ?? s.targetDigit ?? '-'} · waiting for final cycle P/L`
       ];
     }
     if (/LOSS CONFIRMED|RECONCILED LOSS/.test(joined)) {
@@ -402,30 +404,51 @@
   }
 
 
-  function lockActualTradingTarget(current = null) {
+  function lockTargetFromConfirmedTrade() {
     if (state.lockedTradeTarget !== null) return state.lockedTradeTarget;
 
-    const activeDigit = Number(window.activeContract?.predictedDigit);
-    const cycleDigit = Number(current?.digit ?? currentCycle()?.digit);
+    // Strict rule:
+    // Do not lock from AI recommendation, predictedDigit input, or pre-trade cycle state.
+    // Lock only after a real trade exists.
+    const tradeCount = Number(window.tradeCount || 0);
+    const ac = window.activeContract || null;
 
-    const actual = Number.isFinite(activeDigit) && activeDigit >= 0 && activeDigit <= 9
-      ? activeDigit
-      : (
-          Number.isFinite(cycleDigit) && cycleDigit >= 0 && cycleDigit <= 9
-            ? cycleDigit
-            : null
-        );
+    const hasConfirmedTrade = (
+      tradeCount >= 1 ||
+      !!ac?.contractId ||
+      !!window.cycleHasPurchasedContract
+    );
+
+    if (!hasConfirmedTrade) return null;
+
+    const activeDigit = Number(ac?.predictedDigit);
+    const current = currentCycle();
+    const cycleDigit = Number(current?.digit);
+
+    let actual = null;
+
+    if (Number.isFinite(activeDigit) && activeDigit >= 0 && activeDigit <= 9) {
+      actual = activeDigit;
+    } else if (Number.isFinite(cycleDigit) && cycleDigit >= 0 && cycleDigit <= 9) {
+      actual = cycleDigit;
+    }
 
     if (actual === null) return null;
 
     state.lockedTradeTarget = actual;
     state.lastTargetDigit = actual;
+    state.tradingStarted = true;
+    state.lockedTradeNumber = Math.max(1, tradeCount);
 
     addEvent(
-      'target_selected',
-      `TARGET DIGIT LOCKED: ${actual}`,
-      'Confirmed cycle target · fixed on screen · comparison starts at Trade 1',
-      { targetDigit: actual }
+      'target_locked',
+      `TARGET DIGIT: ${actual}`,
+      `Confirmed from Trade ${state.lockedTradeNumber} · fixed for this cycle`,
+      {
+        targetDigit: actual,
+        tradeCount: state.lockedTradeNumber,
+        pnl: readBotPnl()
+      }
     );
 
     return actual;
@@ -534,208 +557,120 @@
 
   function observeGuidedEvents() {
     if (!state.captureStartedAt) return;
+
     const s = snapshot();
+    const tradeCount = Number(s.tradeCount || 0);
 
-    // Keep the actual target fixed, but only begin target-vs-last-digit
-    // comparisons AFTER real trading has started (Trade 1 or later).
-    const tradingHasStarted = (
-      Number(s.tradeCount || 0) >= 1 ||
-      !!window.activeContract?.contractId ||
-      !!window.cycleHasPurchasedContract
-    );
+    // Before Trade 1: do not show target comparisons at all.
+    if (tradeCount < 1 && !window.activeContract?.contractId && !window.cycleHasPurchasedContract) {
+      state.lastCurrentDigit = s.currentDigit;
+      state.lastCurrentTick = s.currentTick;
 
-    if (
-      tradingHasStarted &&
-      s.targetDigit !== null &&
+      addEvent(
+        'scanning',
+        'SCANNING DIGITS...',
+        'Waiting for Trade 1 to confirm the actual target',
+        {
+          targetDigit: null,
+          currentDigit: null,
+          tradeCount: 0,
+          pnl: readBotPnl()
+        }
+      );
+      return;
+    }
+
+    // Trade 1 or later: lock the actual target exactly once.
+    lockTargetFromConfirmedTrade();
+
+    const locked = state.lockedTradeTarget;
+    if (locked === null) return;
+
+    // Record trade-start events separately.
+    if (tradeCount > state.lastTradeCount) {
+      state.lastTradeCount = tradeCount;
+      addEvent(
+        'trade_bought',
+        `TRADE ${tradeCount} EXECUTING`,
+        `Target ${locked} · waiting for the next last digit`,
+        {
+          trade: tradeCount,
+          tradeCount,
+          targetDigit: locked,
+          pnl: readBotPnl(),
+          stake: s.stake
+        }
+      );
+    }
+
+    // Compare only NEW streaming last digits after Trade 1 has started.
+    const tickChanged = (
       s.currentDigit !== null &&
       (
         s.currentDigit !== state.lastCurrentDigit ||
         (s.currentTick && s.currentTick !== state.lastCurrentTick)
       )
-    ) {
+    );
+
+    if (tickChanged) {
       state.lastCurrentDigit = s.currentDigit;
       state.lastCurrentTick = s.currentTick;
 
-      const matched = Number(s.currentDigit) === Number(s.targetDigit);
+      const matched = Number(s.currentDigit) === Number(locked);
+
       addEvent(
         matched ? 'tick_match' : 'tick_compare',
-        `TARGET ${s.targetDigit}  VS  LAST DIGIT ${s.currentDigit}`,
+        `TARGET ${locked}  VS  LAST DIGIT ${s.currentDigit}`,
         matched
-          ? `MATCH DETECTED · Trade ${Math.max(1, s.tradeCount)}`
-          : `Trade ${Math.max(1, s.tradeCount)} · waiting for next streaming digit`,
+          ? `MATCH DETECTED · Trade ${Math.max(1, tradeCount)}`
+          : `Trade ${Math.max(1, tradeCount)} · no match`,
         {
-          targetDigit: s.targetDigit,
+          targetDigit: locked,
           currentDigit: s.currentDigit,
           currentTick: s.currentTick,
+          tradeCount: Math.max(1, tradeCount),
           pnl: readBotPnl(),
-          tradeCount: Math.max(1, Number(s.tradeCount || 0))
+          stake: s.stake
         }
       );
-    } else if (!tradingHasStarted) {
-      // Before Trade 1, track the latest visible digit silently so no stale
-      // pre-trade digit is used as the first comparison once trading begins.
-      state.lastCurrentDigit = s.currentDigit;
-      state.lastCurrentTick = s.currentTick;
     }
 
-
-    if (s.tradeCount > state.lastTradeCount) {
-      state.lastTradeCount = s.tradeCount;
-      addEvent(
-        'trade_bought',
-        `TRADE ${s.tradeCount} EXECUTING`,
-        `Target digit ${s.targetDigit ?? '-'} · watching the next tick`,
-        { trade:s.tradeCount }
-      );
-    }
-
-    if (s.activeContractId && s.activeContractId !== state.lastActiveContractId) {
-      state.lastActiveContractId = s.activeContractId;
-      if (s.tradeCount > 0) {
-        addEvent(
-          'contract_open',
-          `TRADE ${s.tradeCount} EXECUTING`,
-          `Contract open · target digit ${s.targetDigit ?? '-'}`,
-          { trade:s.tradeCount, contractId:s.activeContractId }
-        );
-      }
-    }
-
+    // Keep other real bot statuses only after trading starts.
     const classified = classifyStatus(s);
-    if (classified) addEvent(classified[0], classified[1], classified[2]);
-  }
-
-  async function enableCapture() {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      status('Use desktop Chrome/Edge', 'bad');
-      return;
-    }
-    if (state.recorder?.state === 'recording') {
-      status('Already recording', 'warn');
-      return;
-    }
-
-    prepareCaptureView();
-
-    try {
-      status('Choose this tab + Share tab audio…', 'info');
-
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { ideal:30, max:30 },
-          width: { ideal:2560 },
-          height: { ideal:1440 }
-        },
-        audio: {
-          echoCancellation:false,
-          noiseSuppression:false,
-          autoGainControl:false
-        },
-        preferCurrentTab:true,
-        selfBrowserSurface:'include',
-        surfaceSwitching:'include',
-        systemAudio:'include'
-      });
-
-      if (!stream.getAudioTracks().length) {
-        stream.getTracks().forEach(t => t.stop());
-        status('Enable Share tab audio and retry', 'bad');
-        restoreCaptureView();
-        alert(
-          'DigitMatchStar Premium Capture needs tab audio.\n\n' +
-          'Choose the DigitMatchStar tab and enable "Share tab audio".'
-        );
-        return;
-      }
-
-      state.displayStream = stream;
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-        if (state.recorder?.state === 'recording') {
-          stopRecorderCleanly();
+    if (classified && classified[0] !== 'scanning') {
+      addEvent(
+        classified[0],
+        classified[1],
+        classified[2],
+        {
+          targetDigit: locked,
+          tradeCount: Math.max(1, tradeCount),
+          pnl: readBotPnl(),
+          stake: s.stake
         }
-        state.displayStream = null;
-        restorePanel();
-        restoreCaptureView();
-      });
-
-      // Allow the visual-only zoom/scroll position to settle.
-      await new Promise(resolve => setTimeout(resolve, 450));
-      startSessionRecorder();
-    } catch (error) {
-      console.warn('[DMS v5] capture permission failed:', error);
-      status('Capture not enabled', 'bad');
-      restoreCaptureView();
-    }
-  }
-
-  function startSessionRecorder() {
-    if (!state.displayStream) return;
-
-    const options = {
-      videoBitsPerSecond: 12_000_000,
-      audioBitsPerSecond: 160_000
-    };
-    const mime = supportedMime();
-    if (mime) options.mimeType = mime;
-
-    state.chunks = [];
-    state.captureStartedAt = Date.now();
-    state.activeCycleId = null;
-    state.lastCompletedCycle = null;
-    state.lastSeenCurrent = !!currentCycle();
-    state.events = [];
-    state.stopPending = false;
-    state.lastFingerprint = '';
-    state.lastTradeCount = Number(window.tradeCount || 0);
-    state.lastTargetDigit = null;
-    state.lastActiveContractId = window.activeContract?.contractId ?? null;
-    state.lockedTradeTarget = null;
-    state.finalizingCycle = false;
-    state.lastTargetDigit = null;
-    state.lastCurrentDigit = snapshot().currentDigit;
-    state.lastCurrentTick = snapshot().currentTick;
-
-    addEvent('capture_ready', 'TRADING SCREEN READY', 'Waiting for the next cycle');
-    observeGuidedEvents();
-
-    try {
-      const recorder = new MediaRecorder(state.displayStream, options);
-      state.recorder = recorder;
-      recorder.ondataavailable = event => {
-        if (event.data?.size) state.chunks.push(event.data);
-      };
-      recorder.onerror = event => console.warn('[DMS v5] recorder error:', event);
-      recorder.onstop = finalizeRecording;
-
-      hidePanelFromCapture();
-      recorder.start(1000);
-
-      console.log('🎥 DigitMatchStar v5 guided capture started. Trading logic untouched.');
-    } catch (error) {
-      restorePanel();
-      restoreCaptureView();
-      console.warn('[DMS v5] recorder start failed:', error);
-      status('Recorder could not start', 'bad');
+      );
     }
   }
 
   function observeCycle() {
     const current = currentCycle();
 
-    // Only the actual cycle/contract can establish the target shown in the video.
-    if (current || window.activeContract?.contractId) {
-      lockActualTradingTarget(current);
-    }
-
     observeGuidedEvents();
 
     if (current && !state.lastSeenCurrent) {
       state.lastSeenCurrent = true;
       state.activeCycleId = cycleId(current);
+
+      // Do not announce a locked target here.
       addEvent(
         'cycle_started',
-        `TARGET ${state.lockedTradeTarget ?? current.digit ?? '-'} ACTIVE`,
-        'Confirmed trading target · comparing each new streaming tick'
+        'TRADING CYCLE STARTED',
+        'Waiting for Trade 1 confirmation',
+        {
+          targetDigit: null,
+          tradeCount: Number(window.tradeCount || 0),
+          pnl: readBotPnl()
+        }
       );
       return;
     }
@@ -747,13 +682,12 @@
         const completed = findCompletedCycle(state.activeCycleId);
         if (completed) {
           finalizeCyclePresentation(completed).catch(error => {
-            console.error('[DMS v5.9] final cycle presentation failed:', error);
+            console.error('[DMS v6.0] final cycle presentation failed:', error);
             setTimeout(() => {
               if (state.recorder?.state === 'recording') stopRecorderCleanly();
-            }, 3800);
+            }, 4000);
           });
         } else {
-          // Give history a moment to populate, then try again.
           setTimeout(() => {
             const retry = findCompletedCycle(state.activeCycleId);
             if (retry) {
