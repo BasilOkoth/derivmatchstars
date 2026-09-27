@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.1")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -317,6 +317,20 @@ def default_event(cycle):
 
 def guided_segments(cycle, raw_duration):
     events = cycle.get("captureEvents") or []
+
+    # The completed cycle is authoritative for the digit that was actually traded.
+    # This avoids target flicker when individual recorder events omit targetDigit.
+    raw_cycle_target = cycle.get("digit")
+    if raw_cycle_target is None:
+        raw_cycle_target = cycle.get("targetDigit")
+
+    try:
+        fixed_cycle_target = int(raw_cycle_target)
+        if fixed_cycle_target < 0 or fixed_cycle_target > 9:
+            fixed_cycle_target = None
+    except Exception:
+        fixed_cycle_target = None
+
     rows = []
     for e in events:
         try:
@@ -327,6 +341,81 @@ def guided_segments(cycle, raw_duration):
             at = min(at, raw_duration)
         rows.append({**e, "_at":at})
     rows.sort(key=lambda x: x["_at"])
+
+    # Once actual trading starts, keep the true cycle target and latest live
+    # state persistent on every later frame. The target never disappears.
+    trading_started = False
+    last_trade_count = 0
+    last_pnl = 0.0
+    last_stake = 0.0
+    last_current_digit = None
+    last_current_tick = ""
+
+    normalized = []
+    for e in rows:
+        e = dict(e)
+
+        try:
+            event_trade_count = int(e.get("tradeCount") or 0)
+        except Exception:
+            event_trade_count = 0
+
+        etype = str(e.get("type") or "")
+        if (
+            event_trade_count >= 1
+            or etype in {
+                "target_locked", "trade_bought", "contract_open",
+                "tick_compare", "tick_match", "matched",
+                "loss_confirmed", "recovery", "verifying",
+                "cycle_win", "cycle_stopped", "win_confirmed"
+            }
+        ):
+            trading_started = True
+
+        if event_trade_count > 0:
+            last_trade_count = max(last_trade_count, event_trade_count)
+        elif trading_started and last_trade_count > 0:
+            e["tradeCount"] = last_trade_count
+
+        if e.get("pnl") is not None:
+            try:
+                last_pnl = float(e.get("pnl"))
+            except Exception:
+                pass
+        elif trading_started:
+            e["pnl"] = last_pnl
+
+        if e.get("stake") is not None:
+            try:
+                last_stake = float(e.get("stake"))
+            except Exception:
+                pass
+        elif trading_started:
+            e["stake"] = last_stake
+
+        if e.get("currentDigit") is not None:
+            last_current_digit = e.get("currentDigit")
+        elif trading_started and last_current_digit is not None:
+            e["currentDigit"] = last_current_digit
+
+        if e.get("currentTick"):
+            last_current_tick = str(e.get("currentTick"))
+        elif trading_started and last_current_tick:
+            e["currentTick"] = last_current_tick
+
+        if trading_started and fixed_cycle_target is not None:
+            e["targetDigit"] = fixed_cycle_target
+            e["displayTarget"] = fixed_cycle_target
+            e["tradingStarted"] = True
+        else:
+            # No target before Trade 1.
+            e["targetDigit"] = None
+            e["displayTarget"] = None
+            e["tradingStarted"] = False
+
+        normalized.append(e)
+
+    rows = normalized
 
     if not rows:
         rows = [default_event(cycle)]
@@ -404,9 +493,12 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.text((52,54), "DIGITMATCHSTAR", font=font(44,True), fill=GREEN2)
     d.text((52,104), "TRADING IN PROGRESS", font=font(24,True), fill=WHITE)
 
-    target = event.get("targetDigit")
+    # displayTarget is normalized once Trade 1 starts and stays fixed.
+    target = event.get("displayTarget")
+    if target is None and bool(event.get("tradingStarted")):
+        target = cycle.get("digit") or cycle.get("targetDigit")
     if target is None:
-        target = cycle.get("digit") or cycle.get("targetDigit") or "-"
+        target = "-"
     market = str(cycle.get("marketName") or cycle.get("symbol") or "Digit Match")
     acct = "REAL" if account_type == "REAL" else "DEMO"
 
@@ -417,9 +509,13 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.text((x+(w-(bb[2]-bb[0]))/2, y+(h-(bb[3]-bb[1]))/2-1), str(label), font=ff, fill=color)
 
     chip(650,54,112,42,acct,GOLD if account_type=="REAL" else GREEN2)
-    d.rounded_rectangle((776,48,1032,108), radius=18, fill=(9,34,35), outline=CYAN, width=3)
-    d.text((792,60),"TARGET DIGIT",font=font(17,True),fill=MUTED)
-    d.text((970,53),str(target),font=font(40,True),fill=CYAN)
+    if target != "-":
+        d.rounded_rectangle((776,48,1032,108), radius=18, fill=(9,34,35), outline=CYAN, width=3)
+        d.text((792,60),"TARGET DIGIT",font=font(17,True),fill=MUTED)
+        d.text((970,53),str(target),font=font(40,True),fill=CYAN)
+    else:
+        d.rounded_rectangle((776,48,1032,108), radius=18, fill=(12,29,22), outline=LINE, width=2)
+        d.text((824,66),"SCANNING",font=font(22,True),fill=MUTED)
     chip(650,112,382,36,market[:32],WHITE)
 
     # Browser-like screen template: larger and visually closer
@@ -469,7 +565,7 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.text((sx+56,sy+96),subtitle[:100],font=sub_ff,fill=(218,229,223))
 
     if etype in {"tick_compare","tick_match"}:
-        tdigit = event.get("targetDigit","-")
+        tdigit = target if target != "-" else event.get("targetDigit","-")
         cdigit = event.get("currentDigit","-")
         d.rounded_rectangle((sx+590,sy+28,sx+740,sy+126),radius=20,fill=(10,31,34),outline=CYAN,width=2)
         d.rounded_rectangle((sx+790,sy+28,sx+940,sy+126),radius=20,fill=(8,40,24) if etype=="tick_match" else (28,22,12),outline=GREEN2 if etype=="tick_match" else GOLD,width=3)
@@ -531,19 +627,17 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.text((cx+22,METRIC_TOP+78),values[i],font=font(sizes[i],True),fill=colors[i])
 
     if recovered:
-        losses = float(event.get("lossesBeforeWin",0) or 0)
-        win_profit = float(event.get("winningProfit",0) or 0)
         d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(7,43,25),outline=GREEN2,width=3)
         trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
-        tdigit = event.get("targetDigit","-")
-        center(d,"ONE WIN RECOVERED THE EARLIER LOSSES",1362,font(31,True),GREEN2)
+        tdigit = target if target != "-" else event.get("targetDigit","-")
+        center(d,"ONE WIN RECOVERED ALL THE LOSSES",1364,font(32,True),GREEN2)
         match_line = f"Trade {trade_no} matched target {tdigit}"
-        center(d, match_line, 1404, font(24,True), WHITE)
-        detail = f"Earlier losses ${losses:.2f}  →  win +${win_profit:.2f}  →  final cycle {money(pnl)}"
-        center(d, detail, 1448, fit_font(d, detail, 920, 23, 15, True), WHITE)
+        center(d, match_line, 1412, font(25,True), WHITE)
+        final_line = f"FINAL CYCLE P/L  {money(pnl)}"
+        center(d, final_line, 1458, font(31,True), GREEN2)
     elif str(event.get("type") or "") == "matched":
         trade_no = int(event.get("tradeCount") or 0)
-        tdigit = event.get("targetDigit","-")
+        tdigit = target if target != "-" else event.get("targetDigit","-")
         d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
         center(d,"DIGIT MATCHED",1368,font(38,True),GREEN2)
         detail = f"Trade {trade_no} matched target {tdigit}"
@@ -551,7 +645,7 @@ def build_live_frame(cycle, account_type, website, event, out):
         center(d,"Waiting for the bot's final Cycle P/L to update…",1462,font(18,True),MUTED)
     elif str(event.get("type") or "") in {"cycle_win","win_confirmed"}:
         trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
-        tdigit = event.get("targetDigit","-")
+        tdigit = target if target != "-" else event.get("targetDigit","-")
         win_profit = float(event.get("winningProfit",0) or 0)
         d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
         center(d,"FINAL CYCLE RESULT",1366,font(31,True),GREEN2)
@@ -880,14 +974,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v6.1"}
+    return {"ok":True,"version":"premium-guided-v6.2"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v6.1",
+        "version":"premium-guided-v6.2",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -1040,7 +1134,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v6.1",
+        "version":"premium-guided-v6.2",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
