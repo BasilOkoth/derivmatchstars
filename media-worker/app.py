@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.5")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -172,6 +172,31 @@ def probe_media(ffmpeg: str, media: Path):
         duration = int(hh)*3600 + int(mm)*60 + float(ss)
     has_audio = bool(re.search(r"Stream #.*Audio:", txt))
     return duration, has_audio
+
+
+
+def validate_webm_file(path: Path):
+    size = path.stat().st_size if path.exists() else 0
+    if size < 32:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Uploaded capture is too small ({size} bytes). Please record again."
+        )
+
+    with path.open("rb") as fh:
+        head = fh.read(4)
+
+    if head != bytes([0x1A, 0x45, 0xDF, 0xA3]):
+        hex_head = head.hex() if head else "empty"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Uploaded capture is not a valid WebM file "
+                f"(header={hex_head}, size={size}). "
+                "Please restart capture and record again."
+            )
+        )
+    return size
 
 
 def build_intro(cycle, account_type, out):
@@ -751,14 +776,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.5"}
+    return {"ok":True,"version":"premium-guided-v5.6"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.5",
+        "version":"premium-guided-v5.6",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -832,6 +857,13 @@ async def compose_live_endpoint(
                     raise HTTPException(status_code=413,detail="Live capture is too large")
                 out.write(chunk)
 
+        capture_size = validate_webm_file(raw)
+        print(
+            f"[CAPTURE] valid WebM received | bytes={capture_size} | "
+            f"filename={video.filename} | content_type={video.content_type}",
+            flush=True
+        )
+
         c["marketName"]=c.get("marketName") or c.get("symbol") or "Digit Match"
 
         final=td/"digitmatchstar-premium-guided.mp4"
@@ -860,7 +892,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.5",
+        "version":"premium-guided-v5.6",
         "features":[
             "full-screen-preserved",
             "clearer-screen",

@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.4.1-single-recorder';
+  const VERSION = '5.6-capture-integrity';
 
   const state = {
     displayStream: null,
@@ -32,7 +32,8 @@
     lastTargetDigit: null,
     lastActiveContractId: null,
     savedView: null,
-    capturePrepared: false
+    capturePrepared: false,
+    stopPending: false
   };
 
   function removeLegacyRecorderPanels() {
@@ -462,7 +463,7 @@
       state.displayStream = stream;
       stream.getVideoTracks()[0]?.addEventListener('ended', () => {
         if (state.recorder?.state === 'recording') {
-          try { state.recorder.stop(); } catch (_) {}
+          stopRecorderCleanly();
         }
         state.displayStream = null;
         restorePanel();
@@ -495,6 +496,7 @@
     state.lastCompletedCycle = null;
     state.lastSeenCurrent = !!currentCycle();
     state.events = [];
+    state.stopPending = false;
     state.lastFingerprint = '';
     state.lastTradeCount = Number(window.tradeCount || 0);
     state.lastTargetDigit = null;
@@ -513,7 +515,7 @@
       recorder.onstop = finalizeRecording;
 
       hidePanelFromCapture();
-      recorder.start(500);
+      recorder.start(1000);
 
       console.log('🎥 DigitMatchStar v5 guided capture started. Trading logic untouched.');
     } catch (error) {
@@ -559,18 +561,73 @@
 
         setTimeout(() => {
           if (state.recorder?.state === 'recording') {
-            try { state.recorder.stop(); } catch (_) {}
+            stopRecorderCleanly();
           }
         }, 1800);
       }
     }
   }
 
+
+  function stopRecorderCleanly(delayMs = 180) {
+    if (!state.recorder || state.recorder.state !== 'recording' || state.stopPending) return;
+    state.stopPending = true;
+
+    try {
+      state.recorder.requestData();
+    } catch (_) {}
+
+    setTimeout(() => {
+      try {
+        if (state.recorder?.state === 'recording') {
+          state.recorder.stop();
+        }
+      } catch (error) {
+        console.warn('[DMS v5.6] clean stop failed:', error);
+        state.stopPending = false;
+      }
+    }, delayMs);
+  }
+
+  async function blobLooksLikeWebM(blob) {
+    if (!blob || blob.size < 32) return false;
+    try {
+      const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+      return head[0] === 0x1A &&
+             head[1] === 0x45 &&
+             head[2] === 0xDF &&
+             head[3] === 0xA3;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function finalizeRecording() {
+    state.stopPending = false;
     restorePanel();
 
     const mime = state.recorder?.mimeType || 'video/webm';
     const blob = new Blob(state.chunks, { type:mime });
+
+    const validWebM = await blobLooksLikeWebM(blob);
+    console.log('[DMS v5.6] capture finalized', {
+      mime,
+      bytes: blob.size,
+      chunks: state.chunks.length,
+      validWebM
+    });
+
+    if (!validWebM) {
+      status('Capture invalid — not uploaded. Retry recording.', 'bad');
+      console.error('[DMS v5.6] Invalid WebM capture; upload blocked.', {
+        mime,
+        bytes: blob.size,
+        chunks: state.chunks.length
+      });
+      exposeDownload(blob);
+      restoreCaptureView();
+      return;
+    }
 
     if (state.lastBlobUrl) {
       try { URL.revokeObjectURL(state.lastBlobUrl); } catch (_) {}
