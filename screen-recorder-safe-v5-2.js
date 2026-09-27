@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '6.1.1-capture-button-fixed';
+  const VERSION = '6.5-admin-only-capture';
 
   const state = {
     displayStream: null,
@@ -39,7 +39,11 @@
     lockedTradeNumber: 0,
     savedView: null,
     capturePrepared: false,
-    stopPending: false
+    stopPending: false,
+    captureAuthorized: false,
+    accessChecked: false,
+    accessAccountId: '',
+    accessMonitorTimer: null
   };
 
   function removeLegacyRecorderPanels() {
@@ -223,6 +227,84 @@
     const end = () => { dragging = false; };
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
+  }
+
+
+  function removeCapturePanel() {
+    try {
+      document.getElementById('dms50-panel')?.remove();
+    } catch (_) {}
+    state.panel = null;
+  }
+
+  async function checkCaptureAccess(force = false) {
+    const token = getToken();
+    const accountId = getAccountId();
+
+    if (!token || !accountId) {
+      state.captureAuthorized = false;
+      state.accessChecked = true;
+      state.accessAccountId = '';
+      removeCapturePanel();
+      return false;
+    }
+
+    if (
+      !force &&
+      state.accessChecked &&
+      state.accessAccountId === String(accountId)
+    ) {
+      return state.captureAuthorized;
+    }
+
+    state.accessAccountId = String(accountId);
+
+    try {
+      const response = await fetch('/api/capture-access', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ account_id: accountId })
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      state.accessChecked = true;
+      state.captureAuthorized = !!(
+        response.ok &&
+        data?.authorized === true
+      );
+
+      if (state.captureAuthorized) {
+        ensurePanel();
+        status('Admin capture ready', 'good');
+      } else {
+        removeCapturePanel();
+      }
+
+      return state.captureAuthorized;
+    } catch (error) {
+      state.accessChecked = true;
+      state.captureAuthorized = false;
+      removeCapturePanel();
+      console.warn('[DMS CAPTURE] access check failed:', error);
+      return false;
+    }
+  }
+
+  function startCaptureAccessMonitor() {
+    if (state.accessMonitorTimer) return;
+
+    state.accessMonitorTimer = setInterval(() => {
+      const accountId = String(getAccountId() || '');
+
+      if (accountId !== state.accessAccountId) {
+        state.accessChecked = false;
+        checkCaptureAccess(true);
+      }
+    }, 4000);
   }
 
   function ensurePanel() {
@@ -653,6 +735,17 @@
   }
 
   async function enableCapture() {
+    const allowed =
+      state.captureAuthorized ||
+      await checkCaptureAccess(true);
+
+    if (!allowed) {
+      removeCapturePanel();
+      console.warn(
+        '[DMS CAPTURE] Premium capture denied for this account.'
+      );
+      return;
+    }
     if (!navigator.mediaDevices?.getDisplayMedia) {
       status('Use desktop Chrome/Edge', 'bad');
       return;
@@ -999,7 +1092,9 @@
 
   function boot() {
     enforceSingleRecorderWindow();
-    ensurePanel();
+    removeCapturePanel();
+    checkCaptureAccess(true);
+    startCaptureAccessMonitor();
     state.observerTimer = setInterval(observeCycle, 150);
     console.log(
       `🎥 DigitMatchStar Premium Capture ${VERSION} loaded. ` +
@@ -1015,14 +1110,25 @@
 
   window.dmsPremiumCapture = {
     version:VERSION,
-    enable:enableCapture,
+    enable:async () => {
+      const allowed =
+        state.captureAuthorized ||
+        await checkCaptureAccess(true);
+
+      if (!allowed) return false;
+
+      await enableCapture();
+      return true;
+    },
     getState:() => ({
       recording:state.recorder?.state === 'recording',
       captureStartedAt:state.captureStartedAt,
       activeCycleId:state.activeCycleId,
       eventCount:state.events.length,
       hasAudio:!!state.displayStream?.getAudioTracks?.().length,
-      uploading:state.uploading
+      uploading:state.uploading,
+      captureAuthorized:state.captureAuthorized,
+      accessAccountId:state.accessAccountId
     }),
     getEvents:() => clone(state.events)
   };

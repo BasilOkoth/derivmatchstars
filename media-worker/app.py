@@ -12,7 +12,9 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.4")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.5")
+
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,8 +143,19 @@ def decode_token(token: str) -> dict:
 
 def decode_ticket(token: str):
     payload = decode_token(token)
-    if payload.get("kind") not in {None, "capture"}:
-        raise HTTPException(status_code=403, detail="Invalid live-capture ticket")
+
+    if payload.get("kind") != "capture":
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid live-capture ticket"
+        )
+
+    if payload.get("captureAdmin") is not True:
+        raise HTTPException(
+            status_code=403,
+            detail="Premium capture is restricted to the authorized owner account"
+        )
+
     return payload
 
 
@@ -869,17 +882,37 @@ async def tg_request(method: str, data=None, files=None):
         return payload["result"]
 
 
-async def send_video(chat: str, video: Path, caption: str):
+
+
+async def send_video(
+    chat: str,
+    video: Path,
+    caption: str,
+    reply_markup=None
+):
+    data = {
+        "chat_id": chat,
+        "caption": caption[:950],
+        "parse_mode": "HTML",
+        "supports_streaming": "true"
+    }
+
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(
+            reply_markup
+        )
+
     with video.open("rb") as fh:
         return await tg_request(
             "sendVideo",
-            data={
-                "chat_id":chat,
-                "caption":caption[:950],
-                "parse_mode":"HTML",
-                "supports_streaming":"true"
-            },
-            files={"video":(video.name,fh,"video/mp4")}
+            data=data,
+            files={
+                "video":(
+                    video.name,
+                    fh,
+                    "video/mp4"
+                )
+            }
         )
 
 
@@ -1038,100 +1071,34 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v6.4"}
+    return {"ok":True,"version":"premium-guided-v6.5"}
 
 
 @app.get("/health")
 def health():
     return {
-        "ok":True,
-        "version":"premium-guided-v6.4",
-        "cors":True,
-        "telegramConfigured":bool(
+        "ok": True,
+        "version": "premium-guided-v6.5",
+        "cors": True,
+        "telegramConfigured": bool(
             env("TELEGRAM_BOT_TOKEN") and
             env("TELEGRAM_ADMIN_CHAT_ID")
         ),
-        "approvalConfigured":bool(env("MAIN_CHANNEL_CHAT_ID")),
-        "telegramWebhookUrl": env("PUBLIC_BASE_URL", "https://digitmatchstar-media-worker.onrender.com").rstrip("/") + "/telegram-webhook",
+        "approvalConfigured": bool(
+            env("MAIN_CHANNEL_CHAT_ID") or
+            env("TELEGRAM_CHAT_ID")
+        ),
+        "moderationMode": "one-tap-site-webhook",
+        "telegramCallbackData": [
+            "dms:approve",
+            "dms:reject"
+        ],
+        "expectedTelegramWebhook":
+            "https://www.digitmatchstar.com/api/telegram-approval",
+        "adminCaptureRequired": True
     }
 
 
-@app.post("/telegram-webhook")
-async def telegram_webhook(request: Request):
-    """
-    Telegram inline-button moderation.
-    One tap in Telegram approves or rejects; no browser link is opened.
-    """
-    update = await request.json()
-    cq = update.get("callback_query") or {}
-    if not cq:
-        return {"ok": True}
-
-    callback_id = str(cq.get("id") or "")
-    data = str(cq.get("data") or "")
-    message = cq.get("message") or {}
-    chat = message.get("chat") or {}
-    chat_id = str(chat.get("id") or "")
-    message_id = int(message.get("message_id") or 0)
-
-    admin_chat = str(env("TELEGRAM_ADMIN_CHAT_ID", ""))
-    if admin_chat and chat_id != admin_chat:
-        await answer_callback(callback_id, "Not authorized.")
-        return {"ok": True}
-
-    action, item_id = parse_moderation_callback(data)
-
-    print(
-        f"[TG CALLBACK] raw={data!r} parsed_action={action!r} item_id={item_id!r}",
-        flush=True
-    )
-
-    if action not in {"approve", "reject"} or not item_id:
-        await answer_callback(callback_id, "Unknown action. Please use the newest preview buttons.")
-        return {"ok": True}
-
-    try:
-        item_dir, meta, video = load_pending_item(item_id)
-    except HTTPException:
-        await answer_callback(callback_id, "This preview is no longer available.")
-        return {"ok": True}
-
-    current_status = str(meta.get("status") or "pending")
-    if current_status != "pending":
-        await answer_callback(callback_id, f"Already {current_status}.")
-        await edit_message_reply_markup(chat_id, message_id, {"inline_keyboard": []})
-        return {"ok": True}
-
-    if action == "reject":
-        set_pending_status(item_dir, meta, "rejected")
-        await answer_callback(callback_id, "Rejected ✓")
-        await edit_message_text(
-            chat_id,
-            message_id,
-            f"❌ <b>REJECTED</b>\n<code>{item_id}</code>"
-        )
-        return {"ok": True}
-
-    channel = env("MAIN_CHANNEL_CHAT_ID", "")
-    if not channel:
-        await answer_callback(callback_id, "MAIN_CHANNEL_CHAT_ID is missing.")
-        return {"ok": True}
-
-    try:
-        await send_video(channel, video, public_caption())
-    except Exception as exc:
-        print(f"[TG] approved-post failed: {exc}", flush=True)
-        await answer_callback(callback_id, "Posting failed. Check Render logs.")
-        return {"ok": True}
-
-    set_pending_status(item_dir, meta, "approved")
-    await answer_callback(callback_id, "Approved and posted ✓")
-    await edit_message_text(
-        chat_id,
-        message_id,
-        f"✅ <b>APPROVED & POSTED</b>\n<code>{item_id}</code>"
-    )
-    return {"ok": True}
 
 
 @app.post("/compose-live")
@@ -1177,19 +1144,21 @@ async def compose_live_endpoint(
         final=td/"digitmatchstar-premium-guided.mp4"
         compose_guided(raw,c,str(claims.get("accountType") or "DEMO"),website,final)
 
-        item_id = f"{claims.get('cycleId')}-{int(datetime.now(timezone.utc).timestamp())}"
-        save_pending_item(item_id, final, c, website)
-        approve_cb, reject_cb = moderation_callbacks(item_id)
-
-        msg=await send_video(admin, final, moderation_caption())
-        await send_message(
+        msg = await send_video(
             admin,
-            "Review this preview and choose an action:",
+            final,
+            moderation_caption(),
             reply_markup={
                 "inline_keyboard": [
                     [
-                        {"text": "✅ Approve", "callback_data": approve_cb},
-                        {"text": "❌ Reject", "callback_data": reject_cb}
+                        {
+                            "text": "✅ Share",
+                            "callback_data": "dms:approve"
+                        },
+                        {
+                            "text": "❌ Reject",
+                            "callback_data": "dms:reject"
+                        }
                     ]
                 ]
             }
@@ -1200,7 +1169,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v6.4",
+        "version":"premium-guided-v6.5",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
