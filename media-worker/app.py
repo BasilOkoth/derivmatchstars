@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.6")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v5.7")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,11 +42,11 @@ CYAN = (34, 211, 238)
 LINE = (43, 73, 57)
 
 # Screen gets more real estate now; status is more compact.
-SCREEN = dict(x=10, y=170, w=1060, h=860)
-STATUS = dict(x=42, y=1052, w=996, h=134)
-PROGRESS = dict(x=42, y=1200, w=996, h=126)
-METRIC_TOP = 1342
-METRIC_BOTTOM = 1516
+SCREEN = dict(x=10, y=170, w=1060, h=560)
+STATUS = dict(x=42, y=750, w=996, h=164)
+PROGRESS = dict(x=42, y=932, w=996, h=142)
+METRIC_TOP = 1092
+METRIC_BOTTOM = 1320
 
 X264 = [
     "-c:v", "libx264",
@@ -475,20 +475,44 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.text((bx+(box_w-(bb[2]-bb[0]))/2,by+9),label,font=ff,fill=WHITE)
 
     # Live metrics from event snapshot
-    pnl = event.get("pnl",0)
+    pnl = float(event.get("pnl",0) or 0)
     stake = event.get("stake",0)
     count = int(event.get("tradeCount") or 0)
+    recovered = bool(event.get("recoveredLosses")) or (
+        str(event.get("type") or "") in {"cycle_win","matched","win_confirmed"} and pnl >= 0
+    )
+
     xs=[42,382,722]
     labels=["CYCLE P/L","CURRENT STAKE","TRADES"]
     values=[money(pnl),plain_money(stake),str(count)]
-    colors=[GREEN2 if float(pnl or 0)>=0 else RED,WHITE,WHITE]
-    sizes=[48,44,58]
+    colors=[GREEN2 if pnl >= 0 else RED,WHITE,WHITE]
+    sizes=[52 if recovered else 48,44,58]
+
     for i in range(3):
         cx=xs[i]
-        d.rounded_rectangle((cx,METRIC_TOP,cx+296,METRIC_BOTTOM),radius=24,fill=(10,24,18),outline=LINE,width=2)
-        d.text((cx+22,METRIC_TOP+18),labels[i],font=font(18,True),fill=MUTED)
-        d.text((cx+22,METRIC_TOP+74),values[i],font=font(sizes[i],True),fill=colors[i])
-    center(d,"Educational content only · Trading involves risk.",1690,font(17),MUTED)
+        outline = GREEN2 if (i == 0 and recovered) else LINE
+        width = 4 if (i == 0 and recovered) else 2
+        fill = (8,38,22) if (i == 0 and recovered) else (10,24,18)
+        d.rounded_rectangle((cx,METRIC_TOP,cx+296,METRIC_BOTTOM),radius=24,fill=fill,outline=outline,width=width)
+        label = "CYCLE P/L · RECOVERED" if (i == 0 and recovered) else labels[i]
+        label_color = GREEN2 if (i == 0 and recovered) else MUTED
+        d.text((cx+22,METRIC_TOP+18),label,font=font(17,True),fill=label_color)
+        d.text((cx+22,METRIC_TOP+78),values[i],font=font(sizes[i],True),fill=colors[i])
+
+    if recovered:
+        losses = float(event.get("lossesBeforeWin",0) or 0)
+        win_profit = float(event.get("winningProfit",0) or 0)
+        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(7,43,25),outline=GREEN2,width=3)
+        center(d,"ONE WIN RECOVERED THE EARLIER LOSSES",1370,font(31,True),GREEN2)
+        detail = f"Earlier losses ${losses:.2f}  →  winning trade +${win_profit:.2f}  →  cycle {money(pnl)}"
+        center(d, detail, 1424, fit_font(d, detail, 920, 24, 16, True), WHITE)
+    elif str(event.get("type") or "") in {"cycle_win","matched","win_confirmed"}:
+        win_profit = float(event.get("winningProfit",0) or 0)
+        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=2)
+        center(d,"DIGIT MATCHED",1372,font(34,True),GREEN2)
+        detail = f"Winning trade +${win_profit:.2f} · final cycle P/L {money(pnl)}"
+        center(d, detail, 1430, fit_font(d, detail, 900, 25, 17, True), WHITE)
+    center(d,"Educational content only · Trading involves risk.",1665,font(17),MUTED)
 
     # Slight sharpening to keep overlay crisp.
     im = im.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
@@ -552,7 +576,7 @@ def build_focus_replay(ffmpeg, raw, cycle, account_type, website, duration, td, 
     event={**event,"title":"FOCUS REPLAY","subtitle":"Rewatching the final trading moment"}
     build_live_frame(cycle,account_type,website,event,frame)
 
-    replay_duration=min(1.6,max(0.8,duration))
+    replay_duration=min(2.8,max(1.8,duration))
     start=max(0.0,duration-replay_duration)
 
     ix=SCREEN["x"]+18
@@ -776,14 +800,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v5.6"}
+    return {"ok":True,"version":"premium-guided-v5.7"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v5.6",
+        "version":"premium-guided-v5.7",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -892,7 +916,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v5.6",
+        "version":"premium-guided-v5.7",
         "features":[
             "full-screen-preserved",
             "clearer-screen",

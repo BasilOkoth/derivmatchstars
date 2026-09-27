@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '5.6-capture-integrity';
+  const VERSION = '5.7-dynamic-pnl-win-hold';
 
   const state = {
     displayStream: null,
@@ -301,6 +301,21 @@
     if (state.panel) state.panel.style.display = 'block';
   }
 
+
+  function readBotPnl() {
+    // Mirror the exact P/L visible on the bot first.
+    const displayed = numberFromText(text('metricTotalProfit'));
+    if (displayed !== null) return displayed;
+
+    const liveNet = Number(window.netProfit);
+    if (Number.isFinite(liveNet)) return liveNet;
+
+    const cycleNet = Number(window.cyclePerformance?.current?.netPnL);
+    if (Number.isFinite(cycleNet)) return cycleNet;
+
+    return 0;
+  }
+
   function snapshot() {
     const target = Number(document.getElementById('predictedDigit')?.value);
     const mode = window.sessionState?.mode ||
@@ -314,7 +329,7 @@
       currentTick: text('metricLiveTick'),
       tradeCount: Number(window.tradeCount ?? numberFromText(text('metricTradeCount')) ?? 0),
       stake: Number(window.currentStake ?? numberFromText(text('metricCurrentStake')) ?? 0),
-      pnl: Number(window.pnlTracker?.netProfit ?? numberFromText(text('metricTotalProfit')) ?? 0),
+      pnl: readBotPnl(),
       result: text('metricTradeResult'),
       status: text('metricPreviousResult'),
       action: text('metricNextAction'),
@@ -550,12 +565,35 @@
         if (completed) {
           state.lastCompletedCycle = completed;
           const won = String(completed.status || '').toUpperCase() === 'WIN';
+          const completedNet = Number(completed.netPnL ?? readBotPnl() ?? 0);
+          const totalInvestment = Number(completed.totalInvestment ?? 0);
+          const totalPayout = Number(completed.totalPayout ?? 0);
+          const trades = Array.isArray(completed.trades) ? completed.trades : [];
+          const winningTrade = trades.find(t => String(t.result || '').toUpperCase() === 'WIN') || trades[trades.length - 1] || {};
+          const winningProfit = Number(winningTrade.profit ?? completed.winningProfit ?? 0);
+          const lossesBeforeWin = Math.max(
+            0,
+            totalInvestment - Number(winningTrade.stake ?? winningTrade.buyPrice ?? 0)
+          );
+
           addEvent(
             won ? 'cycle_win' : 'cycle_stopped',
-            won ? 'DIGIT MATCHED' : 'CYCLE COMPLETE',
+            won ? (completedNet >= 0 ? 'LOSSES RECOVERED' : 'DIGIT MATCHED') : 'CYCLE COMPLETE',
             won
-              ? `Matched target digit ${completed.digit ?? state.lastTargetDigit ?? '-'}`
-              : `Cycle ended after ${(completed.trades || []).length} trade(s)`
+              ? (completedNet >= 0
+                  ? `One winning trade recovered the earlier losses · cycle +$${completedNet.toFixed(2)}`
+                  : `Winning trade +$${Math.max(0, winningProfit).toFixed(2)} · cycle P/L -$${Math.abs(completedNet).toFixed(2)}`)
+              : `Cycle ended after ${trades.length} trade(s)`,
+            {
+              pnl: completedNet,
+              cycleNetPnl: completedNet,
+              totalInvestment,
+              totalPayout,
+              winningProfit,
+              lossesBeforeWin,
+              recoveredLosses: won && completedNet >= 0,
+              tradeCount: trades.length
+            }
           );
         }
 
@@ -563,7 +601,7 @@
           if (state.recorder?.state === 'recording') {
             stopRecorderCleanly();
           }
-        }, 1800);
+        }, 3600);
       }
     }
   }
