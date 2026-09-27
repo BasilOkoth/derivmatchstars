@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.2")
+app = FastAPI(title="DigitMatchStar Premium Guided Media Worker v6.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,11 +42,11 @@ CYAN = (34, 211, 238)
 LINE = (43, 73, 57)
 
 # Screen gets more real estate now; status is more compact.
-SCREEN = dict(x=10, y=170, w=1060, h=560)
-STATUS = dict(x=42, y=750, w=996, h=164)
-PROGRESS = dict(x=42, y=932, w=996, h=142)
-METRIC_TOP = 1092
-METRIC_BOTTOM = 1320
+SCREEN = dict(x=10, y=170, w=1060, h=600)
+STATUS = dict(x=42, y=794, w=996, h=230)
+PROGRESS = dict(x=42, y=1040, w=996, h=142)
+METRIC_TOP = 1200
+METRIC_BOTTOM = 1428
 
 X264 = [
     "-c:v", "libx264",
@@ -509,14 +509,7 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.text((x+(w-(bb[2]-bb[0]))/2, y+(h-(bb[3]-bb[1]))/2-1), str(label), font=ff, fill=color)
 
     chip(650,54,112,42,acct,GOLD if account_type=="REAL" else GREEN2)
-    if target != "-":
-        d.rounded_rectangle((776,48,1032,108), radius=18, fill=(9,34,35), outline=CYAN, width=3)
-        d.text((792,60),"TARGET DIGIT",font=font(17,True),fill=MUTED)
-        d.text((970,53),str(target),font=font(40,True),fill=CYAN)
-    else:
-        d.rounded_rectangle((776,48,1032,108), radius=18, fill=(12,29,22), outline=LINE, width=2)
-        d.text((824,66),"SCANNING",font=font(22,True),fill=MUTED)
-    chip(650,112,382,36,market[:32],WHITE)
+    chip(776,54,256,42,market[:24],WHITE)
 
     # Browser-like screen template: larger and visually closer
     x,y,w,h = SCREEN["x"],SCREEN["y"],SCREEN["w"],SCREEN["h"]
@@ -531,51 +524,71 @@ def build_live_frame(cycle, account_type, website, event, out):
     d.rounded_rectangle((x+w-110,y+18,x+w-32,y+50), radius=12, fill=(17,55,35), outline=(44,116,74), width=1)
     d.text((x+w-90,y+25),"LIVE",font=font(15,True),fill=GREEN2)
 
-    # Status panel
+    # BOT STATUS is the only place where digits are shown.
+    # After Trade 1: TARGET stays fixed, LAST DIGIT is the only changing digit.
     sx,sy,sw,sh = STATUS["x"],STATUS["y"],STATUS["w"],STATUS["h"]
-    d.rounded_rectangle((sx,sy,sx+sw,sy+sh), radius=24, fill=(8,19,14), outline=LINE, width=2)
-    title = str(event.get("title") or "TRADING IN PROGRESS")
-    subtitle = str(event.get("subtitle") or "")
+    d.rounded_rectangle((sx,sy,sx+sw,sy+sh), radius=28, fill=(8,19,14), outline=LINE, width=2)
+    d.text((sx+26,sy+18),"BOT STATUS",font=font(20,True),fill=MUTED)
+
     etype = str(event.get("type") or "").lower()
-    accent = GREEN2
-    if etype == "tick_match":
-        accent = GREEN2
-    elif etype == "tick_compare":
-        accent = CYAN
-    elif "loss" in etype or "stop" in etype:
-        accent = RED
-    elif "entry" in etype or "recovery" in etype:
-        accent = GOLD
-    elif "scan" in etype or "verify" in etype:
-        accent = CYAN
+    trade_no = int(event.get("tradeCount") or 0)
+    trading_started = bool(event.get("tradingStarted")) or trade_no >= 1
+    fixed_target = target if target != "-" else None
+    last_digit = event.get("currentDigit")
 
-    d.text((sx+24,sy+16),"BOT STATUS",font=font(18,True),fill=MUTED)
-    d.ellipse((sx+24,sy+58,sx+42,sy+76),fill=accent)
-    if etype == "target_locked":
-        title = f"TARGET DIGIT: {event.get('targetDigit','-')}"
-        subtitle = f"Confirmed from Trade {max(1, int(event.get('tradeCount') or 1))} · fixed for this cycle"
-        accent = CYAN
-    elif etype == "scanning":
-        title = "SCANNING DIGITS..."
-        subtitle = "Waiting for Trade 1 to confirm the actual target"
-        accent = CYAN
-    title_ff = fit_font(d,title,sw-80,start=34 if etype=="target_selected" else 32,minimum=18,bold=True)
-    d.text((sx+56,sy+46),title,font=title_ff,fill=accent)
-    sub_ff = fit_font(d,subtitle,sw-80,start=20,minimum=14,bold=False)
-    d.text((sx+56,sy+96),subtitle[:100],font=sub_ff,fill=(218,229,223))
+    if not trading_started or fixed_target is None:
+        # Pre-trade: no target digit is shown.
+        d.rounded_rectangle((sx+24,sy+58,sx+sw-24,sy+190),radius=22,fill=(10,27,20),outline=LINE,width=2)
+        center(d,"SCANNING DIGITS...",sy+82,font(34,True),CYAN)
+        center(d,"Waiting for Trade 1 to confirm the actual target",sy+136,font(20,True),MUTED)
+    else:
+        # Fixed target panel - NEVER changes during this cycle.
+        d.rounded_rectangle((sx+28,sy+58,sx+310,sy+190),radius=22,fill=(7,31,31),outline=CYAN,width=3)
+        d.text((sx+58,sy+74),"TARGET",font=font(18,True),fill=MUTED)
+        target_ff = font(64,True)
+        tb = d.textbbox((0,0),str(fixed_target),font=target_ff)
+        d.text((sx+169-(tb[2]-tb[0])/2,sy+103),str(fixed_target),font=target_ff,fill=CYAN)
 
-    if etype in {"tick_compare","tick_match"}:
-        tdigit = target if target != "-" else event.get("targetDigit","-")
-        cdigit = event.get("currentDigit","-")
-        d.rounded_rectangle((sx+590,sy+28,sx+740,sy+126),radius=20,fill=(10,31,34),outline=CYAN,width=2)
-        d.rounded_rectangle((sx+790,sy+28,sx+940,sy+126),radius=20,fill=(8,40,24) if etype=="tick_match" else (28,22,12),outline=GREEN2 if etype=="tick_match" else GOLD,width=3)
-        d.text((sx+612,sy+34),"TARGET",font=font(15,True),fill=MUTED)
-        d.text((sx+812,sy+34),"LAST DIGIT",font=font(15,True),fill=MUTED)
-        bf=font(48,True)
-        bt=d.textbbox((0,0),str(tdigit),font=bf)
-        bc=d.textbbox((0,0),str(cdigit),font=bf)
-        d.text((sx+665-(bt[2]-bt[0])/2,sy+58),str(tdigit),font=bf,fill=CYAN)
-        d.text((sx+865-(bc[2]-bc[0])/2,sy+58),str(cdigit),font=bf,fill=GREEN2 if etype=="tick_match" else GOLD)
+        # Dynamic last digit panel - this is the only changing digit.
+        digit_outline = GREEN2 if etype == "tick_match" else GOLD
+        digit_fill = (8,42,24) if etype == "tick_match" else (31,24,11)
+        d.rounded_rectangle((sx+352,sy+58,sx+634,sy+190),radius=22,fill=digit_fill,outline=digit_outline,width=3)
+        d.text((sx+382,sy+74),"LAST DIGIT",font=font(18,True),fill=MUTED)
+
+        shown_last = "-" if last_digit is None else str(last_digit)
+        last_ff = font(64,True)
+        lb = d.textbbox((0,0),shown_last,font=last_ff)
+        d.text((sx+493-(lb[2]-lb[0])/2,sy+103),shown_last,font=last_ff,fill=digit_outline)
+
+        # Right-side trade/result summary.
+        d.rounded_rectangle((sx+676,sy+58,sx+sw-28,sy+190),radius=22,fill=(10,27,20),outline=LINE,width=2)
+        d.text((sx+704,sy+76),f"TRADE {max(1,trade_no)}",font=font(24,True),fill=WHITE)
+
+        if etype == "tick_match":
+            d.text((sx+704,sy+124),"MATCH DETECTED",font=font(22,True),fill=GREEN2)
+        elif etype == "tick_compare":
+            d.text((sx+704,sy+124),"NO MATCH",font=font(22,True),fill=RED)
+        elif etype in {"matched","cycle_win","win_confirmed"}:
+            d.text((sx+704,sy+124),"DIGIT MATCHED",font=font(22,True),fill=GREEN2)
+        else:
+            d.text((sx+704,sy+124),"WAITING FOR DIGIT",font=font(18,True),fill=GOLD)
+
+        # One short status line only; do not duplicate target elsewhere.
+        if etype == "tick_match":
+            status_line = f"Target {fixed_target} = last digit {shown_last}"
+            status_color = GREEN2
+        elif etype == "tick_compare":
+            status_line = f"Target {fixed_target} ≠ last digit {shown_last} · waiting for next digit"
+            status_color = MUTED
+        elif etype in {"matched","cycle_win","win_confirmed"}:
+            status_line = f"Trade {max(1,trade_no)} matched target {fixed_target}"
+            status_color = GREEN2
+        else:
+            status_line = f"Target {fixed_target} fixed · monitoring streaming digits"
+            status_color = MUTED
+
+        sf = fit_font(d,status_line,sw-60,start=20,minimum=14,bold=True)
+        d.text((sx+30,sy+198),status_line,font=sf,fill=status_color)
 
     # Progress
     px,py,pw,ph = PROGRESS["x"],PROGRESS["y"],PROGRESS["w"],PROGRESS["h"]
@@ -627,10 +640,10 @@ def build_live_frame(cycle, account_type, website, event, out):
         d.text((cx+22,METRIC_TOP+78),values[i],font=font(sizes[i],True),fill=colors[i])
 
     if recovered:
-        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(7,43,25),outline=GREEN2,width=3)
+        d.rounded_rectangle((42,1450,1038,1616),radius=26,fill=(7,43,25),outline=GREEN2,width=3)
         trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
         tdigit = target if target != "-" else event.get("targetDigit","-")
-        center(d,"ONE WIN RECOVERED ALL THE LOSSES",1364,font(32,True),GREEN2)
+        center(d,"ONE WIN RECOVERED ALL THE LOSSES",1472,font(32,True),GREEN2)
         match_line = f"Trade {trade_no} matched target {tdigit}"
         center(d, match_line, 1412, font(25,True), WHITE)
         final_line = f"FINAL CYCLE P/L  {money(pnl)}"
@@ -638,22 +651,22 @@ def build_live_frame(cycle, account_type, website, event, out):
     elif str(event.get("type") or "") == "matched":
         trade_no = int(event.get("tradeCount") or 0)
         tdigit = target if target != "-" else event.get("targetDigit","-")
-        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
-        center(d,"DIGIT MATCHED",1368,font(38,True),GREEN2)
+        d.rounded_rectangle((42,1450,1038,1616),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
+        center(d,"DIGIT MATCHED",1476,font(38,True),GREEN2)
         detail = f"Trade {trade_no} matched target {tdigit}"
         center(d, detail, 1420, fit_font(d, detail, 900, 29, 18, True), WHITE)
-        center(d,"Waiting for the bot's final Cycle P/L to update…",1462,font(18,True),MUTED)
+        center(d,"Waiting for the bot's final Cycle P/L to update…",1570,font(18,True),MUTED)
     elif str(event.get("type") or "") in {"cycle_win","win_confirmed"}:
         trade_no = int(event.get("winningTradeNumber") or event.get("tradeCount") or 0)
         tdigit = target if target != "-" else event.get("targetDigit","-")
         win_profit = float(event.get("winningProfit",0) or 0)
-        d.rounded_rectangle((42,1342,1038,1508),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
-        center(d,"FINAL CYCLE RESULT",1366,font(31,True),GREEN2)
+        d.rounded_rectangle((42,1450,1038,1616),radius=26,fill=(13,31,22),outline=GREEN2,width=3)
+        center(d,"FINAL CYCLE RESULT",1474,font(31,True),GREEN2)
         detail = f"Trade {trade_no} matched target {tdigit} · winning trade +${win_profit:.2f}"
         center(d, detail, 1410, fit_font(d, detail, 930, 25, 16, True), WHITE)
         final_line = f"Final Cycle P/L {money(pnl)}"
         center(d, final_line, 1456, font(31,True), GREEN2 if pnl >= 0 else RED)
-    center(d,"Educational content only · Trading involves risk.",1665,font(17),MUTED)
+    center(d,"Educational content only · Trading involves risk.",1685,font(17),MUTED)
 
     # Slight sharpening to keep overlay crisp.
     im = im.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
@@ -922,12 +935,63 @@ async def edit_message_text(chat_id: str, message_id: int, text: str):
 
 
 def moderation_callbacks(item_id: str):
-    # Telegram callback_data is limited to 64 bytes.
-    # Keep it short and opaque; the actual file stays server-side.
+    # Keep callback_data short and Telegram-safe.
+    # New format:
+    #   a|<item_id>  -> approve
+    #   r|<item_id>  -> reject
     return (
-        f"approve:{item_id}",
-        f"reject:{item_id}",
+        f"a|{item_id}",
+        f"r|{item_id}",
     )
+
+
+def parse_moderation_callback(data: str):
+    """
+    Accept both new and legacy button formats so old previews still work.
+
+    Supported:
+      a|id
+      r|id
+      approve:id
+      reject:id
+      approve|id
+      reject|id
+      a:id
+      r:id
+    """
+    raw = str(data or "").strip()
+    if not raw:
+        return None, None
+
+    separators = ["|", ":"]
+    for sep in separators:
+        if sep in raw:
+            action_raw, item_id = raw.split(sep, 1)
+            action_raw = action_raw.strip().lower()
+            item_id = item_id.strip()
+
+            aliases = {
+                "a": "approve",
+                "approve": "approve",
+                "approved": "approve",
+                "yes": "approve",
+                "r": "reject",
+                "reject": "reject",
+                "rejected": "reject",
+                "no": "reject",
+            }
+            action = aliases.get(action_raw)
+            if action and item_id:
+                return action, item_id
+
+    # Very old/plain callback fallback:
+    lowered = raw.lower()
+    if lowered.startswith("approve_"):
+        return "approve", raw[len("approve_"):]
+    if lowered.startswith("reject_"):
+        return "reject", raw[len("reject_"):]
+
+    return None, None
 
 
 def moderation_caption():
@@ -974,14 +1038,14 @@ def set_pending_status(item_dir: Path, data: dict, status: str):
 
 @app.get("/")
 def root():
-    return {"ok":True,"version":"premium-guided-v6.2"}
+    return {"ok":True,"version":"premium-guided-v6.4"}
 
 
 @app.get("/health")
 def health():
     return {
         "ok":True,
-        "version":"premium-guided-v6.2",
+        "version":"premium-guided-v6.4",
         "cors":True,
         "telegramConfigured":bool(
             env("TELEGRAM_BOT_TOKEN") and
@@ -1015,13 +1079,15 @@ async def telegram_webhook(request: Request):
         await answer_callback(callback_id, "Not authorized.")
         return {"ok": True}
 
-    if ":" not in data:
-        await answer_callback(callback_id, "Invalid action.")
-        return {"ok": True}
+    action, item_id = parse_moderation_callback(data)
 
-    action, item_id = data.split(":", 1)
+    print(
+        f"[TG CALLBACK] raw={data!r} parsed_action={action!r} item_id={item_id!r}",
+        flush=True
+    )
+
     if action not in {"approve", "reject"} or not item_id:
-        await answer_callback(callback_id, "Invalid action.")
+        await answer_callback(callback_id, "Unknown action. Please use the newest preview buttons.")
         return {"ok": True}
 
     try:
@@ -1038,7 +1104,7 @@ async def telegram_webhook(request: Request):
 
     if action == "reject":
         set_pending_status(item_dir, meta, "rejected")
-        await answer_callback(callback_id, "Rejected.")
+        await answer_callback(callback_id, "Rejected ✓")
         await edit_message_text(
             chat_id,
             message_id,
@@ -1059,7 +1125,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     set_pending_status(item_dir, meta, "approved")
-    await answer_callback(callback_id, "Approved and posted.")
+    await answer_callback(callback_id, "Approved and posted ✓")
     await edit_message_text(
         chat_id,
         message_id,
@@ -1134,7 +1200,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId":msg.get("message_id"),
         "format":"1080x1920-h264-aac",
         "source":"full-browser-capture",
-        "version":"premium-guided-v6.2",
+        "version":"premium-guided-v6.4",
         "features":[
             "full-screen-preserved",
             "clearer-screen",
