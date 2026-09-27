@@ -1,6 +1,7 @@
-import os, io, json, wave, math, random, hmac, hashlib, base64, tempfile, subprocess, re
+import os, io, json, wave, math, random, hmac, hashlib, base64, tempfile, subprocess, re, gc
 from pathlib import Path
 from datetime import datetime, timezone
+from array import array
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import imageio_ffmpeg
 
-app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.5")
+app = FastAPI(title="DigitMatchStar Ultra Premium Live Compositor v4.6 Low-Memory")
 
 # Browser uploads come directly from DigitMatchStar to Render.
 # CORS lives in app.py itself so it works with BOTH `uvicorn app:app`
@@ -288,11 +289,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
             f"[base]{overlay_filter},fps=30,format=yuv420p[outv]"
         ),
         "-map", "[outv]",
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "18",
-        "-profile:v", "high",
-        "-pix_fmt", "yuv420p",
+        *LOWMEM_X264,
         "-movflags", "+faststart",
         "-an",
         str(full_live)
@@ -320,11 +317,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
             f"fps=30,format=yuv420p[outv]"
         ),
         "-map", "[outv]",
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "18",
-        "-profile:v", "high",
-        "-pix_fmt", "yuv420p",
+        *LOWMEM_X264,
         "-movflags", "+faststart",
         "-an",
         str(focus_live)
@@ -343,11 +336,7 @@ def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
         f"fps=30,format=yuv420p,"
         f"fade=t=in:st=0:d=0.15,"
         f"fade=t=out:st={max(0.1, duration-0.18)}:d=0.18",
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "18",
-        "-profile:v", "high",
-        "-pix_fmt", "yuv420p",
+        *LOWMEM_X264,
         "-movflags", "+faststart",
         "-an",
         str(out)
@@ -355,34 +344,40 @@ def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
     run_ffmpeg(cmd, f"image_clip:{image_path.name}")
 
 def build_soundtrack(total_duration: float, live_start: float, live_end: float, is_win: bool, out_wav: Path):
-    sr = 44100
-    samples = int(total_duration * sr)
-    data = [0.0] * samples
+    """
+    Low-memory soundtrack builder.
+    Uses a compact int16 array instead of millions of Python float objects.
+    """
+    sr = 32000
+    samples = max(1, int(total_duration * sr))
+    data = array("h", [0]) * samples
 
     def add_tone(start, dur, freq, amp=0.18):
-        a = int(start * sr)
+        a = max(0, int(start * sr))
         b = min(samples, int((start + dur) * sr))
+        if b <= a:
+            return
+        peak = int(32767 * amp)
         for i in range(a, b):
             t = (i - a) / sr
-            # Soft attack/release envelope
-            env = min(1.0, t / 0.03) * min(1.0, max(0.0, (dur - t) / 0.05))
-            data[i] += amp * env * math.sin(2 * math.pi * freq * t)
+            attack = min(1.0, t / 0.03)
+            release = min(1.0, max(0.0, (dur - t) / 0.05))
+            env = attack * release
+            v = data[i] + int(peak * env * math.sin(2 * math.pi * freq * t))
+            data[i] = max(-32768, min(32767, v))
 
     def add_tick(start, dur=0.05, freq=1500, amp=0.08):
         add_tone(start, dur, freq, amp)
 
-    # intro pulses
     add_tone(0.18, 0.16, 440, 0.11)
     add_tone(0.43, 0.18, 660, 0.10)
     add_tone(0.68, 0.22, 880, 0.10)
 
-    # subtle ticks during live section every ~0.7 s
     t = live_start + 0.35
     while t < live_end - 0.35:
         add_tick(t)
         t += 0.7
 
-    # final result sting
     if is_win:
         add_tone(max(0.0, live_end - 0.05), 0.12, 740, 0.13)
         add_tone(max(0.0, live_end + 0.10), 0.14, 988, 0.13)
@@ -391,19 +386,29 @@ def build_soundtrack(total_duration: float, live_start: float, live_end: float, 
         add_tone(max(0.0, live_end + 0.05), 0.22, 220, 0.11)
         add_tone(max(0.0, live_end + 0.30), 0.26, 196, 0.11)
 
-    # gentle outro tone
     add_tone(max(0.0, total_duration - 0.55), 0.28, 392 if is_win else 262, 0.06)
 
-    # clamp and write wav
     with wave.open(str(out_wav), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sr)
-        frames = bytearray()
-        for x in data:
-            v = max(-1.0, min(1.0, x))
-            frames += int(v * 32767).to_bytes(2, byteorder="little", signed=True)
-        wf.writeframes(frames)
+        # Write in chunks to avoid a second full-size audio copy in memory.
+        chunk = 16000
+        for i in range(0, len(data), chunk):
+            wf.writeframes(data[i:i+chunk].tobytes())
+
+    del data
+
+
+LOWMEM_X264 = [
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "21",
+    "-profile:v", "high",
+    "-pix_fmt", "yuv420p",
+    "-threads", "1",
+    "-x264-params", "ref=1:bframes=0",
+]
 
 def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str, out_video: Path):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
@@ -415,6 +420,7 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
         build_frame(cycle, account_type, website, frame)
         build_intro(cycle, account_type, intro)
         build_outro(cycle, website, outro)
+        gc.collect()
 
         intro_v = td / "intro.mp4"
         outro_v = td / "outro.mp4"
@@ -431,24 +437,25 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
             f"file '{outro_v.as_posix()}'\n"
         )
         silent_video = td / "silent.mp4"
-        subprocess.run([
+        run_ffmpeg([
             ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-            "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+            "-c", "copy",
+            "-movflags", "+faststart",
             str(silent_video)
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], "concat-copy")
 
         total_duration = 1.10 + raw_duration + focus_duration + 1.65
         live_start = 1.10
         live_end = 1.10 + raw_duration + focus_duration
         sound = td / "sound.wav"
         build_soundtrack(total_duration, live_start, live_end, str(cycle.get("status") or "").upper() == "WIN", sound)
+        gc.collect()
 
         if raw_has_audio:
             # Preserve the actual DigitMatchStar tab audio (ticks, win sounds, etc.)
             # underneath the premium sound design. The live capture begins after
             # the 1.10s branded intro.
-            subprocess.run([
+            run_ffmpeg([
                 ffmpeg, "-y",
                 "-i", str(silent_video),
                 "-i", str(sound),
@@ -463,17 +470,20 @@ def compose_ultra(raw_video: Path, cycle: dict, account_type: str, website: str,
                 "-map", "[aout]",
                 "-c:v", "copy",
                 "-c:a", "aac",
-                "-b:a", "160k",
+                "-b:a", "128k",
+                "-threads", "1",
                 "-shortest",
                 "-movflags", "+faststart",
                 str(out_video)
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], "final-audio-mix")
         else:
-            subprocess.run([
+            run_ffmpeg([
                 ffmpeg, "-y", "-i", str(silent_video), "-i", str(sound),
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+                "-threads", "1",
+                "-shortest",
                 "-movflags", "+faststart", str(out_video)
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], "final-audio")
 
 async def send_video(video: Path, caption: str, chat: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -500,7 +510,7 @@ async def send_video(video: Path, caption: str, chat: str):
 def health():
     return {
         "ok": True,
-        "version": "ultra-premium-live-v4.5",
+        "version": "ultra-premium-live-v4.6-lowmem",
         "cors": True,
         "telegramConfigured": bool(
             os.environ.get("TELEGRAM_BOT_TOKEN") and
@@ -559,7 +569,7 @@ async def compose_live_endpoint(
         "privateTelegramMessageId": msg.get("message_id"),
         "format": "1080x1920-h264-aac",
         "source": "actual-screen-capture",
-        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable"]
+        "features": ["hook-variant", "trade-progress-rail", "focus-replay", "bot-tab-audio", "premium-sound-design", "render-portable", "low-memory"]
     }
 
 
@@ -634,8 +644,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
             f"[base]{overlay_filter}[progress];"
             f"[progress][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
         ),
-        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-        '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(full_live)
+        '-map', '[outv]', *LOWMEM_X264, '-movflags', '+faststart', '-an', str(full_live)
     ]
     _run_ffmpeg(cmd_full, 'live-full')
 
@@ -652,8 +661,7 @@ def render_live_sections(raw_video: Path, frame_png: Path, cycle: dict, ffmpeg: 
             f"[1:v][screen]overlay={VIDEO_WELL['x']}:{VIDEO_WELL['y']}:shortest=1[base];"
             f"[base][2:v]overlay=0:0:shortest=1,fps=30,format=yuv420p[outv]"
         ),
-        '-map', '[outv]', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-        '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(focus_live)
+        '-map', '[outv]', *LOWMEM_X264, '-movflags', '+faststart', '-an', str(focus_live)
     ]
     _run_ffmpeg(cmd_focus, 'focus-replay')
     return full_live, focus_live, raw_duration, zoom_duration, raw_has_audio
@@ -664,7 +672,6 @@ def image_clip(ffmpeg: str, image_path: Path, duration: float, out: Path):
     cmd = [
         ffmpeg, '-y', '-loop', '1', '-t', str(duration), '-i', str(image_path),
         '-vf', f'fps=30,format=yuv420p,fade=t=in:st=0:d=0.15,fade=t=out:st={fade_out}:d=0.18',
-        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-profile:v', 'high',
-        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', str(out)
+        *LOWMEM_X264, '-movflags', '+faststart', '-an', str(out)
     ]
     _run_ffmpeg(cmd, 'image-clip')

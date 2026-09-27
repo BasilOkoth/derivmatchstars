@@ -1,17 +1,18 @@
-# DigitMatchStar Media Worker v4.5
+# DigitMatchStar Media Worker v4.6 Low-Memory
 
-This release is specifically for the Render FFmpeg build.
+Designed for Render instances with a 512 MB RAM limit.
 
-Confirmed fixes:
-- no FFmpeg `drawtext` filter anywhere
-- fade durations use `0.15` and `0.18`
-- FFmpeg errors are printed to Render logs with a stage name
-- trade progress animation remains via `drawbox`
-- focus replay remains
-- bot-tab audio + premium audio mixing remains
-- premium 1080x1920 output remains
+Key changes
+- Keeps 1080x1920 output.
+- H.264 uses veryfast preset, CRF 21, 1 thread, ref=1, bframes=0.
+- Concat stage uses stream copy instead of a second full H.264 re-encode.
+- Soundtrack uses compact int16 storage instead of Python float objects.
+- Soundtrack writes WAV in chunks.
+- Major FFmpeg stages are still sequential and logged.
+- Final video audio mix copies the already-encoded video stream.
+- Same CORS, ticket, Telegram, progress rail, focus replay and bot-tab audio behavior.
 
-Replace `media-worker/app.py` with this file and redeploy Render.
-
-Health endpoint should report:
-`ultra-premium-live-v4.5`
+Render
+Root Directory: media-worker
+Build: pip install -r requirements.txt
+Start: uvicorn app:app --host 0.0.0.0 --port $PORT
