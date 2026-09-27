@@ -6,7 +6,7 @@
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-    <!-- V19 stream-sync: aligned streaming tick drives recovery; settlement reconciles in background; execution sound only -->
+    <!-- V19.1 stream-sync: aligned streaming tick drives recovery; settlement reconciles in background; execution sound only -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -8642,6 +8642,7 @@ window.isBotRunning = true;
                 // Do not launch recovery from settlement. Recovery was already
                 // armed from the aligned streaming tick. Settlement is now
                 // reconciliation-only for progression timing.
+            }
         }
 
         function onTradeComplete(isSuccess = true) {
