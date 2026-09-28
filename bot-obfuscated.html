@@ -4314,7 +4314,10 @@ window.cyclePerformance = {
                             ? window.cyclePerformance.current.trades.length
                             : 0,
                     researchMode: 'SHADOW_ONLY',
-                    dailyCycleTarget: 5,
+                    baseDailyCycleTarget: 5,
+                    extraCyclesToday: Number(window.DMSTailGuardAutopilot?.getState?.()?.extraCyclesToday || 0),
+                    dailyCycleTarget:
+                        5 + Number(window.DMSTailGuardAutopilot?.getState?.()?.extraCyclesToday || 0),
                     cycleTradeCap: Number(document.getElementById('maxTrades')?.value || 10)
                 },
 
@@ -9083,7 +9086,7 @@ window.isBotRunning = true;
 
     <script>
     // ============================================================================
-    // TAILGUARD AUTOPILOT RESEARCH v2.5 — admin-only + export report
+    // TAILGUARD AUTOPILOT RESEARCH v2.6 — admin-only + export + run 5 more
     // DEMO-ONLY autonomous research runner.
     // Uses the EXISTING DigitMatchStar engine; it does not place Deriv contracts itself.
     // TailGuard decisions remain SHADOW-ONLY while the forward dataset is collected.
@@ -9092,7 +9095,7 @@ window.isBotRunning = true;
         'use strict';
 
         const TG_AP = Object.freeze({
-            version: 'TG-AUTOPILOT-2.5-EXPORT',
+            version: 'TG-AUTOPILOT-2.6-RUN-5-MORE',
             maxCyclesPerDay: 5,
             maxTradesPerCycle: 10,
             pollMs: 500,
@@ -9184,6 +9187,7 @@ window.isBotRunning = true;
             minimizeBtn = null;
             pauseBtn = null;
             exportBtn = null;
+            moreBtn = null;
         }
 
         let panel = null;
@@ -9193,6 +9197,7 @@ window.isBotRunning = true;
         let minimizeBtn = null;
         let pauseBtn = null;
         let exportBtn = null;
+        let moreBtn = null;
         let initialized = false;
         let lastActionAt = 0;
 
@@ -9222,12 +9227,17 @@ window.isBotRunning = true;
                 enabled: raw.enabled !== false,
                 lastStopReason: raw.lastStopReason || null,
                 startedAt: raw.startedAt || null,
-                lastCompletedAt: raw.lastCompletedAt || null
+                lastCompletedAt: raw.lastCompletedAt || null,
+                extraCyclesToday: Number(raw.extraCyclesToday || 0)
             };
         }
 
         function saveState(state) {
             try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (_) {}
+        }
+
+        function todayCycleTarget(state = loadState()) {
+            return TG_AP.maxCyclesPerDay + Number(state.extraCyclesToday || 0);
         }
 
         function isMinimized() {
@@ -9323,6 +9333,7 @@ window.isBotRunning = true;
                 state.startedAt = new Date().toISOString();
                 state.lastCompletedAt = null;
                 state.lastStopReason = null;
+                state.extraCyclesToday = 0;
                 saveState(state);
                 return state;
             }
@@ -9492,8 +9503,12 @@ window.isBotRunning = true;
                             style="width:100%;border:1px solid #0369a1;background:#075985;color:#e0f2fe;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
                             📥 Export report
                         </button>
+                        <button id="tg-ap-more" type="button"
+                            style="width:100%;border:1px solid #15803d;background:#166534;color:#dcfce7;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
+                            ▶ Run 5 more
+                        </button>
                         <button id="tg-ap-pause" type="button"
-                            style="width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
+                            style="grid-column:1 / -1;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
                             Pause autopilot
                         </button>
                     </div>
@@ -9507,6 +9522,7 @@ window.isBotRunning = true;
             minimizeBtn = panel.querySelector('#tg-ap-min');
             pauseBtn = panel.querySelector('#tg-ap-pause');
             exportBtn = panel.querySelector('#tg-ap-export');
+            moreBtn = panel.querySelector('#tg-ap-more');
 
             minimizeBtn.addEventListener('click', () => {
                 setMinimized(body.style.display !== 'none');
@@ -9527,6 +9543,20 @@ window.isBotRunning = true;
                     statusEl.textContent = 'Report export failed';
                     statusEl.style.color = '#f87171';
                 }
+            });
+
+            moreBtn?.addEventListener('click', () => {
+                const s = refreshDailyCounter();
+                s.extraCyclesToday = Number(s.extraCyclesToday || 0) + 5;
+                s.enabled = true;
+                s.lastStopReason = null;
+                saveState(s);
+
+                statusEl.textContent = `Added 5 research cycles — target is now ${todayCycleTarget(s)} today`;
+                statusEl.style.color = '#4ade80';
+
+                // Let the normal loop re-confirm DEMO + AI AUTO before starting.
+                setTimeout(() => { tick().catch(() => {}); }, 100);
             });
 
             pauseBtn.addEventListener('click', () => {
@@ -9553,7 +9583,8 @@ window.isBotRunning = true;
             ensurePanel();
             if (!statusEl || !detailEl) return;
 
-            const complete = state.cyclesToday >= TG_AP.maxCyclesPerDay;
+            const targetToday = todayCycleTarget(state);
+            const complete = state.cyclesToday >= targetToday;
             const blocked = account !== 'DEMO';
 
             statusEl.textContent = message ||
@@ -9571,7 +9602,8 @@ window.isBotRunning = true;
                 Account: <b>${account}</b><br>
                 Mode: <b>${mode}</b><br>
                 Bot: <b>${running === true ? 'RUNNING' : running === false ? 'STOPPED' : 'UNKNOWN'}</b><br>
-                Today: <b>${state.cyclesToday}/${TG_AP.maxCyclesPerDay} completed cycles</b><br>
+                Today: <b>${state.cyclesToday}/${targetToday} completed cycles</b><br>
+                Extra allowance: <b>+${Number(state.extraCyclesToday || 0)}</b><br>
                 Active cycle trades: <b>${activeCycleTradeCount()}/${TG_AP.maxTradesPerCycle}</b><br>
                 Max trades/cycle: <b>${TG_AP.maxTradesPerCycle}</b><br>
                 TailGuard: <b>SHADOW RESEARCH</b><br>
@@ -9632,9 +9664,10 @@ window.isBotRunning = true;
 
             setMaxTrades10();
 
-            if (state.cyclesToday >= TG_AP.maxCyclesPerDay) {
+            const targetToday = todayCycleTarget(state);
+            if (state.cyclesToday >= targetToday) {
                 if (running !== false) {
-                    stopExistingBot(`Daily research limit reached: ${TG_AP.maxCyclesPerDay} cycles`);
+                    stopExistingBot(`Daily research limit reached: ${targetToday} cycles`);
                 }
                 render(state, account, mode, isRunning(), 'Daily research complete');
                 return;
@@ -9693,6 +9726,15 @@ window.isBotRunning = true;
                 s.knownCompletedIds = completedIds().slice(-500);
                 s.startedAt = new Date().toISOString();
                 s.lastCompletedAt = null;
+                s.lastStopReason = null;
+                s.extraCyclesToday = 0;
+                saveState(s);
+                return s;
+            },
+            runFiveMore() {
+                const s = refreshDailyCounter();
+                s.extraCyclesToday = Number(s.extraCyclesToday || 0) + 5;
+                s.enabled = true;
                 s.lastStopReason = null;
                 saveState(s);
                 return s;
