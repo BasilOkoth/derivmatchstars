@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.3-FEED-FIX';
+const VERSION = 'UNDER9-LAB-V2.4-PATTERN-LAB';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -21,6 +21,10 @@ const CFG = {
   threshold: 0.06,
   thresholds: [0.08,0.07,0.06,0.05,0.04],
   cooldownMs: 250,
+  breakEvenNineRate: 1 - (1 / 1.09),
+  patternMinDiscoveryN: 30,
+  patternMinPromisingForwardN: 50,
+  patternMinValidatedForwardN: 200,
 };
 
 const S = {
@@ -97,6 +101,7 @@ function load(){
     const x=JSON.parse(localStorage.getItem(STORE)||'{}');
     if(Array.isArray(x.records))S.records=x.records.slice(-CFG.maxRecords);
     if(Array.isArray(x.discoveryTicks))S.discoveryTicks=x.discoveryTicks.slice(-CFG.historyCount);
+    if(S.discoveryTicks.length>=300)S.historicalLoaded=true;
     if(Array.isArray(x.liveTicks))S.liveTicks=x.liveTicks.slice(-CFG.maxLiveTicks);
     if(x.stats)S.stats=x.stats;
     if(x.mode)S.mode=x.mode;
@@ -131,7 +136,8 @@ function estimateP9(){
   let p=.20*.10+.10*r10+.15*r20+.20*r50+.15*r100+.20*tr;
   if(c5>=2)p+=.005; if(c10===0&&g>=10)p+=.003; if(run>=20)p+=.004; if(ent<.90)p+=.003;
   p=clamp(p,.02,.20);
-  return {p9:p, winProb:1-p, features:{prevDigit:prev,rate9_10:r10,rate9_20:r20,rate9_50:r50,rate9_100:r100,transitionTo9:tr,gapSince9:g,count9_5:c5,count9_10:c10,consecutiveNon9:run,entropy100:ent}};
+  const prev2=a.length>=2?a[a.length-2].digit:null;
+  return {p9:p, winProb:1-p, features:{prevDigit:prev,prev2Digit:prev2,prevPair:prev2==null?null:`${prev2}${prev}`,rate9_10:r10,rate9_20:r20,rate9_50:r50,rate9_100:r100,transitionTo9:tr,gapSince9:g,count9_5:c5,count9_10:c10,consecutiveNon9:run,entropy100:ent}};
 }
 
 function makePrediction(){
@@ -284,8 +290,95 @@ function thresholdStats(th){
   const a=S.records.filter(r=>r.kind==='SHADOW' && r.p9<=th);const wins=a.filter(r=>r.under9Win).length,loss=a.length-wins;
   return {n:a.length,winRate:a.length?wins/a.length:null,nineRate:a.length?loss/a.length:null,simPnl:wins*.09-loss*1};
 }
+
+
+function gapBucket(g){
+  if(g===0)return '0';
+  if(g<=2)return '1-2';
+  if(g<=5)return '3-5';
+  if(g<=10)return '6-10';
+  if(g<=20)return '11-20';
+  if(g<=40)return '21-40';
+  return '41+';
+}
+function countBucket(v, cut2=2){
+  if(v===0)return '0';
+  if(v===1)return '1';
+  return `${cut2}+`;
+}
+function tagsFromFeatures(f={}){
+  const tags=[];
+  if(Number.isInteger(f.prevDigit)) tags.push({key:`prev:${f.prevDigit}`,label:`Previous digit = ${f.prevDigit}`});
+  if(f.prevPair!=null) tags.push({key:`pair:${f.prevPair}`,label:`Previous pair = ${f.prevPair}`});
+  if(Number.isFinite(f.gapSince9)) tags.push({key:`gap:${gapBucket(f.gapSince9)}`,label:`Gap since 9 = ${gapBucket(f.gapSince9)}`});
+  if(Number.isFinite(f.count9_5)) tags.push({key:`c5:${countBucket(f.count9_5)}`,label:`9s in last 5 = ${countBucket(f.count9_5)}`});
+  if(Number.isFinite(f.count9_10)) tags.push({key:`c10:${f.count9_10>=3?'3+':String(f.count9_10)}`,label:`9s in last 10 = ${f.count9_10>=3?'3+':f.count9_10}`});
+  if(f.prevDigit===9) tags.push({key:'after9',label:'Immediately after 9'});
+  if(f.prevPair==='99') tags.push({key:'after99',label:'Immediately after 99'});
+  if(Number(f.count9_5)>=2) tags.push({key:'cluster5',label:'2+ nines in last 5'});
+  if(Number(f.count9_10)>=3) tags.push({key:'cluster10',label:'3+ nines in last 10'});
+  return tags;
+}
+function historicalFeaturesAt(arr,i){
+  const prev=i>0?arr[i-1].digit:null;
+  const prev2=i>1?arr[i-2].digit:null;
+  let gap=i;
+  for(let j=i-1,g=0;j>=0;j--,g++){ if(arr[j].digit===9){gap=g;break;} }
+  const c5=arr.slice(Math.max(0,i-5),i).filter(x=>x.digit===9).length;
+  const c10=arr.slice(Math.max(0,i-10),i).filter(x=>x.digit===9).length;
+  return {prevDigit:prev,prev2Digit:prev2,prevPair:(prev2==null||prev==null)?null:`${prev2}${prev}`,gapSince9:gap,count9_5:c5,count9_10:c10};
+}
+function summarizeTagged(rows){
+  const m=new Map();
+  for(const row of rows){
+    for(const tag of row.tags){
+      let x=m.get(tag.key);if(!x){x={key:tag.key,label:tag.label,n:0,nines:0};m.set(tag.key,x);}
+      x.n++; if(row.isNine)x.nines++;
+    }
+  }
+  return [...m.values()].map(x=>({...x,nineRate:x.n?x.nines/x.n:null,winRate:x.n?1-x.nines/x.n:null}));
+}
+function discoveryPatternStats(){
+  const a=S.discoveryTicks;
+  const rows=[];
+  for(let i=20;i<a.length;i++){
+    const f=historicalFeaturesAt(a,i);
+    rows.push({tags:tagsFromFeatures(f),isNine:a[i].digit===9});
+  }
+  return summarizeTagged(rows);
+}
+function forwardPatternStats(){
+  const rows=S.records.filter(r=>r.kind==='SHADOW').map(r=>({tags:tagsFromFeatures(r.features||{}),isNine:r.digit===9}));
+  return summarizeTagged(rows);
+}
+function wilsonUpper(k,n,z=1.96){
+  if(!n)return null;
+  const p=k/n, z2=z*z, den=1+z2/n;
+  const ctr=p+z2/(2*n);
+  const rad=z*Math.sqrt((p*(1-p)+z2/(4*n))/n);
+  return (ctr+rad)/den;
+}
+function patternLabSnapshot(){
+  const disc=discoveryPatternStats().filter(x=>x.n>=CFG.patternMinDiscoveryN);
+  const fwdMap=new Map(forwardPatternStats().map(x=>[x.key,x]));
+  const candidates=disc
+    .filter(x=>x.nineRate<CFG.breakEvenNineRate)
+    .sort((a,b)=>a.nineRate-b.nineRate || b.n-a.n)
+    .slice(0,12)
+    .map(d=>{
+      const f=fwdMap.get(d.key)||{n:0,nines:0,nineRate:null,winRate:null};
+      const upper95=f.n?wilsonUpper(f.nines,f.n):null;
+      let status='DISCOVERY_ONLY';
+      if(f.n>=CFG.patternMinValidatedForwardN && upper95!=null && upper95<CFG.breakEvenNineRate) status='FORWARD_VALIDATED';
+      else if(f.n>=CFG.patternMinPromisingForwardN && f.nineRate!=null && f.nineRate<CFG.breakEvenNineRate) status='PROMISING_FORWARD';
+      else if(f.n>=CFG.patternMinPromisingForwardN) status='NOT_CONFIRMED';
+      return {key:d.key,label:d.label,discovery:d,forward:f,forwardUpper95:upper95,status};
+    });
+  const current=makePrediction();
+  return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,currentTags:current?tagsFromFeatures(current.features):[]};
+}
 function exportJSON(){
-  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),records:S.records};
+  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_4',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),records:S.records};
   const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`under9-lab-${SYMBOL}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
 
@@ -350,6 +443,14 @@ function ensureStyles(){
     #${PANEL_ID} .u9-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:linear-gradient(90deg,rgba(99,102,241,.16),rgba(16,185,129,.12));border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 12px;margin-bottom:12px}
     #${PANEL_ID} .u9-banner .label{font-size:11px;color:#a5b4fc;font-weight:900;letter-spacing:.05em}
     #${PANEL_ID} .u9-banner .value{font-size:14px;color:#fff;font-weight:900}
+    #${PANEL_ID} .u9-pattern-row{display:grid;grid-template-columns:1.6fr .7fr .7fr;gap:6px;align-items:center;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.05)}
+    #${PANEL_ID} .u9-pattern-row:last-child{border-bottom:0}
+    #${PANEL_ID} .u9-pattern-name{font-size:11px;color:#e2e8f0;font-weight:700}
+    #${PANEL_ID} .u9-badge{display:inline-block;padding:3px 6px;border-radius:999px;font-size:9px;font-weight:900;margin-top:3px}
+    #${PANEL_ID} .u9-badge.valid{background:rgba(34,197,94,.16);color:#86efac}
+    #${PANEL_ID} .u9-badge.prom{background:rgba(245,158,11,.16);color:#fde68a}
+    #${PANEL_ID} .u9-badge.disc{background:rgba(96,165,250,.16);color:#bfdbfe}
+    #${PANEL_ID} .u9-badge.no{background:rgba(248,113,113,.16);color:#fecaca}
   `;
   document.head.appendChild(style);
 }
@@ -409,6 +510,12 @@ function render(){
     return `<tr><td align="left">≤ ${(t*100).toFixed(0)}%</td><td align="right">${x.n}</td><td align="right" class="${winClass}">${pct(x.winRate)}</td><td align="right" class="${nineClass}">${pct(x.nineRate)}</td><td align="right" class="${pnlClass}">${money(x.simPnl)}</td></tr>`;
   }).join('');
   const activeTradeSummary=S.activeTrade ? `Contract #${S.activeTrade.contractId} active` : (S.pendingProposal ? 'Waiting for proposal / buy' : (effectiveActive ? 'Watching for qualified signals' : waiting ? 'Waiting for market feed + history' : 'Runner is idle'));
+  const patternLab=patternLabSnapshot();
+  const patternRows=patternLab.candidates.slice(0,8).map(c=>{
+    const badgeClass=c.status==='FORWARD_VALIDATED'?'valid':c.status==='PROMISING_FORWARD'?'prom':c.status==='NOT_CONFIRMED'?'no':'disc';
+    const badgeText=c.status==='FORWARD_VALIDATED'?'VALIDATED':c.status==='PROMISING_FORWARD'?'PROMISING':c.status==='NOT_CONFIRMED'?'NOT CONFIRMED':'DISCOVERY';
+    return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Hist</span><br><b>${pct(c.discovery.nineRate)}</b><br><span class="muted">n=${c.discovery.n}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div></div>`;
+  }).join('');
   el.innerHTML=`
     <div class="u9-status-row">
       ${statusChip(S.connected?'online':'offline',`Feed ${feedStatus}`)}
@@ -478,8 +585,19 @@ function render(){
       </table>
     </div>
 
-    <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The table above is based on <b>future-only live forward observations</b>. The green numbers are the healthier ones to watch. The critical benchmark is keeping the accepted <b>9 rate below 8.26%</b>, which is the break-even point for a <b>$1 stake / $0.09 profit</b> setup.</div>
-    <button id="u9-export" class="u9-export">Export Under-9 JSON</button>`;
+    <div class="u9-table-wrap">
+      <div class="u9-table-title">Pattern Lab · historical discovery vs fresh forward proof</div>
+      <div class="u9-note" style="margin:0 0 6px">Candidates below are selected from the locked historical discovery sample. They are <b>not</b> allowed to become “validated” until enough fresh forward observations confirm them.</div>
+      ${patternRows || '<div class="u9-note">Pattern candidates will appear after the historical discovery sample is available.</div>'}
+    </div>
+
+    <div class="u9-panel">
+      <div class="u9-table-title">Current market state</div>
+      <div class="u9-note" style="margin-top:4px">${patternLab.currentTags.length?patternLab.currentTags.map(x=>x.label).join(' · '):'Waiting for enough ticks'}</div>
+    </div>
+
+    <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The threshold table and Pattern Lab forward column use <b>future-only observations</b>. Break-even requires the accepted digit-9 rate to stay below <b>8.26%</b> for the assumed <b>$1 stake / $0.09 profit</b>. Pattern candidates are research signals only until they earn a fresh forward sample.</div>
+    <button id="u9-export" class="u9-export">Export Under-9 JSON + Pattern Lab</button>`;
   $('u9-shadow').onclick=()=>setMode('SHADOW');
   $('u9-demo').onclick=()=>setMode('DEMO');
   $('u9-real').onclick=()=>setMode('REAL');
@@ -489,7 +607,7 @@ function render(){
 
 window.DMSUnder9Lab={
   version:VERSION,
-  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,privateAdmin:true}):null,
+  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,patternLab:patternLabSnapshot(),privateAdmin:true}):null,
   exportReport:()=>{if(S.adminAuthorized)exportJSON();},
   setMode,
   start:async()=>{if(!(await ensureAdminAuthorized(true)))return;S.running=true;save();render();if(S.mode!=='SHADOW')maybeExecute();},
