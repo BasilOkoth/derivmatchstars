@@ -9068,6 +9068,478 @@ window.isBotRunning = true;
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
     </script>
+
+    <script>
+    // ============================================================================
+    // TAILGUARD AUTOPILOT RESEARCH v2.1
+    // DEMO-ONLY autonomous research runner.
+    // Uses the EXISTING DigitMatchStar engine; it does not place Deriv contracts itself.
+    // TailGuard decisions remain SHADOW-ONLY while the forward dataset is collected.
+    // ============================================================================
+    (() => {
+        'use strict';
+
+        const TG_AP = Object.freeze({
+            version: 'TG-AUTOPILOT-2.1',
+            maxCyclesPerDay: 5,
+            maxTradesPerCycle: 10,
+            pollMs: 500,
+            demoOnly: true
+        });
+
+        const STATE_KEY = 'digitmatchstar_tailguard_autopilot_v21';
+        const MIN_KEY = 'matchstar_panel_min_tailguard-autopilot';
+
+        let panel = null;
+        let body = null;
+        let statusEl = null;
+        let detailEl = null;
+        let minimizeBtn = null;
+        let pauseBtn = null;
+        let initialized = false;
+        let lastActionAt = 0;
+
+        function globalBinding(name) {
+            try {
+                return (0, eval)(`typeof ${name} !== 'undefined' ? ${name} : null`);
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function localDayKey(ts = Date.now()) {
+            const d = new Date(ts);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+
+        function loadState() {
+            let raw = {};
+            try { raw = JSON.parse(localStorage.getItem(STATE_KEY) || '{}') || {}; } catch (_) {}
+            return {
+                dayKey: raw.dayKey || null,
+                cyclesToday: Number(raw.cyclesToday || 0),
+                knownCompletedIds: Array.isArray(raw.knownCompletedIds) ? raw.knownCompletedIds : [],
+                enabled: raw.enabled !== false,
+                lastStopReason: raw.lastStopReason || null,
+                startedAt: raw.startedAt || null,
+                lastCompletedAt: raw.lastCompletedAt || null
+            };
+        }
+
+        function saveState(state) {
+            try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (_) {}
+        }
+
+        function isMinimized() {
+            try { return localStorage.getItem(MIN_KEY) === '1'; } catch (_) { return false; }
+        }
+
+        function saveMinimized(v) {
+            try { localStorage.setItem(MIN_KEY, v ? '1' : '0'); } catch (_) {}
+        }
+
+        function accountMode() {
+            const stored = String(localStorage.getItem('selectedAccountMode') || '').toUpperCase();
+            if (stored === 'DEMO' || stored === 'REAL') return stored;
+
+            const toggle = document.getElementById('accTypeToggle');
+            if (toggle) return toggle.checked ? 'REAL' : 'DEMO';
+
+            return 'UNKNOWN';
+        }
+
+        function currentExecutionMode() {
+            const ss = globalBinding('sessionState');
+            if (ss && typeof ss.mode === 'string') {
+                const m = ss.mode.toLowerCase();
+                if (m === 'ai') return 'AI_AUTO';
+                if (m === 'instant') return 'INSTANT';
+            }
+
+            const desc = String(document.getElementById('mode_description')?.textContent || '').toUpperCase();
+            if (desc.includes('AI AUTO')) return 'AI_AUTO';
+            if (desc.includes('INSTANT')) return 'INSTANT';
+
+            return 'UNKNOWN';
+        }
+
+        function isRunning() {
+            const direct = globalBinding('window')?.isBotRunning;
+            if (typeof direct === 'boolean') return direct;
+
+            const btn = document.getElementById('toggleButton');
+            const txt = String(btn?.textContent || '').toUpperCase();
+            if (txt.includes('STOP')) return true;
+            if (txt.includes('START')) return false;
+            return null;
+        }
+
+        function cycleHistory() {
+            const cp = globalBinding('cyclePerformance') || window.cyclePerformance;
+            const h = cp && Array.isArray(cp.history) ? cp.history : [];
+            return h;
+        }
+
+        function completedIds() {
+            return cycleHistory()
+                .filter(c => c && c.id && (c.status === 'WIN' || c.status === 'STOPPED'))
+                .map(c => String(c.id));
+        }
+
+        function refreshDailyCounter() {
+            const state = loadState();
+            const today = localDayKey();
+            const ids = completedIds();
+
+            if (state.dayKey !== today) {
+                state.dayKey = today;
+                state.cyclesToday = 0;
+                state.knownCompletedIds = ids.slice(-500);
+                state.startedAt = new Date().toISOString();
+                state.lastCompletedAt = null;
+                state.lastStopReason = null;
+                saveState(state);
+                return state;
+            }
+
+            if (!initialized && state.knownCompletedIds.length === 0 && state.cyclesToday === 0) {
+                state.knownCompletedIds = ids.slice(-500);
+                state.startedAt = state.startedAt || new Date().toISOString();
+                saveState(state);
+                return state;
+            }
+
+            const known = new Set(state.knownCompletedIds);
+            const fresh = ids.filter(id => !known.has(id));
+
+            if (fresh.length) {
+                state.cyclesToday += fresh.length;
+                state.lastCompletedAt = new Date().toISOString();
+                state.knownCompletedIds = Array.from(
+                    new Set([...state.knownCompletedIds, ...fresh])
+                ).slice(-1000);
+                saveState(state);
+            }
+
+            return state;
+        }
+
+        function setMaxTrades10() {
+            const input = document.getElementById('maxTrades');
+            if (!input) return false;
+
+            if (String(input.value) !== String(TG_AP.maxTradesPerCycle)) {
+                const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype, 'value'
+                )?.set;
+                if (setter) setter.call(input, String(TG_AP.maxTradesPerCycle));
+                else input.value = String(TG_AP.maxTradesPerCycle);
+
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            return String(input.value) === String(TG_AP.maxTradesPerCycle);
+        }
+
+        function selectAiAuto() {
+            if (currentExecutionMode() === 'AI_AUTO') return true;
+
+            const fn = globalBinding('switchMode');
+            if (typeof fn === 'function') {
+                try {
+                    fn('ai');
+                    lastActionAt = Date.now();
+                    return true;
+                } catch (_) {}
+            }
+
+            const btn = document.getElementById('mode_ai');
+            if (btn) {
+                btn.click();
+                lastActionAt = Date.now();
+                return true;
+            }
+
+            return false;
+        }
+
+        function stopExistingBot(reason) {
+            if (isRunning() === false) return true;
+
+            const stop = globalBinding('stopBot');
+            if (typeof stop === 'function') {
+                try {
+                    stop();
+                    const s = loadState();
+                    s.lastStopReason = reason;
+                    saveState(s);
+                    lastActionAt = Date.now();
+                    return true;
+                } catch (_) {}
+            }
+
+            const btn = document.getElementById('toggleButton');
+            if (btn && String(btn.textContent || '').toUpperCase().includes('STOP')) {
+                btn.click();
+                const s = loadState();
+                s.lastStopReason = reason;
+                saveState(s);
+                lastActionAt = Date.now();
+                return true;
+            }
+
+            return false;
+        }
+
+        function startExistingBot() {
+            if (isRunning() === true) return true;
+
+            const start = globalBinding('startBot');
+            if (typeof start === 'function') {
+                try {
+                    start();
+                    lastActionAt = Date.now();
+                    return true;
+                } catch (_) {}
+            }
+
+            const btn = document.getElementById('toggleButton');
+            if (btn && String(btn.textContent || '').toUpperCase().includes('START')) {
+                btn.click();
+                lastActionAt = Date.now();
+                return true;
+            }
+
+            return false;
+        }
+
+        function setMinimized(minimized) {
+            if (!body || !minimizeBtn) return;
+            body.style.display = minimized ? 'none' : 'block';
+            minimizeBtn.textContent = minimized ? '+' : '−';
+            minimizeBtn.title = minimized ? 'Expand TailGuard Autopilot' : 'Minimize TailGuard Autopilot';
+            minimizeBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+            saveMinimized(minimized);
+        }
+
+        function ensurePanel() {
+            if (panel && document.body.contains(panel)) return;
+
+            panel = document.createElement('section');
+            panel.id = 'tailguard-autopilot-panel';
+            panel.style.cssText = [
+                'position:fixed',
+                'left:12px',
+                'bottom:12px',
+                'z-index:2147483000',
+                'width:min(350px,calc(100vw - 24px))',
+                'font-family:Inter,system-ui,sans-serif',
+                'background:rgba(2,6,23,.97)',
+                'color:#e2e8f0',
+                'border:1px solid rgba(56,189,248,.45)',
+                'border-radius:14px',
+                'box-shadow:0 18px 55px rgba(0,0,0,.48)',
+                'overflow:hidden',
+                'font-size:12px'
+            ].join(';');
+
+            panel.innerHTML = `
+                <div id="tg-ap-header" style="display:flex;align-items:center;gap:8px;padding:9px 10px;background:rgba(15,23,42,.98);border-bottom:1px solid rgba(148,163,184,.18)">
+                    <div style="min-width:0;flex:1">
+                        <div style="font-weight:900;color:#7dd3fc">🤖 TailGuard Autopilot</div>
+                        <div style="font-size:10px;color:#fbbf24">DEMO-ONLY · forward research</div>
+                    </div>
+                    <span style="font-size:9px;color:#64748b">${TG_AP.version}</span>
+                    <button id="tg-ap-min" type="button"
+                        style="border:1px solid #334155;background:#1e293b;color:#fff;border-radius:7px;padding:3px 8px;font-weight:900;cursor:pointer"
+                        aria-expanded="true" title="Minimize TailGuard Autopilot">−</button>
+                </div>
+                <div id="tg-ap-body" style="padding:10px 11px">
+                    <div id="tg-ap-status" style="font-weight:900;color:#38bdf8;margin-bottom:6px">Initializing…</div>
+                    <div id="tg-ap-detail" style="line-height:1.5;color:#cbd5e1"></div>
+                    <button id="tg-ap-pause" type="button"
+                        style="margin-top:9px;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
+                        Pause autopilot
+                    </button>
+                </div>
+            `;
+
+            document.body.appendChild(panel);
+            body = panel.querySelector('#tg-ap-body');
+            statusEl = panel.querySelector('#tg-ap-status');
+            detailEl = panel.querySelector('#tg-ap-detail');
+            minimizeBtn = panel.querySelector('#tg-ap-min');
+            pauseBtn = panel.querySelector('#tg-ap-pause');
+
+            minimizeBtn.addEventListener('click', () => {
+                setMinimized(body.style.display !== 'none');
+            });
+
+            pauseBtn.addEventListener('click', () => {
+                const s = loadState();
+                s.enabled = !s.enabled;
+                saveState(s);
+
+                if (!s.enabled) {
+                    stopExistingBot('Autopilot manually paused');
+                }
+
+                render(s, accountMode(), currentExecutionMode(), isRunning(),
+                    s.enabled ? 'Resuming autonomous research…' : 'Autopilot paused');
+            });
+
+            setMinimized(isMinimized());
+        }
+
+        function render(state, account, mode, running, message) {
+            ensurePanel();
+
+            const complete = state.cyclesToday >= TG_AP.maxCyclesPerDay;
+            const blocked = account !== 'DEMO';
+
+            statusEl.textContent = message ||
+                (complete ? 'Daily research complete' :
+                blocked ? 'Waiting for confirmed DEMO account' :
+                running === true ? 'Autonomous research running' :
+                'Preparing research');
+
+            statusEl.style.color =
+                complete ? '#4ade80' :
+                account === 'REAL' ? '#f87171' :
+                '#38bdf8';
+
+            detailEl.innerHTML = `
+                Account: <b>${account}</b><br>
+                Mode: <b>${mode}</b><br>
+                Bot: <b>${running === true ? 'RUNNING' : running === false ? 'STOPPED' : 'UNKNOWN'}</b><br>
+                Today: <b>${state.cyclesToday}/${TG_AP.maxCyclesPerDay} completed cycles</b><br>
+                Max trades/cycle: <b>${TG_AP.maxTradesPerCycle}</b><br>
+                TailGuard: <b>SHADOW RESEARCH</b><br>
+                Autopilot: <b>${state.enabled ? 'ENABLED' : 'PAUSED'}</b>
+                ${state.lastStopReason ? `<br>Last stop: <b>${String(state.lastStopReason).replace(/[&<>]/g, '')}</b>` : ''}
+            `;
+
+            if (pauseBtn) {
+                pauseBtn.textContent = state.enabled ? 'Pause autopilot' : 'Resume autopilot';
+            }
+        }
+
+        function tick() {
+            if (!document.body) return;
+            ensurePanel();
+
+            const state = refreshDailyCounter();
+            initialized = true;
+
+            const account = accountMode();
+            let mode = currentExecutionMode();
+            let running = isRunning();
+
+            if (!state.enabled) {
+                render(state, account, mode, running, 'Autopilot paused');
+                return;
+            }
+
+            // HARD BOUNDARY: never autonomously run a REAL account.
+            if (account !== 'DEMO') {
+                if (running === true) {
+                    stopExistingBot(
+                        account === 'REAL'
+                            ? 'REAL account detected — autonomous research blocked'
+                            : 'Account type could not be confirmed as DEMO'
+                    );
+                }
+                render(
+                    state, account, mode, isRunning(),
+                    account === 'REAL'
+                        ? 'BLOCKED: REAL account'
+                        : 'Waiting for confirmed DEMO account'
+                );
+                return;
+            }
+
+            setMaxTrades10();
+
+            if (state.cyclesToday >= TG_AP.maxCyclesPerDay) {
+                if (running !== false) {
+                    stopExistingBot(`Daily research limit reached: ${TG_AP.maxCyclesPerDay} cycles`);
+                }
+                render(state, account, mode, isRunning(), 'Daily research complete');
+                return;
+            }
+
+            if (mode !== 'AI_AUTO' && Date.now() - lastActionAt > 1200) {
+                selectAiAuto();
+                mode = currentExecutionMode();
+            }
+
+            // Never start until AI AUTO is confirmed.
+            if (mode !== 'AI_AUTO') {
+                if (running === true) {
+                    stopExistingBot('AI AUTO not confirmed');
+                }
+                render(state, account, mode, isRunning(), 'Switching to AI AUTO…');
+                return;
+            }
+
+            running = isRunning();
+
+            if (running !== true && Date.now() - lastActionAt > 1500) {
+                const started = startExistingBot();
+                render(
+                    state, account, mode, isRunning(),
+                    started ? 'Starting autonomous AI research…' : 'Waiting to start bot…'
+                );
+                return;
+            }
+
+            render(
+                state, account, mode, running,
+                running === true ? 'Autonomous AI research running' : 'Preparing research'
+            );
+        }
+
+        window.DMSTailGuardAutopilot = {
+            version: TG_AP.version,
+            pause() {
+                const s = loadState();
+                s.enabled = false;
+                saveState(s);
+                stopExistingBot('Autopilot API pause');
+                return s;
+            },
+            resume() {
+                const s = loadState();
+                s.enabled = true;
+                saveState(s);
+                return s;
+            },
+            resetToday() {
+                const s = loadState();
+                s.dayKey = localDayKey();
+                s.cyclesToday = 0;
+                s.knownCompletedIds = completedIds().slice(-500);
+                s.startedAt = new Date().toISOString();
+                s.lastCompletedAt = null;
+                s.lastStopReason = null;
+                saveState(s);
+                return s;
+            },
+            getState() {
+                return loadState();
+            }
+        };
+
+        ensurePanel();
+        setInterval(tick, TG_AP.pollMs);
+        setTimeout(tick, 500);
+    })();
+    </script>
+
     <script src="/screen-recorder-safe-v5-2.js"></script>
 </body>
 </html>
