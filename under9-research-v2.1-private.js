@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.5-COMBO-WATCHDOG';
+const VERSION = 'UNDER9-LAB-V2.6-DEDUP-WATCHLIST';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -406,23 +406,36 @@ function wilsonUpper(k,n,z=1.96){
   return (ctr+rad)/den;
 }
 
-function comboKey(tags){return tags.map(t=>t.key).sort().join('&&');}
-function comboLabel(tags){return tags.map(t=>t.label).join(' + ');}
+function canonicalTag(tag){
+  // Collapse logically equivalent market-state descriptions so one state is not counted as several discoveries.
+  if(!tag) return tag;
+  if(tag.key==='prev:9' || tag.key==='gap:0' || tag.key==='after9') return {key:'state:after9',label:'Immediately after 9'};
+  if(tag.key==='cluster5' || tag.key==='c5:2+') return {key:'c5:2+',label:'9s in last 5 = 2+'};
+  return tag;
+}
+function canonicalizeTags(tags){
+  const m=new Map();
+  for(const raw of tags||[]){const t=canonicalTag(raw); if(t && !m.has(t.key))m.set(t.key,t);}
+  return [...m.values()];
+}
+function comboKey(tags){return canonicalizeTags(tags).map(t=>t.key).sort().join('&&');}
+function comboLabel(tags){return canonicalizeTags(tags).map(t=>t.label).join(' + ');}
+function simPnlFromCounts(n,nines){const wins=Math.max(0,(n||0)-(nines||0));return wins*.09-(nines||0);}
 function summarizeCombos(rows, maxSize=2){
   const m=new Map();
   for(const row of rows){
-    const unique=[...new Map(row.tags.map(t=>[t.key,t])).values()];
+    const unique=canonicalizeTags(row.tags);
     for(let i=0;i<unique.length;i++){
       for(let j=i+1;j<unique.length;j++){
-        const tags=[unique[i],unique[j]];
-        const key=comboKey(tags);
+        const tags=[unique[i],unique[j]], key=comboKey(tags);
+        if(!key || !key.includes('&&'))continue;
         let x=m.get(key);
-        if(!x){x={key,label:comboLabel(tags),tagKeys:tags.map(t=>t.key).sort(),n:0,nines:0};m.set(key,x);}
+        if(!x){x={key,label:comboLabel(tags),tagKeys:canonicalizeTags(tags).map(t=>t.key).sort(),n:0,nines:0};m.set(key,x);}
         x.n++; if(row.isNine)x.nines++;
       }
     }
   }
-  return [...m.values()].map(x=>({...x,nineRate:x.n?x.nines/x.n:null,winRate:x.n?1-x.nines/x.n:null}));
+  return [...m.values()].map(x=>({...x,nineRate:x.n?x.nines/x.n:null,winRate:x.n?1-x.nines/x.n:null,simPnl:simPnlFromCounts(x.n,x.nines)}));
 }
 function historicalPatternRows(){
   const a=S.discoveryTicks, rows=[];
@@ -441,19 +454,36 @@ function combinationLabSnapshot(){
     .sort((a,b)=>a.nineRate-b.nineRate || b.n-a.n)
     .slice(0,CFG.comboMaxCandidates);
   const fwdMap=new Map(summarizeCombos(forwardPatternRows()).map(x=>[x.key,x]));
-  const candidates=disc.map(d=>{
-    const f=fwdMap.get(d.key)||{n:0,nines:0,nineRate:null,winRate:null};
+  let candidates=disc.map(d=>{
+    const f0=fwdMap.get(d.key)||{n:0,nines:0,nineRate:null,winRate:null,simPnl:0};
+    const f={...f0,simPnl:simPnlFromCounts(f0.n,f0.nines)};
     const upper95=f.n?wilsonUpper(f.nines,f.n):null;
     let status='DISCOVERY_ONLY';
     if(f.n>=CFG.patternMinValidatedForwardN && upper95!=null && upper95<CFG.breakEvenNineRate) status='FORWARD_VALIDATED';
     else if(f.n>=CFG.patternMinPromisingForwardN && f.nineRate!=null && f.nineRate<CFG.breakEvenNineRate) status='PROMISING_FORWARD';
     else if(f.n>=CFG.patternMinPromisingForwardN) status='NOT_CONFIRMED';
-    return {...d,discovery:d,forward:f,forwardUpper95:upper95,status};
+    const observationsToPromising=Math.max(0,CFG.patternMinPromisingForwardN-f.n);
+    const observationsToValidation=Math.max(0,CFG.patternMinValidatedForwardN-f.n);
+    return {...d,discovery:{...d,simPnl:simPnlFromCounts(d.n,d.nines)},forward:f,forwardUpper95:upper95,status,observationsToPromising,observationsToValidation};
   });
+  const statusRank={FORWARD_VALIDATED:0,PROMISING_FORWARD:1,DISCOVERY_ONLY:2,NOT_CONFIRMED:3};
+  candidates=candidates.sort((a,b)=>
+    (statusRank[a.status]-statusRank[b.status]) ||
+    ((a.forward.nineRate??1)-(b.forward.nineRate??1)) ||
+    (b.forward.n-a.forward.n)
+  );
   const cur=makePrediction();
-  const currentTagKeys=new Set(cur?tagsFromFeatures(cur.features).map(t=>t.key):[]);
+  const currentTagKeys=new Set(canonicalizeTags(cur?tagsFromFeatures(cur.features):[]).map(t=>t.key));
   const activeCandidates=candidates.filter(c=>c.tagKeys.every(k=>currentTagKeys.has(k)));
-  return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,activeCandidates};
+  const watchlist=candidates
+    .filter(c=>c.status==='FORWARD_VALIDATED' || c.status==='PROMISING_FORWARD' || (c.status==='DISCOVERY_ONLY' && c.forward.n>0 && c.forward.nineRate!=null && c.forward.nineRate<CFG.breakEvenNineRate))
+    .sort((a,b)=>
+      (statusRank[a.status]-statusRank[b.status]) ||
+      ((a.forwardUpper95??1)-(b.forwardUpper95??1)) ||
+      (b.forward.n-a.forward.n)
+    )
+    .slice(0,10);
+  return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,watchlist,activeCandidates,deduplication:{rules:['prev:9 = gap:0 = immediately after 9','cluster5 = 9s in last 5 = 2+']}};
 }
 
 function patternLabSnapshot(){
@@ -476,7 +506,7 @@ function patternLabSnapshot(){
   return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,currentTags:current?tagsFromFeatures(current.features):[]};
 }
 function exportJSON(){
-  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_5',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,lastPublicMessageAt:S.lastPublicMessageAt,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},records:S.records};
+  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_6',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,lastPublicMessageAt:S.lastPublicMessageAt,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},records:S.records};
   const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`under9-lab-${SYMBOL}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
 
@@ -549,6 +579,16 @@ function ensureStyles(){
     #${PANEL_ID} .u9-badge.prom{background:rgba(245,158,11,.16);color:#fde68a}
     #${PANEL_ID} .u9-badge.disc{background:rgba(96,165,250,.16);color:#bfdbfe}
     #${PANEL_ID} .u9-badge.no{background:rgba(248,113,113,.16);color:#fecaca}
+    #${PANEL_ID} .u9-badge.validated{background:rgba(34,197,94,.16);color:#86efac}
+    #${PANEL_ID} .u9-badge.promising{background:rgba(245,158,11,.16);color:#fde68a}
+    #${PANEL_ID} .u9-badge.discovery{background:rgba(96,165,250,.16);color:#bfdbfe}
+    #${PANEL_ID} .u9-badge.rejected{background:rgba(248,113,113,.16);color:#fecaca}
+    #${PANEL_ID} .u9-watch{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+    #${PANEL_ID} .u9-watch:last-child{border-bottom:0}
+    #${PANEL_ID} .u9-watch-name{font-weight:800;color:#f8fafc;line-height:1.25}
+    #${PANEL_ID} .u9-watch-meta{font-size:10px;color:#94a3b8;margin-top:3px}
+    #${PANEL_ID} .u9-pnl-pos{color:#4ade80;font-weight:900}
+    #${PANEL_ID} .u9-pnl-neg{color:#f87171;font-weight:900}
   `;
   document.head.appendChild(style);
 }
@@ -616,10 +656,17 @@ function render(){
     return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Hist</span><br><b>${pct(c.discovery.nineRate)}</b><br><span class="muted">n=${c.discovery.n}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div></div>`;
   }).join('');
 
-  const comboRows=comboLab.candidates.slice(0,8).map(c=>{
+  const comboRows=comboLab.candidates.slice(0,10).map(c=>{
     const badgeClass=c.status==='FORWARD_VALIDATED'?'validated':c.status==='PROMISING_FORWARD'?'promising':c.status==='NOT_CONFIRMED'?'rejected':'discovery';
     const badgeText=c.status==='FORWARD_VALIDATED'?'VALIDATED':c.status==='PROMISING_FORWARD'?'PROMISING':c.status==='NOT_CONFIRMED'?'NOT CONFIRMED':'DISCOVERY';
-    return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Hist</span><br><b>${pct(c.discovery.nineRate)}</b><br><span class="muted">n=${c.discovery.n}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div></div>`;
+    const pnlClass=c.forward.simPnl>0?'u9-pnl-pos':c.forward.simPnl<0?'u9-pnl-neg':'muted';
+    return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div><div style="text-align:right"><span class="muted">Sim P&L</span><br><b class="${pnlClass}">${money(c.forward.simPnl)}</b><br><span class="muted">95% up ${pct(c.forwardUpper95)}</span></div></div>`;
+  }).join('');
+
+  const watchRows=comboLab.watchlist.map(c=>{
+    const need=c.status==='FORWARD_VALIDATED'?'validated':`${c.observationsToValidation} more to n=${CFG.patternMinValidatedForwardN}`;
+    const pnlClass=c.forward.simPnl>0?'u9-pnl-pos':c.forward.simPnl<0?'u9-pnl-neg':'muted';
+    return `<div class="u9-watch"><div><div class="u9-watch-name">${c.label}</div><div class="u9-watch-meta">${c.status.replaceAll('_',' ')} · ${need} · 95% upper ${pct(c.forwardUpper95)}</div></div><div style="text-align:right"><div class="${pnlClass}">${money(c.forward.simPnl)}</div><div class="u9-watch-meta">9-rate ${pct(c.forward.nineRate)} · n=${c.forward.n}</div></div></div>`;
   }).join('');
 
   el.innerHTML=`
@@ -697,13 +744,25 @@ function render(){
       ${patternRows || '<div class="u9-note">Pattern candidates will appear after the historical discovery sample is available.</div>'}
     </div>
 
+    <div class="u9-table-wrap">
+      <div class="u9-table-title">Combination Lab · deduplicated and ranked by forward evidence</div>
+      <div class="u9-note" style="margin:0 0 6px">Equivalent states are collapsed so the same underlying condition cannot appear multiple times under different names. Sim P&L assumes +$0.09 per win and -$1.00 per digit-9 loss.</div>
+      ${comboRows || '<div class="u9-note">Combination candidates will appear after discovery history is available.</div>'}
+    </div>
+
+    <div class="u9-table-wrap">
+      <div class="u9-table-title">Forward Watchlist · strongest candidates still alive</div>
+      <div class="u9-note" style="margin:0 0 6px">“More to n=200” is only the sample-count requirement. A candidate is validated only if its 95% upper risk bound also remains below the 8.26% break-even 9-rate.</div>
+      ${watchRows || '<div class="u9-note">No combination currently qualifies for the watchlist.</div>'}
+    </div>
+
     <div class="u9-panel">
       <div class="u9-table-title">Current market state</div>
       <div class="u9-note" style="margin-top:4px">${patternLab.currentTags.length?patternLab.currentTags.map(x=>x.label).join(' · '):'Waiting for enough ticks'}</div>
     </div>
 
     <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The threshold table and Pattern Lab forward column use <b>future-only observations</b>. Break-even requires the accepted digit-9 rate to stay below <b>8.26%</b> for the assumed <b>$1 stake / $0.09 profit</b>. Pattern candidates are research signals only until they earn a fresh forward sample.</div>
-    <button id="u9-export" class="u9-export">Export Under-9 JSON + Pattern + Combo Lab</button>`;
+    <button id="u9-export" class="u9-export">Export Under-9 JSON + Ranked Watchlist</button>`;
   $('u9-shadow').onclick=()=>setMode('SHADOW');
   $('u9-demo').onclick=()=>setMode('DEMO');
   $('u9-real').onclick=()=>setMode('REAL');
