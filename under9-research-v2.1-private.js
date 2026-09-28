@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.2-PRIVATE-ADMIN-UI';
+const VERSION = 'UNDER9-LAB-V2.3-FEED-FIX';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -31,6 +31,7 @@ const S = {
   lastTradeAt:0, historicalLoaded:false, accountId:null,
   stats:{contracts:0,wins:0,losses:0,pnl:0},
   adminAuthorized:false, adminLastCheckedAt:0, adminCheckInFlight:false,
+  lastPublicError:'', publicReconnectAttempts:0,
 };
 
 const $ = id => document.getElementById(id);
@@ -170,11 +171,47 @@ function onPublic(data){
 
 function connectPublic(){
   try{
-    const ws=new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(getAppId())}`);S.publicWs=ws;
-    ws.onopen=()=>{S.connected=true;ws.send(JSON.stringify({ticks:SYMBOL,subscribe:1,req_id:91001}));loadHistory();render();};
-    ws.onmessage=e=>{let d;try{d=JSON.parse(e.data)}catch{return;} if(!d.error)onPublic(d);};
-    ws.onclose=()=>{S.connected=false;render();setTimeout(connectPublic,3000);};
-  }catch(_){setTimeout(connectPublic,3000);}
+    if(S.publicWs && (S.publicWs.readyState===WebSocket.OPEN || S.publicWs.readyState===WebSocket.CONNECTING)) return;
+    const ws=new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public');
+    S.publicWs=ws;
+    S.lastPublicError='';
+    ws.onopen=()=>{
+      S.connected=true;
+      S.publicReconnectAttempts=0;
+      S.lastPublicError='';
+      ws.send(JSON.stringify({ticks:SYMBOL,subscribe:1,req_id:91001}));
+      loadHistory();
+      render();
+    };
+    ws.onmessage=e=>{
+      let d;try{d=JSON.parse(e.data)}catch{return;}
+      if(d.error){
+        S.lastPublicError=d.error.message||d.error.code||'Deriv public feed error';
+        render();
+        return;
+      }
+      onPublic(d);
+    };
+    ws.onerror=()=>{
+      S.lastPublicError='Public market WebSocket error';
+      render();
+    };
+    ws.onclose=()=>{
+      S.connected=false;
+      S.publicWs=null;
+      if(!S.lastPublicError)S.lastPublicError='Public feed disconnected';
+      render();
+      const delay=Math.min(30000,1500*Math.pow(1.7,S.publicReconnectAttempts++));
+      clearTimeout(S.reconnectTimer);
+      S.reconnectTimer=setTimeout(connectPublic,delay);
+    };
+  }catch(e){
+    S.connected=false;
+    S.lastPublicError=String(e?.message||e||'Public feed connection failed');
+    render();
+    clearTimeout(S.reconnectTimer);
+    S.reconnectTimer=setTimeout(connectPublic,3000);
+  }
 }
 
 async function getAuthenticatedWsUrl(){
@@ -229,6 +266,7 @@ function recordExecutionError(msg){S.records.push({kind:'EXECUTION_ERROR',mode:S
 async function maybeExecute(force=false){
   if(!(await ensureAdminAuthorized(true)))return;
   if(!S.running || S.mode==='SHADOW' || S.activeTrade || S.pendingProposal)return;
+  if(!S.connected || !S.historicalLoaded)return;
   if(Date.now()-S.lastTradeAt<CFG.cooldownMs)return;
   const prediction=makePrediction();if(!prediction)return;
   if(!force && !prediction.accept)return;
@@ -256,7 +294,7 @@ async function setMode(m){
   if(m==='REAL') S.running=false;
   S.mode=m;S.authenticated=false;if(S.tradeWs){try{S.tradeWs.close()}catch(_){}}S.tradeWs=null;save();render();
 }
-async function toggleRun(){if(!(await ensureAdminAuthorized(true)))return;S.running=!S.running;save();render();if(S.running&&S.mode!=='SHADOW')maybeExecute();}
+async function toggleRun(){if(!(await ensureAdminAuthorized(true)))return;S.running=!S.running;if(S.running&&!S.connected)connectPublic();save();render();if(S.running&&S.mode!=='SHADOW')maybeExecute();}
 
 
 function ensureStyles(){
@@ -355,6 +393,8 @@ function render(){
   const authStatus=S.mode==='SHADOW' ? 'NOT NEEDED' : (S.authenticated?'READY':'WAITING');
   const histStatus=S.historicalLoaded?`${S.discoveryTicks.length}/${CFG.historyCount}`:`${S.discoveryTicks.length}/${CFG.historyCount}`;
   const modeClass=S.mode.toLowerCase();
+  const effectiveActive=S.running && S.connected && S.historicalLoaded;
+  const waiting=S.running && !effectiveActive;
   const runLabel=S.running?`STOP ${S.mode}`:`START ${S.mode}`;
   const runBtnClass=S.running?'stop':modeClass;
   const acceptedText=pred? (pred.accept?'YES':'NO') : 'WARMING';
@@ -368,7 +408,7 @@ function render(){
     const pnlClass=x.simPnl>0?'good':x.simPnl<0?'bad':'muted';
     return `<tr><td align="left">≤ ${(t*100).toFixed(0)}%</td><td align="right">${x.n}</td><td align="right" class="${winClass}">${pct(x.winRate)}</td><td align="right" class="${nineClass}">${pct(x.nineRate)}</td><td align="right" class="${pnlClass}">${money(x.simPnl)}</td></tr>`;
   }).join('');
-  const activeTradeSummary=S.activeTrade ? `Contract #${S.activeTrade.contractId} active` : (S.pendingProposal ? 'Waiting for proposal / buy' : (S.running ? 'Watching for qualified signals' : 'Runner is idle'));
+  const activeTradeSummary=S.activeTrade ? `Contract #${S.activeTrade.contractId} active` : (S.pendingProposal ? 'Waiting for proposal / buy' : (effectiveActive ? 'Watching for qualified signals' : waiting ? 'Waiting for market feed + history' : 'Runner is idle'));
   el.innerHTML=`
     <div class="u9-status-row">
       ${statusChip(S.connected?'online':'offline',`Feed ${feedStatus}`)}
@@ -380,7 +420,7 @@ function render(){
     <div class="u9-banner">
       <div>
         <div class="label">CURRENT MODE</div>
-        <div class="value">${S.mode} · ${S.running?'ACTIVE':'STANDBY'}</div>
+        <div class="value">${S.mode} · ${effectiveActive?'ACTIVE':waiting?'WAITING FOR FEED':'STANDBY'}</div>
       </div>
       <div class="muted" style="text-align:right;font-size:11px">
         Warm-up ticks: <b>${Math.min(warm,300)}/300</b><br>
@@ -393,6 +433,8 @@ function render(){
       <button id="u9-demo" class="u9-mode-btn ${S.mode==='DEMO'?'active demo':''}">DEMO</button>
       <button id="u9-real" class="u9-mode-btn ${S.mode==='REAL'?'active real':''}">REAL</button>
     </div>
+
+    ${S.lastPublicError?`<div class="u9-panel" style="border-color:rgba(248,113,113,.45);background:rgba(127,29,29,.18)"><div class="u9-rule"><b style="color:#fca5a5">Feed issue:</b> ${S.lastPublicError}</div></div>`:''}
 
     <div class="u9-panel">
       <div class="u9-rule"><b>Rule:</b> trade only when <b>P(9) ≤ ${(CFG.threshold*100).toFixed(0)}%</b>. Contract: <b>UNDER 9</b>. Flat stake: <b>$${CFG.stake.toFixed(2)}</b>.</div>
