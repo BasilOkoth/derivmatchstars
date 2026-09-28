@@ -40,3 +40,8 @@ UI update:
 UI update:
 - Tail Risk panel now shows live/current-cycle T3, T5 and T7 readings at the top.
 - Forward validation history is shown separately underneath.
+
+Live-cycle fix:
+- Tail Risk now reads cyclePerformance.current/currentCycle as well as completed history.
+- T3/T5/T7 predictions appear during an active cycle.
+- A checkpoint freezes only from an exact LOSS_AFTER_TICK snapshot, avoiding purchase-state leakage.

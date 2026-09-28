@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TAIL-RISK-V1.4-LIVE-CHECKPOINTS';
+  const VERSION = 'TAIL-RISK-V1.5-LIVE-ACTIVE-CYCLE';
   const STORE_KEY = 'digitmatchstar_tail_risk_model_v11';
   const MIN_KEY = 'matchstar_panel_min_tail-risk-model';
   const POLL_MS = 500;
@@ -415,7 +415,19 @@
 
   function upsertPredictions() {
     const store = loadStore();
-    const rows = history();
+    const cp = getCyclePerformance();
+
+    const completedRows = history();
+    const currentCycle = cp?.current || cp?.currentCycle || null;
+
+    // Process current cycle first so live T3/T5/T7 readings appear immediately.
+    const rows = [];
+    if (currentCycle?.id) rows.push(currentCycle);
+    for (const row of completedRows) {
+      if (!row?.id) continue;
+      if (currentCycle?.id && String(row.id) === String(currentCycle.id)) continue;
+      rows.push(row);
+    }
 
     for (const cycle of rows) {
       if (!cycle?.id) continue;
@@ -434,27 +446,44 @@
         store.records.push(rec);
       }
 
-      for (const cp of CHECKPOINTS) {
-        const key = String(cp);
+      // Update symbol if it becomes available later.
+      if (!rec.symbol || rec.symbol === 'UNKNOWN') {
+        rec.symbol = cycle.symbol || currentSymbol();
+      }
+
+      const traj = snapshots(cycle);
+
+      for (const checkpoint of CHECKPOINTS) {
+        const key = String(checkpoint);
+
+        // Predictions are immutable once frozen.
         if (rec.checkpoints[key]?.frozen === true) continue;
 
-        const reached = snapshots(cycle).some(s => Number(s?.tradeNumber) >= cp);
-        if (!reached) continue;
+        // IMPORTANT: a checkpoint is reached only when an exact LOSS_AFTER_TICK
+        // snapshot exists for that trade. This prevents purchase/endpoint leakage.
+        const exactLossSnapshot = traj.find(
+          s =>
+            Number(s?.tradeNumber) === checkpoint &&
+            s?.trigger === 'LOSS_AFTER_TICK'
+        );
 
-        const snap = snapshotAt(cycle, cp);
-        const features = featureVector(snap);
-        const probability = predictRisk(features, cp);
+        if (!exactLossSnapshot) continue;
+
+        const features = featureVector(exactLossSnapshot);
+        const probability = predictRisk(features, checkpoint);
 
         rec.checkpoints[key] = {
           frozen: true,
           frozenAt: new Date().toISOString(),
-          checkpoint: cp,
+          checkpoint,
+          snapshotTrigger: 'LOSS_AFTER_TICK',
           probability,
           label: riskLabel(probability),
           features
         };
       }
 
+      // Only score outcome once the cycle is actually resolved.
       const outcome = resolvedBeyond10(cycle);
 
       if (outcome !== null && rec.outcome === null) {
@@ -465,20 +494,21 @@
           winningTradeNumber: num(cycle.winningTradeNumber)
         };
 
-        for (const cp of CHECKPOINTS) {
-          const pred = rec.checkpoints[String(cp)];
+        for (const checkpoint of CHECKPOINTS) {
+          const pred = rec.checkpoints[String(checkpoint)];
           if (!pred?.frozen || !Number.isFinite(pred.probability)) continue;
 
           const already = store.forward.some(
-            x => x.id === id && Number(x.checkpoint) === cp
+            x => x.id === id && Number(x.checkpoint) === checkpoint
           );
 
           if (!already) {
             store.forward.push({
               id,
               symbol: rec.symbol,
-              checkpoint: cp,
+              checkpoint,
               probability: pred.probability,
+              predictedLabel: pred.label,
               actual: outcome,
               scoredAt: new Date().toISOString()
             });
