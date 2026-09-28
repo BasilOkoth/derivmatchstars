@@ -9071,7 +9071,7 @@ window.isBotRunning = true;
 
     <script>
     // ============================================================================
-    // TAILGUARD AUTOPILOT RESEARCH v2.3 — admin-only visibility + cycle counter
+    // TAILGUARD AUTOPILOT RESEARCH v2.4 — admin-only auth fix + cycle counter
     // DEMO-ONLY autonomous research runner.
     // Uses the EXISTING DigitMatchStar engine; it does not place Deriv contracts itself.
     // TailGuard decisions remain SHADOW-ONLY while the forward dataset is collected.
@@ -9080,7 +9080,7 @@ window.isBotRunning = true;
         'use strict';
 
         const TG_AP = Object.freeze({
-            version: 'TG-AUTOPILOT-2.3-ADMIN-ONLY',
+            version: 'TG-AUTOPILOT-2.4-ADMIN-AUTH-FIX',
             maxCyclesPerDay: 5,
             maxTradesPerCycle: 10,
             pollMs: 500,
@@ -9111,13 +9111,28 @@ window.isBotRunning = true;
                     localStorage.getItem('derivRealAccount') ||
                     '';
 
+                const token =
+                    localStorage.getItem('active_token') ||
+                    localStorage.getItem('derivToken') ||
+                    localStorage.getItem('derivTokenDemo') ||
+                    localStorage.getItem('derivTokenReal') ||
+                    '';
+
+                if (!token || !accountId) {
+                    adminAuthorized = false;
+                    adminLastCheckedAt = now;
+                    return false;
+                }
+
                 const response = await fetch('/api/capture-access', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
                     credentials: 'same-origin',
                     body: JSON.stringify({
-                        accountId,
-                        purpose: 'tailguard'
+                        account_id: accountId
                     })
                 });
 
