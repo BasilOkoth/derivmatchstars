@@ -4306,6 +4306,18 @@ window.cyclePerformance = {
                     resolvedCycles: safeClone(postResolved)
                 },
 
+                tailGuardAutopilot: {
+                    version: window.DMSTailGuardAutopilot?.version || null,
+                    state: safeClone(window.DMSTailGuardAutopilot?.getState?.() || null),
+                    activeCycleTrades:
+                        Array.isArray(window.cyclePerformance?.current?.trades)
+                            ? window.cyclePerformance.current.trades.length
+                            : 0,
+                    researchMode: 'SHADOW_ONLY',
+                    dailyCycleTarget: 5,
+                    cycleTradeCap: Number(document.getElementById('maxTrades')?.value || 10)
+                },
+
                 storageKeys: {
                     cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
                     forwardShadow: `matchstar_shadow_v1_${symbol}`,
@@ -9071,7 +9083,7 @@ window.isBotRunning = true;
 
     <script>
     // ============================================================================
-    // TAILGUARD AUTOPILOT RESEARCH v2.4 — admin-only auth fix + cycle counter
+    // TAILGUARD AUTOPILOT RESEARCH v2.5 — admin-only + export report
     // DEMO-ONLY autonomous research runner.
     // Uses the EXISTING DigitMatchStar engine; it does not place Deriv contracts itself.
     // TailGuard decisions remain SHADOW-ONLY while the forward dataset is collected.
@@ -9080,7 +9092,7 @@ window.isBotRunning = true;
         'use strict';
 
         const TG_AP = Object.freeze({
-            version: 'TG-AUTOPILOT-2.4-ADMIN-AUTH-FIX',
+            version: 'TG-AUTOPILOT-2.5-EXPORT',
             maxCyclesPerDay: 5,
             maxTradesPerCycle: 10,
             pollMs: 500,
@@ -9171,6 +9183,7 @@ window.isBotRunning = true;
             detailEl = null;
             minimizeBtn = null;
             pauseBtn = null;
+            exportBtn = null;
         }
 
         let panel = null;
@@ -9179,6 +9192,7 @@ window.isBotRunning = true;
         let detailEl = null;
         let minimizeBtn = null;
         let pauseBtn = null;
+        let exportBtn = null;
         let initialized = false;
         let lastActionAt = 0;
 
@@ -9473,10 +9487,16 @@ window.isBotRunning = true;
                 <div id="tg-ap-body" style="padding:10px 11px">
                     <div id="tg-ap-status" style="font-weight:900;color:#38bdf8;margin-bottom:6px">Initializing…</div>
                     <div id="tg-ap-detail" style="line-height:1.5;color:#cbd5e1"></div>
-                    <button id="tg-ap-pause" type="button"
-                        style="margin-top:9px;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
-                        Pause autopilot
-                    </button>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px">
+                        <button id="tg-ap-export" type="button"
+                            style="width:100%;border:1px solid #0369a1;background:#075985;color:#e0f2fe;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
+                            📥 Export report
+                        </button>
+                        <button id="tg-ap-pause" type="button"
+                            style="width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
+                            Pause autopilot
+                        </button>
+                    </div>
                 </div>
             `;
 
@@ -9486,9 +9506,27 @@ window.isBotRunning = true;
             detailEl = panel.querySelector('#tg-ap-detail');
             minimizeBtn = panel.querySelector('#tg-ap-min');
             pauseBtn = panel.querySelector('#tg-ap-pause');
+            exportBtn = panel.querySelector('#tg-ap-export');
 
             minimizeBtn.addEventListener('click', () => {
                 setMinimized(body.style.display !== 'none');
+            });
+
+            exportBtn?.addEventListener('click', () => {
+                try {
+                    if (typeof downloadMatchStarResearchReport === 'function') {
+                        downloadMatchStarResearchReport();
+                        statusEl.textContent = 'Research report downloaded';
+                        statusEl.style.color = '#4ade80';
+                    } else {
+                        statusEl.textContent = 'Report exporter is not available';
+                        statusEl.style.color = '#f87171';
+                    }
+                } catch (error) {
+                    console.error('TailGuard report export failed:', error);
+                    statusEl.textContent = 'Report export failed';
+                    statusEl.style.color = '#f87171';
+                }
             });
 
             pauseBtn.addEventListener('click', () => {
