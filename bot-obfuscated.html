@@ -4321,6 +4321,9 @@ window.cyclePerformance = {
                     cycleTradeCap: Number(document.getElementById('maxTrades')?.value || 10)
                 },
 
+                tailRiskModel:
+                    safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
+
                 storageKeys: {
                     cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
                     forwardShadow: `matchstar_shadow_v1_${symbol}`,

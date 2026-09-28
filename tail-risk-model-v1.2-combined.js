@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TAIL-RISK-V1.2-COMBINED-EXPORT';
+  const VERSION = 'TAIL-RISK-V1.3-DRAGGABLE';
   const STORE_KEY = 'digitmatchstar_tail_risk_model_v11';
   const MIN_KEY = 'matchstar_panel_min_tail-risk-model';
   const POLL_MS = 500;
@@ -136,6 +136,61 @@
     saveMinimized(minimized);
   }
 
+
+  function makePanelDraggable(target, handle) {
+    if (!target || !handle || target.dataset.dmsDraggable === '1') return;
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    handle.style.cursor = 'move';
+
+    handle.addEventListener('pointerdown', event => {
+      // Keep buttons (especially minimize) clickable without starting a drag.
+      if (event.target.closest('button')) return;
+
+      const rect = target.getBoundingClientRect();
+      dragging = true;
+      startX = event.clientX;
+      startY = event.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+
+      target.style.right = 'auto';
+      target.style.bottom = 'auto';
+      target.style.left = `${rect.left}px`;
+      target.style.top = `${rect.top}px`;
+
+      try { handle.setPointerCapture(event.pointerId); } catch (_) {}
+      event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', event => {
+      if (!dragging) return;
+
+      const nextLeft = startLeft + (event.clientX - startX);
+      const nextTop = startTop + (event.clientY - startY);
+
+      const maxLeft = Math.max(0, window.innerWidth - target.offsetWidth);
+      const maxTop = Math.max(0, window.innerHeight - target.offsetHeight);
+
+      target.style.left = `${Math.min(maxLeft, Math.max(0, nextLeft))}px`;
+      target.style.top = `${Math.min(maxTop, Math.max(0, nextTop))}px`;
+    });
+
+    const endDrag = () => {
+      dragging = false;
+    };
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+
+    target.dataset.dmsDraggable = '1';
+  }
+
   function ensurePanel() {
     if (adminAuthorized !== true) {
       hideCompletely();
@@ -163,6 +218,7 @@
     ].join(';');
 
     const header = document.createElement('div');
+    header.id = 'tail-risk-model-drag-handle';
     header.style.cssText = [
       'display:flex',
       'align-items:center',
@@ -215,6 +271,7 @@
     panel.appendChild(body);
     document.body.appendChild(panel);
 
+    makePanelDraggable(panel, header);
     setMinimized(isMinimized());
   }
 

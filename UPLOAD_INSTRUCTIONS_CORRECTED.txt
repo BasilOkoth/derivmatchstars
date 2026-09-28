@@ -1,0 +1,38 @@
+CORRECTED DigitMatchStar Tail Risk Upgrade
+
+IMPORTANT:
+Your bot already contains TailGuard Autopilot Research v2.6 inside bot-obfuscated.html.
+
+Therefore:
+- DO NOT upload/load a separate tailguard-research-v2-autopilot.js for this upgrade.
+- DO NOT use combined-tailguard-tailrisk-export.js.
+- The existing TailGuard Autopilot remains the single TailGuard panel.
+- Its existing report exporter now includes a new tailRiskModel section.
+
+UPLOAD THESE 3 FILES TO THE REPOSITORY ROOT:
+
+1. bot-obfuscated.html
+   Replace the current file.
+
+2. tail-risk-model-v1.2-combined.js
+   New/private Tail Risk Model.
+
+3. research-suite-loader.js
+   Loads ONLY the Tail Risk Model.
+
+KEEP THESE EXISTING FILES UNCHANGED:
+- screen-recorder-safe-v5-2.js
+- api/capture-access.js
+- all other bot/API files
+
+AFTER DEPLOYMENT:
+- You should see ONE TailGuard Autopilot panel.
+- You should see ONE private, minimizable Tail Risk Model panel.
+- Clicking the existing TailGuard Autopilot report button downloads the normal MatchStar report.
+- That report now contains both:
+    tailGuardAutopilot
+    tailRiskModel
+
+UI update:
+- The Tail Risk Model panel is minimizable and draggable by its header.
+- Dragging does not interfere with the minimize button.
