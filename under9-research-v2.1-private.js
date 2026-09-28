@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.4-PATTERN-LAB';
+const VERSION = 'UNDER9-LAB-V2.5-COMBO-WATCHDOG';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -25,6 +25,11 @@ const CFG = {
   patternMinDiscoveryN: 30,
   patternMinPromisingForwardN: 50,
   patternMinValidatedForwardN: 200,
+  comboMinDiscoveryN: 25,
+  comboMaxCandidates: 20,
+  staleFeedMs: 12000,
+  watchdogIntervalMs: 4000,
+  pingIntervalMs: 15000,
 };
 
 const S = {
@@ -35,6 +40,8 @@ const S = {
   lastTradeAt:0, historicalLoaded:false, accountId:null,
   stats:{contracts:0,wins:0,losses:0,pnl:0},
   adminAuthorized:false, adminLastCheckedAt:0, adminCheckInFlight:false,
+  lastPublicMessageAt:0, lastTickAt:0, lastTickEpoch:null,
+  watchdogTimer:null, pingTimer:null, feedReconnects:0, staleReconnects:0,
   lastPublicError:'', publicReconnectAttempts:0,
 };
 
@@ -165,6 +172,8 @@ function onPublic(data){
     S.discoveryTicks=out.slice(-CFG.historyCount);S.historicalLoaded=true;save();render();return;
   }
   if(data.msg_type!=='tick'||!data.tick)return;
+  S.lastTickAt=Date.now();
+  S.lastTickEpoch=Number(data.tick.epoch||0);
   if(Number.isFinite(Number(data.tick.pip_size)))S.pipSize=Number(data.tick.pip_size);
   const d=digitFromQuote(data.tick.quote,S.pipSize);if(d==null)return;
   scoreShadow(d,data.tick.epoch,Number(data.tick.quote));
@@ -173,6 +182,38 @@ function onPublic(data){
   S.pendingShadow=makePrediction();
   if(S.running && S.mode!=='SHADOW') maybeExecute();
   render();
+}
+
+
+function clearFeedHealthTimers(){
+  if(S.watchdogTimer){clearInterval(S.watchdogTimer);S.watchdogTimer=null;}
+  if(S.pingTimer){clearInterval(S.pingTimer);S.pingTimer=null;}
+}
+function forcePublicReconnect(reason='Feed stale'){
+  S.lastPublicError=reason;
+  S.connected=false;
+  S.staleReconnects++;
+  const old=S.publicWs;
+  S.publicWs=null;
+  if(old){try{old.onclose=null;old.close();}catch(_){}}
+  clearFeedHealthTimers();
+  clearTimeout(S.reconnectTimer);
+  S.reconnectTimer=setTimeout(connectPublic,500);
+  render();
+}
+function startFeedHealthTimers(ws){
+  clearFeedHealthTimers();
+  S.pingTimer=setInterval(()=>{
+    if(S.publicWs!==ws || ws.readyState!==WebSocket.OPEN)return;
+    try{ws.send(JSON.stringify({ping:1,req_id:91999}));}catch(_){ }
+  },CFG.pingIntervalMs);
+  S.watchdogTimer=setInterval(()=>{
+    if(S.publicWs!==ws)return;
+    const age=Date.now()-(S.lastTickAt||0);
+    if(S.connected && S.lastTickAt && age>CFG.staleFeedMs){
+      forcePublicReconnect(`No R_10 tick for ${(age/1000).toFixed(1)}s — reconnecting`);
+    }
+  },CFG.watchdogIntervalMs);
 }
 
 function connectPublic(){
@@ -184,12 +225,17 @@ function connectPublic(){
     ws.onopen=()=>{
       S.connected=true;
       S.publicReconnectAttempts=0;
+      S.lastPublicMessageAt=Date.now();
+      S.lastTickAt=Date.now();
+      S.feedReconnects++;
       S.lastPublicError='';
       ws.send(JSON.stringify({ticks:SYMBOL,subscribe:1,req_id:91001}));
+      startFeedHealthTimers(ws);
       loadHistory();
       render();
     };
     ws.onmessage=e=>{
+      S.lastPublicMessageAt=Date.now();
       let d;try{d=JSON.parse(e.data)}catch{return;}
       if(d.error){
         S.lastPublicError=d.error.message||d.error.code||'Deriv public feed error';
@@ -203,8 +249,9 @@ function connectPublic(){
       render();
     };
     ws.onclose=()=>{
+      clearFeedHealthTimers();
       S.connected=false;
-      S.publicWs=null;
+      if(S.publicWs===ws)S.publicWs=null;
       if(!S.lastPublicError)S.lastPublicError='Public feed disconnected';
       render();
       const delay=Math.min(30000,1500*Math.pow(1.7,S.publicReconnectAttempts++));
@@ -358,6 +405,57 @@ function wilsonUpper(k,n,z=1.96){
   const rad=z*Math.sqrt((p*(1-p)+z2/(4*n))/n);
   return (ctr+rad)/den;
 }
+
+function comboKey(tags){return tags.map(t=>t.key).sort().join('&&');}
+function comboLabel(tags){return tags.map(t=>t.label).join(' + ');}
+function summarizeCombos(rows, maxSize=2){
+  const m=new Map();
+  for(const row of rows){
+    const unique=[...new Map(row.tags.map(t=>[t.key,t])).values()];
+    for(let i=0;i<unique.length;i++){
+      for(let j=i+1;j<unique.length;j++){
+        const tags=[unique[i],unique[j]];
+        const key=comboKey(tags);
+        let x=m.get(key);
+        if(!x){x={key,label:comboLabel(tags),tagKeys:tags.map(t=>t.key).sort(),n:0,nines:0};m.set(key,x);}
+        x.n++; if(row.isNine)x.nines++;
+      }
+    }
+  }
+  return [...m.values()].map(x=>({...x,nineRate:x.n?x.nines/x.n:null,winRate:x.n?1-x.nines/x.n:null}));
+}
+function historicalPatternRows(){
+  const a=S.discoveryTicks, rows=[];
+  for(let i=20;i<a.length;i++){
+    const f=historicalFeaturesAt(a,i);
+    rows.push({tags:tagsFromFeatures(f),isNine:a[i].digit===9});
+  }
+  return rows;
+}
+function forwardPatternRows(){
+  return S.records.filter(r=>r.kind==='SHADOW').map(r=>({tags:tagsFromFeatures(r.features||{}),isNine:r.digit===9}));
+}
+function combinationLabSnapshot(){
+  const disc=summarizeCombos(historicalPatternRows())
+    .filter(x=>x.n>=CFG.comboMinDiscoveryN && x.nineRate<CFG.breakEvenNineRate)
+    .sort((a,b)=>a.nineRate-b.nineRate || b.n-a.n)
+    .slice(0,CFG.comboMaxCandidates);
+  const fwdMap=new Map(summarizeCombos(forwardPatternRows()).map(x=>[x.key,x]));
+  const candidates=disc.map(d=>{
+    const f=fwdMap.get(d.key)||{n:0,nines:0,nineRate:null,winRate:null};
+    const upper95=f.n?wilsonUpper(f.nines,f.n):null;
+    let status='DISCOVERY_ONLY';
+    if(f.n>=CFG.patternMinValidatedForwardN && upper95!=null && upper95<CFG.breakEvenNineRate) status='FORWARD_VALIDATED';
+    else if(f.n>=CFG.patternMinPromisingForwardN && f.nineRate!=null && f.nineRate<CFG.breakEvenNineRate) status='PROMISING_FORWARD';
+    else if(f.n>=CFG.patternMinPromisingForwardN) status='NOT_CONFIRMED';
+    return {...d,discovery:d,forward:f,forwardUpper95:upper95,status};
+  });
+  const cur=makePrediction();
+  const currentTagKeys=new Set(cur?tagsFromFeatures(cur.features).map(t=>t.key):[]);
+  const activeCandidates=candidates.filter(c=>c.tagKeys.every(k=>currentTagKeys.has(k)));
+  return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,activeCandidates};
+}
+
 function patternLabSnapshot(){
   const disc=discoveryPatternStats().filter(x=>x.n>=CFG.patternMinDiscoveryN);
   const fwdMap=new Map(forwardPatternStats().map(x=>[x.key,x]));
@@ -378,7 +476,7 @@ function patternLabSnapshot(){
   return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,currentTags:current?tagsFromFeatures(current.features):[]};
 }
 function exportJSON(){
-  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_4',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),records:S.records};
+  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_5',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,lastPublicMessageAt:S.lastPublicMessageAt,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},records:S.records};
   const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`under9-lab-${SYMBOL}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
 
@@ -511,14 +609,22 @@ function render(){
   }).join('');
   const activeTradeSummary=S.activeTrade ? `Contract #${S.activeTrade.contractId} active` : (S.pendingProposal ? 'Waiting for proposal / buy' : (effectiveActive ? 'Watching for qualified signals' : waiting ? 'Waiting for market feed + history' : 'Runner is idle'));
   const patternLab=patternLabSnapshot();
+  const comboLab=combinationLabSnapshot();
   const patternRows=patternLab.candidates.slice(0,8).map(c=>{
     const badgeClass=c.status==='FORWARD_VALIDATED'?'valid':c.status==='PROMISING_FORWARD'?'prom':c.status==='NOT_CONFIRMED'?'no':'disc';
     const badgeText=c.status==='FORWARD_VALIDATED'?'VALIDATED':c.status==='PROMISING_FORWARD'?'PROMISING':c.status==='NOT_CONFIRMED'?'NOT CONFIRMED':'DISCOVERY';
     return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Hist</span><br><b>${pct(c.discovery.nineRate)}</b><br><span class="muted">n=${c.discovery.n}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div></div>`;
   }).join('');
+
+  const comboRows=comboLab.candidates.slice(0,8).map(c=>{
+    const badgeClass=c.status==='FORWARD_VALIDATED'?'validated':c.status==='PROMISING_FORWARD'?'promising':c.status==='NOT_CONFIRMED'?'rejected':'discovery';
+    const badgeText=c.status==='FORWARD_VALIDATED'?'VALIDATED':c.status==='PROMISING_FORWARD'?'PROMISING':c.status==='NOT_CONFIRMED'?'NOT CONFIRMED':'DISCOVERY';
+    return `<div class="u9-pattern-row"><div><div class="u9-pattern-name">${c.label}</div><span class="u9-badge ${badgeClass}">${badgeText}</span></div><div style="text-align:right"><span class="muted">Hist</span><br><b>${pct(c.discovery.nineRate)}</b><br><span class="muted">n=${c.discovery.n}</span></div><div style="text-align:right"><span class="muted">Forward</span><br><b class="${colorValue(c.forward.nineRate,CFG.breakEvenNineRate,0.12,true)}">${pct(c.forward.nineRate)}</b><br><span class="muted">n=${c.forward.n}</span></div></div>`;
+  }).join('');
+
   el.innerHTML=`
     <div class="u9-status-row">
-      ${statusChip(S.connected?'online':'offline',`Feed ${feedStatus}`)}
+      ${statusChip(S.connected?'online':'offline',`Feed ${feedStatus}${S.lastTickAt?` · ${Math.max(0,Math.round((Date.now()-S.lastTickAt)/1000))}s`:''}`)}
       ${statusChip(S.historicalLoaded?'online':'warn',`Historical ${histStatus}`)}
       ${statusChip(S.running?'online':'warn',`Runner ${S.running?'ON':'OFF'}`)}
       ${statusChip((S.mode==='SHADOW'||S.authenticated)?'online':'warn',`${S.mode} auth ${authStatus}`)}
@@ -545,7 +651,7 @@ function render(){
 
     <div class="u9-panel">
       <div class="u9-rule"><b>Rule:</b> trade only when <b>P(9) ≤ ${(CFG.threshold*100).toFixed(0)}%</b>. Contract: <b>UNDER 9</b>. Flat stake: <b>$${CFG.stake.toFixed(2)}</b>.</div>
-      <div class="u9-note" style="margin-top:8px">Status: ${activeTradeSummary}</div>
+      <div class="u9-note" style="margin-top:8px">Status: ${activeTradeSummary}<br><span class="muted">Feed reconnects: ${S.feedReconnects} · stale recoveries: ${S.staleReconnects}${S.lastPublicError?` · ${S.lastPublicError}`:''}</span></div>
     </div>
 
     <button id="u9-run" class="u9-cta ${runBtnClass}">${runLabel}</button>
@@ -597,7 +703,7 @@ function render(){
     </div>
 
     <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The threshold table and Pattern Lab forward column use <b>future-only observations</b>. Break-even requires the accepted digit-9 rate to stay below <b>8.26%</b> for the assumed <b>$1 stake / $0.09 profit</b>. Pattern candidates are research signals only until they earn a fresh forward sample.</div>
-    <button id="u9-export" class="u9-export">Export Under-9 JSON + Pattern Lab</button>`;
+    <button id="u9-export" class="u9-export">Export Under-9 JSON + Pattern + Combo Lab</button>`;
   $('u9-shadow').onclick=()=>setMode('SHADOW');
   $('u9-demo').onclick=()=>setMode('DEMO');
   $('u9-real').onclick=()=>setMode('REAL');
@@ -607,7 +713,7 @@ function render(){
 
 window.DMSUnder9Lab={
   version:VERSION,
-  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,patternLab:patternLabSnapshot(),privateAdmin:true}):null,
+  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},privateAdmin:true}):null,
   exportReport:()=>{if(S.adminAuthorized)exportJSON();},
   setMode,
   start:async()=>{if(!(await ensureAdminAuthorized(true)))return;S.running=true;save();render();if(S.mode!=='SHADOW')maybeExecute();},
@@ -624,5 +730,12 @@ async function bootPrivateLab(){
     if(!ok)hidePrivateLab();
   },60000);
 }
+
+window.addEventListener('focus',()=>{
+  if(S.adminAuthorized && (!S.connected || (S.lastTickAt && Date.now()-S.lastTickAt>CFG.staleFeedMs))) forcePublicReconnect('Window resumed — refreshing feed');
+});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && S.adminAuthorized && (!S.connected || (S.lastTickAt && Date.now()-S.lastTickAt>CFG.staleFeedMs))) forcePublicReconnect('Tab resumed — refreshing feed');
+});
 bootPrivateLab();
 })();
