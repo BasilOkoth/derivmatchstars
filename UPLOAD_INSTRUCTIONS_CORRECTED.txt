@@ -45,3 +45,10 @@ Live-cycle fix:
 - Tail Risk now reads cyclePerformance.current/currentCycle as well as completed history.
 - T3/T5/T7 predictions appear during an active cycle.
 - A checkpoint freezes only from an exact LOSS_AFTER_TICK snapshot, avoiding purchase-state leakage.
+
+Panel usability V1.6:
+- Tail Risk panel now loads MINIMIZED by default on first use.
+- Only the compact header remains visible while minimized.
+- Drag the header to move the panel even when minimized.
+- The + / − button reliably expands/collapses the panel.
+- Panel position is remembered in localStorage.

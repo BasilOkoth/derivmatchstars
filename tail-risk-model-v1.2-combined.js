@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TAIL-RISK-V1.5-LIVE-ACTIVE-CYCLE';
+  const VERSION = 'TAIL-RISK-V1.6-DOCKABLE-MIN';
   const STORE_KEY = 'digitmatchstar_tail_risk_model_v11';
   const MIN_KEY = 'matchstar_panel_min_tail-risk-model';
   const POLL_MS = 500;
@@ -115,9 +115,10 @@
 
   function isMinimized() {
     try {
-      return localStorage.getItem(MIN_KEY) === '1';
+      const saved = localStorage.getItem(MIN_KEY);
+      return saved === null ? true : saved === '1';
     } catch (_) {
-      return false;
+      return true;
     }
   }
 
@@ -128,32 +129,71 @@
   }
 
   function setMinimized(minimized) {
-    if (!body || !minimizeBtn) return;
-    body.style.display = minimized ? 'none' : 'block';
-    minimizeBtn.textContent = minimized ? '+' : '−';
-    minimizeBtn.title = minimized ? 'Expand Tail Risk Model' : 'Minimize Tail Risk Model';
-    minimizeBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-    saveMinimized(minimized);
+    const next = !!minimized;
+    saveMinimized(next);
+
+    if (body) {
+      body.style.display = next ? 'none' : 'block';
+    }
+
+    if (minimizeBtn) {
+      minimizeBtn.textContent = next ? '+' : '−';
+      minimizeBtn.title = next ? 'Expand Tail Risk Model' : 'Minimize Tail Risk Model';
+      minimizeBtn.setAttribute('aria-expanded', next ? 'false' : 'true');
+      minimizeBtn.setAttribute(
+        'aria-label',
+        next ? 'Expand Tail Risk Model' : 'Minimize Tail Risk Model'
+      );
+    }
+
+    if (panel) {
+      panel.dataset.minimized = next ? '1' : '0';
+      panel.style.width = next ? '260px' : 'min(360px,calc(100vw - 28px))';
+    }
   }
 
 
   function makePanelDraggable(target, handle) {
     if (!target || !handle || target.dataset.dmsDraggable === '1') return;
 
+    const POS_KEY = 'matchstar_tail_risk_panel_position';
+
+    // Restore prior position when available.
+    try {
+      const saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+      if (
+        saved &&
+        Number.isFinite(saved.left) &&
+        Number.isFinite(saved.top)
+      ) {
+        target.style.right = 'auto';
+        target.style.bottom = 'auto';
+        target.style.left = `${Math.max(0, saved.left)}px`;
+        target.style.top = `${Math.max(0, saved.top)}px`;
+      }
+    } catch (_) {}
+
     let dragging = false;
+    let moved = false;
     let startX = 0;
     let startY = 0;
     let startLeft = 0;
     let startTop = 0;
 
     handle.style.cursor = 'move';
+    handle.style.touchAction = 'none';
+    handle.style.userSelect = 'none';
 
     handle.addEventListener('pointerdown', event => {
-      // Keep buttons (especially minimize) clickable without starting a drag.
+      if (event.button !== undefined && event.button !== 0) return;
+
+      // Buttons remain clickable; dragging starts only on free header space.
       if (event.target.closest('button')) return;
 
       const rect = target.getBoundingClientRect();
+
       dragging = true;
+      moved = false;
       startX = event.clientX;
       startY = event.clientY;
       startLeft = rect.left;
@@ -171,18 +211,39 @@
     handle.addEventListener('pointermove', event => {
       if (!dragging) return;
 
-      const nextLeft = startLeft + (event.clientX - startX);
-      const nextTop = startTop + (event.clientY - startY);
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
 
       const maxLeft = Math.max(0, window.innerWidth - target.offsetWidth);
       const maxTop = Math.max(0, window.innerHeight - target.offsetHeight);
 
-      target.style.left = `${Math.min(maxLeft, Math.max(0, nextLeft))}px`;
-      target.style.top = `${Math.min(maxTop, Math.max(0, nextTop))}px`;
+      const nextLeft = Math.min(maxLeft, Math.max(0, startLeft + dx));
+      const nextTop = Math.min(maxTop, Math.max(0, startTop + dy));
+
+      target.style.left = `${nextLeft}px`;
+      target.style.top = `${nextTop}px`;
     });
 
-    const endDrag = () => {
+    const endDrag = event => {
+      if (!dragging) return;
       dragging = false;
+
+      try { handle.releasePointerCapture(event.pointerId); } catch (_) {}
+
+      if (moved) {
+        const rect = target.getBoundingClientRect();
+        try {
+          localStorage.setItem(
+            POS_KEY,
+            JSON.stringify({
+              left: Math.round(rect.left),
+              top: Math.round(rect.top)
+            })
+          );
+        } catch (_) {}
+      }
     };
 
     handle.addEventListener('pointerup', endDrag);
@@ -232,7 +293,7 @@
     const titleWrap = document.createElement('div');
     titleWrap.innerHTML = `
       <div style="font-weight:800;font-size:13px;letter-spacing:.02em">Tail Risk Model</div>
-      <div style="font-size:10px;color:#86efac;margin-top:2px">ADMIN · SHADOW RESEARCH</div>
+      <div style="font-size:10px;color:#86efac;margin-top:2px">ADMIN · SHADOW RESEARCH · DRAG HERE</div>
     `;
 
     minimizeBtn = document.createElement('button');
@@ -249,7 +310,14 @@
       'line-height:1',
       'cursor:pointer'
     ].join(';');
-    minimizeBtn.addEventListener('click', () => setMinimized(!isMinimized()));
+    minimizeBtn.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const currentlyMinimized =
+        panel?.dataset?.minimized === '1' ||
+        body?.style?.display === 'none';
+      setMinimized(!currentlyMinimized);
+    });
 
     header.appendChild(titleWrap);
     header.appendChild(minimizeBtn);
