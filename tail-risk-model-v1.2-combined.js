@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TAIL-RISK-V1.6-DOCKABLE-MIN';
+  const VERSION = 'TAIL-RISK-V1.8-INDEPENDENT-TOGGLES';
   const STORE_KEY = 'digitmatchstar_tail_risk_model_v11';
   const MIN_KEY = 'matchstar_panel_min_tail-risk-model';
   const POLL_MS = 500;
@@ -105,7 +105,7 @@
   }
 
   function hideCompletely() {
-    if (panel && document.body.contains(panel)) panel.remove();
+    try { panel?.remove(); } catch (_) {}
     panel = null;
     body = null;
     minimizeBtn = null;
@@ -123,77 +123,61 @@
   }
 
   function saveMinimized(v) {
-    try {
-      localStorage.setItem(MIN_KEY, v ? '1' : '0');
-    } catch (_) {}
+    try { localStorage.setItem(MIN_KEY, v ? '1' : '0'); } catch (_) {}
   }
 
   function setMinimized(minimized) {
     const next = !!minimized;
     saveMinimized(next);
 
-    if (body) {
-      body.style.display = next ? 'none' : 'block';
+    if (body) body.style.display = next ? 'none' : 'block';
+
+    if (panel) {
+      panel.dataset.minimized = next ? '1' : '0';
+      panel.style.width = next ? '230px' : '320px';
+      panel.style.maxHeight = next ? '44px' : '420px';
     }
 
     if (minimizeBtn) {
       minimizeBtn.textContent = next ? '+' : '−';
-      minimizeBtn.title = next ? 'Expand Tail Risk Model' : 'Minimize Tail Risk Model';
+      minimizeBtn.title = next ? 'Expand' : 'Minimize';
       minimizeBtn.setAttribute('aria-expanded', next ? 'false' : 'true');
-      minimizeBtn.setAttribute(
-        'aria-label',
-        next ? 'Expand Tail Risk Model' : 'Minimize Tail Risk Model'
-      );
-    }
-
-    if (panel) {
-      panel.dataset.minimized = next ? '1' : '0';
-      panel.style.width = next ? '260px' : 'min(360px,calc(100vw - 28px))';
     }
   }
 
-
   function makePanelDraggable(target, handle) {
-    if (!target || !handle || target.dataset.dmsDraggable === '1') return;
-
-    const POS_KEY = 'matchstar_tail_risk_panel_position';
-
-    // Restore prior position when available.
-    try {
-      const saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
-      if (
-        saved &&
-        Number.isFinite(saved.left) &&
-        Number.isFinite(saved.top)
-      ) {
-        target.style.right = 'auto';
-        target.style.bottom = 'auto';
-        target.style.left = `${Math.max(0, saved.left)}px`;
-        target.style.top = `${Math.max(0, saved.top)}px`;
-      }
-    } catch (_) {}
+    if (!target || !handle || target.dataset.dragReady === '1') return;
 
     let dragging = false;
-    let moved = false;
-    let startX = 0;
-    let startY = 0;
-    let startLeft = 0;
-    let startTop = 0;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
 
     handle.style.cursor = 'move';
-    handle.style.touchAction = 'none';
     handle.style.userSelect = 'none';
+    handle.style.touchAction = 'none';
 
-    handle.addEventListener('pointerdown', event => {
-      if (event.button !== undefined && event.button !== 0) return;
+    const move = (event) => {
+      if (!dragging) return;
 
-      // Buttons remain clickable; dragging starts only on free header space.
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      const maxLeft = Math.max(0, window.innerWidth - target.offsetWidth);
+      const maxTop = Math.max(0, window.innerHeight - target.offsetHeight);
+
+      target.style.left = `${Math.max(0, Math.min(maxLeft, startLeft + dx))}px`;
+      target.style.top = `${Math.max(0, Math.min(maxTop, startTop + dy))}px`;
+    };
+
+    const up = () => {
+      dragging = false;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+    };
+
+    handle.addEventListener('pointerdown', (event) => {
       if (event.target.closest('button')) return;
 
       const rect = target.getBoundingClientRect();
-
       dragging = true;
-      moved = false;
       startX = event.clientX;
       startY = event.clientY;
       startLeft = rect.left;
@@ -204,52 +188,13 @@
       target.style.left = `${rect.left}px`;
       target.style.top = `${rect.top}px`;
 
-      try { handle.setPointerCapture(event.pointerId); } catch (_) {}
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up, { once: true });
+
       event.preventDefault();
     });
 
-    handle.addEventListener('pointermove', event => {
-      if (!dragging) return;
-
-      const dx = event.clientX - startX;
-      const dy = event.clientY - startY;
-
-      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
-
-      const maxLeft = Math.max(0, window.innerWidth - target.offsetWidth);
-      const maxTop = Math.max(0, window.innerHeight - target.offsetHeight);
-
-      const nextLeft = Math.min(maxLeft, Math.max(0, startLeft + dx));
-      const nextTop = Math.min(maxTop, Math.max(0, startTop + dy));
-
-      target.style.left = `${nextLeft}px`;
-      target.style.top = `${nextTop}px`;
-    });
-
-    const endDrag = event => {
-      if (!dragging) return;
-      dragging = false;
-
-      try { handle.releasePointerCapture(event.pointerId); } catch (_) {}
-
-      if (moved) {
-        const rect = target.getBoundingClientRect();
-        try {
-          localStorage.setItem(
-            POS_KEY,
-            JSON.stringify({
-              left: Math.round(rect.left),
-              top: Math.round(rect.top)
-            })
-          );
-        } catch (_) {}
-      }
-    };
-
-    handle.addEventListener('pointerup', endDrag);
-    handle.addEventListener('pointercancel', endDrag);
-
-    target.dataset.dmsDraggable = '1';
+    target.dataset.dragReady = '1';
   }
 
   function ensurePanel() {
@@ -264,80 +209,83 @@
     panel.id = 'tail-risk-model-panel';
     panel.style.cssText = [
       'position:fixed',
-      'right:18px',
-      'bottom:18px',
-      'z-index:99999',
-      'width:min(360px,calc(100vw - 28px))',
-      'background:rgba(5,15,11,.96)',
-      'border:1px solid rgba(34,197,94,.28)',
-      'border-radius:18px',
-      'box-shadow:0 22px 60px rgba(0,0,0,.42)',
-      'backdrop-filter:blur(16px)',
-      'color:#ecfdf5',
-      'font-family:Inter,system-ui,sans-serif',
+      'right:12px',
+      'bottom:12px',
+      'z-index:2147483600',
+      'width:230px',
+      'max-width:calc(100vw - 24px)',
+      'max-height:44px',
+      'background:#06120c',
+      'border:1px solid #14532d',
+      'border-radius:10px',
+      'box-shadow:0 10px 30px rgba(0,0,0,.35)',
+      'color:#e5e7eb',
+      'font-family:Inter,Arial,sans-serif',
       'overflow:hidden'
     ].join(';');
 
     const header = document.createElement('div');
     header.id = 'tail-risk-model-drag-handle';
     header.style.cssText = [
+      'height:44px',
       'display:flex',
       'align-items:center',
-      'justify-content:space-between',
-      'gap:10px',
-      'padding:12px 14px',
-      'border-bottom:1px solid rgba(255,255,255,.08)',
-      'background:rgba(34,197,94,.06)'
+      'gap:8px',
+      'padding:0 10px',
+      'background:#071a11',
+      'border-bottom:1px solid rgba(255,255,255,.08)'
     ].join(';');
 
-    const titleWrap = document.createElement('div');
-    titleWrap.innerHTML = `
-      <div style="font-weight:800;font-size:13px;letter-spacing:.02em">Tail Risk Model</div>
-      <div style="font-size:10px;color:#86efac;margin-top:2px">ADMIN · SHADOW RESEARCH · DRAG HERE</div>
+    const title = document.createElement('div');
+    title.style.cssText = 'min-width:0;flex:1';
+    title.innerHTML = `
+      <div style="font-size:12px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+        Tail Risk
+      </div>
+      <div style="font-size:9px;color:#86efac;white-space:nowrap">ADMIN · DRAG HERE</div>
     `;
 
     minimizeBtn = document.createElement('button');
     minimizeBtn.type = 'button';
-    minimizeBtn.setAttribute('aria-label', 'Minimize Tail Risk Model');
     minimizeBtn.style.cssText = [
-      'width:30px',
+      'width:28px',
       'height:28px',
-      'border-radius:999px',
-      'border:1px solid rgba(255,255,255,.12)',
-      'background:rgba(255,255,255,.06)',
+      'flex:0 0 28px',
+      'border-radius:7px',
+      'border:1px solid #334155',
+      'background:#111827',
       'color:#fff',
       'font-size:18px',
+      'font-weight:900',
       'line-height:1',
       'cursor:pointer'
     ].join(';');
-    minimizeBtn.addEventListener('click', event => {
-      event.preventDefault();
-      event.stopPropagation();
-      const currentlyMinimized =
-        panel?.dataset?.minimized === '1' ||
-        body?.style?.display === 'none';
-      setMinimized(!currentlyMinimized);
-    });
-
-    header.appendChild(titleWrap);
-    header.appendChild(minimizeBtn);
 
     body = document.createElement('div');
-    body.style.cssText = 'padding:14px';
+    body.style.cssText = [
+      'display:none',
+      'padding:10px',
+      'max-height:376px',
+      'overflow:auto',
+      'background:#07110d'
+    ].join(';');
 
     statusEl = document.createElement('div');
-    statusEl.style.cssText = 'font-size:13px;font-weight:700;color:#38bdf8;margin-bottom:8px';
-    statusEl.textContent = 'Initializing research model…';
+    statusEl.style.cssText = 'font-size:11px;font-weight:800;color:#38bdf8;margin-bottom:8px';
 
     detailEl = document.createElement('div');
-    detailEl.style.cssText = 'font-size:12px;line-height:1.65;color:#cbd5e1';
+    detailEl.style.cssText = 'font-size:11px;line-height:1.45;color:#cbd5e1';
 
-    body.appendChild(statusEl);
-    body.appendChild(detailEl);
-
-    panel.appendChild(header);
-    panel.appendChild(body);
+    body.append(statusEl, detailEl);
+    header.append(title, minimizeBtn);
+    panel.append(header, body);
     document.body.appendChild(panel);
+
+    minimizeBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setMinimized(panel.dataset.minimized !== '1');
+    });
 
     makePanelDraggable(panel, header);
     setMinimized(isMinimized());
@@ -721,28 +669,60 @@
         ${currentRows}
       </div>
 
-      <details open style="
+      <div style="
         border-top:1px solid rgba(255,255,255,.08);
         padding-top:8px
       ">
-        <summary style="
+        <button id="tail-risk-forward-toggle" type="button" style="
+          width:100%;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:8px;
+          border:0;
+          background:transparent;
+          color:#86efac;
+          padding:4px 0;
           cursor:pointer;
           font-size:11px;
           font-weight:900;
-          color:#86efac;
-          user-select:none
+          text-align:left
         ">
-          FORWARD VALIDATION HISTORY
-        </summary>
-        <div style="margin-top:8px">
+          <span>FORWARD VALIDATION HISTORY</span>
+          <span id="tail-risk-forward-toggle-icon">+</span>
+        </button>
+
+        <div id="tail-risk-forward-body" style="
+          display:none;
+          margin-top:8px
+        ">
           ${statsHtml}
         </div>
-      </details>
+      </div>
 
       <div style="color:#64748b;font-size:10px;margin-top:10px">
         Admin only · shadow research · never controls live trades
       </div>
     `;
+
+    const forwardToggle = detailEl.querySelector('#tail-risk-forward-toggle');
+    const forwardBody = detailEl.querySelector('#tail-risk-forward-body');
+    const forwardIcon = detailEl.querySelector('#tail-risk-forward-toggle-icon');
+
+    forwardToggle?.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const isHidden = forwardBody?.style?.display === 'none';
+
+      if (forwardBody) {
+        forwardBody.style.display = isHidden ? 'block' : 'none';
+      }
+
+      if (forwardIcon) {
+        forwardIcon.textContent = isHidden ? '−' : '+';
+      }
+    });
   }
 
   async function tick() {

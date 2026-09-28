@@ -52,3 +52,16 @@ Panel usability V1.6:
 - Drag the header to move the panel even when minimized.
 - The + / − button reliably expands/collapses the panel.
 - Panel position is remembered in localStorage.
+
+V1.7 compact panel fix:
+- Loads collapsed at 230px wide and 44px tall.
+- Expands to only 320px wide, maximum 420px high.
+- Historical validation section is collapsed by default.
+- Dragging uses the entire title bar except the +/- button.
+- Dragging now uses document-level pointer events for reliability.
+
+V1.8 independent controls:
+- Main Tail Risk panel +/- controls the whole panel.
+- Forward Validation History has its own independent +/- button.
+- Forward Validation History loads collapsed by default.
+- Expanding/collapsing history does not move or affect the main panel state.
