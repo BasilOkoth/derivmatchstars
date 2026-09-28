@@ -1,0 +1,32 @@
+DigitMatchStar Research Upgrade Upload Pack
+
+Upload/replace these files in the ROOT of your GitHub repository:
+
+1. bot-obfuscated.html
+   - REPLACE the current bot-obfuscated.html
+   - This full file already includes:
+     <script src="/research-suite-loader.js"></script>
+     immediately before:
+     <script src="/screen-recorder-safe-v5-2.js"></script>
+
+2. tail-risk-model-v1.2-combined.js
+   - NEW file
+
+3. combined-tailguard-tailrisk-export.js
+   - NEW file
+
+4. research-suite-loader.js
+   - NEW file
+
+Do NOT remove your existing:
+- tailguard-research-v2-autopilot.js
+- screen-recorder-safe-v5-2.js
+- api/capture-access.js
+
+The loader will load:
+TailGuard -> Tail Risk Model -> Combined Export
+
+Result:
+- Tail Risk panel remains admin-only and minimizable.
+- Existing TailGuard Export Research button downloads ONE combined JSON report.
+- No separate Tail Risk report is needed.
