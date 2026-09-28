@@ -1,0 +1,21 @@
+DigitMatchStar Under-9 Lab v2.7 — Continuous Counter + Wake Lock
+
+UPLOAD
+1. Replace only: under9-research-v2.1-private.js
+2. Keep the same filename on GitHub/Render.
+3. Redeploy and hard refresh.
+
+WHAT CHANGED
+- Clarifies the 5,000 live-tick value is a rolling feature buffer, not a stop limit.
+- Adds persistent totalForwardTicks, which continues increasing beyond 5,000.
+- UI now shows Total forward ticks, rolling feature buffer, and collector status.
+- Export adds a collection section with totalForwardTicks and retained buffer counts.
+- Adds KEEP SCREEN AWAKE toggle using the browser Screen Wake Lock API where supported.
+- Existing watchdog/reconnect behavior remains.
+- Existing Under-9 research/trading rules are unchanged.
+
+IMPORTANT LIMITATION
+Browser Wake Lock can help prevent normal screen sleep while the page is open, but it cannot guarantee research continues if the computer actually sleeps, hibernates, the lid is closed, the browser is killed, or the network is suspended. For true 24/7 collection, move the tick collector to an always-on server/background worker (for example Render) and let the browser dashboard read the stored research data.
+
+STORAGE
+The lab still retains up to 30,000 scored records locally. Long-running research beyond that should be moved to server-side or IndexedDB storage so old forward observations are not dropped from detailed analysis.

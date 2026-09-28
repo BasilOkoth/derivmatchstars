@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.6-DEDUP-WATCHLIST';
+const VERSION = 'UNDER9-LAB-V2.7-CONTINUOUS-WAKE';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -30,6 +30,7 @@ const CFG = {
   staleFeedMs: 12000,
   watchdogIntervalMs: 4000,
   pingIntervalMs: 15000,
+  retainedLiveFeatureTicks: 5000,
 };
 
 const S = {
@@ -43,6 +44,7 @@ const S = {
   lastPublicMessageAt:0, lastTickAt:0, lastTickEpoch:null,
   watchdogTimer:null, pingTimer:null, feedReconnects:0, staleReconnects:0,
   lastPublicError:'', publicReconnectAttempts:0,
+  totalForwardTicks:0, wakeLock:null, wakeLockRequested:false,
 };
 
 const $ = id => document.getElementById(id);
@@ -110,6 +112,8 @@ function load(){
     if(Array.isArray(x.discoveryTicks))S.discoveryTicks=x.discoveryTicks.slice(-CFG.historyCount);
     if(S.discoveryTicks.length>=300)S.historicalLoaded=true;
     if(Array.isArray(x.liveTicks))S.liveTicks=x.liveTicks.slice(-CFG.maxLiveTicks);
+    S.totalForwardTicks=Math.max(Number(x.totalForwardTicks||0),S.records.length,S.liveTicks.length);
+    if(typeof x.wakeLockRequested==='boolean')S.wakeLockRequested=x.wakeLockRequested;
     if(x.stats)S.stats=x.stats;
     if(x.mode)S.mode=x.mode;
     if(typeof x.running==='boolean')S.running=x.running;
@@ -118,7 +122,7 @@ function load(){
   if(S.mode==='REAL'){ S.mode='SHADOW'; S.running=false; }
 }
 function save(){
-  try{ localStorage.setItem(STORE,JSON.stringify({records:S.records.slice(-CFG.maxRecords),discoveryTicks:S.discoveryTicks.slice(-CFG.historyCount),liveTicks:S.liveTicks.slice(-CFG.maxLiveTicks),stats:S.stats,mode:S.mode,running:S.running})); }catch(_){ }
+  try{ localStorage.setItem(STORE,JSON.stringify({records:S.records.slice(-CFG.maxRecords),discoveryTicks:S.discoveryTicks.slice(-CFG.historyCount),liveTicks:S.liveTicks.slice(-CFG.maxLiveTicks),totalForwardTicks:S.totalForwardTicks,wakeLockRequested:S.wakeLockRequested,stats:S.stats,mode:S.mode,running:S.running})); }catch(_){ }
 }
 
 function digitFromQuote(q,pip=S.pipSize){
@@ -176,6 +180,7 @@ function onPublic(data){
   S.lastTickEpoch=Number(data.tick.epoch||0);
   if(Number.isFinite(Number(data.tick.pip_size)))S.pipSize=Number(data.tick.pip_size);
   const d=digitFromQuote(data.tick.quote,S.pipSize);if(d==null)return;
+  S.totalForwardTicks++;
   scoreShadow(d,data.tick.epoch,Number(data.tick.quote));
   S.liveTicks.push({digit:d,quote:Number(data.tick.quote),epoch:Number(data.tick.epoch),source:'LIVE_FORWARD'});
   if(S.liveTicks.length>CFG.maxLiveTicks)S.liveTicks.shift();
@@ -506,9 +511,26 @@ function patternLabSnapshot(){
   return {breakEvenNineRate:CFG.breakEvenNineRate,candidates,currentTags:current?tagsFromFeatures(current.features):[]};
 }
 function exportJSON(){
-  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_6',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,lastPublicMessageAt:S.lastPublicMessageAt,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},records:S.records};
+  const payload={schema:'DIGITMATCHSTAR_UNDER9_LAB_V2_7',generatedAt:nowISO(),version:VERSION,researchOnly:false,defaultMode:'SHADOW',currentMode:S.mode,symbol:SYMBOL,config:CFG,methodology:{historicalUsage:'DISCOVERY_ONLY',liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,patternCandidatesSelectedFromHistoricalOnly:true,forwardValidationSeparated:true},executionStats:S.stats,thresholds:Object.fromEntries(CFG.thresholds.map(t=>[String(t),thresholdStats(t)])),patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),collection:{totalForwardTicks:S.totalForwardTicks,retainedLiveFeatureTicks:S.liveTicks.length,retainedRecordCount:S.records.length,liveFeatureBufferLimit:CFG.maxLiveTicks,recordRetentionLimit:CFG.maxRecords,collectionContinuesPastFeatureBuffer:true,wakeLockRequested:S.wakeLockRequested,wakeLockActive:!!S.wakeLock},feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,lastPublicMessageAt:S.lastPublicMessageAt,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},records:S.records};
   const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`under9-lab-${SYMBOL}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
 }
+
+
+async function requestWakeLock(){
+  S.wakeLockRequested=true; save();
+  if(!('wakeLock' in navigator)){ render(); return false; }
+  try{
+    S.wakeLock=await navigator.wakeLock.request('screen');
+    S.wakeLock.addEventListener('release',()=>{S.wakeLock=null;render();});
+    render(); return true;
+  }catch(_){ S.wakeLock=null; render(); return false; }
+}
+async function releaseWakeLock(){
+  S.wakeLockRequested=false; save();
+  if(S.wakeLock){try{await S.wakeLock.release();}catch(_){ }S.wakeLock=null;}
+  render();
+}
+async function toggleWakeLock(){ if(S.wakeLockRequested) await releaseWakeLock(); else await requestWakeLock(); }
 
 async function setMode(m){
   if(!(await ensureAdminAuthorized(true)))return;
@@ -538,6 +560,8 @@ function ensureStyles(){
     #${PANEL_ID} .u9-chip.warn .dot{background:#f59e0b;box-shadow:0 0 10px rgba(245,158,11,.55)}
     #${PANEL_ID} .u9-panel{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 12px;margin-bottom:12px}
     #${PANEL_ID} .u9-mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+    #${PANEL_ID} .u9-wake{width:100%;border:1px solid rgba(255,255,255,.12);background:#0f223c;color:#dbeafe;padding:9px 10px;border-radius:12px;font-weight:800;cursor:pointer;margin:-4px 0 12px}
+    #${PANEL_ID} .u9-wake.on{background:#123728;color:#bbf7d0;border-color:#22c55e}
     #${PANEL_ID} .u9-mode-btn{border:1px solid rgba(255,255,255,.1);background:#122038;color:#dbeafe;padding:10px 8px;border-radius:12px;font-weight:800;cursor:pointer;transition:.15s ease all}
     #${PANEL_ID} .u9-mode-btn:hover{transform:translateY(-1px)}
     #${PANEL_ID} .u9-mode-btn.active.shadow{background:#17325c;color:#bfdbfe;border-color:#60a5fa}
@@ -626,7 +650,9 @@ function colorValue(v, goodThreshold, badThreshold, inverse=false){
 function render(){
   if(!S.adminAuthorized){hidePrivateLab();return;}
   makePanel();const el=$('u9v2-body');if(!el)return;const pred=S.pendingShadow||makePrediction();
-  const liveCount=S.liveTicks.length;
+  const liveCount=S.totalForwardTicks;
+  const retainedLiveCount=S.liveTicks.length;
+  const collectionStatus=S.connected?'COLLECTING':'PAUSED / OFFLINE';
   const warm = featureUniverse().length;
   const feedStatus=S.connected?'CONNECTED':'OFFLINE';
   const authStatus=S.mode==='SHADOW' ? 'NOT NEEDED' : (S.authenticated?'READY':'WAITING');
@@ -684,7 +710,9 @@ function render(){
       </div>
       <div class="muted" style="text-align:right;font-size:11px">
         Warm-up ticks: <b>${Math.min(warm,300)}/300</b><br>
-        Live forward ticks: <b>${liveCount}</b>
+        Total forward ticks: <b>${liveCount}</b><br>
+        Rolling feature buffer: <b>${retainedLiveCount}/${CFG.maxLiveTicks}</b><br>
+        Collector: <b>${collectionStatus}</b>
       </div>
     </div>
 
@@ -693,6 +721,7 @@ function render(){
       <button id="u9-demo" class="u9-mode-btn ${S.mode==='DEMO'?'active demo':''}">DEMO</button>
       <button id="u9-real" class="u9-mode-btn ${S.mode==='REAL'?'active real':''}">REAL</button>
     </div>
+    <button id="u9-wake" class="u9-wake ${S.wakeLockRequested?'on':''}">${S.wakeLockRequested?(S.wakeLock?'KEEP AWAKE: ON':'KEEP AWAKE: REQUESTED'):'KEEP SCREEN AWAKE: OFF'}</button>
 
     ${S.lastPublicError?`<div class="u9-panel" style="border-color:rgba(248,113,113,.45);background:rgba(127,29,29,.18)"><div class="u9-rule"><b style="color:#fca5a5">Feed issue:</b> ${S.lastPublicError}</div></div>`:''}
 
@@ -761,22 +790,25 @@ function render(){
       <div class="u9-note" style="margin-top:4px">${patternLab.currentTags.length?patternLab.currentTags.map(x=>x.label).join(' · '):'Waiting for enough ticks'}</div>
     </div>
 
-    <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The threshold table and Pattern Lab forward column use <b>future-only observations</b>. Break-even requires the accepted digit-9 rate to stay below <b>8.26%</b> for the assumed <b>$1 stake / $0.09 profit</b>. Pattern candidates are research signals only until they earn a fresh forward sample.</div>
+    <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The live 5,000-tick value is a <b>rolling feature buffer, not a collection stop</b>; Total forward ticks continues increasing past 5,000. The threshold table and Pattern Lab forward column use <b>future-only observations</b>. Break-even requires the accepted digit-9 rate to stay below <b>8.26%</b> for the assumed <b>$1 stake / $0.09 profit</b>. Pattern candidates are research signals only until they earn a fresh forward sample.</div>
     <button id="u9-export" class="u9-export">Export Under-9 JSON + Ranked Watchlist</button>`;
   $('u9-shadow').onclick=()=>setMode('SHADOW');
   $('u9-demo').onclick=()=>setMode('DEMO');
   $('u9-real').onclick=()=>setMode('REAL');
+  $('u9-wake').onclick=toggleWakeLock;
   $('u9-run').onclick=toggleRun;
   $('u9-export').onclick=exportJSON;
 }
 
 window.DMSUnder9Lab={
   version:VERSION,
-  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},privateAdmin:true}):null,
+  getSnapshot:()=>S.adminAuthorized?({version:VERSION,mode:S.mode,running:S.running,stats:S.stats,pending:S.pendingShadow,historicalTicks:S.discoveryTicks.length,liveTicks:S.liveTicks.length,totalForwardTicks:S.totalForwardTicks,wakeLockRequested:S.wakeLockRequested,wakeLockActive:!!S.wakeLock,patternLab:patternLabSnapshot(),combinationLab:combinationLabSnapshot(),feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,feedReconnects:S.feedReconnects,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},privateAdmin:true}):null,
   exportReport:()=>{if(S.adminAuthorized)exportJSON();},
   setMode,
   start:async()=>{if(!(await ensureAdminAuthorized(true)))return;S.running=true;save();render();if(S.mode!=='SHADOW')maybeExecute();},
-  stop:()=>{S.running=false;save();render();}
+  stop:()=>{S.running=false;save();render();},
+  requestWakeLock,
+  releaseWakeLock
 };
 
 async function bootPrivateLab(){
@@ -784,6 +816,7 @@ async function bootPrivateLab(){
   const ok=await ensureAdminAuthorized(true);
   if(!ok)return;
   makePanel();render();connectPublic();
+  if(S.wakeLockRequested && !document.hidden) requestWakeLock();
   setInterval(async()=>{
     const ok=await ensureAdminAuthorized(true);
     if(!ok)hidePrivateLab();
@@ -794,6 +827,7 @@ window.addEventListener('focus',()=>{
   if(S.adminAuthorized && (!S.connected || (S.lastTickAt && Date.now()-S.lastTickAt>CFG.staleFeedMs))) forcePublicReconnect('Window resumed — refreshing feed');
 });
 document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && S.wakeLockRequested && !S.wakeLock) requestWakeLock();
   if(!document.hidden && S.adminAuthorized && (!S.connected || (S.lastTickAt && Date.now()-S.lastTickAt>CFG.staleFeedMs))) forcePublicReconnect('Tab resumed — refreshing feed');
 });
 bootPrivateLab();
