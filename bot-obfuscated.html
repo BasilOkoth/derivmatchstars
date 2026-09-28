@@ -9071,7 +9071,7 @@ window.isBotRunning = true;
 
     <script>
     // ============================================================================
-    // TAILGUARD AUTOPILOT RESEARCH v2.1
+    // TAILGUARD AUTOPILOT RESEARCH v2.3 — admin-only visibility + cycle counter
     // DEMO-ONLY autonomous research runner.
     // Uses the EXISTING DigitMatchStar engine; it does not place Deriv contracts itself.
     // TailGuard decisions remain SHADOW-ONLY while the forward dataset is collected.
@@ -9080,7 +9080,7 @@ window.isBotRunning = true;
         'use strict';
 
         const TG_AP = Object.freeze({
-            version: 'TG-AUTOPILOT-2.1',
+            version: 'TG-AUTOPILOT-2.3-ADMIN-ONLY',
             maxCyclesPerDay: 5,
             maxTradesPerCycle: 10,
             pollMs: 500,
@@ -9089,6 +9089,74 @@ window.isBotRunning = true;
 
         const STATE_KEY = 'digitmatchstar_tailguard_autopilot_v21';
         const MIN_KEY = 'matchstar_panel_min_tailguard-autopilot';
+
+        let adminAuthorized = null;
+        let adminCheckInFlight = false;
+        let adminLastCheckedAt = 0;
+        const ADMIN_RECHECK_MS = 60000;
+
+        async function checkTailGuardAdminAccess(force = false) {
+            const now = Date.now();
+            if (!force && adminAuthorized !== null && (now - adminLastCheckedAt) < ADMIN_RECHECK_MS) {
+                return adminAuthorized;
+            }
+            if (adminCheckInFlight) return adminAuthorized === true;
+
+            adminCheckInFlight = true;
+            try {
+                const accountId =
+                    localStorage.getItem('active_account') ||
+                    localStorage.getItem('derivAccount') ||
+                    localStorage.getItem('derivDemoAccount') ||
+                    localStorage.getItem('derivRealAccount') ||
+                    '';
+
+                const response = await fetch('/api/capture-access', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        accountId,
+                        purpose: 'tailguard'
+                    })
+                });
+
+                if (!response.ok) {
+                    adminAuthorized = false;
+                    adminLastCheckedAt = now;
+                    return false;
+                }
+
+                const data = await response.json().catch(() => ({}));
+                adminAuthorized = !!(
+                    data.allowed === true ||
+                    data.authorized === true ||
+                    data.captureAllowed === true ||
+                    data.captureAdmin === true ||
+                    data.ok === true
+                );
+                adminLastCheckedAt = now;
+                return adminAuthorized;
+            } catch (_) {
+                adminAuthorized = false;
+                adminLastCheckedAt = now;
+                return false;
+            } finally {
+                adminCheckInFlight = false;
+            }
+        }
+
+        function hideTailGuardCompletely() {
+            if (panel && document.body.contains(panel)) {
+                panel.remove();
+            }
+            panel = null;
+            body = null;
+            statusEl = null;
+            detailEl = null;
+            minimizeBtn = null;
+            pauseBtn = null;
+        }
 
         let panel = null;
         let body = null;
@@ -9179,14 +9247,39 @@ window.isBotRunning = true;
 
         function cycleHistory() {
             const cp = globalBinding('cyclePerformance') || window.cyclePerformance;
-            const h = cp && Array.isArray(cp.history) ? cp.history : [];
-            return h;
+            if (!cp) return [];
+
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                'UNKNOWN';
+
+            // CPR-3 stores completed cycles by symbol and exposes them through load().
+            // It does NOT maintain a flat cp.history array.
+            try {
+                if (typeof cp.load === 'function') {
+                    const rows = cp.load(symbol);
+                    if (Array.isArray(rows)) return rows;
+                }
+            } catch (_) {}
+
+            if (cp.historyBySymbol && Array.isArray(cp.historyBySymbol[symbol])) {
+                return cp.historyBySymbol[symbol];
+            }
+
+            return [];
         }
 
         function completedIds() {
             return cycleHistory()
                 .filter(c => c && c.id && (c.status === 'WIN' || c.status === 'STOPPED'))
                 .map(c => String(c.id));
+        }
+
+        function activeCycleTradeCount() {
+            const cp = globalBinding('cyclePerformance') || window.cyclePerformance;
+            const current = cp?.current;
+            return Array.isArray(current?.trades) ? current.trades.length : 0;
         }
 
         function refreshDailyCounter() {
@@ -9327,6 +9420,10 @@ window.isBotRunning = true;
         }
 
         function ensurePanel() {
+            if (adminAuthorized !== true) {
+                hideTailGuardCompletely();
+                return;
+            }
             if (panel && document.body.contains(panel)) return;
 
             panel = document.createElement('section');
@@ -9396,7 +9493,12 @@ window.isBotRunning = true;
         }
 
         function render(state, account, mode, running, message) {
+            if (adminAuthorized !== true) {
+                hideTailGuardCompletely();
+                return;
+            }
             ensurePanel();
+            if (!statusEl || !detailEl) return;
 
             const complete = state.cyclesToday >= TG_AP.maxCyclesPerDay;
             const blocked = account !== 'DEMO';
@@ -9417,6 +9519,7 @@ window.isBotRunning = true;
                 Mode: <b>${mode}</b><br>
                 Bot: <b>${running === true ? 'RUNNING' : running === false ? 'STOPPED' : 'UNKNOWN'}</b><br>
                 Today: <b>${state.cyclesToday}/${TG_AP.maxCyclesPerDay} completed cycles</b><br>
+                Active cycle trades: <b>${activeCycleTradeCount()}/${TG_AP.maxTradesPerCycle}</b><br>
                 Max trades/cycle: <b>${TG_AP.maxTradesPerCycle}</b><br>
                 TailGuard: <b>SHADOW RESEARCH</b><br>
                 Autopilot: <b>${state.enabled ? 'ENABLED' : 'PAUSED'}</b>
@@ -9428,8 +9531,20 @@ window.isBotRunning = true;
             }
         }
 
-        function tick() {
+        async function tick() {
             if (!document.body) return;
+
+            const authorized = await checkTailGuardAdminAccess(false);
+            if (!authorized) {
+                // TailGuard must be invisible and inactive for all non-admin users.
+                hideTailGuardCompletely();
+                if (isRunning() === true && loadState().enabled) {
+                    // Do not interfere with ordinary user bot sessions; only TailGuard automation
+                    // remains disabled. No start/stop action is taken here.
+                }
+                return;
+            }
+
             ensurePanel();
 
             const state = refreshDailyCounter();
@@ -9534,9 +9649,17 @@ window.isBotRunning = true;
             }
         };
 
-        ensurePanel();
-        setInterval(tick, TG_AP.pollMs);
-        setTimeout(tick, 500);
+        (async () => {
+            const authorized = await checkTailGuardAdminAccess(true);
+            if (!authorized) {
+                hideTailGuardCompletely();
+                return;
+            }
+
+            ensurePanel();
+            setInterval(() => { tick().catch(() => {}); }, TG_AP.pollMs);
+            setTimeout(() => { tick().catch(() => {}); }, 500);
+        })();
     })();
     </script>
 
