@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TAIL-RISK-V1.3-DRAGGABLE';
+  const VERSION = 'TAIL-RISK-V1.4-LIVE-CHECKPOINTS';
   const STORE_KEY = 'digitmatchstar_tail_risk_model_v11';
   const MIN_KEY = 'matchstar_panel_min_tail-risk-model';
   const POLL_MS = 500;
@@ -519,6 +519,38 @@
     return score / (pos.length * neg.length);
   }
 
+
+  function currentCycleRecord(store) {
+    const cp = getCyclePerformance();
+    const current = cp?.current || cp?.currentCycle || null;
+    if (!current?.id) return null;
+    return store.records.find(r => String(r.id) === String(current.id)) || null;
+  }
+
+  function checkpointDisplay(rec, cp) {
+    const row = rec?.checkpoints?.[String(cp)];
+    if (!row?.frozen || !Number.isFinite(row.probability)) {
+      return {
+        text: 'PENDING',
+        tone: '#94a3b8',
+        detail: `Waiting for Trade ${cp}`
+      };
+    }
+
+    const pct = (row.probability * 100).toFixed(1) + '%';
+    const label = row.label || 'UNKNOWN';
+    let tone = '#22c55e';
+    if (label === 'MODERATE') tone = '#f59e0b';
+    if (label === 'HIGH') tone = '#fb7185';
+    if (label === 'VERY HIGH') tone = '#ef4444';
+
+    return {
+      text: `${pct} · ${label}`,
+      tone,
+      detail: `Frozen at Trade ${cp}`
+    };
+  }
+
   function render(store) {
     if (adminAuthorized !== true) {
       hideCompletely();
@@ -528,9 +560,33 @@
     ensurePanel();
     if (!statusEl || !detailEl) return;
 
-    statusEl.textContent = 'Forward tail-risk research active';
-
     const forward = store.forward || [];
+    const rec = currentCycleRecord(store);
+
+    statusEl.textContent = rec
+      ? 'Current cycle tail-risk monitoring'
+      : 'Forward tail-risk research active';
+
+    const currentRows = CHECKPOINTS.map(cp => {
+      const d = checkpointDisplay(rec, cp);
+      return `
+        <div style="
+          display:grid;
+          grid-template-columns:46px 1fr;
+          gap:10px;
+          align-items:center;
+          padding:8px 0;
+          border-bottom:1px solid rgba(255,255,255,.06)
+        ">
+          <div style="font-weight:900;font-size:13px;color:#e2e8f0">T${cp}</div>
+          <div>
+            <div style="font-weight:900;color:${d.tone};font-size:13px">${d.text}</div>
+            <div style="font-size:10px;color:#64748b;margin-top:2px">${d.detail}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
     const statsHtml = CHECKPOINTS.map(cp => {
       const rows = forward.filter(r => Number(r.checkpoint) === cp);
       const n = rows.length;
@@ -551,10 +607,43 @@
     }).join('');
 
     detailEl.innerHTML = `
-      <div style="color:#86efac;font-size:11px">
-        Visible only to authorized admin · research only
+      <div style="
+        margin-bottom:12px;
+        padding:10px 11px;
+        border-radius:10px;
+        background:rgba(15,23,42,.55);
+        border:1px solid rgba(148,163,184,.14)
+      ">
+        <div style="font-size:11px;font-weight:900;color:#7dd3fc;margin-bottom:4px">
+          CURRENT CYCLE
+        </div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px">
+          ${rec?.id ? `Cycle ${String(rec.id).slice(-8)}` : 'No active cycle'}
+        </div>
+        ${currentRows}
       </div>
-      ${statsHtml}
+
+      <details open style="
+        border-top:1px solid rgba(255,255,255,.08);
+        padding-top:8px
+      ">
+        <summary style="
+          cursor:pointer;
+          font-size:11px;
+          font-weight:900;
+          color:#86efac;
+          user-select:none
+        ">
+          FORWARD VALIDATION HISTORY
+        </summary>
+        <div style="margin-top:8px">
+          ${statsHtml}
+        </div>
+      </details>
+
+      <div style="color:#64748b;font-size:10px;margin-top:10px">
+        Admin only · shadow research · never controls live trades
+      </div>
     `;
   }
 

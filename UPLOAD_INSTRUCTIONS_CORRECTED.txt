@@ -36,3 +36,7 @@ AFTER DEPLOYMENT:
 UI update:
 - The Tail Risk Model panel is minimizable and draggable by its header.
 - Dragging does not interfere with the minimize button.
+
+UI update:
+- Tail Risk panel now shows live/current-cycle T3, T5 and T7 readings at the top.
+- Forward validation history is shown separately underneath.
