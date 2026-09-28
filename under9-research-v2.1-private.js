@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const VERSION = 'UNDER9-LAB-V2.1-PRIVATE-ADMIN';
+const VERSION = 'UNDER9-LAB-V2.2-PRIVATE-ADMIN-UI';
 const SYMBOL = 'R_10';
 const STORE = `under9_lab_v2_${SYMBOL}`;
 const PANEL_ID = 'under9-lab-v2-panel';
@@ -258,31 +258,191 @@ async function setMode(m){
 }
 async function toggleRun(){if(!(await ensureAdminAuthorized(true)))return;S.running=!S.running;save();render();if(S.running&&S.mode!=='SHADOW')maybeExecute();}
 
+
+function ensureStyles(){
+  if(document.getElementById('u9v2-style')) return;
+  const style=document.createElement('style');
+  style.id='u9v2-style';
+  style.textContent=`
+    #${PANEL_ID}{position:fixed;right:12px;bottom:12px;z-index:2147483644;width:380px;max-width:calc(100vw - 24px);max-height:82vh;overflow:auto;background:linear-gradient(180deg,#08111f 0%,#0b1630 100%);color:#e5eefb;border:1px solid rgba(99,102,241,.28);border-radius:18px;box-shadow:0 18px 46px rgba(0,0,0,.46);font:12px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    #${PANEL_ID} *{box-sizing:border-box}
+    #${PANEL_ID} .u9-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.01));border-bottom:1px solid rgba(255,255,255,.08);cursor:move;position:sticky;top:0;backdrop-filter:blur(10px);z-index:2}
+    #${PANEL_ID} .u9-title{font-size:21px;font-weight:900;letter-spacing:.03em;color:#f8fafc}
+    #${PANEL_ID} .u9-sub{font-size:11px;color:#93c5fd;margin-top:2px}
+    #${PANEL_ID} .u9-min{border:0;border-radius:12px;background:#16233d;color:#fff;width:34px;height:34px;font-size:20px;line-height:1;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+    #${PANEL_ID} .u9-body{padding:14px}
+    #${PANEL_ID} .u9-status-row{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+    #${PANEL_ID} .u9-chip{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.05);font-size:11px;font-weight:700;border:1px solid rgba(255,255,255,.08)}
+    #${PANEL_ID} .u9-chip .dot{width:9px;height:9px;border-radius:50%}
+    #${PANEL_ID} .u9-chip.online .dot{background:#22c55e;box-shadow:0 0 10px rgba(34,197,94,.7)}
+    #${PANEL_ID} .u9-chip.offline .dot{background:#ef4444;box-shadow:0 0 10px rgba(239,68,68,.55)}
+    #${PANEL_ID} .u9-chip.warn .dot{background:#f59e0b;box-shadow:0 0 10px rgba(245,158,11,.55)}
+    #${PANEL_ID} .u9-panel{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 12px;margin-bottom:12px}
+    #${PANEL_ID} .u9-mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+    #${PANEL_ID} .u9-mode-btn{border:1px solid rgba(255,255,255,.1);background:#122038;color:#dbeafe;padding:10px 8px;border-radius:12px;font-weight:800;cursor:pointer;transition:.15s ease all}
+    #${PANEL_ID} .u9-mode-btn:hover{transform:translateY(-1px)}
+    #${PANEL_ID} .u9-mode-btn.active.shadow{background:#17325c;color:#bfdbfe;border-color:#60a5fa}
+    #${PANEL_ID} .u9-mode-btn.active.demo{background:#3b2c11;color:#fde68a;border-color:#fbbf24}
+    #${PANEL_ID} .u9-mode-btn.active.real{background:#3a1212;color:#fecaca;border-color:#f87171}
+    #${PANEL_ID} .u9-rule{font-size:12px;color:#cbd5e1;line-height:1.45}
+    #${PANEL_ID} .u9-rule b{color:#fff}
+    #${PANEL_ID} .u9-cta{width:100%;border:0;border-radius:14px;padding:12px 14px;font-size:15px;font-weight:900;cursor:pointer;color:#fff;transition:.15s ease transform;box-shadow:0 10px 22px rgba(0,0,0,.18)}
+    #${PANEL_ID} .u9-cta:hover{transform:translateY(-1px)}
+    #${PANEL_ID} .u9-cta.shadow{background:linear-gradient(180deg,#3b82f6,#1d4ed8)}
+    #${PANEL_ID} .u9-cta.demo{background:linear-gradient(180deg,#f59e0b,#d97706)}
+    #${PANEL_ID} .u9-cta.real{background:linear-gradient(180deg,#ef4444,#b91c1c)}
+    #${PANEL_ID} .u9-cta.stop{background:linear-gradient(180deg,#64748b,#475569)}
+    #${PANEL_ID} .u9-metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:12px 0}
+    #${PANEL_ID} .u9-metric{background:rgba(15,23,42,.72);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:11px}
+    #${PANEL_ID} .u9-metric-label{font-size:11px;color:#9fb0cf;margin-bottom:4px}
+    #${PANEL_ID} .u9-metric-value{font-size:22px;font-weight:900;color:#fff;letter-spacing:.01em}
+    #${PANEL_ID} .u9-metric.small .u9-metric-value{font-size:19px}
+    #${PANEL_ID} .u9-table-wrap{margin-top:12px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:8px 10px 10px}
+    #${PANEL_ID} .u9-table-title{font-size:12px;font-weight:900;color:#e2e8f0;margin-bottom:6px}
+    #${PANEL_ID} table{width:100%;border-collapse:collapse;font-size:11px}
+    #${PANEL_ID} thead th{padding:7px 4px;color:#93c5fd;border-bottom:1px solid rgba(255,255,255,.08)}
+    #${PANEL_ID} tbody td{padding:7px 4px;border-bottom:1px solid rgba(255,255,255,.05)}
+    #${PANEL_ID} tbody tr:last-child td{border-bottom:0}
+    #${PANEL_ID} .good{color:#4ade80;font-weight:800}
+    #${PANEL_ID} .bad{color:#f87171;font-weight:800}
+    #${PANEL_ID} .mid{color:#fbbf24;font-weight:800}
+    #${PANEL_ID} .muted{color:#94a3b8}
+    #${PANEL_ID} .u9-note{font-size:11px;color:#9fb0cf;line-height:1.45;margin-top:10px}
+    #${PANEL_ID} .u9-export{width:100%;margin-top:12px;padding:11px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:#122038;color:#fff;font-weight:900;cursor:pointer}
+    #${PANEL_ID} .u9-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:linear-gradient(90deg,rgba(99,102,241,.16),rgba(16,185,129,.12));border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 12px;margin-bottom:12px}
+    #${PANEL_ID} .u9-banner .label{font-size:11px;color:#a5b4fc;font-weight:900;letter-spacing:.05em}
+    #${PANEL_ID} .u9-banner .value{font-size:14px;color:#fff;font-weight:900}
+  `;
+  document.head.appendChild(style);
+}
+
+
 function makePanel(){
   if(!S.adminAuthorized)return;
-  if($(PANEL_ID))return;const p=document.createElement('div');p.id=PANEL_ID;
-  p.style.cssText='position:fixed;right:12px;bottom:12px;z-index:2147483644;width:355px;max-height:570px;overflow:auto;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.4);font:12px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-  p.innerHTML='<div id="u9v2-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 10px;background:#111827;cursor:move"><div><b>UNDER 9 LAB</b><div style="font-size:10px;color:#94a3b8">'+VERSION+'</div></div><button id="u9v2-min">−</button></div><div id="u9v2-body" style="padding:10px"></div>';
-  document.body.appendChild(p);let col=false;$('u9v2-min').onclick=()=>{col=!col;$('u9v2-body').style.display=col?'none':'block';$('u9v2-min').textContent=col?'+':'−';};
-  let drag=null;$('u9v2-head').addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;const r=p.getBoundingClientRect();drag={dx:e.clientX-r.left,dy:e.clientY-r.top};p.style.right='auto';p.style.bottom='auto';});document.addEventListener('pointermove',e=>{if(!drag)return;p.style.left=Math.max(0,Math.min(innerWidth-p.offsetWidth,e.clientX-drag.dx))+'px';p.style.top=Math.max(0,Math.min(innerHeight-p.offsetHeight,e.clientY-drag.dy))+'px';});document.addEventListener('pointerup',()=>drag=null);
+  ensureStyles();
+  if($(PANEL_ID))return;
+  const p=document.createElement('div');p.id=PANEL_ID;
+  p.innerHTML=`<div id="u9v2-head" class="u9-head"><div><div class="u9-title">UNDER 9 LAB</div><div class="u9-sub">${VERSION}</div></div><button id="u9v2-min" class="u9-min">−</button></div><div id="u9v2-body" class="u9-body"></div>`;
+  document.body.appendChild(p);
+  let col=false;
+  $('u9v2-min').onclick=()=>{col=!col;$('u9v2-body').style.display=col?'none':'block';$('u9v2-min').textContent=col?'+':'−';};
+  let drag=null;
+  $('u9v2-head').addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;const r=p.getBoundingClientRect();drag={dx:e.clientX-r.left,dy:e.clientY-r.top};p.style.right='auto';p.style.bottom='auto';e.preventDefault();});
+  document.addEventListener('pointermove',e=>{if(!drag)return;p.style.left=Math.max(0,Math.min(innerWidth-p.offsetWidth,e.clientX-drag.dx))+'px';p.style.top=Math.max(0,Math.min(innerHeight-p.offsetHeight,e.clientY-drag.dy))+'px';});
+  document.addEventListener('pointerup',()=>drag=null);
+}
+
+function statusChip(kind,label){
+  return `<div class="u9-chip ${kind}"><span class="dot"></span><span>${label}</span></div>`;
+}
+function colorValue(v, goodThreshold, badThreshold, inverse=false){
+  if(v==null) return 'muted';
+  if(!inverse){
+    if(v>=goodThreshold) return 'good';
+    if(v<=badThreshold) return 'bad';
+  } else {
+    if(v<=goodThreshold) return 'good';
+    if(v>=badThreshold) return 'bad';
+  }
+  return 'mid';
 }
 function render(){
   if(!S.adminAuthorized){hidePrivateLab();return;}
   makePanel();const el=$('u9v2-body');if(!el)return;const pred=S.pendingShadow||makePrediction();
-  const rows=CFG.thresholds.map(t=>{const x=thresholdStats(t);return `<tr><td>≤${(t*100).toFixed(0)}%</td><td>${x.n}</td><td>${pct(x.winRate)}</td><td>${pct(x.nineRate)}</td><td>${money(x.simPnl)}</td></tr>`}).join('');
-  const modeColor=S.mode==='REAL'?'#fecaca':S.mode==='DEMO'?'#fde68a':'#bfdbfe';
+  const liveCount=S.liveTicks.length;
+  const warm = featureUniverse().length;
+  const feedStatus=S.connected?'CONNECTED':'OFFLINE';
+  const authStatus=S.mode==='SHADOW' ? 'NOT NEEDED' : (S.authenticated?'READY':'WAITING');
+  const histStatus=S.historicalLoaded?`${S.discoveryTicks.length}/${CFG.historyCount}`:`${S.discoveryTicks.length}/${CFG.historyCount}`;
+  const modeClass=S.mode.toLowerCase();
+  const runLabel=S.running?`STOP ${S.mode}`:`START ${S.mode}`;
+  const runBtnClass=S.running?'stop':modeClass;
+  const acceptedText=pred? (pred.accept?'YES':'NO') : 'WARMING';
+  const acceptedClass=pred? (pred.accept?'good':'bad') : 'mid';
+  const nextP9Class=pred? colorValue(pred.p9,0.06,0.082569,true):'mid';
+  const under9Class=pred? colorValue(pred.winProb,0.917431,0.88,false):'mid';
+  const rows=CFG.thresholds.map(t=>{
+    const x=thresholdStats(t);
+    const winClass=colorValue(x.winRate,0.917431,0.88,false);
+    const nineClass=colorValue(x.nineRate,0.082569,0.12,true);
+    const pnlClass=x.simPnl>0?'good':x.simPnl<0?'bad':'muted';
+    return `<tr><td align="left">≤ ${(t*100).toFixed(0)}%</td><td align="right">${x.n}</td><td align="right" class="${winClass}">${pct(x.winRate)}</td><td align="right" class="${nineClass}">${pct(x.nineRate)}</td><td align="right" class="${pnlClass}">${money(x.simPnl)}</td></tr>`;
+  }).join('');
+  const activeTradeSummary=S.activeTrade ? `Contract #${S.activeTrade.contractId} active` : (S.pendingProposal ? 'Waiting for proposal / buy' : (S.running ? 'Watching for qualified signals' : 'Runner is idle'));
   el.innerHTML=`
-    <div style="margin-bottom:7px">Feed: <b>${S.connected?'CONNECTED':'OFFLINE'}</b> · Historical: <b>${S.discoveryTicks.length}/${CFG.historyCount}</b></div>
-    <div style="display:flex;gap:5px;margin-bottom:7px">
-      <button id="u9-shadow" style="flex:1">SHADOW</button><button id="u9-demo" style="flex:1">DEMO</button><button id="u9-real" style="flex:1">REAL</button>
+    <div class="u9-status-row">
+      ${statusChip(S.connected?'online':'offline',`Feed ${feedStatus}`)}
+      ${statusChip(S.historicalLoaded?'online':'warn',`Historical ${histStatus}`)}
+      ${statusChip(S.running?'online':'warn',`Runner ${S.running?'ON':'OFF'}`)}
+      ${statusChip((S.mode==='SHADOW'||S.authenticated)?'online':'warn',`${S.mode} auth ${authStatus}`)}
     </div>
-    <div style="padding:7px;border-radius:8px;background:#111827;margin-bottom:7px">Mode: <b style="color:${modeColor}">${S.mode}</b> · Runner: <b>${S.running?'ON':'OFF'}</b><br>Rule: trade only when P(9) ≤ ${(CFG.threshold*100).toFixed(0)}% · Flat stake $${CFG.stake.toFixed(2)}</div>
-    <button id="u9-run" style="width:100%;padding:7px;margin-bottom:7px">${S.running?'STOP':'START'} ${S.mode}</button>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px"><div style="background:#111827;padding:6px">Next P(9)<br><b>${pred?pct(pred.p9):'warming'}</b></div><div style="background:#111827;padding:6px">Under-9<br><b>${pred?pct(pred.winProb):'—'}</b></div><div style="background:#111827;padding:6px">Executed<br><b>${S.stats.contracts}</b></div><div style="background:#111827;padding:6px">Exec P&L<br><b>${money(S.stats.pnl)}</b></div></div>
-    <table style="width:100%;font-size:10px;text-align:right"><thead><tr><th align="left">P9</th><th>N</th><th>Win</th><th>9 rate</th><th>Sim P&L</th></tr></thead><tbody>${rows}</tbody></table>
-    <div style="font-size:10px;color:#94a3b8;margin-top:6px">Historical 5,000 ticks are discovery only. All scored shadow outcomes are future-only. DEMO/REAL use live Deriv proposal prices; Panel and execution are restricted to the authorized admin account. REAL starts only after you press START REAL.</div>
-    <button id="u9-export" style="width:100%;margin-top:7px;padding:7px">Export Under-9 JSON</button>`;
-  $('u9-shadow').onclick=()=>setMode('SHADOW');$('u9-demo').onclick=()=>setMode('DEMO');$('u9-real').onclick=()=>setMode('REAL');$('u9-run').onclick=toggleRun;$('u9-export').onclick=exportJSON;
+
+    <div class="u9-banner">
+      <div>
+        <div class="label">CURRENT MODE</div>
+        <div class="value">${S.mode} · ${S.running?'ACTIVE':'STANDBY'}</div>
+      </div>
+      <div class="muted" style="text-align:right;font-size:11px">
+        Warm-up ticks: <b>${Math.min(warm,300)}/300</b><br>
+        Live forward ticks: <b>${liveCount}</b>
+      </div>
+    </div>
+
+    <div class="u9-mode-grid">
+      <button id="u9-shadow" class="u9-mode-btn ${S.mode==='SHADOW'?'active shadow':''}">SHADOW</button>
+      <button id="u9-demo" class="u9-mode-btn ${S.mode==='DEMO'?'active demo':''}">DEMO</button>
+      <button id="u9-real" class="u9-mode-btn ${S.mode==='REAL'?'active real':''}">REAL</button>
+    </div>
+
+    <div class="u9-panel">
+      <div class="u9-rule"><b>Rule:</b> trade only when <b>P(9) ≤ ${(CFG.threshold*100).toFixed(0)}%</b>. Contract: <b>UNDER 9</b>. Flat stake: <b>$${CFG.stake.toFixed(2)}</b>.</div>
+      <div class="u9-note" style="margin-top:8px">Status: ${activeTradeSummary}</div>
+    </div>
+
+    <button id="u9-run" class="u9-cta ${runBtnClass}">${runLabel}</button>
+
+    <div class="u9-metrics">
+      <div class="u9-metric">
+        <div class="u9-metric-label">Next P(9)</div>
+        <div class="u9-metric-value ${nextP9Class}">${pred?pct(pred.p9):'warming'}</div>
+      </div>
+      <div class="u9-metric">
+        <div class="u9-metric-label">Under-9 win prob</div>
+        <div class="u9-metric-value ${under9Class}">${pred?pct(pred.winProb):'—'}</div>
+      </div>
+      <div class="u9-metric small">
+        <div class="u9-metric-label">Current signal accepted?</div>
+        <div class="u9-metric-value ${acceptedClass}">${acceptedText}</div>
+      </div>
+      <div class="u9-metric small">
+        <div class="u9-metric-label">Executed contracts</div>
+        <div class="u9-metric-value">${S.stats.contracts}</div>
+      </div>
+      <div class="u9-metric small">
+        <div class="u9-metric-label">Execution P&L</div>
+        <div class="u9-metric-value ${S.stats.pnl>0?'good':S.stats.pnl<0?'bad':'muted'}">${money(S.stats.pnl)}</div>
+      </div>
+      <div class="u9-metric small">
+        <div class="u9-metric-label">Wins / Losses</div>
+        <div class="u9-metric-value">${S.stats.wins} / ${S.stats.losses}</div>
+      </div>
+    </div>
+
+    <div class="u9-table-wrap">
+      <div class="u9-table-title">Forward threshold scoreboard</div>
+      <table>
+        <thead><tr><th align="left">P(9) filter</th><th align="right">N</th><th align="right">Win rate</th><th align="right">9 rate</th><th align="right">Sim P&L</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+
+    <div class="u9-note">Historical 5,000 ticks are used for <b>discovery only</b>. The table above is based on <b>future-only live forward observations</b>. The green numbers are the healthier ones to watch. The critical benchmark is keeping the accepted <b>9 rate below 8.26%</b>, which is the break-even point for a <b>$1 stake / $0.09 profit</b> setup.</div>
+    <button id="u9-export" class="u9-export">Export Under-9 JSON</button>`;
+  $('u9-shadow').onclick=()=>setMode('SHADOW');
+  $('u9-demo').onclick=()=>setMode('DEMO');
+  $('u9-real').onclick=()=>setMode('REAL');
+  $('u9-run').onclick=toggleRun;
+  $('u9-export').onclick=exportJSON;
 }
 
 window.DMSUnder9Lab={
