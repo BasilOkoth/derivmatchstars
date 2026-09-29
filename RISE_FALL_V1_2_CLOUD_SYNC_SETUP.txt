@@ -1,0 +1,50 @@
+DigitMatchStar Rise/Fall Lab v1.2 — CROSS-DEVICE CLOUD BACKUP + UI DIAGNOSTICS
+================================================================================
+
+WHY THIS UPDATE EXISTS
+The existing v1.1 stores the cohort in browser IndexedDB/localStorage. That survives refreshes on one browser, but it does NOT automatically appear on another laptop.
+
+This package adds an admin-only cloud snapshot so the same frozen Rise/Fall cohort can be restored on another device without starting again.
+
+FILES TO UPLOAD TO THE REPOSITORY ROOT
+1. rise-fall-research-v1-private.js              (same research engine / same cohort schema)
+2. rise-fall-cloud-ui-v1.js                     (NEW)
+3. bot-obfuscated-rise-fall-v1.2-cloud.html     (full HTML with the cloud UI loaded)
+4. api/rise-fall-cloud-state.js                 (NEW Vercel serverless API)
+
+If your deployed page is another HTML filename, keep that filename but make sure it loads, in this order:
+  /rise-fall-research-v1-private.js
+  /rise-fall-cloud-ui-v1.js
+
+CLOUD DATABASE SETUP
+Use an Upstash Redis / Vercel KV store and add these environment variables to the deployment:
+  UPSTASH_REDIS_REST_URL
+  UPSTASH_REDIS_REST_TOKEN
+
+The endpoint also accepts the Vercel KV aliases:
+  KV_REST_API_URL
+  KV_REST_API_TOKEN
+
+Keep TELEGRAM_PUBLISH_ACCOUNT_IDS configured because the cloud endpoint uses the same owner-account restriction as /api/capture-access.
+
+IMPORTANT: PRESERVING THE CURRENT 4,000+ TICKS
+- Deploy this update FIRST on the same laptop/browser that already has the current cohort.
+- Log in with the same owner account.
+- The Cloud Research Backup panel will see the existing local cohort and seed the cloud from it.
+- Confirm that Cloud shows the same or higher tick count before opening the dashboard on the second laptop.
+- On the second laptop, log in, press CHECK CLOUD, then RESTORE CLOUD. The page reloads in SHADOW mode with the same cohort/counters.
+
+MULTI-DEVICE SAFETY
+Only one device should be the active collector at a time. The cloud record uses a 90-second collector lease. A second device is shown as VIEWER while the first device is active. To move collection to the second laptop, restore the newest cloud state first and then use TAKE OVER.
+
+UI IMPROVEMENTS
+- Cloud backup status and local/cloud tick counts
+- Collector-device status
+- RESTORE CLOUD / SYNC NOW / TAKE OVER controls
+- AUTO DIAGNOSTICS with red/green pass/fail gates
+- Separate Auto vs Manual trade counts
+- Clear explanation of exactly why AUTO is waiting
+- Wider, clearer dashboard with stronger evidence colors
+
+RESEARCH LOGIC
+This update does NOT change candidate definitions, historical discovery, forward counters, 300-signal AUTO minimum, 54% observed threshold, Wilson confidence rule, live proposal check, or REAL safety behavior.
