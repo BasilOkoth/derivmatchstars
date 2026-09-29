@@ -1,0 +1,52 @@
+DigitMatchStar Rise / Fall Forward Validation Lab v1.0
+======================================================
+
+FILES TO UPLOAD
+1. rise-fall-research-v1-private.js
+2. bot-obfuscated-rise-fall-v1.html  (or just add the script tag shown below to your current HTML)
+
+SCRIPT TAG
+<script src="/rise-fall-research-v1-private.js"></script>
+
+WHAT IT DOES
+- Admin-only using the same /api/capture-access gate already used by the Odd/Even Lab.
+- Fixed 1-tick Rise/Fall validation on R_10.
+- Historical 5,000 ticks are DISCOVERY ONLY.
+- Candidate definitions are frozen into an immutable cohort.
+- Fresh ticks are FORWARD VALIDATION ONLY.
+- Predictions are frozen before the next tick outcome.
+- Features: previous direction, Rise/Fall run, Rise count last 5/10, 3/5-tick momentum, last-move size regime, direction pair.
+- Equal next price is treated as a loss for whichever Rise/Fall side was selected.
+- IndexedDB is the primary browser database; compact localStorage is a fallback/mirror.
+- Cohort, candidate counters, forward tick count, recent records, execution stats and UI position survive refresh in the same browser profile.
+- Draggable and minimizable admin panel.
+- SHADOW, DEMO and REAL modes.
+- Manual TRADE RISE NOW / TRADE FALL NOW.
+- AUTO execution only after strict forward evidence gates.
+- Uses live Deriv proposal economics before AUTO buys.
+- One active contract maximum.
+- REAL never auto-resumes after reload.
+- Wake-lock control included.
+
+EXECUTION CONTRACTS
+- Rise: CALL
+- Fall: PUT
+- Duration: 1 tick
+- Basis: stake
+- Underlying: R_10
+
+RESEARCH ECONOMICS DISPLAY
+The research display uses the user's observed $10 payout (+$9.01 profit on a win):
+- assumed profit per $1 = 0.901
+- approximate break-even = 52.6039%
+Actual DEMO/REAL execution does NOT trust that fixed number; it checks the live proposal ask/payout.
+
+AUTO GATE
+- forward n >= 300
+- observed win rate >= 54%
+- Wilson 95% lower bound >= assumed break-even
+- predicted probability >= live proposal break-even + 1 percentage point
+
+IMPORTANT
+This is a validation lab, not a profitability claim. Leave it in SHADOW until a candidate survives a large independent forward sample.
+IndexedDB protects against ordinary page refresh. It is browser-local; clearing site data/changing device/browser removes that local database.
