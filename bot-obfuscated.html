@@ -6,7 +6,7 @@
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-    <!-- V19.1 stream-sync: aligned streaming tick drives recovery; settlement reconciles in background; execution sound only -->
+    <!-- V20 INSTANT lifecycle: public tick observes outcome; Deriv settlement is authoritative; exactly one recovery arm after confirmed loss -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -8259,7 +8259,7 @@ window.isBotRunning = true;
             window.executionLock = true;
             window.nextTradeAllowed = false;
             log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
-            updateTradeStatus('CONTRACT OPEN', `Watching next tick for digit ${window.activeContract.predictedDigit}`, 'Next market tick drives fast outcome · settlement reconciles in background', 'trade');
+            updateTradeStatus('CONTRACT OPEN', `Watching next tick for digit ${window.activeContract.predictedDigit}`, 'Public tick is observational · Deriv settlement is authoritative', 'trade');
             if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
         }
 
@@ -8423,35 +8423,29 @@ window.isBotRunning = true;
                 return { handled: true, fastLoss: false, fastWin: true };
             }
 
-            // V19 STREAM-SYNC:
-            // For a 1-tick DIGITMATCH contract, the first correctly aligned public
-            // streaming tick after the contract start is the trading tick we follow.
-            // A miss immediately advances recovery and arms the next contract for
-            // the NEXT streaming tick. Deriv settlement still reconciles in the
-            // background, but it no longer blocks the live tick pipeline.
-            ac.fastOutcome = 'LOSS';
+            // V20 AUTHORITATIVE SETTLEMENT:
+            // A public-tick miss is observational only. Do NOT advance progression,
+            // release the execution lock, or arm recovery here. We wait for Deriv's
+            // proposal_open_contract settlement to confirm the LOSS.
+            ac.fastOutcome = 'LOSS_OBSERVED';
             ac.fastOutcomeAt = Date.now();
-            ac.status = 'FAST_LOSS_STREAM_CONFIRMED';
+            ac.status = 'STREAM_MISS_OBSERVED_WAITING_SETTLEMENT';
 
-            if (!ac.progressionApplied) {
-                applyFastLossProgression(ac);
-            }
-
-            window.executionLock = false;
-            window.nextTradeAllowed = true;
+            window.executionLock = true;
+            window.nextTradeAllowed = false;
 
             log(
-                `⚡ STREAM LOSS | Contract ${ac.contractId} | tick digit ${ac.observedDigit} ≠ target ${ac.predictedDigit} | recovery arms now`,
+                `👁️ STREAM MISS OBSERVED | Contract ${ac.contractId} | tick digit ${ac.observedDigit} ≠ target ${ac.predictedDigit} | waiting for Deriv settlement`,
                 'LOSS'
             );
             updateTradeStatus(
-                'NO MATCH',
+                'MISS OBSERVED',
                 `Digit ${ac.observedDigit} ≠ target ${ac.predictedDigit}`,
-                `Arming next trade at $${window.currentStake.toFixed(2)} for the next streaming tick`,
+                'Waiting for authoritative Deriv LOSS before recovery',
                 'loss'
             );
 
-            return { handled: true, fastLoss: true, fastWin: false };
+            return { handled: true, fastLoss: false, fastWin: false };
         }
 
         function getContractFinalDigit(contract) {
@@ -8638,28 +8632,33 @@ window.isBotRunning = true;
                 actualProfit
             );
 
-            // Progression is now applied ONLY after authoritative Deriv LOSS.
+            // V20: Deriv settlement is the ONLY event allowed to advance recovery.
+            // progressionApplied guarantees the stake can advance at most once.
             if (!ac.progressionApplied) applyFastLossProgression(ac);
 
             window.settlementLedger.delete(contractId);
 
             if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
                 window.activeContract = null;
-                window.executionLock = false;
-                window.nextTradeAllowed = true;
             }
 
             if (!window.activeContract && window.isBotRunning && !window.stopAfterWin) {
+                // Drop ticks accumulated while settlement was pending so recovery
+                // can only use a genuinely NEW tick after the confirmed LOSS.
+                window.tickQueue.length = 0;
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+
                 updateTradeStatus(
                     'LOSS CONFIRMED',
-                    `Contract ${contractId} reconciled`,
-                    `Recovery continues at $${window.currentStake.toFixed(2)}`,
+                    `Contract ${contractId} settled by Deriv`,
+                    `Recovery armed once at $${window.currentStake.toFixed(2)} · waiting for next tick`,
                     'loss'
                 );
-                // V19 STREAM-SYNC:
-                // Do not launch recovery from settlement. Recovery was already
-                // armed from the aligned streaming tick. Settlement is now
-                // reconciliation-only for progression timing.
+                log(
+                    `🔓 RECOVERY ARMED | Contract ${contractId} settled LOSS | next stake $${window.currentStake.toFixed(2)} | next NEW tick only`,
+                    'TRADE'
+                );
             }
         }
 
@@ -9038,50 +9037,37 @@ window.isBotRunning = true;
         // the legacy Precision Matcher no longer controls trading eligibility.
         const originalStartBot = startBot;
 
-        function waitForTradingSocketAndFireFirstInstantTrade(timeoutMs = 10000) {
-            const startedAt = Date.now();
-
-            const check = () => {
-                if (!window.isBotRunning || sessionState.mode !== 'instant') return;
-
-                if (window.ws && window.ws.readyState === WebSocket.OPEN) {
-                    if (window.lastTick && !window.executionLock && window.nextTradeAllowed) {
-                        log('⚡ INSTANT mode: trading connection ready - executing first trade now', 'TRADE');
-                        processTickImmediately(window.lastTick);
-                    }
-                    return;
-                }
-
-                if (Date.now() - startedAt >= timeoutMs) {
-                    log('❌ Trading connection did not become ready in time', 'ERROR');
-                    updateTradeStatus(
-                        'ERROR',
-                        'Trading connection timeout',
-                        'Stop and reconnect your Deriv account',
-                        'loss'
-                    );
-                    return;
-                }
-
-                setTimeout(check, 100);
-            };
-
-            check();
-        }
-
         startBot = function() {
             if (sessionState.mode === 'instant') {
-                log('⚡ INSTANT mode: starting immediately - confidence gate bypassed', 'SYSTEM');
-                const result = originalStartBot();
-                waitForTradingSocketAndFireFirstInstantTrade();
-                return result;
+                // V20: one entry path only. originalStartBot() clears the queue,
+                // locks the selected digit and opens/reuses the authenticated socket.
+                // The normal queue processor then executes on the first NEW market tick.
+                log('⚡ INSTANT armed · selected digit locked · waiting for first NEW tick', 'SYSTEM');
+                return originalStartBot();
             }
 
-            // AI AUTO: arm the trading engine now. The existing processTickImmediately
-            // function waits until Digit Intelligence has a recommendation and all
-            // strict digit gates pass.
             log('🤖 AI AUTO armed · Evaluating safe entries', 'ENGINE');
             return originalStartBot();
+        };
+
+        window.DMSInstantLifecycleV20 = {
+            version: 'INSTANT-LIFECYCLE-V20-AUTHORITATIVE-SETTLEMENT',
+            getState() {
+                return {
+                    mode: sessionState?.mode || null,
+                    running: !!window.isBotRunning,
+                    executionLock: !!window.executionLock,
+                    nextTradeAllowed: !!window.nextTradeAllowed,
+                    activeContractId: window.activeContract?.contractId || null,
+                    activeContractStatus: window.activeContract?.status || null,
+                    progressionApplied: !!window.activeContract?.progressionApplied,
+                    pendingProposals: window.pendingProposals?.size || 0,
+                    queuedTicks: window.tickQueue?.length || 0,
+                    tradeCount: Number(window.tradeCount || 0),
+                    martingaleStep: Number(window.martingaleStep || 0),
+                    currentStake: Number(window.currentStake || 0)
+                };
+            }
         };
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
