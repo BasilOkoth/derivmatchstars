@@ -7,6 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
+    <!-- V22 AI recovery EV gate: AI AUTO requires positive live edge on entry AND recovery; INSTANT remains manual/ungated -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1919,10 +1920,11 @@ window.EV_GATE_CONFIG = {
     // AI AUTO only. INSTANT remains a manual execution mode.
     applyToInstant: false,
 
-    // Experimental entry threshold.
-    // -0.01 = allow entries down to -1.00 percentage point below live break-even.
+    // AI AUTO live-edge threshold for both initial entries and recovery trades.
+    // +0.005 = require at least +0.50 percentage points above live break-even.
+    // This small positive buffer avoids treating a barely break-even model estimate as an edge.
     // P90 and other entry-safety gates remain active.
-    minEdge: -0.01,
+    minEdge: 0.005,
 
     // Exact-next-tick empirical model readiness.
     minEffectiveSupport: 20,
@@ -2375,6 +2377,7 @@ window.nextTickModel = {
             window.EV_GATE_CONFIG.enabled &&
             (
                 mode === 'ai' ||
+                mode === 'recovery' ||
                 (mode === 'instant' && window.EV_GATE_CONFIG.applyToInstant)
             );
 
@@ -2444,7 +2447,7 @@ window.nextTickModel = {
                 <span id="ntm-edge" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Entry threshold:</span>
-                <span id="ntm-threshold" class="font-bold text-orange-300">-1.00 pp</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">+0.50 pp</span>
 
                 <span class="text-gray-400">Expected value:</span>
                 <span id="ntm-ev" class="font-bold text-white">-</span>
@@ -8082,35 +8085,46 @@ window.isBotRunning = true;
                 'PNL'
             );
 
-            // V18 TIMING FIX:
-            // INSTANT mode means exactly that: do not veto the entry on model edge.
-            // AI AUTO keeps the model/EV gate.
+            // V22 AI EDGE GATE:
+            // INSTANT remains a manual execution mode and is never vetoed by the model.
+            // AI AUTO must clear the SAME live probability/EV gate on the first entry
+            // and on every recovery attempt. A recovery trade is no longer allowed
+            // simply because the cycle is already in a loss state.
             if (
-                !isRecovery &&
                 pending.executionMode === 'ai' &&
                 !evaluation.approved
             ) {
                 rollbackUnsentTrade(pending.stake);
+
+                const thresholdPp = window.EV_GATE_CONFIG.minEdge * 100;
+                const phase = isRecovery ? 'RECOVERY' : 'ENTRY';
                 log(
-                    `🧱 ENTRY EV VETO: ${evaluation.reason} | no contract purchased | trade count unchanged`,
+                    `🧱 ${phase} EV VETO: ${evaluation.reason} | ` +
+                    `edge ${(evaluation.edge * 100).toFixed(2)} pp < ` +
+                    `${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp | ` +
+                    `no contract purchased | trade count unchanged`,
                     'ENGINE'
                 );
+
                 updateTradeStatus(
-                    'AI AUTO ARMED',
-                    'Waiting for edge ≥ -1.00 pp',
-                    `Edge ${(evaluation.edge * 100).toFixed(2)} pp · threshold -1.00 pp · no trade counted`,
+                    isRecovery ? 'RECOVERY WAIT' : 'AI AUTO ARMED',
+                    `Waiting for edge ≥ ${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp`,
+                    `Current edge ${(evaluation.edge * 100).toFixed(2)} pp · no trade counted`,
                     'normal'
                 );
-                if (typeof clearSessionDigitLock === 'function') {
+
+                // For a new cycle, release the candidate lock so AI can select a new digit.
+                // During recovery, preserve the selected digit and current recovery stake;
+                // the bot simply waits for a later tick/quote that clears the edge gate.
+                if (!isRecovery && typeof clearSessionDigitLock === 'function') {
                     clearSessionDigitLock(`ENTRY_EV:${evaluation.reason}`);
                 }
                 return;
             }
 
-            // V18 TIMING FIX:
-            // Recovery quote veto remains an AI AUTO safety/selection rule.
-            // INSTANT mode continues the user-selected recovery sequence without
-            // pausing for a "viable quote" gate.
+            // Recovery must also be economically capable of restoring the cycle to profit
+            // if the proposed contract wins. This is separate from positive expected edge:
+            // both conditions must be satisfied in AI AUTO. INSTANT remains user-directed.
             if (
                 isRecovery &&
                 pending.executionMode === 'ai' &&
@@ -8122,9 +8136,9 @@ window.isBotRunning = true;
                     'CRITICAL'
                 );
                 updateTradeStatus(
-                    'RECOVERY PAUSED',
-                    'Live quote cannot recover the current cycle deficit',
-                    'Waiting for a viable recovery quote',
+                    'RECOVERY WAIT',
+                    'Live quote cannot restore the cycle above $0',
+                    `Cycle net if win ${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)} · waiting for a viable quote`,
                     'loss'
                 );
                 return;
