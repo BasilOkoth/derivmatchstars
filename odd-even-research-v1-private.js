@@ -7,11 +7,12 @@
 (() => {
 'use strict';
 
-const VERSION = 'ODDEVEN-LAB-V1.1-STRICT-COHORT';
+const VERSION = 'ODDEVEN-LAB-V1.2-PERSISTENCE-FIX';
 const SYMBOL = 'R_10';
 const STORE = `oddeven_lab_v1_1_ui_${SYMBOL}`;
 const COHORT_STORE = `oddeven_lab_v1_1_cohort_${SYMBOL}`;
 const PROGRESS_STORE = `oddeven_lab_v1_1_progress_${SYMBOL}`;
+const LEGACY_STORE = `oddeven_lab_v1_${SYMBOL}`; // v1.0 large single-key store; safe to retire after strict-cohort upgrade
 const PANEL_ID = 'oddeven-lab-v1-panel';
 const DEFAULT_APP_ID = 1089;
 const CFG = {
@@ -19,7 +20,7 @@ const CFG = {
   historyCount: 5000,
   featureBuffer: 5000,
   maxRecords: 30000,
-  maxPersistedRecords: 4000,
+  maxPersistedRecords: 250, // compact summaries only; cumulative candidate counters are authoritative
   featureSeedTicks: 50,
   seenEpochRetention: 12000,
   defaultStake: 1,
@@ -83,6 +84,7 @@ const S = {
   feedConnectionsOpened: 0,
   staleReconnects: 0,
   lastPublicError: '',
+  persistenceIssue: '',
   reconnectTimer: null,
   reconnectAttempts: 0,
   watchdogTimer: null,
@@ -217,6 +219,30 @@ function hidePrivateLab(){
   S.publicWs=null; S.tradeWs=null; S.connected=false; S.authenticated=false;
 }
 
+function cleanupLegacyStorage(){
+  // v1.0 stored history + live ticks + records in one large localStorage key.
+  // Under-9 uses the same origin, so leaving that old blob can exhaust the browser's ~5 MB localStorage quota.
+  try{ localStorage.removeItem(LEGACY_STORE); }catch(_){ }
+}
+function safeSetItem(key,value){
+  try{
+    localStorage.setItem(key,value);
+    if(S.persistenceIssue) S.persistenceIssue='';
+    return true;
+  }catch(e){
+    // First recovery: delete only our obsolete v1.0 Odd/Even blob, never Under-9 data.
+    try{ localStorage.removeItem(LEGACY_STORE); }catch(_){ }
+    try{
+      localStorage.setItem(key,value);
+      S.persistenceIssue='';
+      return true;
+    }catch(e2){
+      S.persistenceIssue=`Browser persistence failed: ${String(e2?.name||e2?.message||e2||'storage error')}`;
+      return false;
+    }
+  }
+}
+
 function load(){
   try{
     const ui=JSON.parse(localStorage.getItem(STORE)||'{}');
@@ -242,10 +268,11 @@ function load(){
   }catch(_){ }
   try{
     const x=JSON.parse(localStorage.getItem(PROGRESS_STORE)||'{}');
-    if(Array.isArray(x.liveTicks)) S.liveTicks=x.liveTicks.slice(-CFG.featureBuffer);
+    // v1.2 persists compact cumulative progress. Older v1.1 arrays are accepted once, but are no longer re-saved.
+    if(Array.isArray(x.liveTicks)) S.liveTicks=x.liveTicks.slice(-50);
     if(Array.isArray(x.forwardRecords)) S.forwardRecords=x.forwardRecords.slice(-CFG.maxPersistedRecords);
-    if(Array.isArray(x.executionRecords)) S.executionRecords=x.executionRecords.slice(-2000);
-    S.totalForwardTicks=Math.max(Number(x.totalForwardTicks||0),S.forwardRecords.length,S.liveTicks.length);
+    if(Array.isArray(x.executionRecords)) S.executionRecords=x.executionRecords.slice(-250);
+    S.totalForwardTicks=Math.max(Number(x.totalForwardTicks||0),Number(x.forwardRecordCount||0),S.forwardRecords.length);
     if(x.stats) S.stats=x.stats;
     if(Number.isFinite(Number(x.forwardStartEpoch))&&!S.forwardStartEpoch) S.forwardStartEpoch=Number(x.forwardStartEpoch);
     if(Number.isFinite(Number(x.lastFeatureEpoch))) S.lastFeatureEpoch=Number(x.lastFeatureEpoch);
@@ -264,30 +291,35 @@ function load(){
 }
 
 function saveUI(){
-  try{localStorage.setItem(STORE,JSON.stringify({mode:S.mode,autoSide:S.autoSide,stake:S.stake,runner:S.runner,wakeLockRequested:S.wakeLockRequested,minimized:S.minimized,panelPos:S.panelPos}));}catch(_){}
+  safeSetItem(STORE,JSON.stringify({mode:S.mode,autoSide:S.autoSide,stake:S.stake,runner:S.runner,wakeLockRequested:S.wakeLockRequested,minimized:S.minimized,panelPos:S.panelPos}));
 }
 function saveCohortRegistry(){
   if(!S.cohortId || !S.candidates.length) return;
-  try{
-    localStorage.setItem(COHORT_STORE,JSON.stringify({
+  safeSetItem(COHORT_STORE,JSON.stringify({
       cohortId:S.cohortId,cohortCreatedAt:S.cohortCreatedAt,candidatesFrozenAt:S.candidatesFrozenAt,
       candidateSetHash:S.candidateSetHash,historicalHash:S.historicalHash,hashAlgorithm:S.hashAlgorithm,
       discoveryStartEpoch:S.discoveryStartEpoch,discoveryEndEpoch:S.discoveryEndEpoch,forwardStartEpoch:S.forwardStartEpoch,
       featureSeedTicks:S.discoveryTicks.slice(-CFG.featureSeedTicks),
       candidates:S.candidates.map(stableCandidateDefinition)
     }));
-  }catch(_){}
 }
 function saveProgress(){
-  try{
-    localStorage.setItem(PROGRESS_STORE,JSON.stringify({
-      liveTicks:S.liveTicks.slice(-CFG.featureBuffer),
-      forwardRecords:S.forwardRecords.slice(-CFG.maxPersistedRecords),executionRecords:S.executionRecords.slice(-2000),
-      candidateProgress:S.candidates.map(c=>({key:c.key,forwardN:c.forwardN||0,forwardWins:c.forwardWins||0,forwardLosses:c.forwardLosses||0})),
-      totalForwardTicks:S.totalForwardTicks,forwardStartEpoch:S.forwardStartEpoch,lastFeatureEpoch:S.lastFeatureEpoch,
-      seenEpochQueue:S.seenEpochQueue.slice(-CFG.seenEpochRetention),collectionGapEvents:S.collectionGapEvents,stats:S.stats
-    }));
-  }catch(_){}
+  // Keep this intentionally compact. Raw tick/record history is not required to preserve
+  // the cohort or cumulative validation statistics, and large localStorage blobs can be
+  // evicted/fail when Under-9 and Odd/Even share the same website origin.
+  const compact={
+    candidateProgress:S.candidates.map(c=>({key:c.key,forwardN:c.forwardN||0,forwardWins:c.forwardWins||0,forwardLosses:c.forwardLosses||0})),
+    totalForwardTicks:S.totalForwardTicks,
+    forwardRecordCount:S.forwardRecords.length,
+    forwardStartEpoch:S.forwardStartEpoch,
+    lastFeatureEpoch:S.lastFeatureEpoch,
+    collectionGapEvents:S.collectionGapEvents,
+    stats:S.stats,
+    executionRecords:S.executionRecords.slice(-100),
+    persistedAt:nowISO(),
+    compactPersistence:true
+  };
+  safeSetItem(PROGRESS_STORE,JSON.stringify(compact));
 }
 function save(){ saveUI(); saveCohortRegistry(); saveProgress(); }
 
@@ -703,7 +735,7 @@ function rankedCandidates(){
 function snapshot(){
   const sig=currentSignal();
   return {
-    schema:'DIGITMATCHSTAR_ODDEVEN_LAB_V1_1_STRICT_COHORT',generatedAt:nowISO(),version:VERSION,symbol:SYMBOL,currentMode:S.mode,runner:S.runner,autoSide:S.autoSide,stake:S.stake,
+    schema:'DIGITMATCHSTAR_ODDEVEN_LAB_V1_2_PERSISTENCE_FIX',generatedAt:nowISO(),version:VERSION,symbol:SYMBOL,currentMode:S.mode,runner:S.runner,autoSide:S.autoSide,stake:S.stake,
     cohort:{cohortId:S.cohortId,status:S.cohortId?'FORWARD_VALIDATION':'DISCOVERY',cohortCreatedAt:S.cohortCreatedAt,candidatesFrozenAt:S.candidatesFrozenAt,candidateSetHash:S.candidateSetHash,historicalHash:S.historicalHash,hashAlgorithm:S.hashAlgorithm,discoveryStartEpoch:S.discoveryStartEpoch,discoveryEndEpoch:S.discoveryEndEpoch,forwardStartEpoch:S.forwardStartEpoch,immutableUntilExplicitNewCohort:true},
     economics:{assumedWinProfitPerDollar:CFG.assumedWinProfitPerDollar,assumedBreakEvenWinRate:CFG.assumedBreakEvenWinRate,liveProposalEconomicsUsedForExecution:true},
     methodology:{historicalUsage:'DISCOVERY_ONLY',candidateDefinitionsFrozenFromHistorical:true,candidateRegistryPersistsAcrossReload:true,logicalCandidateDeduplication:true,epochDeduplication:true,historyLiveOverlapBlocked:true,liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,realNeverAutoResumes:true,oneActiveContractMax:true},
@@ -791,8 +823,9 @@ function render(){
     <div class="panel"><div class="panel-title">Manual one-tick trade</div><div class="trade-grid"><button id="oe-trade-odd" class="trade-now odd" ${disabledTrade}>TRADE ODD NOW</button><button id="oe-trade-even" class="trade-now even" ${disabledTrade}>TRADE EVEN NOW</button></div><div class="muted" style="margin-top:8px">Manual buttons execute one contract at your current stake in DEMO or REAL. One active contract maximum. No per-trade confirmation after you select REAL.</div></div>
     <div class="panel"><div class="panel-title">Execution</div><div class="signal"><div class="metric"><span>Contracts</span><b>${S.stats.contracts}</b></div><div class="metric"><span>Wins / losses</span><b>${S.stats.wins} / ${S.stats.losses}</b></div><div class="metric"><span>P&L</span><b class="${S.stats.pnl>0?'good':S.stats.pnl<0?'bad':''}">${money(S.stats.pnl)}</b></div><div class="metric"><span>Signal status</span><b class="${autoReady?'good':'amber'}">${sig?.status||'WARMING'}</b></div></div></div>
     ${S.lastPublicError?`<div class="panel" style="border-color:rgba(248,113,113,.45)"><b class="bad">Feed issue:</b> ${S.lastPublicError}</div>`:''}
+    ${S.persistenceIssue?`<div class="panel" style="border-color:rgba(248,113,113,.45)"><b class="bad">Persistence issue:</b> ${S.persistenceIssue}. Do not refresh until this is resolved.</div>`:''}
     <div class="panel"><div class="panel-title">Ranked frozen candidates</div>${topRows||'<div class="muted">Candidates appear after historical discovery loads.</div>'}</div>
-    <div class="panel"><div class="panel-title">Research rule</div><div class="muted">Historical 5,000 ticks create one immutable, deduplicated candidate registry with cohort and hash IDs. Reloading restores that same cohort; candidates cannot be rediscovered unless you explicitly start NEW COHORT. Epoch overlap/duplicates are rejected. Future ticks score only the frozen states. ODD/EVEN assumed economics are +$0.95 per $1 win and -$1 per loss only for research display; actual DEMO/REAL execution uses the live Deriv proposal economics.</div></div>
+    <div class="panel"><div class="panel-title">Research rule</div><div class="muted">Historical 5,000 ticks create one immutable, deduplicated candidate registry with cohort and hash IDs. Reloading restores that same cohort and cumulative counters from a compact persistence record; candidates cannot be rediscovered unless you explicitly start NEW COHORT. Epoch overlap/duplicates are rejected. Future ticks score only the frozen states. ODD/EVEN assumed economics are +$0.95 per $1 win and -$1 per loss only for research display; actual DEMO/REAL execution uses the live Deriv proposal economics.</div></div>
     <div class="footer-actions"><button id="oe-export">EXPORT JSON</button><button id="oe-new-cohort">NEW RESEARCH COHORT</button><button id="oe-reset-exec">RESET EXEC STATS</button></div>`;
 
   $('oe-shadow').onclick=()=>setMode('SHADOW');$('oe-demo').onclick=()=>setMode('DEMO');$('oe-real').onclick=()=>setMode('REAL');
@@ -817,6 +850,7 @@ window.DMSOddEvenLab={
 };
 
 async function boot(){
+  cleanupLegacyStorage();
   load();const ok=await ensureAdminAuthorized(true);if(!ok)return;
   makePanel();render();connectPublic();
   if(S.wakeLockRequested&&!document.hidden)requestWakeLock();
