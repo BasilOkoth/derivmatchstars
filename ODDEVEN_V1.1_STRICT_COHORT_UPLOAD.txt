@@ -1,0 +1,32 @@
+DigitMatchStar Odd / Even Lab v1.1 — STRICT COHORT
+===================================================
+
+FILES TO UPLOAD
+1. odd-even-research-v1-private.js
+2. bot-obfuscated-under9-v2.1-private.html
+
+Keep the JS filename exactly the same. The HTML already loads:
+  /odd-even-research-v1-private.js
+
+WHAT CHANGED IN v1.1
+- New clean cohort storage, separate from v1.0.
+- One cohort is frozen and survives normal reloads/redeploy refreshes through dedicated localStorage cohort metadata.
+- Cohort ID, historical-data hash, candidate-set hash, discovery start/end epochs, and forward-start epoch are exported.
+- Reload does NOT rediscover candidates.
+- Only the explicit NEW RESEARCH COHORT button can intentionally reset/re-discover candidates.
+- Duplicate/overlapping tick epochs are rejected.
+- Discovery history is loaded before the forward subscription starts, preventing history/live overlap.
+- On feed gaps/reconnects, a small feature-only warmup is used; it does not alter candidate definitions or forward statistics.
+- Logical candidate deduplication removes redundant states such as digit parity duplicates and last-5-all-even versus EVEN-run-5+ aliases.
+- Leaderboard is ranked from forward evidence, not historical discovery percentage.
+- Candidate statuses: FORWARD TESTING, STATISTICALLY CLEARED, REJECTED.
+- Dedicated small cohort/progress stores reduce the risk that a large record log prevents the frozen registry from persisting.
+- REAL still never auto-resumes after reload.
+- Admin-only access checks, screen wake lock, draggable/minimizable panel, SHADOW/DEMO/REAL, and manual/auto execution remain.
+
+IMPORTANT FIRST RUN
+v1.1 intentionally does NOT merge the old v1.0 research cohort. After deployment it will create one new clean strict cohort from 5,000 historical discovery ticks, then begin fresh forward validation.
+
+After the new cohort is created, DO NOT click NEW RESEARCH COHORT unless you deliberately want to end the current experiment and start again.
+
+Recommended: leave it in SHADOW while validating research integrity.

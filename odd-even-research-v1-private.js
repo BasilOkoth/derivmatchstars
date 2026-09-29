@@ -1,5 +1,5 @@
 /*
- * DigitMatchStar — Odd / Even Research + Execution Lab v1.0
+ * DigitMatchStar — Odd / Even Research + Execution Lab v1.1 STRICT COHORT
  * Admin-only. Modes: SHADOW, DEMO, REAL. REAL never auto-resumes after reload.
  * Research objective: discover and forward-test parity states against live proposal economics.
  * Execution: manual ODD / EVEN buttons, or conservative AUTO mode after forward evidence.
@@ -7,9 +7,11 @@
 (() => {
 'use strict';
 
-const VERSION = 'ODDEVEN-LAB-V1.0-FORWARD-EXEC';
+const VERSION = 'ODDEVEN-LAB-V1.1-STRICT-COHORT';
 const SYMBOL = 'R_10';
-const STORE = `oddeven_lab_v1_${SYMBOL}`;
+const STORE = `oddeven_lab_v1_1_ui_${SYMBOL}`;
+const COHORT_STORE = `oddeven_lab_v1_1_cohort_${SYMBOL}`;
+const PROGRESS_STORE = `oddeven_lab_v1_1_progress_${SYMBOL}`;
 const PANEL_ID = 'oddeven-lab-v1-panel';
 const DEFAULT_APP_ID = 1089;
 const CFG = {
@@ -17,6 +19,9 @@ const CFG = {
   historyCount: 5000,
   featureBuffer: 5000,
   maxRecords: 30000,
+  maxPersistedRecords: 4000,
+  featureSeedTicks: 50,
+  seenEpochRetention: 12000,
   defaultStake: 1,
   assumedWinProfitPerDollar: 0.95,
   assumedBreakEvenWinRate: 1 / 1.95,
@@ -49,6 +54,21 @@ const S = {
   executionRecords: [],
   candidates: [],
   candidatesFrozenAt: null,
+  cohortId: null,
+  cohortCreatedAt: null,
+  cohortStatus: 'DISCOVERY',
+  candidateSetHash: null,
+  historicalHash: null,
+  hashAlgorithm: 'FNV1A32',
+  discoveryStartEpoch: null,
+  discoveryEndEpoch: null,
+  forwardStartEpoch: null,
+  lastFeatureEpoch: null,
+  collectionGapEvents: 0,
+  seenForwardEpochs: new Set(),
+  seenEpochQueue: [],
+  awaitingHistoryPurpose: null,
+  needsWarmup: false,
   historicalLoaded: false,
   pendingSignal: null,
   pendingProposal: null,
@@ -82,6 +102,77 @@ const money = v => `${Number(v||0)<0?'-':'+'}$${Math.abs(Number(v||0)).toFixed(2
 const parity = d => d % 2 ? 'ODD' : 'EVEN';
 const opposite = p => p === 'ODD' ? 'EVEN' : 'ODD';
 const last = (a,n) => a.slice(Math.max(0,a.length-n));
+
+function fnv1a32(text){
+  let h=0x811c9dc5;
+  const str=String(text??'');
+  for(let i=0;i<str.length;i++){
+    h^=str.charCodeAt(i);
+    h=Math.imul(h,0x01000193)>>>0;
+  }
+  return `FNV1A32:${h.toString(16).padStart(8,'0')}`;
+}
+function stableCandidateDefinition(c){
+  return {
+    key:c.key,label:c.label,tagKeys:Array.isArray(c.tagKeys)?[...c.tagKeys].sort():null,
+    type:c.type,side:c.side,n:c.n,odd:c.odd,even:c.even,
+    discoveryWinRate:c.discoveryWinRate,discoveryEdge:c.discoveryEdge
+  };
+}
+function computeCandidateSetHash(cands){
+  const defs=(cands||[]).map(stableCandidateDefinition).sort((a,b)=>a.key.localeCompare(b.key));
+  return fnv1a32(JSON.stringify(defs));
+}
+function computeHistoricalHash(ticks){
+  return fnv1a32((ticks||[]).map(t=>`${Number(t.epoch)||0}:${t.digit}`).join('|'));
+}
+function makeCohortId(){
+  const stamp=new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,14);
+  const rand=Math.random().toString(36).slice(2,7).toUpperCase();
+  return `OE-${SYMBOL}-${stamp}-${rand}`;
+}
+function canonicalSingleKey(key){
+  if(key==='odd5:0') return 'run:EVEN:5+';
+  if(key==='odd5:5') return 'run:ODD:5+';
+  return key;
+}
+function canonicalLabelForKey(key,fallback=''){
+  if(key==='run:EVEN:5+') return 'EVEN run = 5+ (last 5 all even)';
+  if(key==='run:ODD:5+') return 'ODD run = 5+ (last 5 all odd)';
+  return fallback;
+}
+function impliedParityByKey(key){
+  if(key.startsWith('prevDigit:')){
+    const d=Number(key.split(':')[1]); if(Number.isInteger(d)) return parity(d);
+  }
+  if(key.startsWith('run:')) return key.split(':')[1]||null;
+  if(key==='odd5:0') return 'EVEN';
+  if(key==='odd5:5') return 'ODD';
+  return null;
+}
+function canonicalizeTagKeys(keys){
+  let out=[...new Set((keys||[]).map(canonicalSingleKey))];
+  const implied=out.map(impliedParityByKey).filter(Boolean);
+  if(implied.includes('ODD')) out=out.filter(k=>k!=='prevParity:ODD');
+  if(implied.includes('EVEN')) out=out.filter(k=>k!=='prevParity:EVEN');
+  out.sort();
+  return out;
+}
+function markSeenEpoch(epoch){
+  const e=Number(epoch); if(!Number.isFinite(e)||!e) return;
+  if(S.seenForwardEpochs.has(e)) return;
+  S.seenForwardEpochs.add(e); S.seenEpochQueue.push(e);
+  while(S.seenEpochQueue.length>CFG.seenEpochRetention){
+    const old=S.seenEpochQueue.shift(); S.seenForwardEpochs.delete(old);
+  }
+}
+function candidateStatus(c){
+  const f=candidateForwardStats(c);
+  if(f.n<CFG.minForwardNForAuto) return 'FORWARD_TESTING';
+  if(f.winRate>=CFG.autoMinObservedWinRate && f.lower95>=CFG.autoMinWilsonLower95) return 'STATISTICALLY_CLEARED';
+  if(f.upper95<CFG.assumedBreakEvenWinRate) return 'REJECTED';
+  return 'FORWARD_TESTING';
+}
 
 function getToken(){
   return localStorage.getItem('active_token') || localStorage.getItem('derivToken') ||
@@ -128,43 +219,77 @@ function hidePrivateLab(){
 
 function load(){
   try{
-    const x=JSON.parse(localStorage.getItem(STORE)||'{}');
-    if(Array.isArray(x.discoveryTicks)) S.discoveryTicks=x.discoveryTicks.slice(-CFG.historyCount);
+    const ui=JSON.parse(localStorage.getItem(STORE)||'{}');
+    if(ui.mode) S.mode=ui.mode;
+    if(ui.autoSide) S.autoSide=ui.autoSide;
+    if(Number.isFinite(Number(ui.stake))) S.stake=clamp(Number(ui.stake),0.35,1000);
+    if(typeof ui.runner==='boolean') S.runner=ui.runner;
+    if(typeof ui.wakeLockRequested==='boolean') S.wakeLockRequested=ui.wakeLockRequested;
+    if(typeof ui.minimized==='boolean') S.minimized=ui.minimized;
+    if(ui.panelPos && Number.isFinite(ui.panelPos.left) && Number.isFinite(ui.panelPos.top)) S.panelPos=ui.panelPos;
+  }catch(_){ }
+  try{
+    const c=JSON.parse(localStorage.getItem(COHORT_STORE)||'null');
+    if(c?.cohortId && Array.isArray(c.candidates) && c.candidates.length){
+      S.cohortId=c.cohortId; S.cohortCreatedAt=c.cohortCreatedAt||null; S.cohortStatus='FORWARD_VALIDATION';
+      S.candidatesFrozenAt=c.candidatesFrozenAt||null; S.candidateSetHash=c.candidateSetHash||computeCandidateSetHash(c.candidates);
+      S.historicalHash=c.historicalHash||null; S.hashAlgorithm=c.hashAlgorithm||'FNV1A32';
+      S.discoveryStartEpoch=Number(c.discoveryStartEpoch||0)||null; S.discoveryEndEpoch=Number(c.discoveryEndEpoch||0)||null;
+      S.forwardStartEpoch=Number(c.forwardStartEpoch||0)||null; S.candidates=c.candidates.map(x=>({...x,forwardN:0,forwardWins:0,forwardLosses:0}));
+      S.discoveryTicks=Array.isArray(c.featureSeedTicks)?c.featureSeedTicks.slice(-CFG.featureSeedTicks):[];
+      S.historicalLoaded=true;
+    }
+  }catch(_){ }
+  try{
+    const x=JSON.parse(localStorage.getItem(PROGRESS_STORE)||'{}');
     if(Array.isArray(x.liveTicks)) S.liveTicks=x.liveTicks.slice(-CFG.featureBuffer);
-    if(Array.isArray(x.forwardRecords)) S.forwardRecords=x.forwardRecords.slice(-CFG.maxRecords);
+    if(Array.isArray(x.forwardRecords)) S.forwardRecords=x.forwardRecords.slice(-CFG.maxPersistedRecords);
     if(Array.isArray(x.executionRecords)) S.executionRecords=x.executionRecords.slice(-2000);
-    if(Array.isArray(x.candidates)) S.candidates=x.candidates;
-    if(x.candidatesFrozenAt) S.candidatesFrozenAt=x.candidatesFrozenAt;
     S.totalForwardTicks=Math.max(Number(x.totalForwardTicks||0),S.forwardRecords.length,S.liveTicks.length);
     if(x.stats) S.stats=x.stats;
-    if(x.mode) S.mode=x.mode;
-    if(x.autoSide) S.autoSide=x.autoSide;
-    if(Number.isFinite(Number(x.stake))) S.stake=clamp(Number(x.stake),0.35,1000);
-    if(typeof x.runner==='boolean') S.runner=x.runner;
-    if(typeof x.wakeLockRequested==='boolean') S.wakeLockRequested=x.wakeLockRequested;
-    if(typeof x.minimized==='boolean') S.minimized=x.minimized;
-    if(x.panelPos && Number.isFinite(x.panelPos.left) && Number.isFinite(x.panelPos.top)) S.panelPos=x.panelPos;
-    S.historicalLoaded=S.discoveryTicks.length>=300;
+    if(Number.isFinite(Number(x.forwardStartEpoch))&&!S.forwardStartEpoch) S.forwardStartEpoch=Number(x.forwardStartEpoch);
+    if(Number.isFinite(Number(x.lastFeatureEpoch))) S.lastFeatureEpoch=Number(x.lastFeatureEpoch);
+    if(Number.isFinite(Number(x.collectionGapEvents))) S.collectionGapEvents=Number(x.collectionGapEvents);
+    if(Array.isArray(x.seenEpochQueue)){
+      S.seenEpochQueue=x.seenEpochQueue.slice(-CFG.seenEpochRetention).map(Number).filter(Number.isFinite);
+      S.seenForwardEpochs=new Set(S.seenEpochQueue);
+    }
+    const byKey=new Map((x.candidateProgress||[]).map(r=>[r.key,r]));
+    for(const c of S.candidates){const r=byKey.get(c.key);if(r){c.forwardN=Number(r.forwardN||0);c.forwardWins=Number(r.forwardWins||0);c.forwardLosses=Number(r.forwardLosses||0);}}
   }catch(_){ }
+  if(!S.lastFeatureEpoch && S.liveTicks.length) S.lastFeatureEpoch=Math.max(...S.liveTicks.map(t=>Number(t.epoch)||0));
+  if(S.cohortId && S.liveTicks.length<20) S.needsWarmup=true;
   // REAL must always require a fresh user action after reload.
   if(S.mode==='REAL'){ S.mode='SHADOW'; S.runner=false; }
 }
 
-function save(){
-  try{
-    localStorage.setItem(STORE,JSON.stringify({
-      discoveryTicks:S.discoveryTicks.slice(-CFG.historyCount),
-      liveTicks:S.liveTicks.slice(-CFG.featureBuffer),
-      forwardRecords:S.forwardRecords.slice(-CFG.maxRecords),
-      executionRecords:S.executionRecords.slice(-2000),
-      candidates:S.candidates,
-      candidatesFrozenAt:S.candidatesFrozenAt,
-      totalForwardTicks:S.totalForwardTicks,
-      stats:S.stats, mode:S.mode, autoSide:S.autoSide, stake:S.stake, runner:S.runner,
-      wakeLockRequested:S.wakeLockRequested, minimized:S.minimized, panelPos:S.panelPos
-    }));
-  }catch(_){ }
+function saveUI(){
+  try{localStorage.setItem(STORE,JSON.stringify({mode:S.mode,autoSide:S.autoSide,stake:S.stake,runner:S.runner,wakeLockRequested:S.wakeLockRequested,minimized:S.minimized,panelPos:S.panelPos}));}catch(_){}
 }
+function saveCohortRegistry(){
+  if(!S.cohortId || !S.candidates.length) return;
+  try{
+    localStorage.setItem(COHORT_STORE,JSON.stringify({
+      cohortId:S.cohortId,cohortCreatedAt:S.cohortCreatedAt,candidatesFrozenAt:S.candidatesFrozenAt,
+      candidateSetHash:S.candidateSetHash,historicalHash:S.historicalHash,hashAlgorithm:S.hashAlgorithm,
+      discoveryStartEpoch:S.discoveryStartEpoch,discoveryEndEpoch:S.discoveryEndEpoch,forwardStartEpoch:S.forwardStartEpoch,
+      featureSeedTicks:S.discoveryTicks.slice(-CFG.featureSeedTicks),
+      candidates:S.candidates.map(stableCandidateDefinition)
+    }));
+  }catch(_){}
+}
+function saveProgress(){
+  try{
+    localStorage.setItem(PROGRESS_STORE,JSON.stringify({
+      liveTicks:S.liveTicks.slice(-CFG.featureBuffer),
+      forwardRecords:S.forwardRecords.slice(-CFG.maxPersistedRecords),executionRecords:S.executionRecords.slice(-2000),
+      candidateProgress:S.candidates.map(c=>({key:c.key,forwardN:c.forwardN||0,forwardWins:c.forwardWins||0,forwardLosses:c.forwardLosses||0})),
+      totalForwardTicks:S.totalForwardTicks,forwardStartEpoch:S.forwardStartEpoch,lastFeatureEpoch:S.lastFeatureEpoch,
+      seenEpochQueue:S.seenEpochQueue.slice(-CFG.seenEpochRetention),collectionGapEvents:S.collectionGapEvents,stats:S.stats
+    }));
+  }catch(_){}
+}
+function save(){ saveUI(); saveCohortRegistry(); saveProgress(); }
 
 function digitFromQuote(q,pip=S.pipSize){
   const n=Number(q); if(!Number.isFinite(n)) return null;
@@ -231,42 +356,61 @@ function buildHistoricalObservations(){
 }
 
 function freezeCandidatesFromHistory(){
-  if(!S.historicalLoaded || S.discoveryTicks.length<300) return;
-  if(S.candidates.length) return;
+  if(!S.historicalLoaded || S.discoveryTicks.length<300) return false;
+  if(S.cohortId && S.candidates.length) return true; // immutable until explicit NEW COHORT
   const obs=buildHistoricalObservations();
   const map=new Map();
   for(const o of obs){
+    const uniqueTags=new Map();
     for(const t of o.tags){
+      const key=canonicalSingleKey(t.key), label=canonicalLabelForKey(key,t.label);
+      if(!uniqueTags.has(key)) uniqueTags.set(key,{key,label});
+    }
+    for(const t of uniqueTags.values()){
       const x=map.get(t.key)||{key:t.key,label:t.label,n:0,odd:0,even:0};
       x.n++; if(o.outcome==='ODD')x.odd++; else x.even++; map.set(t.key,x);
     }
   }
   const singles=[...map.values()].filter(x=>x.n>=CFG.minDiscoveryN).map(x=>{
-    const oddRate=x.odd/x.n, side=oddRate>=.5?'ODD':'EVEN', winRate=Math.max(oddRate,1-oddRate);
+    const r=x.odd/x.n,side=r>=.5?'ODD':'EVEN',winRate=Math.max(r,1-r);
     return {...x,type:'single',side,discoveryWinRate:winRate,discoveryEdge:winRate-.5};
   });
 
-  // Pair combinations are frozen from history only. Limit to interpretable combinations.
   const pairMap=new Map();
   for(const o of obs){
-    const usable=o.tags.filter(t=>!t.key.startsWith('parityPair:'));
-    for(let i=0;i<usable.length;i++) for(let j=i+1;j<usable.length;j++){
-      const ks=[usable[i].key,usable[j].key].sort(), key=ks.join('&&');
-      const labels=[usable[i],usable[j]].sort((a,b)=>a.key.localeCompare(b.key)).map(x=>x.label);
+    const uniqueRawMap=new Map();
+    for(const t of o.tags){
+      if(t.key.startsWith('parityPair:')) continue;
+      const key=canonicalSingleKey(t.key), label=canonicalLabelForKey(key,t.label);
+      if(!uniqueRawMap.has(key)) uniqueRawMap.set(key,{key,label});
+    }
+    const raw=[...uniqueRawMap.values()], seenPairs=new Set();
+    for(let i=0;i<raw.length;i++) for(let j=i+1;j<raw.length;j++){
+      const ks=canonicalizeTagKeys([raw[i].key,raw[j].key]);
+      if(ks.length<2) continue; // logical duplicate of a single state
+      const key=ks.join('&&'); if(seenPairs.has(key)) continue; seenPairs.add(key);
+      const labelMap=new Map(raw.map(t=>[t.key,t.label]));
+      const labels=ks.map(k=>labelMap.get(k)||k);
       const x=pairMap.get(key)||{key,label:labels.join(' + '),tagKeys:ks,n:0,odd:0,even:0};
       x.n++; if(o.outcome==='ODD')x.odd++; else x.even++; pairMap.set(key,x);
     }
   }
   const pairs=[...pairMap.values()].filter(x=>x.n>=CFG.minDiscoveryN).map(x=>{
-    const oddRate=x.odd/x.n, side=oddRate>=.5?'ODD':'EVEN', winRate=Math.max(oddRate,1-oddRate);
+    const r=x.odd/x.n,side=r>=.5?'ODD':'EVEN',winRate=Math.max(r,1-r);
     return {...x,type:'combo',side,discoveryWinRate:winRate,discoveryEdge:winRate-.5};
   });
-  S.candidates=[...singles,...pairs]
-    .sort((a,b)=>b.discoveryEdge-a.discoveryEdge || b.n-a.n)
-    .slice(0,CFG.maxCandidates)
-    .map(x=>({...x,forwardN:0,forwardWins:0,forwardLosses:0}));
-  S.candidatesFrozenAt=nowISO();
-  save();
+  const unique=new Map();
+  for(const c of [...singles,...pairs]){
+    const old=unique.get(c.key);
+    if(!old || c.n>old.n || (c.n===old.n&&c.discoveryEdge>old.discoveryEdge)) unique.set(c.key,c);
+  }
+  S.candidates=[...unique.values()].sort((a,b)=>b.discoveryEdge-a.discoveryEdge||b.n-a.n).slice(0,CFG.maxCandidates).map(x=>({...x,forwardN:0,forwardWins:0,forwardLosses:0}));
+  S.cohortId=makeCohortId(); S.cohortCreatedAt=nowISO(); S.candidatesFrozenAt=S.cohortCreatedAt; S.cohortStatus='FORWARD_VALIDATION';
+  S.historicalHash=computeHistoricalHash(S.discoveryTicks); S.candidateSetHash=computeCandidateSetHash(S.candidates);
+  const eps=S.discoveryTicks.map(t=>Number(t.epoch)||0).filter(Boolean); S.discoveryStartEpoch=eps.length?Math.min(...eps):null; S.discoveryEndEpoch=eps.length?Math.max(...eps):null;
+  S.lastFeatureEpoch=S.discoveryEndEpoch; S.forwardStartEpoch=null; S.totalForwardTicks=0; S.forwardRecords=[]; S.liveTicks=[]; S.seenForwardEpochs=new Set();S.seenEpochQueue=[];
+  const sig=currentSignal(); S.pendingSignal=sig?{...sig,predictedAt:nowISO()}:null;
+  save(); return true;
 }
 
 function candidateMatches(c,tags){
@@ -315,7 +459,7 @@ function currentSignal(){
   });
   const best=matches[0], probability=best.s.n?best.s.winRate:best.c.discoveryWinRate;
   const autoReady=best.s.n>=CFG.minForwardNForAuto && best.s.winRate>=CFG.autoMinObservedWinRate && best.s.lower95>=CFG.autoMinWilsonLower95;
-  return {features:f,tags,side:best.c.side,probability,candidate:best.c,forward:best.s,status:autoReady?'AUTO_READY':'RESEARCH_ONLY'};
+  return {features:f,tags,side:best.c.side,probability,candidate:best.c,forward:best.s,status:autoReady?'AUTO_READY':candidateStatus(best.c)};
 }
 
 function scoreForwardOutcome(digit,epoch,quote){
@@ -323,39 +467,68 @@ function scoreForwardOutcome(digit,epoch,quote){
   const outcome=parity(digit);
   updateCandidatesForOutcome(p.tags,outcome);
   S.forwardRecords.push({
-    kind:'FORWARD',predictedAt:p.predictedAt,outcomeAt:nowISO(),epoch:Number(epoch),quote:Number(quote),digit,outcome,
+    kind:'FORWARD',cohortId:S.cohortId,candidateSetHash:S.candidateSetHash,predictedAt:p.predictedAt,outcomeAt:nowISO(),epoch:Number(epoch),quote:Number(quote),digit,outcome,
     selectedSide:p.side,win:p.side?outcome===p.side:null,candidateKey:p.candidate?.key||null,candidateLabel:p.candidate?.label||null,
-    candidateStatus:p.status,features:p.features,tags:p.tags.map(x=>x.key)
+    candidateStatus:p.candidate?candidateStatus(p.candidate):'NO_FROZEN_MATCH',features:p.features,tags:p.tags.map(x=>x.key)
   });
   if(S.forwardRecords.length>CFG.maxRecords)S.forwardRecords.splice(0,S.forwardRecords.length-CFG.maxRecords);
-  S.pendingSignal=null; save();
+  S.pendingSignal=null;
 }
 
-async function loadHistory(){
-  if(S.historicalLoaded || !S.publicWs || S.publicWs.readyState!==WebSocket.OPEN) return;
+function requestDiscoveryHistory(){
+  if(S.cohortId || !S.publicWs || S.publicWs.readyState!==WebSocket.OPEN) return;
+  S.awaitingHistoryPurpose='DISCOVERY';
   S.publicWs.send(JSON.stringify({ticks_history:SYMBOL,end:'latest',count:CFG.historyCount,style:'ticks',adjust_start_time:1,req_id:95001}));
+}
+function requestFeatureWarmup(){
+  if(!S.cohortId || !S.publicWs || S.publicWs.readyState!==WebSocket.OPEN) return;
+  S.awaitingHistoryPurpose='WARMUP';
+  S.publicWs.send(JSON.stringify({ticks_history:SYMBOL,end:'latest',count:CFG.featureSeedTicks,style:'ticks',adjust_start_time:1,req_id:95004}));
+}
+function subscribeForward(){
+  if(!S.publicWs || S.publicWs.readyState!==WebSocket.OPEN) return;
+  S.publicWs.send(JSON.stringify({ticks:SYMBOL,subscribe:1,req_id:95003}));
+}
+function parseHistory(d,source){
+  const prices=d.history?.prices||[],times=d.history?.times||[],out=[];
+  for(let i=0;i<prices.length;i++){
+    const dig=digitFromQuote(prices[i]);
+    if(dig!=null)out.push({digit:dig,parity:parity(dig),quote:Number(prices[i]),epoch:Number(times[i]||0),source});
+  }
+  return out;
 }
 
 function onPublic(d){
   if(d.msg_type==='history' && d.history){
-    const prices=d.history.prices||[], times=d.history.times||[], out=[];
-    for(let i=0;i<prices.length;i++){
-      const dig=digitFromQuote(prices[i]);
-      if(dig!=null)out.push({digit:dig,parity:parity(dig),quote:Number(prices[i]),epoch:Number(times[i]||0),source:'HISTORICAL_DISCOVERY'});
+    const purpose=S.awaitingHistoryPurpose; S.awaitingHistoryPurpose=null;
+    if(purpose==='DISCOVERY' && !S.cohortId){
+      const out=parseHistory(d,'HISTORICAL_DISCOVERY'); S.discoveryTicks=out.slice(-CFG.historyCount); S.historicalLoaded=true;
+      freezeCandidatesFromHistory(); subscribeForward(); save(); render(); return;
     }
-    S.discoveryTicks=out.slice(-CFG.historyCount); S.historicalLoaded=true;
-    freezeCandidatesFromHistory(); save(); render(); return;
+    if(purpose==='WARMUP' && S.cohortId){
+      const out=parseHistory(d,'FEATURE_WARMUP'); S.liveTicks=out.slice(-CFG.featureSeedTicks);
+      S.lastFeatureEpoch=S.liveTicks.length?Math.max(...S.liveTicks.map(t=>Number(t.epoch)||0)):S.lastFeatureEpoch;
+      S.needsWarmup=false; S.pendingSignal=currentSignal()?{...currentSignal(),predictedAt:nowISO()}:null;
+      save(); subscribeForward(); render(); return;
+    }
+    return;
   }
-  if(d.msg_type!=='tick'||!d.tick) return;
+  if(d.msg_type!=='tick'||!d.tick || !S.cohortId || !S.candidates.length) return;
   S.lastTickAt=Date.now(); S.lastTickEpoch=Number(d.tick.epoch||0);
   if(Number.isFinite(Number(d.tick.pip_size)))S.pipSize=Number(d.tick.pip_size);
+  const epoch=Number(d.tick.epoch||0);
+  if(!Number.isFinite(epoch)||!epoch) return;
+  if(S.lastFeatureEpoch && epoch<=S.lastFeatureEpoch) return; // history/subscription overlap or duplicate
+  if(S.seenForwardEpochs.has(epoch)) return;
   const dig=digitFromQuote(d.tick.quote,S.pipSize); if(dig==null)return;
-  S.totalForwardTicks++;
-  scoreForwardOutcome(dig,d.tick.epoch,d.tick.quote);
-  S.liveTicks.push({digit:dig,parity:parity(dig),quote:Number(d.tick.quote),epoch:Number(d.tick.epoch),source:'LIVE_FORWARD'});
+  if(S.discoveryEndEpoch && epoch<=S.discoveryEndEpoch) return;
+  if(!S.forwardStartEpoch){S.forwardStartEpoch=epoch;saveCohortRegistry();}
+  S.totalForwardTicks++; markSeenEpoch(epoch);
+  scoreForwardOutcome(dig,epoch,d.tick.quote);
+  S.liveTicks.push({digit:dig,parity:parity(dig),quote:Number(d.tick.quote),epoch,source:'LIVE_FORWARD'});
   if(S.liveTicks.length>CFG.featureBuffer)S.liveTicks.shift();
-  const sig=currentSignal();
-  S.pendingSignal=sig?{...sig,predictedAt:nowISO()}:null;
+  S.lastFeatureEpoch=epoch;
+  const sig=currentSignal(); S.pendingSignal=sig?{...sig,predictedAt:nowISO()}:null;
   if(S.runner && S.mode!=='SHADOW') maybeAutoExecute();
   save(); render();
 }
@@ -365,10 +538,10 @@ function clearFeedTimers(){
   if(S.pingTimer){clearInterval(S.pingTimer);S.pingTimer=null;}
 }
 function forcePublicReconnect(reason='Feed stale'){
-  S.lastPublicError=reason; S.connected=false; S.staleReconnects++;
+  S.lastPublicError=reason; S.connected=false; S.staleReconnects++; S.needsWarmup=!!S.cohortId; S.collectionGapEvents+=S.cohortId?1:0;
   const old=S.publicWs; S.publicWs=null;
   if(old){try{old.onclose=null;old.close();}catch(_){}}
-  clearFeedTimers(); clearTimeout(S.reconnectTimer);
+  clearFeedTimers(); clearTimeout(S.reconnectTimer); saveProgress();
   S.reconnectTimer=setTimeout(connectPublic,500); render();
 }
 function startFeedTimers(ws){
@@ -387,12 +560,16 @@ function connectPublic(){
     const ws=new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public'); S.publicWs=ws; S.lastPublicError='';
     ws.onopen=()=>{
       S.connected=true;S.reconnectAttempts=0;S.feedConnectionsOpened++;S.lastPublicMessageAt=Date.now();S.lastTickAt=Date.now();S.lastPublicError='';
-      ws.send(JSON.stringify({ticks:SYMBOL,subscribe:1,req_id:95003})); startFeedTimers(ws); loadHistory(); render();
+      startFeedTimers(ws);
+      if(!S.cohortId){requestDiscoveryHistory();}
+      else if(S.needsWarmup || S.liveTicks.length<20){requestFeatureWarmup();}
+      else {S.pendingSignal=currentSignal()?{...currentSignal(),predictedAt:nowISO()}:null;subscribeForward();}
+      render();
     };
     ws.onmessage=e=>{S.lastPublicMessageAt=Date.now();let d;try{d=JSON.parse(e.data)}catch{return;}if(d.error){S.lastPublicError=d.error.message||d.error.code||'Deriv public feed error';render();return;}onPublic(d);};
     ws.onerror=()=>{S.lastPublicError='Public market WebSocket error';render();};
-    ws.onclose=()=>{clearFeedTimers();S.connected=false;if(S.publicWs===ws)S.publicWs=null;if(!S.lastPublicError)S.lastPublicError='Public feed disconnected';render();const delay=Math.min(30000,1500*Math.pow(1.7,S.reconnectAttempts++));clearTimeout(S.reconnectTimer);S.reconnectTimer=setTimeout(connectPublic,delay);};
-  }catch(e){S.connected=false;S.lastPublicError=String(e?.message||e||'Public feed connection failed');render();clearTimeout(S.reconnectTimer);S.reconnectTimer=setTimeout(connectPublic,3000);}
+    ws.onclose=()=>{clearFeedTimers();S.connected=false;if(S.publicWs===ws)S.publicWs=null;if(!S.lastPublicError)S.lastPublicError='Public feed disconnected';S.needsWarmup=!!S.cohortId;S.collectionGapEvents+=S.cohortId?1:0;saveProgress();render();const delay=Math.min(30000,1500*Math.pow(1.7,S.reconnectAttempts++));clearTimeout(S.reconnectTimer);S.reconnectTimer=setTimeout(connectPublic,delay);};
+  }catch(e){S.connected=false;S.lastPublicError=String(e?.message||e||'Public feed connection failed');S.needsWarmup=!!S.cohortId;render();clearTimeout(S.reconnectTimer);S.reconnectTimer=setTimeout(connectPublic,3000);}
 }
 
 async function getAuthenticatedWsUrl(){
@@ -491,6 +668,21 @@ async function toggleRunner(){
   }else{S.runner=false;save();render();}
 }
 
+async function beginNewCohort(){
+  if(!(await ensureAdminAuthorized(true))) return;
+  if(S.activeTrade||S.pendingProposal){executionError('Wait for the active trade/proposal to finish before starting a new research cohort.');return;}
+  if(!window.confirm('Start a NEW RESEARCH COHORT? This permanently closes the current browser-side cohort and resets its forward statistics. Export the current report first if you need it.')) return;
+  S.runner=false; S.mode='SHADOW';
+  if(S.tradeWs){try{S.tradeWs.close();}catch(_){}S.tradeWs=null;S.authenticated=false;}
+  S.discoveryTicks=[];S.liveTicks=[];S.totalForwardTicks=0;S.forwardRecords=[];S.executionRecords=[];S.candidates=[];S.candidatesFrozenAt=null;
+  S.cohortId=null;S.cohortCreatedAt=null;S.cohortStatus='DISCOVERY';S.candidateSetHash=null;S.historicalHash=null;S.discoveryStartEpoch=null;S.discoveryEndEpoch=null;S.forwardStartEpoch=null;S.lastFeatureEpoch=null;
+  S.collectionGapEvents=0;S.seenForwardEpochs=new Set();S.seenEpochQueue=[];S.pendingSignal=null;S.pendingProposal=null;S.activeTrade=null;S.stats={contracts:0,wins:0,losses:0,pnl:0};S.historicalLoaded=false;S.awaitingHistoryPurpose=null;S.needsWarmup=false;
+  try{localStorage.removeItem(COHORT_STORE);localStorage.removeItem(PROGRESS_STORE);}catch(_){}
+  saveUI();
+  if(S.publicWs && S.publicWs.readyState===WebSocket.OPEN) requestDiscoveryHistory(); else connectPublic();
+  render();
+}
+
 async function requestWakeLock(){
   S.wakeLockRequested=true;save();
   if(!('wakeLock' in navigator)){render();return false;}
@@ -500,19 +692,22 @@ async function releaseWakeLock(){S.wakeLockRequested=false;save();if(S.wakeLock)
 async function toggleWakeLock(){if(S.wakeLockRequested)await releaseWakeLock();else await requestWakeLock();}
 
 function rankedCandidates(){
-  return S.candidates.map(c=>({...c,forward:candidateForwardStats(c)})).sort((a,b)=>{
-    const ar=a.forward.n>=CFG.minForwardNForAuto?1:0,br=b.forward.n>=CFG.minForwardNForAuto?1:0;if(ar!==br)return br-ar;
-    const al=a.forward.lower95??0,bl=b.forward.lower95??0;if(al!==bl)return bl-al;
+  const rank={STATISTICALLY_CLEARED:3,FORWARD_TESTING:2,REJECTED:1};
+  return S.candidates.map(c=>({...c,forward:candidateForwardStats(c),validationStatus:candidateStatus(c)})).sort((a,b)=>{
+    const sr=(rank[b.validationStatus]||0)-(rank[a.validationStatus]||0);if(sr)return sr;
+    const al=a.forward.lower95??-1,bl=b.forward.lower95??-1;if(al!==bl)return bl-al;
+    if(a.forward.n!==b.forward.n)return b.forward.n-a.forward.n;
     return (b.forward.winRate??0)-(a.forward.winRate??0);
   });
 }
 function snapshot(){
   const sig=currentSignal();
   return {
-    schema:'DIGITMATCHSTAR_ODDEVEN_LAB_V1',generatedAt:nowISO(),version:VERSION,symbol:SYMBOL,currentMode:S.mode,runner:S.runner,autoSide:S.autoSide,stake:S.stake,
+    schema:'DIGITMATCHSTAR_ODDEVEN_LAB_V1_1_STRICT_COHORT',generatedAt:nowISO(),version:VERSION,symbol:SYMBOL,currentMode:S.mode,runner:S.runner,autoSide:S.autoSide,stake:S.stake,
+    cohort:{cohortId:S.cohortId,status:S.cohortId?'FORWARD_VALIDATION':'DISCOVERY',cohortCreatedAt:S.cohortCreatedAt,candidatesFrozenAt:S.candidatesFrozenAt,candidateSetHash:S.candidateSetHash,historicalHash:S.historicalHash,hashAlgorithm:S.hashAlgorithm,discoveryStartEpoch:S.discoveryStartEpoch,discoveryEndEpoch:S.discoveryEndEpoch,forwardStartEpoch:S.forwardStartEpoch,immutableUntilExplicitNewCohort:true},
     economics:{assumedWinProfitPerDollar:CFG.assumedWinProfitPerDollar,assumedBreakEvenWinRate:CFG.assumedBreakEvenWinRate,liveProposalEconomicsUsedForExecution:true},
-    methodology:{historicalUsage:'DISCOVERY_ONLY',candidateDefinitionsFrozenFromHistorical:true,candidatesFrozenAt:S.candidatesFrozenAt,liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,realNeverAutoResumes:true,oneActiveContractMax:true},
-    collection:{totalForwardTicks:S.totalForwardTicks,retainedFeatureTicks:S.liveTicks.length,featureBufferLimit:CFG.featureBuffer,forwardRecordCount:S.forwardRecords.length,wakeLockRequested:S.wakeLockRequested,wakeLockActive:!!S.wakeLock},
+    methodology:{historicalUsage:'DISCOVERY_ONLY',candidateDefinitionsFrozenFromHistorical:true,candidateRegistryPersistsAcrossReload:true,logicalCandidateDeduplication:true,epochDeduplication:true,historyLiveOverlapBlocked:true,liveRecords:'FORWARD_ONLY',predictionFrozenBeforeOutcome:true,realNeverAutoResumes:true,oneActiveContractMax:true},
+    collection:{totalForwardTicks:S.totalForwardTicks,retainedFeatureTicks:S.liveTicks.length,featureBufferLimit:CFG.featureBuffer,retainedForwardRecords:S.forwardRecords.length,maxPersistedForwardRecords:CFG.maxPersistedRecords,lastFeatureEpoch:S.lastFeatureEpoch,collectionGapEvents:S.collectionGapEvents,wakeLockRequested:S.wakeLockRequested,wakeLockActive:!!S.wakeLock},
     feedHealth:{connected:S.connected,lastTickAt:S.lastTickAt,lastTickEpoch:S.lastTickEpoch,connectionsOpened:S.feedConnectionsOpened,staleReconnects:S.staleReconnects,lastError:S.lastPublicError||''},
     executionStats:S.stats,currentSignal:sig,candidates:rankedCandidates(),forwardRecords:S.forwardRecords,executionRecords:S.executionRecords
   };
@@ -579,14 +774,15 @@ function render(){
   const runLabel=S.runner?`STOP ${S.mode} AUTO`:`START ${S.mode} AUTO`;
   const disabledTrade=(S.mode==='SHADOW'||!!S.activeTrade||!!S.pendingProposal)?'disabled':'';
   const topRows=cand.slice(0,8).map(c=>{
-    const s=c.forward,ready=s.n>=CFG.minForwardNForAuto&&s.winRate>=CFG.autoMinObservedWinRate&&s.lower95>=CFG.autoMinWilsonLower95;
-    return `<div class="cand"><div><div class="cand-name">${c.side} · ${c.label}</div><span class="tag ${ready?'ready':s.n>=CFG.minForwardNForAuto?'no':''}">${ready?'AUTO READY':s.n>=CFG.minForwardNForAuto?'NOT PROVEN':`FORWARD n=${s.n}`}</span></div><div style="text-align:right"><b class="${s.winRate!=null&&s.winRate>=CFG.assumedBreakEvenWinRate?'good':'bad'}">${pct(s.winRate)}</b><div class="muted" style="font-size:10px">95% low ${pct(s.lower95)}</div></div></div>`;
+    const s=c.forward,status=c.validationStatus,ready=status==='STATISTICALLY_CLEARED';
+    return `<div class="cand"><div><div class="cand-name">${c.side} · ${c.label}</div><span class="tag ${ready?'ready':status==='REJECTED'?'no':''}">${status.replaceAll('_',' ')} · n=${s.n}</span></div><div style="text-align:right"><b class="${s.winRate!=null&&s.winRate>=CFG.assumedBreakEvenWinRate?'good':'bad'}">${pct(s.winRate)}</b><div class="muted" style="font-size:10px">95% low ${pct(s.lower95)}</div></div></div>`;
   }).join('');
   const busy=S.activeTrade?`Contract #${S.activeTrade.contractId} active`:S.pendingProposal?'Waiting for proposal / buy':'Ready';
 
   body.innerHTML=`
     <div class="chips">${chip(feedKind,`Feed ${S.connected?'ONLINE':'OFFLINE'}`)}${chip(histKind,`History ${S.historicalLoaded?'READY':'LOADING'}`)}${chip(runnerKind,`Auto ${S.runner?'ON':'OFF'}`)}${chip(authKind,`${S.mode} ${S.mode==='SHADOW'?'NO TRADE':S.authenticated?'AUTH OK':'AUTH NEEDED'}`)}</div>
     <div class="hero"><div><div class="muted">FORWARD COLLECTOR</div><b>${S.totalForwardTicks.toLocaleString()} ticks</b></div><div style="text-align:right"><div class="muted">Rolling buffer</div><b>${S.liveTicks.length.toLocaleString()}/${CFG.featureBuffer}</b></div></div>
+    <div class="panel"><div class="panel-title">Strict research cohort</div><div class="muted"><b class="accent">${S.cohortId||'DISCOVERY PENDING'}</b><br>Frozen: ${S.candidatesFrozenAt||'—'}<br>Candidate hash: ${S.candidateSetHash||'—'}<br>History hash: ${S.historicalHash||'—'}<br>Forward start epoch: ${S.forwardStartEpoch||'—'} · gap events: ${S.collectionGapEvents}</div></div>
     <div class="modes"><button id="oe-shadow" class="oe-btn ${S.mode==='SHADOW'?'active':''}">SHADOW</button><button id="oe-demo" class="oe-btn demo ${S.mode==='DEMO'?'active':''}">DEMO</button><button id="oe-real" class="oe-btn real ${S.mode==='REAL'?'active':''}">REAL</button></div>
     <button id="oe-wake" class="wake ${S.wakeLockRequested?'on':''}">${S.wakeLockRequested?(S.wakeLock?'KEEP AWAKE: ON':'KEEP AWAKE: REQUESTED'):'KEEP SCREEN AWAKE: OFF'}</button>
     <div class="panel"><div class="panel-title">Trade setup</div><div class="stake-row"><div><label>Stake per trade (USD)</label><input id="oe-stake" type="number" min="0.35" step="0.01" value="${S.stake.toFixed(2)}"></div><div><label>Live state</label><div style="font-weight:900;padding:9px 0">${busy}</div></div></div></div>
@@ -596,14 +792,14 @@ function render(){
     <div class="panel"><div class="panel-title">Execution</div><div class="signal"><div class="metric"><span>Contracts</span><b>${S.stats.contracts}</b></div><div class="metric"><span>Wins / losses</span><b>${S.stats.wins} / ${S.stats.losses}</b></div><div class="metric"><span>P&L</span><b class="${S.stats.pnl>0?'good':S.stats.pnl<0?'bad':''}">${money(S.stats.pnl)}</b></div><div class="metric"><span>Signal status</span><b class="${autoReady?'good':'amber'}">${sig?.status||'WARMING'}</b></div></div></div>
     ${S.lastPublicError?`<div class="panel" style="border-color:rgba(248,113,113,.45)"><b class="bad">Feed issue:</b> ${S.lastPublicError}</div>`:''}
     <div class="panel"><div class="panel-title">Ranked frozen candidates</div>${topRows||'<div class="muted">Candidates appear after historical discovery loads.</div>'}</div>
-    <div class="panel"><div class="panel-title">Research rule</div><div class="muted">Historical 5,000 ticks discover candidate states once. Future ticks score those frozen states. ODD/EVEN assumed economics are +$0.95 per $1 win and -$1 per loss only for research display; actual DEMO/REAL execution uses the live Deriv proposal economics.</div></div>
-    <div class="footer-actions"><button id="oe-export">EXPORT JSON</button><button id="oe-reset-exec">RESET EXEC STATS</button></div>`;
+    <div class="panel"><div class="panel-title">Research rule</div><div class="muted">Historical 5,000 ticks create one immutable, deduplicated candidate registry with cohort and hash IDs. Reloading restores that same cohort; candidates cannot be rediscovered unless you explicitly start NEW COHORT. Epoch overlap/duplicates are rejected. Future ticks score only the frozen states. ODD/EVEN assumed economics are +$0.95 per $1 win and -$1 per loss only for research display; actual DEMO/REAL execution uses the live Deriv proposal economics.</div></div>
+    <div class="footer-actions"><button id="oe-export">EXPORT JSON</button><button id="oe-new-cohort">NEW RESEARCH COHORT</button><button id="oe-reset-exec">RESET EXEC STATS</button></div>`;
 
   $('oe-shadow').onclick=()=>setMode('SHADOW');$('oe-demo').onclick=()=>setMode('DEMO');$('oe-real').onclick=()=>setMode('REAL');
   $('oe-wake').onclick=toggleWakeLock;$('oe-auto').onclick=()=>setAutoSide('AUTO');$('oe-auto-odd').onclick=()=>setAutoSide('ODD');$('oe-auto-even').onclick=()=>setAutoSide('EVEN');$('oe-run').onclick=toggleRunner;
   $('oe-trade-odd').onclick=()=>requestTrade('ODD','MANUAL',currentSignal());$('oe-trade-even').onclick=()=>requestTrade('EVEN','MANUAL',currentSignal());
   $('oe-stake').onchange=e=>{const v=Number(e.target.value);if(Number.isFinite(v)&&v>=.35){S.stake=clamp(v,.35,1000);save();render();}else render();};
-  $('oe-export').onclick=exportJSON;$('oe-reset-exec').onclick=()=>{S.stats={contracts:0,wins:0,losses:0,pnl:0};S.executionRecords=[];save();render();};
+  $('oe-export').onclick=exportJSON;$('oe-new-cohort').onclick=beginNewCohort;$('oe-reset-exec').onclick=()=>{S.stats={contracts:0,wins:0,losses:0,pnl:0};S.executionRecords=[];save();render();};
 }
 
 window.DMSOddEvenLab={
@@ -616,7 +812,8 @@ window.DMSOddEvenLab={
   stopAuto:()=>{S.runner=false;save();render();},
   tradeOdd:()=>requestTrade('ODD','MANUAL',currentSignal()),
   tradeEven:()=>requestTrade('EVEN','MANUAL',currentSignal()),
-  requestWakeLock,releaseWakeLock
+  requestWakeLock,releaseWakeLock,
+  beginNewCohort
 };
 
 async function boot(){
