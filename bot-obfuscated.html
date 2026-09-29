@@ -6,7 +6,7 @@
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-    <!-- V20 INSTANT lifecycle: public tick observes outcome; Deriv settlement is authoritative; exactly one recovery arm after confirmed loss -->
+    <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -7398,6 +7398,18 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             if (window.stopAfterWin) return;
             if (!mayPlaceNextTrade()) return;
 
+            // V21: INSTANT may attempt at most ONE order from any market epoch.
+            // This prevents duplicate proposals if the same tick is seen through
+            // more than one execution path.
+            const instantEntryEpoch = Number(tick?.raw?.epoch || 0);
+            if (
+                sessionState.mode === 'instant' &&
+                instantEntryEpoch > 0 &&
+                Number(window.lastInstantEntryEpoch || 0) === instantEntryEpoch
+            ) {
+                return;
+            }
+
             // Public market ticks may arrive before the authenticated trading
             // WebSocket is ready. Never attempt an order until it is OPEN.
             if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
@@ -7483,6 +7495,10 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
 window.executionLock = true;
             window.nextTradeAllowed = false;
+
+            if (sessionState.mode === 'instant') {
+                window.lastInstantEntryEpoch = Number(tick?.raw?.epoch || 0) || window.lastInstantEntryEpoch || 0;
+            }
 
             try {
                 const nextTradeNumber = window.tradeCount + 1;
@@ -8380,15 +8396,19 @@ window.isBotRunning = true;
 
             const result = observeActiveContractTick(buffered);
 
-            // SAFETY FIX V17:
-            // Public ticks are observational only. Recovery is never launched here.
-            // The contract remains locked until handleOpenContractUpdate() receives
-            // authoritative Deriv settlement.
-            if (result?.handled && !result?.fastWin) {
-                log(
-                    '⏳ Settlement tick observed · waiting for Deriv confirmation before any recovery trade',
-                    'TRADE'
-                );
+            // V21: if the buffered tick is the proven first tick after the
+            // Deriv-aligned barrier and it is a miss, use the same fast pipeline.
+            if (result?.fastLoss && window.isBotRunning && !window.stopAfterWin) {
+                if (window.tradeCount >= window.maxTrades) {
+                    window.nextTradeAllowed = false;
+                    stopBot('Maximum trades reached');
+                    return;
+                }
+                const currentTick = window.lastTick;
+                if (currentTick) {
+                    log('⚡ BUFFERED OUTCOME RESOLVED · submitting recovery immediately', 'TRADE');
+                    processTickImmediately(currentTick);
+                }
             }
         }
 
@@ -8423,29 +8443,35 @@ window.isBotRunning = true;
                 return { handled: true, fastLoss: false, fastWin: true };
             }
 
-            // V20 AUTHORITATIVE SETTLEMENT:
-            // A public-tick miss is observational only. Do NOT advance progression,
-            // release the execution lock, or arm recovery here. We wait for Deriv's
-            // proposal_open_contract settlement to confirm the LOSS.
-            ac.fastOutcome = 'LOSS_OBSERVED';
+            // V21 TICK-PIPELINED INSTANT:
+            // For a correctly aligned 1-tick contract, this is the outcome tick.
+            // Advance the progression ONCE, release the execution lane, and submit
+            // the recovery immediately from this same market tick so the NEXT tick
+            // can resolve the new contract. Deriv settlement remains authoritative
+            // accounting/reconciliation in the background.
+            ac.fastOutcome = 'LOSS';
             ac.fastOutcomeAt = Date.now();
-            ac.status = 'STREAM_MISS_OBSERVED_WAITING_SETTLEMENT';
+            ac.status = 'FAST_LOSS_STREAM_CONFIRMED';
 
-            window.executionLock = true;
-            window.nextTradeAllowed = false;
+            if (!ac.progressionApplied) {
+                applyFastLossProgression(ac);
+            }
+
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
 
             log(
-                `👁️ STREAM MISS OBSERVED | Contract ${ac.contractId} | tick digit ${ac.observedDigit} ≠ target ${ac.predictedDigit} | waiting for Deriv settlement`,
+                `⚡ FAST LOSS | Contract ${ac.contractId} | tick ${epoch} digit ${ac.observedDigit} ≠ target ${ac.predictedDigit} | recovery submitting now`,
                 'LOSS'
             );
             updateTradeStatus(
-                'MISS OBSERVED',
+                'FAST LOSS',
                 `Digit ${ac.observedDigit} ≠ target ${ac.predictedDigit}`,
-                'Waiting for authoritative Deriv LOSS before recovery',
+                `Submitting recovery at $${window.currentStake.toFixed(2)} before the next tick`,
                 'loss'
             );
 
-            return { handled: true, fastLoss: false, fastWin: false };
+            return { handled: true, fastLoss: true, fastWin: false };
         }
 
         function getContractFinalDigit(contract) {
@@ -8632,34 +8658,30 @@ window.isBotRunning = true;
                 actualProfit
             );
 
-            // V20: Deriv settlement is the ONLY event allowed to advance recovery.
-            // progressionApplied guarantees the stake can advance at most once.
-            if (!ac.progressionApplied) applyFastLossProgression(ac);
+            // V21: progression normally happened on the aligned outcome tick.
+            // Settlement is reconciliation/accounting only. If no aligned tick was
+            // ever observed, fall back to applying progression once here.
+            if (!ac.progressionApplied) {
+                log(`⚠️ No fast progression recorded for contract ${contractId}; applying confirmed LOSS progression now`, 'WARNING');
+                applyFastLossProgression(ac);
+            }
 
             window.settlementLedger.delete(contractId);
 
+            // Never clear or unlock a NEWER active contract when an older pipelined
+            // contract settles in the background.
             if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
                 window.activeContract = null;
+                if (window.isBotRunning && !window.stopAfterWin) {
+                    window.executionLock = false;
+                    window.nextTradeAllowed = true;
+                }
             }
 
-            if (!window.activeContract && window.isBotRunning && !window.stopAfterWin) {
-                // Drop ticks accumulated while settlement was pending so recovery
-                // can only use a genuinely NEW tick after the confirmed LOSS.
-                window.tickQueue.length = 0;
-                window.executionLock = false;
-                window.nextTradeAllowed = true;
-
-                updateTradeStatus(
-                    'LOSS CONFIRMED',
-                    `Contract ${contractId} settled by Deriv`,
-                    `Recovery armed once at $${window.currentStake.toFixed(2)} · waiting for next tick`,
-                    'loss'
-                );
-                log(
-                    `🔓 RECOVERY ARMED | Contract ${contractId} settled LOSS | next stake $${window.currentStake.toFixed(2)} | next NEW tick only`,
-                    'TRADE'
-                );
-            }
+            log(
+                `✅ DERIV LOSS RECONCILED | Contract ${contractId} | progressionApplied=${!!ac.progressionApplied}`,
+                'LOSS'
+            );
         }
 
         function onTradeComplete(isSuccess = true) {
@@ -8703,6 +8725,7 @@ window.isBotRunning = true;
             window.cycleHasPurchasedContract = false;
             
             window.executionLock = false;
+            window.lastInstantEntryEpoch = 0;
             window.waitingForTradeResult = false;
             window.nextTradeAllowed = true;
             window.stopAfterWin = false;
@@ -9042,7 +9065,7 @@ window.isBotRunning = true;
                 // V20: one entry path only. originalStartBot() clears the queue,
                 // locks the selected digit and opens/reuses the authenticated socket.
                 // The normal queue processor then executes on the first NEW market tick.
-                log('⚡ INSTANT armed · selected digit locked · waiting for first NEW tick', 'SYSTEM');
+                log('⚡ INSTANT V21 armed · tick-pipelined execution · selected digit locked', 'SYSTEM');
                 return originalStartBot();
             }
 
@@ -9050,8 +9073,8 @@ window.isBotRunning = true;
             return originalStartBot();
         };
 
-        window.DMSInstantLifecycleV20 = {
-            version: 'INSTANT-LIFECYCLE-V20-AUTHORITATIVE-SETTLEMENT',
+        window.DMSInstantLifecycleV21 = {
+            version: 'INSTANT-LIFECYCLE-V21-TICK-PIPELINED',
             getState() {
                 return {
                     mode: sessionState?.mode || null,
@@ -9063,6 +9086,7 @@ window.isBotRunning = true;
                     progressionApplied: !!window.activeContract?.progressionApplied,
                     pendingProposals: window.pendingProposals?.size || 0,
                     queuedTicks: window.tickQueue?.length || 0,
+                    lastInstantEntryEpoch: Number(window.lastInstantEntryEpoch || 0),
                     tradeCount: Number(window.tradeCount || 0),
                     martingaleStep: Number(window.martingaleStep || 0),
                     currentStake: Number(window.currentStake || 0)
