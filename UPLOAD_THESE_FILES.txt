@@ -1,0 +1,21 @@
+RISE/FALL CLEAN UI UPDATE
+
+Upload/replace:
+1. bot-obfuscated.html               -> repository root (replace active bot page)
+2. rise-fall-ui-stabilizer-v1.js     -> repository root
+
+Keep your existing files:
+- rise-fall-research-v1-private.js
+- rise-fall-cloud-ui-v1.js
+- api/rise-fall-cloud-state.js
+- research-suite-loader.js
+- screen-recorder-safe-v5-2.js
+
+This HTML no longer loads:
+- under9-research-v2.1-private.js
+- odd-even-research-v1-private.js
+
+The stabilizer is presentation-only. It does not change cohort IDs, candidate definitions,
+validation thresholds, scoring, persistence, or trading logic.
+
+After upload, let Vercel redeploy, then hard-refresh with Ctrl+Shift+R.
