@@ -7,12 +7,14 @@
 (() => {
 'use strict';
 
-const VERSION = 'ODDEVEN-LAB-V1.2-PERSISTENCE-FIX';
+const VERSION = 'ODDEVEN-LAB-V1.3-INDEXEDDB-PERSISTENCE';
 const SYMBOL = 'R_10';
 const STORE = `oddeven_lab_v1_1_ui_${SYMBOL}`;
 const COHORT_STORE = `oddeven_lab_v1_1_cohort_${SYMBOL}`;
 const PROGRESS_STORE = `oddeven_lab_v1_1_progress_${SYMBOL}`;
 const LEGACY_STORE = `oddeven_lab_v1_${SYMBOL}`; // v1.0 large single-key store; safe to retire after strict-cohort upgrade
+const IDB_NAME = 'digitmatchstar_research_persistence_v1';
+const IDB_STORE = 'kv';
 const PANEL_ID = 'oddeven-lab-v1-panel';
 const DEFAULT_APP_ID = 1089;
 const CFG = {
@@ -85,6 +87,8 @@ const S = {
   staleReconnects: 0,
   lastPublicError: '',
   persistenceIssue: '',
+  persistenceBackend: 'initializing',
+  persistenceLastVerifiedAt: null,
   reconnectTimer: null,
   reconnectAttempts: 0,
   watchdogTimer: null,
@@ -219,33 +223,98 @@ function hidePrivateLab(){
   S.publicWs=null; S.tradeWs=null; S.connected=false; S.authenticated=false;
 }
 
+
+let _idbPromise = null;
+function openPersistenceDb(){
+  if(_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((resolve,reject)=>{
+    try{
+      const req=indexedDB.open(IDB_NAME,1);
+      req.onupgradeneeded=()=>{
+        const db=req.result;
+        if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>reject(req.error||new Error('IndexedDB open failed'));
+      req.onblocked=()=>reject(new Error('IndexedDB open blocked'));
+    }catch(e){ reject(e); }
+  });
+  return _idbPromise;
+}
+async function idbSet(key,value){
+  const db=await openPersistenceDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).put(value,key);
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));
+    tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'));
+  });
+  S.persistenceBackend='IndexedDB + localStorage mirror';
+  S.persistenceLastVerifiedAt=nowISO();
+  return true;
+}
+async function idbGet(key){
+  const db=await openPersistenceDb();
+  return await new Promise((resolve,reject)=>{
+    const tx=db.transaction(IDB_STORE,'readonly');
+    const req=tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess=()=>resolve(req.result==null?null:req.result);
+    req.onerror=()=>reject(req.error||new Error('IndexedDB read failed'));
+  });
+}
+async function idbDelete(key){
+  try{
+    const db=await openPersistenceDb();
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,'readwrite');
+      tx.objectStore(IDB_STORE).delete(key);
+      tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error||new Error('IndexedDB delete failed'));
+    });
+  }catch(_){ }
+}
+async function getPersistedItem(key){
+  try{
+    const v=await idbGet(key);
+    if(v!=null){ S.persistenceBackend='IndexedDB + localStorage mirror'; return v; }
+  }catch(e){
+    S.persistenceBackend='localStorage fallback';
+    S.persistenceIssue=`IndexedDB unavailable: ${String(e?.name||e?.message||e)}`;
+  }
+  try{return localStorage.getItem(key);}catch(_){return null;}
+}
+
 function cleanupLegacyStorage(){
   // v1.0 stored history + live ticks + records in one large localStorage key.
   // Under-9 uses the same origin, so leaving that old blob can exhaust the browser's ~5 MB localStorage quota.
   try{ localStorage.removeItem(LEGACY_STORE); }catch(_){ }
+  idbDelete(LEGACY_STORE);
 }
 function safeSetItem(key,value){
+  // IndexedDB is the durable primary store. localStorage is only a small mirror/fallback.
+  idbSet(key,value).then(()=>{if(S.persistenceIssue?.startsWith('Browser persistence failed'))S.persistenceIssue='';}).catch(e=>{
+    S.persistenceBackend='localStorage fallback';
+    S.persistenceIssue=`IndexedDB write failed: ${String(e?.name||e?.message||e||'storage error')}`;
+  });
   try{
     localStorage.setItem(key,value);
-    if(S.persistenceIssue) S.persistenceIssue='';
     return true;
   }catch(e){
-    // First recovery: delete only our obsolete v1.0 Odd/Even blob, never Under-9 data.
     try{ localStorage.removeItem(LEGACY_STORE); }catch(_){ }
     try{
       localStorage.setItem(key,value);
-      S.persistenceIssue='';
       return true;
     }catch(e2){
-      S.persistenceIssue=`Browser persistence failed: ${String(e2?.name||e2?.message||e2||'storage error')}`;
+      // Do not call this a total persistence failure because IndexedDB may still succeed.
+      S.persistenceIssue=`localStorage mirror failed; IndexedDB will be used: ${String(e2?.name||e2?.message||e2||'storage error')}`;
       return false;
     }
   }
 }
 
-function load(){
+async function load(){
   try{
-    const ui=JSON.parse(localStorage.getItem(STORE)||'{}');
+    const ui=JSON.parse((await getPersistedItem(STORE))||'{}');
     if(ui.mode) S.mode=ui.mode;
     if(ui.autoSide) S.autoSide=ui.autoSide;
     if(Number.isFinite(Number(ui.stake))) S.stake=clamp(Number(ui.stake),0.35,1000);
@@ -255,7 +324,7 @@ function load(){
     if(ui.panelPos && Number.isFinite(ui.panelPos.left) && Number.isFinite(ui.panelPos.top)) S.panelPos=ui.panelPos;
   }catch(_){ }
   try{
-    const c=JSON.parse(localStorage.getItem(COHORT_STORE)||'null');
+    const c=JSON.parse((await getPersistedItem(COHORT_STORE))||'null');
     if(c?.cohortId && Array.isArray(c.candidates) && c.candidates.length){
       S.cohortId=c.cohortId; S.cohortCreatedAt=c.cohortCreatedAt||null; S.cohortStatus='FORWARD_VALIDATION';
       S.candidatesFrozenAt=c.candidatesFrozenAt||null; S.candidateSetHash=c.candidateSetHash||computeCandidateSetHash(c.candidates);
@@ -267,7 +336,7 @@ function load(){
     }
   }catch(_){ }
   try{
-    const x=JSON.parse(localStorage.getItem(PROGRESS_STORE)||'{}');
+    const x=JSON.parse((await getPersistedItem(PROGRESS_STORE))||'{}');
     // v1.2 persists compact cumulative progress. Older v1.1 arrays are accepted once, but are no longer re-saved.
     if(Array.isArray(x.liveTicks)) S.liveTicks=x.liveTicks.slice(-50);
     if(Array.isArray(x.forwardRecords)) S.forwardRecords=x.forwardRecords.slice(-CFG.maxPersistedRecords);
@@ -710,6 +779,7 @@ async function beginNewCohort(){
   S.cohortId=null;S.cohortCreatedAt=null;S.cohortStatus='DISCOVERY';S.candidateSetHash=null;S.historicalHash=null;S.discoveryStartEpoch=null;S.discoveryEndEpoch=null;S.forwardStartEpoch=null;S.lastFeatureEpoch=null;
   S.collectionGapEvents=0;S.seenForwardEpochs=new Set();S.seenEpochQueue=[];S.pendingSignal=null;S.pendingProposal=null;S.activeTrade=null;S.stats={contracts:0,wins:0,losses:0,pnl:0};S.historicalLoaded=false;S.awaitingHistoryPurpose=null;S.needsWarmup=false;
   try{localStorage.removeItem(COHORT_STORE);localStorage.removeItem(PROGRESS_STORE);}catch(_){}
+  idbDelete(COHORT_STORE); idbDelete(PROGRESS_STORE);
   saveUI();
   if(S.publicWs && S.publicWs.readyState===WebSocket.OPEN) requestDiscoveryHistory(); else connectPublic();
   render();
@@ -814,7 +884,7 @@ function render(){
   body.innerHTML=`
     <div class="chips">${chip(feedKind,`Feed ${S.connected?'ONLINE':'OFFLINE'}`)}${chip(histKind,`History ${S.historicalLoaded?'READY':'LOADING'}`)}${chip(runnerKind,`Auto ${S.runner?'ON':'OFF'}`)}${chip(authKind,`${S.mode} ${S.mode==='SHADOW'?'NO TRADE':S.authenticated?'AUTH OK':'AUTH NEEDED'}`)}</div>
     <div class="hero"><div><div class="muted">FORWARD COLLECTOR</div><b>${S.totalForwardTicks.toLocaleString()} ticks</b></div><div style="text-align:right"><div class="muted">Rolling buffer</div><b>${S.liveTicks.length.toLocaleString()}/${CFG.featureBuffer}</b></div></div>
-    <div class="panel"><div class="panel-title">Strict research cohort</div><div class="muted"><b class="accent">${S.cohortId||'DISCOVERY PENDING'}</b><br>Frozen: ${S.candidatesFrozenAt||'—'}<br>Candidate hash: ${S.candidateSetHash||'—'}<br>History hash: ${S.historicalHash||'—'}<br>Forward start epoch: ${S.forwardStartEpoch||'—'} · gap events: ${S.collectionGapEvents}</div></div>
+    <div class="panel"><div class="panel-title">Strict research cohort</div><div class="muted"><b class="accent">${S.cohortId||'DISCOVERY PENDING'}</b><br>Frozen: ${S.candidatesFrozenAt||'—'}<br>Candidate hash: ${S.candidateSetHash||'—'}<br>History hash: ${S.historicalHash||'—'}<br>Forward start epoch: ${S.forwardStartEpoch||'—'} · gap events: ${S.collectionGapEvents}<br>Persistence: <b>${S.persistenceBackend}</b>${S.persistenceLastVerifiedAt?` · verified ${new Date(S.persistenceLastVerifiedAt).toLocaleTimeString()}`:''}</div></div>
     <div class="modes"><button id="oe-shadow" class="oe-btn ${S.mode==='SHADOW'?'active':''}">SHADOW</button><button id="oe-demo" class="oe-btn demo ${S.mode==='DEMO'?'active':''}">DEMO</button><button id="oe-real" class="oe-btn real ${S.mode==='REAL'?'active':''}">REAL</button></div>
     <button id="oe-wake" class="wake ${S.wakeLockRequested?'on':''}">${S.wakeLockRequested?(S.wakeLock?'KEEP AWAKE: ON':'KEEP AWAKE: REQUESTED'):'KEEP SCREEN AWAKE: OFF'}</button>
     <div class="panel"><div class="panel-title">Trade setup</div><div class="stake-row"><div><label>Stake per trade (USD)</label><input id="oe-stake" type="number" min="0.35" step="0.01" value="${S.stake.toFixed(2)}"></div><div><label>Live state</label><div style="font-weight:900;padding:9px 0">${busy}</div></div></div></div>
@@ -851,12 +921,13 @@ window.DMSOddEvenLab={
 
 async function boot(){
   cleanupLegacyStorage();
-  load();const ok=await ensureAdminAuthorized(true);if(!ok)return;
+  await load();const ok=await ensureAdminAuthorized(true);if(!ok)return;
   makePanel();render();connectPublic();
   if(S.wakeLockRequested&&!document.hidden)requestWakeLock();
   setInterval(async()=>{const ok=await ensureAdminAuthorized(true);if(!ok)hidePrivateLab();},60000);
 }
 window.addEventListener('focus',()=>{if(S.adminAuthorized&&(!S.connected||(S.lastTickAt&&Date.now()-S.lastTickAt>CFG.staleFeedMs)))forcePublicReconnect('Window resumed — refreshing feed');});
+window.addEventListener('pagehide',()=>{try{save();}catch(_){}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.wakeLockRequested&&!S.wakeLock)requestWakeLock();if(!document.hidden&&S.adminAuthorized&&(!S.connected||(S.lastTickAt&&Date.now()-S.lastTickAt>CFG.staleFeedMs)))forcePublicReconnect('Tab resumed — refreshing feed');});
 boot();
 })();
