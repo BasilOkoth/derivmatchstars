@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V31: V30 + reliable pointer-based dragging for Digit Differs and Top-2 Basket -->
+    <!-- V32: V31 + global delegated drag controller for Digit Differs and Top-2 Basket -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -457,6 +457,19 @@
 @media(max-width:640px){
   #top2-basket-lab{top:86px;left:6px;right:6px;width:auto}
   #top2-basket-lab .t2-body{max-height:70vh}
+}
+
+
+#differs-lab-handle,
+#top2-basket-handle{
+  cursor:grab !important;
+  user-select:none !important;
+  -webkit-user-select:none !important;
+  -webkit-user-drag:none !important;
+}
+#differs-lab-handle:active,
+#top2-basket-handle:active{
+  cursor:grabbing !important;
 }
 
 </style>
@@ -10155,7 +10168,7 @@ window.isBotRunning = true;
 
 <!-- V25 Digit Differs Lab -->
 <div id="differs-lab" style="display:none">
-  <div class="ddl-head" id="differs-lab-handle">
+  <div class="ddl-head" id="differs-lab-handle" data-drag-target="differs-lab" data-drag-storage="ddl_position">
     <div class="flex items-center gap-2 min-w-0">
       <div class="ddl-title">↔️ Digit Differs Lab</div>
       <span id="ddl-mode-badge" class="ddl-badge shadow">SHADOW</span>
@@ -10820,7 +10833,7 @@ if (document.readyState === 'loading') {
 
 <!-- V28 Top-2 Match Basket -->
 <div id="top2-basket-lab" style="display:none">
-  <div class="t2-head" id="top2-basket-handle">
+  <div class="t2-head" id="top2-basket-handle" data-drag-target="top2-basket-lab" data-drag-storage="t2_position">
     <div class="flex items-center gap-2 min-w-0">
       <div class="t2-title">🎯 Top-2 Match Basket</div>
       <span id="t2-mode-badge" class="t2-badge shadow">SHADOW</span>
@@ -11572,6 +11585,162 @@ if(document.readyState==='loading'){
         } catch (_) {}
         return false;
     };
+})();
+</script>
+
+
+<script>
+(() => {
+    'use strict';
+
+    let activeDrag = null;
+
+    function getDragHandle(target) {
+        if (!(target instanceof Element)) return null;
+        return target.closest('[data-drag-target]');
+    }
+
+    function startDrag(e) {
+        const handle = getDragHandle(e.target);
+        if (!handle) return;
+
+        // Controls inside the header should remain clickable.
+        if (e.target.closest('button, input, select, textarea, a, label')) return;
+
+        const panelId = handle.getAttribute('data-drag-target');
+        const storageKey = handle.getAttribute('data-drag-storage');
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+
+        const rect = panel.getBoundingClientRect();
+
+        panel.style.position = 'fixed';
+        panel.style.left = `${rect.left}px`;
+        panel.style.top = `${rect.top}px`;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        panel.style.margin = '0';
+
+        activeDrag = {
+            panel,
+            handle,
+            storageKey,
+            offsetX: e.clientX - rect.left,
+            offsetY: e.clientY - rect.top
+        };
+
+        handle.style.cursor = 'grabbing';
+        document.documentElement.style.userSelect = 'none';
+        document.body.style.userSelect = 'none';
+
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function moveDrag(e) {
+        if (!activeDrag) return;
+
+        const { panel, offsetX, offsetY } = activeDrag;
+        const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+        const maxTop = Math.max(0, window.innerHeight - 42);
+
+        const left = Math.min(maxLeft, Math.max(0, e.clientX - offsetX));
+        const top = Math.min(maxTop, Math.max(0, e.clientY - offsetY));
+
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+
+        e.preventDefault();
+    }
+
+    function finishDrag() {
+        if (!activeDrag) return;
+
+        const { panel, handle, storageKey } = activeDrag;
+        const rect = panel.getBoundingClientRect();
+
+        if (storageKey) {
+            try {
+                localStorage.setItem(
+                    storageKey,
+                    JSON.stringify({ left: rect.left, top: rect.top })
+                );
+            } catch (_) {}
+        }
+
+        handle.style.cursor = 'grab';
+        document.documentElement.style.userSelect = '';
+        document.body.style.userSelect = '';
+        activeDrag = null;
+    }
+
+    // Capture phase makes dragging independent of the individual panel scripts.
+    document.addEventListener('mousedown', startDrag, true);
+    document.addEventListener('mousemove', moveDrag, true);
+    document.addEventListener('mouseup', finishDrag, true);
+
+    // Touch support for the same headers.
+    document.addEventListener('touchstart', (e) => {
+        const handle = getDragHandle(e.target);
+        if (!handle) return;
+        if (e.target.closest('button, input, select, textarea, a, label')) return;
+
+        const touch = e.touches && e.touches[0];
+        if (!touch) return;
+
+        startDrag({
+            target: e.target,
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            preventDefault: () => e.preventDefault(),
+            stopPropagation: () => e.stopPropagation()
+        });
+    }, { capture: true, passive: false });
+
+    document.addEventListener('touchmove', (e) => {
+        if (!activeDrag) return;
+        const touch = e.touches && e.touches[0];
+        if (!touch) return;
+
+        moveDrag({
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            preventDefault: () => e.preventDefault()
+        });
+    }, { capture: true, passive: false });
+
+    document.addEventListener('touchend', finishDrag, true);
+    document.addEventListener('touchcancel', finishDrag, true);
+
+    // Restore saved positions once the DOM is ready.
+    function restorePanel(panelId, storageKey) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+
+        try {
+            const pos = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) return;
+
+            panel.style.position = 'fixed';
+            panel.style.left = `${Math.max(0, pos.left)}px`;
+            panel.style.top = `${Math.max(0, pos.top)}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        } catch (_) {}
+    }
+
+    const restore = () => {
+        restorePanel('differs-lab', 'ddl_position');
+        restorePanel('top2-basket-lab', 't2_position');
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore, { once: true });
+    } else {
+        restore();
+    }
 })();
 </script>
 
