@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V42: V41 + rule/width consistency lock for Observe-5 multi-digit mode -->
+    <!-- V43: V42 + dedicated Multi-Digit Match UI and hard Observe-5 lock for widths 3-7 -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -414,7 +414,7 @@
 }
 
 
-/* === V28 TOP-2 MATCH BASKET === */
+/* === V28 MULTI-DIGIT MATCH BASKET === */
 #top2-basket-lab{
   position:fixed;top:118px;left:18px;width:min(450px,calc(100vw - 24px));
   z-index:9997;background:rgba(15,23,42,.985);border:1px solid rgba(168,85,247,.5);
@@ -11075,11 +11075,11 @@ if (document.readyState === 'loading') {
 </script>
 
 
-<!-- V28 Top-2 Match Basket -->
+<!-- Multi-Digit Match Basket Lab -->
 <div id="top2-basket-lab" style="display:none">
   <div class="t2-head" id="top2-basket-handle" data-drag-target="top2-basket-lab" data-drag-storage="t2_position">
     <div class="flex items-center gap-2 min-w-0">
-      <div class="t2-title">🎯 Top-2 Match Basket</div>
+      <div class="t2-title">🎯 Multi-Digit Match Basket</div>
       <span id="t2-mode-badge" class="t2-badge shadow">SHADOW</span>
     </div>
     <div class="flex gap-1">
@@ -11120,8 +11120,8 @@ if (document.readyState === 'loading') {
         <label>Selection rule</label>
         <select id="t2-rule">
           <option value="observe5trade5" selected>OBSERVE 5 → TRADE NEXT 5</option>
-          <option value="last5">ROLLING LAST-5 EXCLUSION</option>
-          <option value="model">MODEL TOP-2</option>
+          <option value="last5">ROLLING LAST-5 (2 DIGITS ONLY)</option>
+          <option value="model">LEGACY MODEL (2 DIGITS ONLY)</option>
         </select>
         <select id="t2-width" title="Targets purchased in each Observe-5 basket">
           <option value="2">2 DIGITS / BASKET</option>
@@ -11135,6 +11135,9 @@ if (document.readyState === 'loading') {
           Target hit profit ($)
           <input id="t2-hit-target" type="number" min="0.01" step="0.01" value="0.90">
         </label>
+        <div id="t2-rule-lock-note" class="t2-note" style="margin-top:6px">
+          7-digit mode is locked to OBSERVE 5 → freeze absent pool → trade selected targets.
+        </div>
       </div>
       <div class="t2-field">
         <label>Minimum basket edge (pp)</label>
@@ -11151,9 +11154,9 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="grid grid-cols-3 gap-2 mt-3">
-      <div class="t2-card"><div class="t2-k">Top digit 1</div><div id="t2-d1" class="t2-v">—</div></div>
-      <div class="t2-card"><div class="t2-k">Top digit 2</div><div id="t2-d2" class="t2-v">—</div></div>
-      <div class="t2-card"><div class="t2-k">Combined model P</div><div id="t2-combined-p" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Target digit 1</div><div id="t2-d1" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Other target digits</div><div id="t2-d2" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Target coverage</div><div id="t2-combined-p" class="t2-v">—</div></div>
       <div class="t2-card"><div class="t2-k">Basket stake</div><div id="t2-basket-stake" class="t2-v">$10.00</div></div>
       <div class="t2-card"><div class="t2-k">Live basket edge</div><div id="t2-basket-edge" class="t2-v">Awaiting</div></div>
       <div class="t2-card"><div class="t2-k">Worst hit profit</div><div id="t2-hit-profit" class="t2-v">—</div></div>
@@ -11181,19 +11184,19 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-actions">
-      <button id="t2-start" class="t2-btn t2-start">▶ START TOP-2</button>
+      <button id="t2-start" class="t2-btn t2-start">▶ START MULTI-DIGIT</button>
       <button id="t2-stop" class="t2-btn t2-stop">■ STOP</button>
       <button id="t2-export" class="t2-btn t2-stop">⬇ EXPORT</button>
       <button id="t2-reset-emp" class="t2-btn t2-stop" title="Clear lifetime Last-5 empirical statistics">↺ RESET DATA</button>
     </div>
 
     <div class="t2-note">
-      Multi-digit widths 3–7 are locked to OBSERVE 5 → TRADE UP TO 5; MODEL TOP-2 and rolling Last-5 are disabled
-      whenever width exceeds 2. The bot observes 5 digits, freezes the absent pool, and trades only when that pool has
-      enough digits for the selected width. It sizes from live Match payout toward the configured hit-profit target
+      This is the Multi-Digit Match experiment. Widths 3–7 use only OBSERVE 5 → freeze the absent pool → trade up
+      to 5 baskets; incompatible legacy rules are hidden. The bot trades only when the frozen pool contains enough
+      absent digits for the selected width and sizes from the live Match payout toward the configured hit-profit target
       (default $0.90), subject to recovery-depth and max-basket caps. Live multi-leg buys remain sequential/non-atomic.
     </div>
-    <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
+    <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
 </div>
 
@@ -11205,7 +11208,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.5-RULE-WIDTH-LOCK',
+    version: 'MULTIDIGIT-MATCH-V1.6-OBSERVE5-LOCK',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11299,18 +11302,33 @@ window.top2BasketLab = {
     enforceRuleWidthConsistency(){
         const ruleEl=q('t2-rule');
         const width=this.basketWidth();
+        const note=q('t2-rule-lock-note');
+
         if(width>2 && ruleEl){
             if(ruleEl.value!=='observe5trade5'){
                 ruleEl.value='observe5trade5';
-                this.log(`Rule auto-corrected to OBSERVE 5 → TRADE UP TO 5 because basket width is ${width}.`);
+                this.log(`Rule auto-corrected to OBSERVE 5 because basket width is ${width}.`);
             }
             for(const opt of ruleEl.options){
-                opt.disabled = opt.value!=='observe5trade5';
+                const compatible=opt.value==='observe5trade5';
+                opt.disabled=!compatible;
+                opt.hidden=!compatible;
             }
-            ruleEl.title=`${width}-digit baskets require the Observe-5 frozen absent-pool rule.`;
+            ruleEl.title=`${width}-digit mode is locked to OBSERVE 5 → TRADE UP TO 5.`;
+            if(note){
+                note.textContent=`LOCKED: ${width}-digit mode uses OBSERVE 5 → freeze absent pool → trade up to 5 baskets.`;
+                note.style.display='';
+            }
         }else if(ruleEl){
-            for(const opt of ruleEl.options) opt.disabled=false;
+            for(const opt of ruleEl.options){
+                opt.disabled=false;
+                opt.hidden=false;
+            }
             ruleEl.title='Choose the selection rule.';
+            if(note){
+                note.textContent='2-digit mode can use Observe-5, Rolling Last-5, or the legacy model.';
+                note.style.display='';
+            }
         }
     },
     symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
@@ -11385,7 +11403,7 @@ window.top2BasketLab = {
         const startBtn=q('t2-start');
         const stopBtn=q('t2-stop');
         if(startBtn){
-            startBtn.textContent=this.running ? '● TOP-2 RUNNING' : '▶ START TOP-2';
+            startBtn.textContent=this.running ? '● MULTI-DIGIT RUNNING' : '▶ START MULTI-DIGIT';
             startBtn.disabled=!!this.running;
             startBtn.style.opacity=this.running?'0.72':'1';
             startBtn.style.cursor=this.running?'default':'pointer';
@@ -11549,7 +11567,7 @@ window.top2BasketLab = {
                 (window.digitDiffersLab?.running && window.digitDiffersLab.isLive()) ||
                 (typeof hasOpenContract==='function' && hasOpenContract())
             ){
-                this.status('Stop other LIVE trading engines before starting Top-2.',false);
+                this.status('Stop other LIVE trading engines before starting Multi-Digit Match.',false);
                 this.log('LIVE start blocked because another trading engine is active.');
                 return;
             }
@@ -11701,7 +11719,7 @@ window.top2BasketLab = {
             (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
             (typeof hasOpenContract==='function' && hasOpenContract())
         )){
-            this.status('Another LIVE engine is active; Top-2 paused.',false);
+            this.status('Another LIVE engine is active; Multi-Digit Match paused.',false);
             return;
         }
 
@@ -11734,7 +11752,7 @@ window.top2BasketLab = {
             q('t2-d1').textContent=ds.length?`${ds[0]} (absent)`:'—';
             q('t2-d2').textContent=ds.length>1?`${ds.slice(1).join(' + ')} (absent)`:'—';
             q('t2-combined-p').textContent=useObserve5
-                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5 · ${picks.basketWidth||ds.length} digits`
+                ? `${picks.basketWidth||ds.length}/10 digits · Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5`
                 : 'Rule test';
         }else{
             q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
@@ -12144,6 +12162,7 @@ window.top2BasketLab = {
         const losses=trades.filter(x=>x.result==='LOSS').length;
         const payload={
             schema:'TOP2_MATCH_BASKET_REPORT_V1',
+            engineName:'MULTI_DIGIT_MATCH_BASKET',
             generatedAt:now.toISOString(),
             version:this.version,
             sessionStartedAt:this.sessionStartedAt,
@@ -12159,6 +12178,7 @@ window.top2BasketLab = {
                 basketWidth:this.basketWidth(),
                 targetHitProfit:this.targetHitProfit(),
                 enforcedRuleWidthCompatibility:true,
+                effectiveRule:this.rule(),
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
@@ -12362,12 +12382,12 @@ if(typeof handleTick==='function'){
     const __top2PrevTick=handleTick;
     handleTick=function(tick){
         const result=__top2PrevTick(tick);
-        try{window.top2BasketLab?.onTick(tick);}catch(e){console.error('Top-2 Basket tick error',e);}
+        try{window.top2BasketLab?.onTick(tick);}catch(e){console.error('Multi-Digit Match tick error',e);}
         return result;
     };
 }
 
-// Do not let the main bot start while LIVE Top-2 is armed/open.
+// Do not let the main bot start while LIVE Multi-Digit Match is armed/open.
 if(typeof startBot==='function'){
     const __top2PrevStart=startBot;
     startBot=function(){
@@ -12375,8 +12395,8 @@ if(typeof startBot==='function'){
             window.top2BasketLab?.running &&
             window.top2BasketLab.mode()==='live'
         ){
-            window.top2BasketLab.status('Stop LIVE Top-2 before starting Digit Match.',false);
-            window.top2BasketLab.log('Main bot start blocked while LIVE Top-2 is armed.');
+            window.top2BasketLab.status('Stop LIVE Multi-Digit Match before starting Digit Match.',false);
+            window.top2BasketLab.log('Main bot start blocked while LIVE Multi-Digit Match is armed.');
             return;
         }
         return __top2PrevStart();
