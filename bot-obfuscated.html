@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57 STABILITY FIX: predictions scope + duplicate public subscription guard + single warm-up owner -->
+    <!-- V58 DNA TIMING: T+0..T+5 precursor timing + hard 10-trade cap + minimizable AI panels; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -536,7 +536,7 @@
                                 
                                 <div>
                                     <label class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                                    <input type="number" id="calc_max_trades" value="10" min="1" step="1" 
+                                    <input type="number" id="calc_max_trades" value="10" min="1" max="10" step="1" 
                                         class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
                                 </div>
                                 
@@ -643,7 +643,7 @@
                     <!-- Max Trades -->
                     <div>
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="10" min="1" step="1" 
+                        <input type="number" id="maxTrades" value="10" min="1" max="10" step="1" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
                         <p class="text-[10px] text-gray-500 mt-1">Choose 1–10. The hard safety cap is 10 purchased contracts per cycle.</p>
                     </div>
@@ -837,7 +837,10 @@
                 ['cycle-performance-panel', 'cycle-performance'],
                 ['tail-risk-panel', 'tail-risk'],
                 ['tail-precursor-panel', 'tail-precursor'],
-                ['post-stop-depth-panel', 'post-stop-depth']
+                ['post-stop-depth-panel', 'post-stop-depth'],
+                ['digit-dna-panel', 'digit-dna'],
+                ['digit-feature-panel', 'digit-feature'],
+                ['randomness-auditor-panel', 'randomness-auditor']
             ];
 
             for (const [id, key] of configs) {
@@ -997,7 +1000,16 @@
                 pending: null,
                 n: 0,
                 hits: 0,
-                byDigit: Array.from({length:10},()=>({n:0,hits:0}))
+                byDigit: Array.from({length:10},()=>({n:0,hits:0})),
+                t0: { n:0, hits:0 },
+                horizons: {
+                    1:{n:0,hits:0},
+                    2:{n:0,hits:0},
+                    3:{n:0,hits:0},
+                    4:{n:0,hits:0},
+                    5:{n:0,hits:0}
+                },
+                queue: []
             },
 
             digits() {
@@ -1254,7 +1266,16 @@
                     margin,
                     forwardN:this.forward.n,
                     forwardHits:this.forward.hits,
-                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null
+                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null,
+                    t0N:this.forward.t0.n,
+                    t0Hits:this.forward.t0.hits,
+                    t0Rate:this.forward.t0.n?this.forward.t0.hits/this.forward.t0.n:null,
+                    horizonStats:Object.fromEntries(
+                        Object.entries(this.forward.horizons).map(([k,v])=>[
+                            k,
+                            {n:v.n,hits:v.hits,rate:v.n?v.hits/v.n:null}
+                        ])
+                    )
                 };
                 this.lastSnapshot=snap;
                 this.render(snap);
@@ -1273,22 +1294,50 @@
                 this.forward.pending=null;
             },
 
-            armNextForecast(symbol=null) {
-                const s=this.analyze(symbol);
+            scoreTimingQueue(actualDigit) {
+                const nextQueue=[];
+                for(const f of (this.forward.queue || [])){
+                    const age=Number(f.age||0)+1;
+                    if(age>=1 && age<=5){
+                        const h=this.forward.horizons[age];
+                        h.n++;
+                        if(Number(f.digit)===Number(actualDigit)) h.hits++;
+                    }
+                    if(age<5) nextQueue.push({...f,age});
+                }
+                this.forward.queue=nextQueue;
+            },
+
+            armNextForecast(symbol=null, snapshot=null) {
+                const s=snapshot || this.analyze(symbol);
                 if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
-                this.forward.pending={
+                const f={
                     digit:Number(s.topDigit),
                     similarity:Number(s.topSimilarity||0),
-                    at:Date.now()
+                    at:Date.now(),
+                    age:0
                 };
+                this.forward.pending={...f};
+                this.forward.queue.push({...f});
             },
 
             onNewTick(actualDigit,symbol=null) {
-                // Score the forecast that existed BEFORE this tick.
+                // 1) Score forecasts made BEFORE this tick.
                 this.scorePendingOutcome(actualDigit);
-                // Then learn through lastDigits (already updated by main engine) and
-                // freeze a DNA forecast for the NEXT unseen tick.
-                this.armNextForecast(symbol);
+                this.scoreTimingQueue(actualDigit);
+
+                // 2) Analyze the state AFTER this tick has arrived. If the DNA top
+                //    equals the just-seen digit, that is T+0 recognition: useful for
+                //    diagnostics, but already too late to count as a DIGITMATCH win.
+                const s=this.analyze(symbol);
+                if(s?.ready && Number.isInteger(Number(s.topDigit))){
+                    this.forward.t0.n++;
+                    if(Number(s.topDigit)===Number(actualDigit)) this.forward.t0.hits++;
+                }
+
+                // 3) Freeze this post-tick DNA state as the prediction for the NEXT
+                //    unseen tick. Trading usefulness is therefore measured at T+1.
+                this.armNextForecast(symbol,s);
             },
 
             ensurePanel() {
@@ -1305,13 +1354,16 @@
                     <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
                     <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
                     <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
-                    <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">DNA separation:</span><span id="dna-separation" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Forward T+1:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">T+0 recognition:</span><span id="dna-t0" class="font-bold text-yellow-300">-</span>
                   </div>
+                  <div id="dna-timing" class="mt-2 text-[11px] text-cyan-200">Timing profile warming…</div>
                   <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
                   <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
                   <div class="mt-2 text-[10px] text-gray-500">
                     DNA = historical precursor fingerprint, not a guaranteed probability.
-                    Every profile uses only ticks that occurred BEFORE each labelled digit.
+                    Every profile uses only ticks that occurred BEFORE each labelled digit. Trading relevance is measured at T+1; T+0 means the digit was recognized only after it had already arrived.
                   </div>
                 `;
                 ref.parentElement.appendChild(panel);
@@ -1326,9 +1378,22 @@
                 set('dna-history',`${s.historyN||0}${s.ready?' ✓':' · learning'}`);
                 set('dna-top',s.ready?String(s.topDigit):'-');
                 set('dna-sim',s.ready?`${(Number(s.topSimilarity||0)*100).toFixed(1)}%`:'-');
+                set('dna-separation',s.ready?`${(Number(s.margin||0)*100).toFixed(1)} pp`:'-');
                 set('dna-forward',s.forwardN
                     ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
                     : 'collecting');
+                set('dna-t0',s.t0N
+                    ? `${s.t0Hits}/${s.t0N} = ${(s.t0Rate*100).toFixed(2)}%`
+                    : 'collecting');
+
+                const timing=document.getElementById('dna-timing');
+                if(timing){
+                    const hs=s.horizonStats||{};
+                    timing.innerHTML=[1,2,3,4,5].map(h=>{
+                        const x=hs[h]||{};
+                        return `T+${h}: ${x.n||0}${x.n?` / ${(Number(x.rate||0)*100).toFixed(2)}%`:''}`;
+                    }).join(' · ') + '<br><span class="text-gray-500">Only T+1 is the one-tick DIGITMATCH target.</span>';
+                }
 
                 const top3=document.getElementById('dna-top3');
                 if(top3){
@@ -1963,7 +2028,7 @@
                         <span class="text-gray-400">2-gram support:</span><span id="ra-ngram" class="font-bold text-white">-</span>
                         <span class="text-gray-400">Auditor digit:</span><span id="ra-digit" class="font-bold text-fuchsia-300">-</span>
                         <span class="text-gray-400">Signal strength:</span><span id="ra-signal" class="font-bold text-cyan-300">-</span>
-                        <span class="text-gray-400">Role:</span><span class="font-bold text-green-300">AI only · INSTANT unchanged</span>
+                        <span class="text-gray-400">Role:</span><span class="font-bold text-green-300">AI only · public feed single-source · INSTANT unchanged</span>
                     </div>
                 `;
                 anchor.parentElement.appendChild(panel);
@@ -2421,9 +2486,15 @@ expectedAdditionalTicks: function(gaps, g) {
                 // This keeps AI AUTO active in more market states.
                 let best = this.selectBestDigit();
 
-                const auditor = window.randomnessAuditor?.analyze?.(
-                    document.getElementById('symbol')?.value || window.currentSymbol || null
-                ) || null;
+                let auditor = null;
+                try {
+                    auditor = window.randomnessAuditor?.analyze?.(
+                        document.getElementById('symbol')?.value || window.currentSymbol || null
+                    ) || null;
+                } catch (e) {
+                    console.warn('Randomness Auditor analysis skipped:', e);
+                    auditor = window.randomnessAuditor?.lastSnapshot || null;
+                }
 
                 // -----------------------------
                 // Survival-curve overlay (always-on hybrid when data exists)
@@ -3037,7 +3108,7 @@ function buildDigitDecision(digit) {
 // =====================================================
 
 function canTradeDigit(d, regime, tradeCount) {
-  if (tradeCount >= (window.maxTrades ?? 10)) {
+  if (tradeCount >= Math.min(Number(window.maxTrades ?? 10), Number(window.HARD_MAX_TRADES ?? 10))) {
     return { ok: false, reason: "MAX_TRADES_REACHED" };
   }
 
@@ -5634,7 +5705,7 @@ window.cyclePerformance = {
             try {
                 const baseStake = parseFloat(document.getElementById('calc_base_stake').value) || 1.0;
                 const multiplier = parseFloat(document.getElementById('calc_multiplier').value) || 1.15;
-                const maxTrades = parseInt(document.getElementById('calc_max_trades').value) || 10;
+                const maxTrades = window.clampMaxTrades(document.getElementById('calc_max_trades').value);
                 const bankrollLimit = parseFloat(document.getElementById('calc_bankroll_limit').value) || 50.0;
                 
                 if (baseStake <= 0 || multiplier <= 1.0 || maxTrades <= 0) {
@@ -5677,6 +5748,7 @@ window.cyclePerformance = {
                 document.getElementById('baseStake').value = baseStake.toFixed(2);
                 document.getElementById('multiplier').value = multiplier.toFixed(2);
                 document.getElementById('maxTrades').value = maxTrades;
+                document.getElementById('calc_max_trades').value = maxTrades;
                 
                 // Update calculator results
                 document.getElementById('calc_total_required').textContent = `$${totalRequired.toFixed(2)}`;
@@ -5735,7 +5807,7 @@ window.cyclePerformance = {
         function syncCalculatorWithMain() {
             const baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             const multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            const maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            const maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
             
             document.getElementById('calc_base_stake').value = baseStake.toFixed(2);
             document.getElementById('calc_multiplier').value = multiplier.toFixed(2);
@@ -6057,8 +6129,14 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.baseStake = 1.0;
         window.currentStake = 1.0;
         window.multiplier = 1.15;
-        window.maxTrades = 10;
-        window.maxCycleTrades = Math.min(window.maxTrades, 10);
+        window.HARD_MAX_TRADES = 10;
+        window.clampMaxTrades = function(value) {
+            const n = parseInt(value, 10);
+            if (!Number.isFinite(n)) return window.HARD_MAX_TRADES;
+            return Math.max(1, Math.min(window.HARD_MAX_TRADES, n));
+        };
+        window.maxTrades = window.HARD_MAX_TRADES;
+        window.maxCycleTrades = window.HARD_MAX_TRADES;
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
@@ -7392,27 +7470,6 @@ function rotateHybridDigit(reason = '') {
         function subscribePublicTicks(symbol) {
             if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
 
-            window.publicTickSubscriptionState = window.publicTickSubscriptionState || {
-                socket: null,
-                symbol: null,
-                requested: false,
-                subscriptionId: null
-            };
-
-            const publicSub = window.publicTickSubscriptionState;
-            if (
-                publicSub.socket === window.marketWs &&
-                publicSub.symbol === symbol &&
-                publicSub.requested
-            ) {
-                return;
-            }
-
-            publicSub.socket = window.marketWs;
-            publicSub.symbol = symbol;
-            publicSub.requested = true;
-            publicSub.subscriptionId = null;
-
             window.tickFormat.symbol = symbol;
             const cachedPrecision = window.tickFormat.pipSizeBySymbol[symbol];
             if (cachedPrecision) {
@@ -7423,18 +7480,10 @@ function rotateHybridDigit(reason = '') {
             sendMarketRequest({
                 ticks: symbol,
                 subscribe: 1,
-                req_id: marketNextReqId(),
-                passthrough: { matchstar_public_tick_stream: true, symbol }
+                req_id: marketNextReqId()
             });
 
-            log(`📡 Public market stream subscription requested: ${symbol}`, 'SYSTEM');
-
-            setTimeout(() => {
-                if (window.isBotRunning && window.totalTicksReceived === 0) {
-                    log('⚠️ No public ticks received yet. Checking connection...', 'WARNING');
-                    updateConnectionStatus();
-                }
-            }, 2000);
+            log(`📡 Public market stream subscribed: ${symbol}`, 'SYSTEM');
         }
 
         function schedulePublicMarketReconnect() {
@@ -7478,12 +7527,6 @@ function rotateHybridDigit(reason = '') {
             window.marketWs.onopen = () => {
                 window.marketIsConnecting = false;
                 window.marketReconnectAttempts = 0;
-                window.publicTickSubscriptionState = {
-                    socket: window.marketWs,
-                    symbol: null,
-                    requested: false,
-                    subscriptionId: null
-                };
                 log('🟢 Public market WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
 
@@ -7537,12 +7580,6 @@ function rotateHybridDigit(reason = '') {
                         data?.error?.message ||
                         data?.errors?.[0]?.message ||
                         'Public market API error';
-
-                    if (/already subscribed/i.test(String(message))) {
-                        console.warn('Duplicate public tick subscription ignored:', message);
-                        return;
-                    }
-
                     log(`❌ Public market error: ${message}`, 'ERROR');
                     return;
                 }
@@ -7625,10 +7662,6 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 if (data.msg_type === 'tick' && data.tick) {
-                    if (data.subscription?.id && window.publicTickSubscriptionState) {
-                        window.publicTickSubscriptionState.subscriptionId = data.subscription.id;
-                    }
-
                     const selectedSymbol = document.getElementById('symbol')?.value;
                     const tickSymbol =
                         data.tick?.symbol ||
@@ -7678,12 +7711,6 @@ function rotateHybridDigit(reason = '') {
 
             window.marketWs.onclose = () => {
                 window.marketIsConnecting = false;
-                window.publicTickSubscriptionState = {
-                    socket: null,
-                    symbol: null,
-                    requested: false,
-                    subscriptionId: null
-                };
                 log('🔌 Public market WebSocket disconnected', 'NETWORK');
                 updateConnectionStatus();
                 schedulePublicMarketReconnect();
@@ -7703,13 +7730,6 @@ function rotateHybridDigit(reason = '') {
                 } catch (_) {}
                 window.marketWs = null;
             }
-
-            window.publicTickSubscriptionState = {
-                socket: null,
-                symbol: null,
-                requested: false,
-                subscriptionId: null
-            };
 
             connectPublicMarketData(true);
         }
@@ -7834,8 +7854,9 @@ function rotateHybridDigit(reason = '') {
             document.getElementById('multiplier').addEventListener('change', syncCalculatorWithMain);
             document.getElementById('maxTrades').addEventListener('change', () => {
                 syncCalculatorWithMain();
-                window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-                window.maxCycleTrades = Math.min(window.maxTrades, 10);
+                window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
+            document.getElementById('maxTrades').value = window.maxTrades;
+                window.maxCycleTrades = window.HARD_MAX_TRADES;
                 window.TAIL_RISK_CONFIG.maxCycleLoss = null;
                 if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
                 if (typeof log === 'function') log(`🧯 Max Trades updated to ${window.maxTrades}; exposure cap recalculated automatically`, 'CONFIG');
@@ -8211,7 +8232,7 @@ function rotateHybridDigit(reason = '') {
             const fastResult = observeActiveContractTick(tickData);
 
             if (window.isBotRunning && fastResult?.fastLoss && !window.stopAfterWin) {
-                if (window.tradeCount >= window.maxTrades) {
+                if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
                     window.nextTradeAllowed = false;
                     log(`🛑 Max trades reached (${window.maxTrades}) after fast loss`, 'CRITICAL');
                     stopBot('Maximum trades reached');
@@ -8272,16 +8293,22 @@ function rotateHybridDigit(reason = '') {
             if (data.msg_type === 'authorize') {
                 if (data.authorize) {
                     log(`🔐 Authorized as ${data.authorize.loginid}`, 'SYSTEM');
-                    subscribeToTicks(document.getElementById('symbol').value);
+
+                    // V57: market ticks and warm-up history come ONLY from the
+                    // dedicated public-market WebSocket. The authenticated channel
+                    // is reserved for balance, proposals, buys and settlement.
+                    // This prevents duplicate R_10 subscriptions and double-learning.
+                    window.tickSubscriptionSent = false;
                     subscribeToBalance();
-                    
-                    // V57: the public market socket is the single AI warm-up owner.
-                    log('🧠 AI warm-up source: public market channel', 'ENGINE');
+                    log('📡 Trading socket ready · market data remains on the public feed only', 'SYSTEM');
                 }
             } else if (data.msg_type === 'history') {
-                // V57: ignore authenticated history; public channel owns warm-up.
-                console.debug('Authenticated history ignored; public channel owns warm-up.');
-
+                // Process warm-up ticks for engine
+                if (window.digitIntelligenceEngine.enabled && data.history && data.history.prices) {
+                    window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                    log(`🧠 Processed ${data.history.prices.length} warm-up ticks`, 'ENGINE');
+                }
+            
             } else if (data.msg_type === 'proposal') {
                 handleProposalResponse(data.proposal, data.req_id);
             } else if (data.msg_type === 'buy') {
@@ -8761,7 +8788,7 @@ function rotateHybridDigit(reason = '') {
         function defaultTailDollarCap() {
             const base = Number(document.getElementById('baseStake')?.value || window.baseStake || 1);
             const mult = Number(document.getElementById('multiplier')?.value || window.multiplier || 1.15);
-            const hardTrades = Number(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
+            const hardTrades = window.clampMaxTrades(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
             return projectedProgressionExposure(base, mult, hardTrades);
         }
 
@@ -8791,7 +8818,7 @@ function rotateHybridDigit(reason = '') {
             const nextStake = Number(window.currentStake || window.baseStake || 0);
             const nextLossExposure = Number((exposure + nextStake).toFixed(2));
             const dollarCap = getTailDollarCap();
-            const maxCycleTrades = Number(window.maxTrades || window.maxCycleTrades || 10);
+            const maxCycleTrades = window.clampMaxTrades(window.maxTrades || window.maxCycleTrades || 10);
             const currentTrades = getCurrentCycleTradeCount();
 
             return {
@@ -9024,7 +9051,7 @@ function rotateHybridDigit(reason = '') {
                 return;
             }
             
-            if (window.tradeCount >= window.maxTrades) {
+            if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
                 log(`🛑 Max trades reached (${window.maxTrades})`, 'CRITICAL');
                 updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
                 stopBot('Maximum trades reached');
@@ -9138,6 +9165,14 @@ window.executionLock = true;
                     'TRADE'
                 );
 
+                if (Number(tick.digit) === Number(selectedDigit)) {
+                    log(
+                        `ℹ️ T+0 DNA/decision match: current digit ${tick.digit} already equals target ${selectedDigit}, ` +
+                        `but this tick occurred BEFORE purchase. It cannot settle the new contract; the first eligible post-buy tick is T+1.`,
+                        'ENGINE'
+                    );
+                }
+
                 playAudioFeedback('EXECUTION');
                 executeTrade(tick);
 
@@ -9205,8 +9240,9 @@ window.executionLock = true;
         function updateStake(winOrLoss) {
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = Math.min(window.maxTrades, 10);
+            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
+            document.getElementById('maxTrades').value = window.maxTrades;
+            window.maxCycleTrades = window.HARD_MAX_TRADES;
 
             if (winOrLoss === 'win') {
                 window.lastTradeWon = true;
@@ -9247,8 +9283,9 @@ window.executionLock = true;
                 return;
             }
             
-            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = Math.min(window.maxTrades, 10);
+            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
+            document.getElementById('maxTrades').value = window.maxTrades;
+            window.maxCycleTrades = window.HARD_MAX_TRADES;
             
             const token = getStoredDerivToken();
             if (!token) {
@@ -9283,11 +9320,11 @@ window.isBotRunning = true;
             
             log('🚀 Starting bot...', 'SYSTEM');
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
-            log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
+            log(`📊 Max Trades: ${window.maxTrades} (hard cap ${window.HARD_MAX_TRADES})`, 'SYSTEM');
             log(`🧯 User-selected cycle cap: ${window.maxTrades} trades`, 'SYSTEM');
 
             // Recalculate from the user's CURRENT Max Trades every time START is pressed.
-            window.maxCycleTrades = Math.min(window.maxTrades, 10);
+            window.maxCycleTrades = window.HARD_MAX_TRADES;
             window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
             log(
@@ -9615,32 +9652,15 @@ window.isBotRunning = true;
         }
         
         function subscribeToTicks(symbol) {
-            if (window.tickSubscriptionSent) return;
-            
-            window.tickFormat.symbol = symbol;
-            window.tickFormat.lastQuote = null;
-            window.tickFormat.minStep = Infinity;
-            window.tickFormat.decimals = window.tickFormat.decimals || 3;
-            
-            // Request tick stream
-            sendRequest({ 
-                ticks: symbol, 
-                subscribe: 1, 
-                req_id: getNextReqId() 
-            });
-            
-            window.tickSubscriptionSent = true;
-            log(`✅ Subscribed to ${symbol} ticks`, 'SYSTEM');
-            
-            // Add verification
-            setTimeout(() => {
-                if (window.isBotRunning && window.totalTicksReceived === 0) {
-                    log('⚠️ No ticks received. Checking connection...', 'WARNING');
-                    updateConnectionStatus();
-                }
-            }, 2000);
+            // V57 compatibility no-op.
+            // The dedicated public market socket is the single source of ticks.
+            window.tickSubscriptionSent = false;
+            if (typeof log === 'function') {
+                log(`📡 Public feed owns ${symbol} ticks · authenticated duplicate subscription skipped`, 'SYSTEM');
+            }
+            return false;
         }
-        
+
         function handleProposalResponse(proposal, req_id) {
             const pending = window.pendingProposals.get(req_id) || null;
             if (pending) window.pendingProposals.delete(req_id);
@@ -10119,7 +10139,7 @@ window.isBotRunning = true;
             // V21: if the buffered tick is the proven first tick after the
             // Deriv-aligned barrier and it is a miss, use the same fast pipeline.
             if (result?.fastLoss && window.isBotRunning && !window.stopAfterWin) {
-                if (window.tradeCount >= window.maxTrades) {
+                if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
                     window.nextTradeAllowed = false;
                     stopBot('Maximum trades reached');
                     return;
@@ -10411,8 +10431,9 @@ window.isBotRunning = true;
 
         // Reset all state
         function resetAllState() {
-            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = Math.min(window.maxTrades, 10);
+            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
+            document.getElementById('maxTrades').value = window.maxTrades;
+            window.maxCycleTrades = window.HARD_MAX_TRADES;
             window.cycleRotations = 0;
             
             updateStake('initial');
@@ -11502,9 +11523,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57-STABILITY-FIX"
+data-version="DIGITMATCHSTAR-V58-DNA-TIMING-CAP-MINIMIZE"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-predictions-fix="true" data-public-subscription-guard="true" data-single-warmup-owner="public" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-2-TIMING" data-hard-max-trades="10" data-ai-panels-minimizable="true" data-public-market-parser="single-feed-v57" data-auditor-panel="always-visible"></div>
 </body>
 </html>
