@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V49: exclusion-confidence gate for bottom-3 risk before trading top 7 -->
+    <!-- V50: corrected exclusion-confidence gate with feasible score-share thresholds -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11136,12 +11136,12 @@ if (document.readyState === 'loading') {
           <input id="t2-hit-target" type="number" min="0.01" step="0.01" value="0.90">
         </label>
         <label class="t2-inline">
-          Max excluded-3 risk
-          <input id="t2-max-excluded-risk" type="number" min="0.01" max="0.30" step="0.01" value="0.08">
+          Max excluded-3 score share
+          <input id="t2-max-excluded-risk" type="number" min="0.10" max="0.30" step="0.01" value="0.21">
         </label>
         <label class="t2-inline">
           Min ranking spread
-          <input id="t2-min-ranking-spread" type="number" min="0" max="0.20" step="0.005" value="0.015">
+          <input id="t2-min-ranking-spread" type="number" min="0" max="0.20" step="0.005" value="0.010">
         </label>
         <div id="t2-rule-lock-note" class="t2-note" style="margin-top:6px">
           7-digit mode observes 5 ticks as context, then ranks all 10 digits using rolling history and trades the top 7.
@@ -11199,11 +11199,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Multi-Digit Match V49 adds an exclusion-confidence gate. After ranking all 10 digits, the bot measures the
-      bottom-3 score mass and the separation between the weakest selected digit and strongest excluded digit. It trades
-      only when excluded risk is at or below the configured maximum and ranking spread is at or above the configured
-      minimum; otherwise the setup is skipped and a fresh 5-tick observation begins immediately.
-    </div>
+      Multi-Digit Match V50 fixes the V49 gate threshold. The bottom-3 metric is a normalized composite score share,
+      not a calibrated probability, so the old 8% default was unrealistically strict and could cause every setup to be
+      skipped. V50 defaults to a feasible 21% maximum bottom-3 score share and 0.010 minimum ranking spread. Setups that
+      fail either condition are skipped; qualifying setups proceed to the 7-digit basket.</div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
 </div>
@@ -11216,7 +11215,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V2.2-EXCLUSION-CONFIDENCE-GATE',
+    version: 'MULTIDIGIT-MATCH-V2.3-WORKING-CONFIDENCE-GATE',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11311,8 +11310,8 @@ window.top2BasketLab = {
         return Math.max(2,Math.min(7,n));
     },
     targetHitProfit(){ return Math.max(0.01,Number(q('t2-hit-target')?.value || 0.90)); },
-    maxExcludedRisk(){ return Math.max(0.01, Math.min(0.30, Number(q('t2-max-excluded-risk')?.value || 0.08))); },
-    minRankingSpread(){ return Math.max(0, Number(q('t2-min-ranking-spread')?.value || 0.015)); },
+    maxExcludedScoreShare(){ return Math.max(0.10, Math.min(0.30, Number(q('t2-max-excluded-risk')?.value || 0.21))); },
+    minRankingSpread(){ return Math.max(0, Number(q('t2-min-ranking-spread')?.value || 0.010)); },
     cents(v){ return Math.round((Number(v)||0)*100); },
     blockTargetReached(){
         return this.cents(this.blockPnl) >= this.cents(this.targetHitProfit());
@@ -11457,16 +11456,16 @@ window.top2BasketLab = {
 
         const totalScore=ranked.reduce((s,x)=>s+Math.max(0,x.score),0);
         const excludedScore=excluded.reduce((s,x)=>s+Math.max(0,x.score),0);
-        const excludedRisk=totalScore>0 ? excludedScore/totalScore : 0.30;
+        const excludedScoreShare=totalScore>0 ? excludedScore/totalScore : 0.30;
 
         const selectedFloor=chosen.length ? chosen[chosen.length-1].score : 0;
         const excludedCeil=excluded.length ? excluded[0].score : 0;
         const rankingSpread=selectedFloor-excludedCeil;
 
-        this.lastExcludedRisk=excludedRisk;
+        this.lastExcludedRisk=excludedScoreShare;
         this.lastRankingSpread=rankingSpread;
 
-        const riskOk=excludedRisk <= this.maxExcludedRisk();
+        const riskOk=excludedScoreShare <= this.maxExcludedScoreShare();
         const spreadOk=rankingSpread >= this.minRankingSpread();
 
         if(!riskOk || !spreadOk){
@@ -11474,7 +11473,7 @@ window.top2BasketLab = {
             this.log(
                 `SKIP SETUP | observed [${this.observationWindow.join(', ')}] | ` +
                 `excluded [${excluded.map(x=>x.digit).join(', ')}] | ` +
-                `risk ${(excludedRisk*100).toFixed(2)}% ${riskOk?'OK':'HIGH'} | ` +
+                `risk ${(excludedScoreShare*100).toFixed(2)}% ${riskOk?'OK':'HIGH'} | ` +
                 `spread ${rankingSpread.toFixed(4)} ${spreadOk?'OK':'LOW'}`
             );
 
@@ -11486,7 +11485,7 @@ window.top2BasketLab = {
             const last5El=q('t2-last5');
             if(last5El) last5El.value='—';
             this.status(
-                `Setup skipped: excluded risk ${(excludedRisk*100).toFixed(1)}% / spread ${rankingSpread.toFixed(3)}. Re-observing.`
+                `Setup skipped: excluded score share ${(excludedScoreShare*100).toFixed(1)}% / spread ${rankingSpread.toFixed(3)}. Re-observing.`
             );
             this.render();
             return false;
@@ -11499,7 +11498,7 @@ window.top2BasketLab = {
         this.log(
             `BLOCK ${this.blockNumber} READY | observed [${this.observationWindow.join(', ')}] | ` +
             `selected [${chosen.map(x=>x.digit).join(', ')}] | excluded [${excluded.map(x=>x.digit).join(', ')}] | ` +
-            `risk ${(excludedRisk*100).toFixed(2)}% | spread ${rankingSpread.toFixed(4)} | history ${ranked[0]?.historyN||0}`
+            `risk ${(excludedScoreShare*100).toFixed(2)}% | spread ${rankingSpread.toFixed(4)} | history ${ranked[0]?.historyN||0}`
         );
         this.render();
         return true;
@@ -11624,7 +11623,7 @@ window.top2BasketLab = {
                 historyN:x.historyN
             })),
             excludedDigits:ranked.slice(width).map(x=>x.digit),
-            excludedRisk:this.lastExcludedRisk,
+            excludedScoreShare:this.lastExcludedRisk,
             rankingSpread:this.lastRankingSpread,
             blockNumber:this.blockNumber,
             blockTradeNumber:this.blockTradeIndex+1,
@@ -11855,7 +11854,7 @@ window.top2BasketLab = {
                 frozenAbsentPool:b.picks.absentPool || null,
                 rankedDigits:b.picks.rankedDigits || null,
                 excludedDigits:b.picks.excludedDigits || null,
-                excludedRisk:b.picks.excludedRisk ?? null,
+                excludedScoreShare:b.picks.excludedScoreShare ?? null,
                 rankingSpread:b.picks.rankingSpread ?? null,
                 blockNumber:b.picks.blockNumber || null,
                 blockTradeNumber:b.picks.blockTradeNumber || null,
@@ -12265,7 +12264,7 @@ window.top2BasketLab = {
             frozenAbsentPool:pair.picks.absentPool || null,
             rankedDigits:pair.picks.rankedDigits || null,
             excludedDigits:pair.picks.excludedDigits || null,
-            excludedRisk:pair.picks.excludedRisk ?? null,
+            excludedScoreShare:pair.picks.excludedScoreShare ?? null,
             rankingSpread:pair.picks.rankingSpread ?? null,
             blockNumber:pair.picks.blockNumber || null,
             blockTradeNumber:pair.picks.blockTradeNumber || null,
@@ -12382,7 +12381,10 @@ window.top2BasketLab = {
                 observedDigitsAreNotExcluded:true,
                 rankingMethod:'0.45_modelP + 0.20_transitionP + 0.15_smoothedFreq20 + 0.10_smoothedFreq50 + 0.05_smoothedFreq5 + 0.05_recency',
                 exclusionConfidenceGate:true,
-                maxExcludedRisk:this.maxExcludedRisk(),
+                exclusionMetricIsCalibratedProbability:false,
+                exclusionMetricMeaning:'NORMALIZED_BOTTOM3_COMPOSITE_SCORE_SHARE',
+                gateDefaults:{maxExcludedScoreShare:0.21,minRankingSpread:0.010},
+                maxExcludedScoreShare:this.maxExcludedScoreShare(),
                 minRankingSpread:this.minRankingSpread(),
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
@@ -12416,7 +12418,7 @@ window.top2BasketLab = {
                 basketWidth:this.basketWidth(),
                 excludedDigits:this.lastRanking.length ? this.lastRanking.slice(this.basketWidth()).map(x=>x.digit) : [],
                 rankingHistoryN:this.lastRanking[0]?.historyN || 0,
-                excludedRisk:this.lastExcludedRisk,
+                excludedScoreShare:this.lastExcludedRisk,
                 rankingSpread:this.lastRankingSpread,
                 skippedByConfidence:this.skippedByConfidence
             },
