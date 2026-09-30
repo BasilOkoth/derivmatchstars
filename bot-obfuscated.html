@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V25: V24 recovery corrections + polished executable Digit Differs Lab (draggable/minimizable, shadow/live, lowest-probability digit, live EV gate) -->
+    <!-- V26: 3-trade recovery digit lock before re-ranking + reliable mouse/touch draggable Digit Differs Lab -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -373,7 +373,7 @@
   border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.55);backdrop-filter:blur(14px);
   color:#e5e7eb;overflow:hidden;
 }
-#differs-lab .ddl-head{
+#differs-lab .ddl-head{touch-action:none;
   display:flex;align-items:center;justify-content:space-between;gap:10px;
   padding:11px 12px;background:linear-gradient(135deg,rgba(8,145,178,.26),rgba(79,70,229,.18));
   border-bottom:1px solid rgba(148,163,184,.18);cursor:move;user-select:none;
@@ -4290,7 +4290,8 @@ window.cyclePerformance = {
                         window.EV_GATE_CONFIG?.minEdge ??
                         NaN
                     ),
-                    recoveryDigitPolicy: 'LATEST_BEST_DIGIT_EACH_ATTEMPT',
+                    recoveryDigitPolicy: 'HOLD_SELECTED_DIGIT_FOR_3_PURCHASED_RECOVERY_TRADES_THEN_RERANK',
+                    recoveryDigitTradeLock: 3,
                     hardCycleTradeCap: 10,
                     minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
                 },
@@ -4901,6 +4902,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
+        window.recoveryDigitLock = null;
+        window.recoveryDigitTrades = 0;
+        window.recoveryDigitTradeLimit = 3;
         window.cycleLosses = 0;
         window.accountBalance = 0.0;
         window.startingBalance = 0.0;
@@ -7604,16 +7608,39 @@ window.executionLock = true;
                 let selectedDigit = parseInt(document.getElementById('predictedDigit').value);
 
                 if (window.cycleHasPurchasedContract) {
-                    const recoveryPick = chooseBestRecoveryDigit();
-                    if (recoveryPick && Number.isInteger(recoveryPick.digit)) {
-                        selectedDigit = recoveryPick.digit;
+                    const limit = Math.max(1, Number(window.recoveryDigitTradeLimit || 3));
+
+                    // Keep the chosen recovery digit for up to 3 PURCHASED recovery trades.
+                    // Only after those 3 trades have been used do we re-rank all 10 digits.
+                    if (
+                        !Number.isInteger(window.recoveryDigitLock) ||
+                        Number(window.recoveryDigitTrades || 0) >= limit
+                    ) {
+                        const recoveryPick = chooseBestRecoveryDigit();
+
+                        if (recoveryPick && Number.isInteger(recoveryPick.digit)) {
+                            window.recoveryDigitLock = recoveryPick.digit;
+                            window.recoveryDigitTrades = 0;
+
+                            log(
+                                `🔄 RECOVERY DIGIT SELECTED | digit ${window.recoveryDigitLock} | ` +
+                                `hold for up to ${limit} purchased recovery trades | ` +
+                                `model P ${(recoveryPick.probability * 100).toFixed(2)}% | ` +
+                                `support ${recoveryPick.support}`,
+                                'ENGINE'
+                            );
+                        }
+                    }
+
+                    if (Number.isInteger(window.recoveryDigitLock)) {
+                        selectedDigit = window.recoveryDigitLock;
+
                         const predictedDigitEl = document.getElementById('predictedDigit');
                         if (predictedDigitEl) predictedDigitEl.value = String(selectedDigit);
 
                         log(
-                            `🔄 RECOVERY RE-RANK | latest best digit ${selectedDigit} | ` +
-                            `model P ${(recoveryPick.probability * 100).toFixed(2)}% | ` +
-                            `support ${recoveryPick.support}`,
+                            `🔒 RECOVERY DIGIT LOCK | digit ${selectedDigit} | ` +
+                            `trade ${(window.recoveryDigitTrades || 0) + 1}/${limit} before re-evaluation`,
                             'ENGINE'
                         );
                     }
@@ -7709,6 +7736,8 @@ window.executionLock = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
                 window.cycleHasPurchasedContract = false;
                 log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
                 updatePnL();
@@ -7724,6 +7753,8 @@ window.executionLock = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
                 log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
                 updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
             }
@@ -7803,6 +7834,7 @@ window.isBotRunning = true;
             
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
             updateStake('initial');
+            log('🔒 AI recovery policy: hold selected recovery digit for 3 purchased trades, then re-rank all 10 digits', 'ENGINE');
             initTone();
 
             if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
@@ -8320,6 +8352,17 @@ window.isBotRunning = true;
             window.tradeCount++;
             window.stats.tradesExecuted++;
             window.cycleHasPurchasedContract = true;
+
+            if (
+                sessionState.mode === 'ai' &&
+                Number.isInteger(window.recoveryDigitLock) &&
+                window.tradeCount > 1
+            ) {
+                window.recoveryDigitTrades = Math.min(
+                    Number(window.recoveryDigitTrades || 0) + 1,
+                    Number(window.recoveryDigitTradeLimit || 3)
+                );
+            }
 
             trackTradeInvestment(
                 Number.isFinite(actualBuyPrice) && actualBuyPrice > 0
@@ -10324,29 +10367,58 @@ window.digitDiffersLab = {
         } catch(_){}
 
         let drag=null;
-        handle?.addEventListener('pointerdown',(e)=>{
-            if(e.target.closest('button')) return;
-            if(window.innerWidth<=640) return;
-            const r=panel.getBoundingClientRect();
-            drag={dx:e.clientX-r.left,dy:e.clientY-r.top};
-            handle.setPointerCapture?.(e.pointerId);
-        });
-        handle?.addEventListener('pointermove',(e)=>{
-            if(!drag) return;
-            const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
-            const maxT=Math.max(0,window.innerHeight-48);
-            const left=Math.min(maxL,Math.max(0,e.clientX-drag.dx));
-            const top=Math.min(maxT,Math.max(0,e.clientY-drag.dy));
-            panel.style.left=`${left}px`;panel.style.top=`${top}px`;panel.style.right='auto';
-        });
-        const endDrag=()=>{
-            if(!drag)return;
-            const r=panel.getBoundingClientRect();
-            localStorage.setItem('ddl_position',JSON.stringify({left:r.left,top:r.top}));
-            drag=null;
+
+        const beginDrag = (clientX, clientY) => {
+            if (!panel || window.innerWidth <= 640) return;
+            const r = panel.getBoundingClientRect();
+            panel.style.left = `${r.left}px`;
+            panel.style.top = `${r.top}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+            drag = { dx: clientX - r.left, dy: clientY - r.top };
+            document.body.style.userSelect = 'none';
         };
-        handle?.addEventListener('pointerup',endDrag);
-        handle?.addEventListener('pointercancel',endDrag);
+
+        const moveDrag = (clientX, clientY) => {
+            if (!drag || !panel) return;
+            const maxL = Math.max(0, window.innerWidth - panel.offsetWidth);
+            const maxT = Math.max(0, window.innerHeight - 44);
+            const left = Math.min(maxL, Math.max(0, clientX - drag.dx));
+            const top = Math.min(maxT, Math.max(0, clientY - drag.dy));
+            panel.style.left = `${left}px`;
+            panel.style.top = `${top}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        };
+
+        const endDrag = () => {
+            if (!drag || !panel) return;
+            const r = panel.getBoundingClientRect();
+            localStorage.setItem('ddl_position', JSON.stringify({left:r.left,top:r.top}));
+            drag = null;
+            document.body.style.userSelect = '';
+        };
+
+        handle?.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button')) return;
+            e.preventDefault();
+            beginDrag(e.clientX, e.clientY);
+        });
+        document.addEventListener('mousemove', (e) => { if (drag) moveDrag(e.clientX, e.clientY); });
+        document.addEventListener('mouseup', endDrag);
+
+        handle?.addEventListener('touchstart', (e) => {
+            if (e.target.closest('button')) return;
+            const t=e.touches?.[0]; if(!t) return;
+            e.preventDefault();
+            beginDrag(t.clientX,t.clientY);
+        }, {passive:false});
+        document.addEventListener('touchmove', (e) => {
+            if(!drag) return; const t=e.touches?.[0]; if(!t) return;
+            e.preventDefault(); moveDrag(t.clientX,t.clientY);
+        }, {passive:false});
+        document.addEventListener('touchend', endDrag);
+        document.addEventListener('touchcancel', endDrag);
     }
 };
 
