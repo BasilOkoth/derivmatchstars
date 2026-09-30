@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V40: V39 + early profitable-block stop + selectable 2/3-digit baskets -->
+    <!-- V41: V40 + selectable 2-7 digit baskets + fixed hit-profit targeting -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11124,9 +11124,17 @@ if (document.readyState === 'loading') {
           <option value="model">MODEL TOP-2</option>
         </select>
         <select id="t2-width" title="Targets purchased in each Observe-5 basket">
-          <option value="2" selected>2 DIGITS / BASKET</option>
+          <option value="2">2 DIGITS / BASKET</option>
           <option value="3">3 DIGITS / BASKET</option>
+          <option value="4">4 DIGITS / BASKET</option>
+          <option value="5">5 DIGITS / BASKET</option>
+          <option value="6">6 DIGITS / BASKET</option>
+          <option value="7" selected>7 DIGITS / BASKET</option>
         </select>
+        <label class="t2-inline">
+          Target hit profit ($)
+          <input id="t2-hit-target" type="number" min="0.01" step="0.01" value="0.90">
+        </label>
       </div>
       <div class="t2-field">
         <label>Minimum basket edge (pp)</label>
@@ -11156,7 +11164,7 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Frozen absent pool</div><div id="t2-absent-pool" class="t2-v">—</div></div>
       <div class="t2-card"><div class="t2-k">Trade in block</div><div id="t2-block-trade" class="t2-v">0/5</div></div>
       <div class="t2-card"><div class="t2-k">Block P/L</div><div id="t2-block-pnl" class="t2-v">$0.00</div></div>
-      <div class="t2-card"><div class="t2-k">Basket width</div><div id="t2-width-show" class="t2-v">2 digits</div></div>
+      <div class="t2-card"><div class="t2-k">Basket width</div><div id="t2-width-show" class="t2-v">7 digits</div></div>
     </div>
     <div id="t2-outcome" class="t2-outcome neutral">LAST RESULT: —</div>
     <div class="grid grid-cols-3 gap-2 mt-2">
@@ -11180,11 +11188,12 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Default rule: OBSERVE 5 → TRADE UP TO 5. The bot observes 5 digits, freezes the absent pool, and then trades
-      either 2 or 3 Match targets per basket. A block stops immediately when cumulative block P/L reaches the target
-      profit; otherwise it ends after basket 5. Every new block resets recovery and starts again from the base total
-      basket stake. Persistent evidence is stored separately by symbol, rule, and basket width. Live multi-leg buys
-      are sequential/non-atomic, so a partial fill remains possible if a later buy fails.
+      Default experiment supports 2–7 Match targets per basket. In 7-digit mode the bot only trades when the frozen
+      absent pool has at least 7 digits. It first reads the live uniform Match payout, then sizes the total basket so
+      the worst single target hit aims to net the configured hit profit (default $0.90), including recovery of current
+      block losses when possible. A profitable block stops early; otherwise it ends after 5 baskets. New blocks reset
+      recovery. Persistent evidence remains separated by symbol, rule, and basket width. Live multi-leg buys are
+      sequential/non-atomic, so partial fills remain possible.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11198,7 +11207,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.3-BLOCK-PROFIT-3DIGIT',
+    version: 'TOP2-BASKET-V1.4-UPTO7-TARGET-HIT-PROFIT',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11284,7 +11293,11 @@ window.top2BasketLab = {
     minEdge(){ return Math.max(0, Number(q('t2-edge')?.value || 0.10)) / 100; },
     maxTrades(){ return Math.max(1, Math.min(10, Number(q('t2-max')?.value || 10))); },
     rule(){ return q('t2-rule')?.value || 'last5'; },
-    basketWidth(){ return Number(q('t2-width')?.value || 2)===3 ? 3 : 2; },
+    basketWidth(){
+        const n=Math.floor(Number(q('t2-width')?.value || 7));
+        return Math.max(2,Math.min(7,n));
+    },
+    targetHitProfit(){ return Math.max(0.01,Number(q('t2-hit-target')?.value || 0.90)); },
     symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
 
     log(msg){
@@ -11392,17 +11405,19 @@ window.top2BasketLab = {
     },
 
     observe5Trade5Pair(){
-        if(this.blockPhase!=='TRADE' || this.frozenAbsentPool.length<2 || this.blockTradeIndex>=5) return null;
+        if(this.blockPhase!=='TRADE' || this.blockTradeIndex>=5) return null;
         const pool=this.frozenAbsentPool;
         const width=this.basketWidth();
+
+        // Clean 7-digit experiment: trade only when the frozen absent pool
+        // contains at least the selected number of targets.
         if(pool.length<width) return null;
+
         const start=(width*this.blockTradeIndex)%pool.length;
         const digits=[];
         for(let k=0;k<width;k++) digits.push(pool[(start+k)%pool.length]);
-        return {
-            a:{digit:digits[0],p:0.10,support:5,model:null},
-            b:{digit:digits[1],p:0.10,support:5,model:null},
-            c:width===3 ? {digit:digits[2],p:0.10,support:5,model:null} : null,
+
+        const picks={
             digits,
             combinedP:width*0.10,
             rule:'OBSERVE5_TRADE5',
@@ -11412,6 +11427,10 @@ window.top2BasketLab = {
             blockTradeNumber:this.blockTradeIndex+1,
             basketWidth:width
         };
+        digits.forEach((d,i)=>{
+            picks[String.fromCharCode(97+i)]={digit:d,p:0.10,support:5,model:null};
+        });
+        return picks;
     },
 
     finishObserveTradeBlock(reason){
@@ -11631,8 +11650,8 @@ window.top2BasketLab = {
             this.awaitingOutcome=null;
             this.busy=false;
             if(b.picks?.rule==='OBSERVE5_TRADE5'){
-                if(this.blockPnl >= this.targetProfit()){
-                    this.finishObserveTradeBlock(`profit target $${this.targetProfit().toFixed(2)} reached early`);
+                if(this.blockPnl >= this.targetHitProfit()){
+                    this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached early`);
                 }else{
                     this.advanceObserveTradeBlock();
                 }
@@ -11688,12 +11707,11 @@ window.top2BasketLab = {
         }
 
         if(useObserve5 || useLast5){
-            q('t2-d1').textContent=`${picks.a.digit} (absent)`;
-            q('t2-d2').textContent=picks.c
-                ? `${picks.b.digit} + ${picks.c.digit} (absent)`
-                : `${picks.b.digit} (absent)`;
+            const ds=picks.digits || [picks.a?.digit,picks.b?.digit].filter(Number.isFinite);
+            q('t2-d1').textContent=ds.length?`${ds[0]} (absent)`:'—';
+            q('t2-d2').textContent=ds.length>1?`${ds.slice(1).join(' + ')} (absent)`:'—';
             q('t2-combined-p').textContent=useObserve5
-                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5 · ${picks.basketWidth||2} digits`
+                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5 · ${picks.basketWidth||ds.length} digits`
                 : 'Rule test';
         }else{
             q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
@@ -11722,6 +11740,16 @@ window.top2BasketLab = {
     },
 
     requestPair(picks,totalStake,isRecoverySizing){
+        const width=(picks?.rule==='OBSERVE5_TRADE5') ? this.basketWidth() : 2;
+        const legs=Array.from({length:width},(_,i)=>String.fromCharCode(97+i));
+
+        // For Observe-5 width experiments, the first quote uses a small stake merely
+        // to learn the live payout multiple. We then re-quote the exact total stake
+        // needed to target the requested net hit profit.
+        if(!isRecoverySizing && picks?.rule==='OBSERVE5_TRADE5' && this.cycleLoss===0){
+            totalStake=Math.max(width*0.35, 1.00);
+        }
+
         if(Number(totalStake) > this.maxBasketStake() + 1e-9){
             this.stopForRecoveryLimit(
                 `Basket $${Number(totalStake).toFixed(2)} blocked by max basket stake $${this.maxBasketStake().toFixed(2)}.`
@@ -11729,8 +11757,6 @@ window.top2BasketLab = {
             return;
         }
 
-        const width=(picks?.c && this.rule()==='observe5trade5') ? 3 : 2;
-        const legs=width===3 ? ['a','b','c'] : ['a','b'];
         const cents=Math.max(width*35,Math.round(Number(totalStake)*100));
         const baseCents=Math.floor(cents/width);
         const stakes=legs.map((_,i)=>(i===width-1 ? cents-baseCents*(width-1) : baseCents)/100);
@@ -11745,6 +11771,7 @@ window.top2BasketLab = {
 
         legs.forEach((leg,idx)=>{
             const p=picks[leg];
+            if(!p) return;
             const reqId=getNextReqId();
             this.pending.set(reqId,{
                 kind:'top2-proposal',pairId,leg,
@@ -11770,7 +11797,7 @@ window.top2BasketLab = {
             }
         });
 
-        this.status(`${isRecoverySizing?'Recovery sizing':'Quoting'} ${width}-digit basket ${legs.map(l=>picks[l].digit).join(' + ')} at $${totalStake.toFixed(2)} total...`);
+        this.status(`${isRecoverySizing?'Sizing':'Quoting'} ${width}-digit basket ${legs.map(l=>picks[l]?.digit).join(' + ')}...`);
     },
 
     handleProposal(proposal,reqId){
@@ -11782,8 +11809,7 @@ window.top2BasketLab = {
         if(!pair || pair.pairId!==ctx.pairId) return true;
 
         if(!proposal?.id){
-            this.busy=false;
-            this.pendingProposalPair=null;
+            this.busy=false; this.pendingProposalPair=null;
             this.status('One Match proposal quote was unavailable.',false);
             return true;
         }
@@ -11794,14 +11820,12 @@ window.top2BasketLab = {
             payout:Number(proposal.payout),
             ctx
         };
-
         if(!pair.legs.every(l=>pair.proposals[l])) return true;
 
         const Q=pair.legs.map(l=>pair.proposals[l]);
         const S=Number(Q.reduce((sum,x)=>sum+x.ask,0).toFixed(2));
         if(!Q.every(x=>x.ask>0 && x.payout>0)){
-            this.busy=false;
-            this.pendingProposalPair=null;
+            this.busy=false; this.pendingProposalPair=null;
             this.status('Invalid basket proposal economics.',false);
             return true;
         }
@@ -11821,9 +11845,52 @@ window.top2BasketLab = {
         q('t2-hit-profit').textContent=this.money(worstHitProfit);
         q('t2-hit-profit').className=`t2-v ${worstHitProfit>0?'metric-profit':worstHitProfit<0?'metric-loss':'metric-neutral'}`;
 
+        const isObserve5Rule=pair.picks?.rule==='OBSERVE5_TRADE5';
+        const isLast5Rule=pair.picks?.rule==='LAST5_EXCLUSION';
         const worstProfitFactor=worstHitProfit/S;
 
-        if(this.cycleLoss>0 && !pair.isRecoverySizing){
+        if(isObserve5Rule){
+            if(!(worstProfitFactor>0)){
+                this.busy=false; this.pendingProposalPair=null;
+                this.status(`${pair.width}-digit basket cannot produce positive net profit at the current payout.`,false);
+                return true;
+            }
+
+            // Exact total needed so the worst winning target earns:
+            // current cycle losses + desired net hit profit.
+            const requiredNet=this.cycleLoss + this.targetHitProfit();
+            const needed=requiredNet/worstProfitFactor;
+            const safeNeeded=Math.ceil((needed+0.01)*100)/100;
+
+            if(safeNeeded>this.maxBasketStake()+1e-9){
+                this.stopForRecoveryLimit(
+                    `Required ${pair.width}-digit basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
+                );
+                return true;
+            }
+
+            if(Math.abs(safeNeeded-S)>0.02){
+                this.pendingProposalPair=null;
+                this.log(`TARGET-HIT SIZE | ${pair.width} digits | desired +$${this.targetHitProfit().toFixed(2)} after cycle loss $${this.cycleLoss.toFixed(2)} | total ≈ $${safeNeeded.toFixed(2)}`);
+                this.requestPair(pair.picks,safeNeeded,true);
+                return true;
+            }
+
+            const minRequired=this.cycleLoss+this.targetHitProfit();
+            if(worstHitProfit+1e-9<minRequired){
+                const needed2=minRequired/worstProfitFactor;
+                const safe2=Math.ceil((needed2+0.02)*100)/100;
+                if(safe2>this.maxBasketStake()+1e-9){
+                    this.stopForRecoveryLimit(
+                        `Verified ${pair.width}-digit basket $${safe2.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
+                    );
+                    return true;
+                }
+                this.pendingProposalPair=null;
+                this.requestPair(pair.picks,safe2,true);
+                return true;
+            }
+        }else if(this.cycleLoss>0){
             if(!(worstProfitFactor>0)){
                 this.busy=false; this.pendingProposalPair=null;
                 this.status('Current payout cannot support recovery sizing.',false);
@@ -11836,27 +11903,6 @@ window.top2BasketLab = {
                 return true;
             }
             if(Math.abs(safeNeeded-S)>0.02){
-                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next ${pair.width}-digit basket ≈ $${safeNeeded.toFixed(2)} total`);
-                this.pendingProposalPair=null;
-                this.requestPair(pair.picks,safeNeeded,true);
-                return true;
-            }
-        }
-
-        if(this.cycleLoss>0){
-            const minRequired=this.cycleLoss+this.targetProfit();
-            if(worstHitProfit+1e-9<minRequired){
-                if(!(worstProfitFactor>0)){
-                    this.busy=false; this.pendingProposalPair=null;
-                    this.status('Recovery quote cannot recover the cycle.',false);
-                    return true;
-                }
-                const needed=(this.cycleLoss+this.targetProfit())/worstProfitFactor;
-                const safeNeeded=Math.ceil((needed+0.02)*100)/100;
-                if(safeNeeded>this.maxBasketStake()+1e-9){
-                    this.stopForRecoveryLimit(`Required verified recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`);
-                    return true;
-                }
                 this.pendingProposalPair=null;
                 this.requestPair(pair.picks,safeNeeded,true);
                 return true;
@@ -11866,8 +11912,6 @@ window.top2BasketLab = {
         this.currentBasketStake=S;
         this.render();
 
-        const isLast5Rule=pair.picks?.rule==='LAST5_EXCLUSION';
-        const isObserve5Rule=pair.picks?.rule==='OBSERVE5_TRADE5';
         if(!isLast5Rule && !isObserve5Rule && evPerDollar<this.minEdge()){
             this.stats.blocked++;
             this.busy=false; this.pendingProposalPair=null;
@@ -11877,22 +11921,17 @@ window.top2BasketLab = {
 
         const targets=pair.legs.map(l=>pair.picks[l].digit);
         if(isObserve5Rule){
-            this.status(`BLOCK ${pair.picks.blockNumber} TRADE ${pair.picks.blockTradeNumber}/5 · frozen absent [${pair.picks.absentPool.join(', ')}] · targets ${targets.join(' + ')}`,true);
+            this.status(`BLOCK ${pair.picks.blockNumber} TRADE ${pair.picks.blockTradeNumber}/5 · ${pair.width} targets ${targets.join(' + ')} · target hit profit $${this.targetHitProfit().toFixed(2)}`,true);
         }
 
         if(!this.isLive()){
             this.awaitingOutcome={
                 picks:pair.picks,legs:pair.legs,targets,
-                totalStake:S,
-                payouts:Q.map(x=>x.payout),
-                asks:Q.map(x=>x.ask),
-                ev,evPerDollar,worstHitProfit,
-                breakEvenProbability:equivalentBE
+                totalStake:S,payouts:Q.map(x=>x.payout),asks:Q.map(x=>x.ask),
+                ev,evPerDollar,worstHitProfit,breakEvenProbability:equivalentBE
             };
-            this.pendingProposalPair=null;
-            this.busy=false;
-            this.status(`SHADOW ARMED: ${targets.join(' + ')} | basket $${S.toFixed(2)}`,true);
-            this.log(`SHADOW BASKET | digits ${targets.join('+')} | $${S.toFixed(2)} total | worst hit ${this.money(worstHitProfit)}`);
+            this.pendingProposalPair=null; this.busy=false;
+            this.status(`SHADOW ARMED: ${targets.join(' + ')} | basket $${S.toFixed(2)} | hit ≈ ${this.money(worstHitProfit)}`,true);
             return true;
         }
 
@@ -11901,10 +11940,8 @@ window.top2BasketLab = {
             pairId:livePairId,picks:pair.picks,totalStake:S,
             legs:pair.legs,targets,
             quotes:Object.fromEntries(pair.legs.map((l,i)=>[l,Q[i]])),
-            buys:{},
-            ev,evPerDollar,worstHitProfit,
-            breakEvenProbability:equivalentBE,
-            startedAt:Date.now()
+            buys:{},ev,evPerDollar,worstHitProfit,
+            breakEvenProbability:equivalentBE,startedAt:Date.now()
         };
         this.pendingProposalPair=null;
 
@@ -11914,10 +11951,9 @@ window.top2BasketLab = {
             this.pending.set(buyReqId,{kind:'top2-buy',pairId:livePairId,leg,digit:pair.picks[leg].digit});
             const sent=sendRequest({buy:quote.id,price:quote.ask,req_id:buyReqId});
             if(sent===null){
-                this.pending.delete(buyReqId);
-                this.busy=false;
-                this.status('One basket buy could not be sent. Stop and inspect before retrying.',false);
-                this.log('CRITICAL: multi-leg basket buy send failed; purchases are sequential/non-atomic.');
+                this.pending.delete(buyReqId); this.busy=false;
+                this.status('One basket buy could not be sent. Stop and inspect.',false);
+                this.log('CRITICAL: multi-leg basket buys are sequential/non-atomic; partial fill is possible.');
             }
         });
 
@@ -12035,8 +12071,8 @@ window.top2BasketLab = {
         this.busy=false;
 
         if(pair.picks?.rule==='OBSERVE5_TRADE5'){
-            if(this.blockPnl >= this.targetProfit()){
-                this.finishObserveTradeBlock(`profit target $${this.targetProfit().toFixed(2)} reached early`);
+            if(this.blockPnl >= this.targetHitProfit()){
+                this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached early`);
             }else{
                 this.advanceObserveTradeBlock();
             }
@@ -12098,11 +12134,10 @@ window.top2BasketLab = {
                 minimumBasketEdge:this.minEdge(),
                 maxBasketTrades:this.maxTrades(),
                 basketWidth:this.basketWidth(),
+                targetHitProfit:this.targetHitProfit(),
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
-                    ? (this.basketWidth()===3
-                        ? 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_ROTATING_TRIPLETS_STOP_ON_BLOCK_PROFIT'
-                        : 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_ROTATING_PAIRS_STOP_ON_BLOCK_PROFIT')
+                    ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
                     : (this.rule()==='last5'
                         ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
                         : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES'),
@@ -12186,6 +12221,10 @@ window.top2BasketLab = {
             if(this.running) this.stop('Basket width changed. Press START again.');
             this.resetObserveTradeBlock();
             this.loadEmpirical();
+            this.render();
+        });
+        q('t2-hit-target')?.addEventListener('change',()=>{
+            if(this.running) this.stop('Target hit profit changed. Press START again.');
             this.render();
         });
         q('symbol')?.addEventListener('change',()=>{
