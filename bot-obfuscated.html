@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V39: V38 + Observe-5 / Trade-5 frozen absent-pool experiment -->
+    <!-- V40: V39 + early profitable-block stop + selectable 2/3-digit baskets -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11123,6 +11123,10 @@ if (document.readyState === 'loading') {
           <option value="last5">ROLLING LAST-5 EXCLUSION</option>
           <option value="model">MODEL TOP-2</option>
         </select>
+        <select id="t2-width" title="Targets purchased in each Observe-5 basket">
+          <option value="2" selected>2 DIGITS / BASKET</option>
+          <option value="3">3 DIGITS / BASKET</option>
+        </select>
       </div>
       <div class="t2-field">
         <label>Minimum basket edge (pp)</label>
@@ -11151,6 +11155,8 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Block phase</div><div id="t2-block-phase" class="t2-v">OBSERVE 0/5</div></div>
       <div class="t2-card"><div class="t2-k">Frozen absent pool</div><div id="t2-absent-pool" class="t2-v">—</div></div>
       <div class="t2-card"><div class="t2-k">Trade in block</div><div id="t2-block-trade" class="t2-v">0/5</div></div>
+      <div class="t2-card"><div class="t2-k">Block P/L</div><div id="t2-block-pnl" class="t2-v">$0.00</div></div>
+      <div class="t2-card"><div class="t2-k">Basket width</div><div id="t2-width-show" class="t2-v">2 digits</div></div>
     </div>
     <div id="t2-outcome" class="t2-outcome neutral">LAST RESULT: —</div>
     <div class="grid grid-cols-3 gap-2 mt-2">
@@ -11174,11 +11180,11 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Default rule: OBSERVE 5 → TRADE NEXT 5. The bot observes 5 public outcome digits with no purchase, freezes
-      every digit absent from that observation window, then executes exactly 5 forward baskets using rotating pairs
-      from that frozen pool. It does not recalculate the pool during those 5 trades. After the fifth settled basket,
-      it discards the block and observes a fresh 5 digits. Persistent empirical evidence is stored separately by
-      symbol and rule. Basket stake is total exposure and splits equally; recovery caps remain active.
+      Default rule: OBSERVE 5 → TRADE UP TO 5. The bot observes 5 digits, freezes the absent pool, and then trades
+      either 2 or 3 Match targets per basket. A block stops immediately when cumulative block P/L reaches the target
+      profit; otherwise it ends after basket 5. Every new block resets recovery and starts again from the base total
+      basket stake. Persistent evidence is stored separately by symbol, rule, and basket width. Live multi-leg buys
+      are sequential/non-atomic, so a partial fill remains possible if a later buy fails.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11192,7 +11198,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.2-OBSERVE5-TRADE5',
+    version: 'TOP2-BASKET-V1.3-BLOCK-PROFIT-3DIGIT',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11213,11 +11219,12 @@ window.top2BasketLab = {
     frozenAbsentPool: [],
     blockTradeIndex: 0,
     blockNumber: 1,
+    blockPnl: 0,
     empirical: { n:0, wins:0, losses:0, sumBreakEven:0, firstAt:null, updatedAt:null },
 
     empiricalKey(){
         const r=this.rule();
-        if(r==='observe5trade5') return `t2_empirical_observe5trade5_${this.symbol()}`;
+        if(r==='observe5trade5') return `t2_empirical_observe5trade5_w${this.basketWidth()}_${this.symbol()}`;
         if(r==='last5') return `t2_empirical_last5_${this.symbol()}`;
         return `t2_empirical_model_${this.symbol()}`;
     },
@@ -11277,6 +11284,7 @@ window.top2BasketLab = {
     minEdge(){ return Math.max(0, Number(q('t2-edge')?.value || 0.10)) / 100; },
     maxTrades(){ return Math.max(1, Math.min(10, Number(q('t2-max')?.value || 10))); },
     rule(){ return q('t2-rule')?.value || 'last5'; },
+    basketWidth(){ return Number(q('t2-width')?.value || 2)===3 ? 3 : 2; },
     symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
 
     log(msg){
@@ -11326,10 +11334,15 @@ window.top2BasketLab = {
                 : `TRADE ${Math.min(this.blockTradeIndex+1,5)}/5`);
             set('t2-absent-pool',this.frozenAbsentPool.length ? this.frozenAbsentPool.join(' · ') : '—');
             set('t2-block-trade',`${Math.min(this.blockTradeIndex,5)}/5 completed`);
+            set('t2-block-pnl',this.money(this.blockPnl));
+            setSignClass('t2-block-pnl',this.blockPnl);
+            set('t2-width-show',`${this.basketWidth()} digits`);
         }else{
             set('t2-block-phase','—');
             set('t2-absent-pool','—');
             set('t2-block-trade','—');
+            set('t2-block-pnl',this.money(0));
+            set('t2-width-show',`${this.basketWidth()} digits`);
         }
 
         const badge=q('t2-mode-badge');
@@ -11360,6 +11373,7 @@ window.top2BasketLab = {
         this.observationWindow=[];
         this.frozenAbsentPool=[];
         this.blockTradeIndex=0;
+        this.blockPnl=0;
         const el=q('t2-last5'); if(el) el.value='—';
         this.render();
     },
@@ -11380,33 +11394,40 @@ window.top2BasketLab = {
     observe5Trade5Pair(){
         if(this.blockPhase!=='TRADE' || this.frozenAbsentPool.length<2 || this.blockTradeIndex>=5) return null;
         const pool=this.frozenAbsentPool;
-        const m=pool.length;
-
-        // Rotate through the frozen absent pool. The pool is NOT recalculated during these 5 trades.
-        const i=(2*this.blockTradeIndex)%m;
-        let j=(i+1)%m;
-        if(j===i) j=(j+1)%m;
-
-        const a=pool[i], b=pool[j];
+        const width=this.basketWidth();
+        if(pool.length<width) return null;
+        const start=(width*this.blockTradeIndex)%pool.length;
+        const digits=[];
+        for(let k=0;k<width;k++) digits.push(pool[(start+k)%pool.length]);
         return {
-            a:{digit:a,p:0.10,support:5,model:null},
-            b:{digit:b,p:0.10,support:5,model:null},
-            combinedP:0.20,
+            a:{digit:digits[0],p:0.10,support:5,model:null},
+            b:{digit:digits[1],p:0.10,support:5,model:null},
+            c:width===3 ? {digit:digits[2],p:0.10,support:5,model:null} : null,
+            digits,
+            combinedP:width*0.10,
             rule:'OBSERVE5_TRADE5',
             window5:[...this.observationWindow],
             absentPool:[...pool],
             blockNumber:this.blockNumber,
-            blockTradeNumber:this.blockTradeIndex+1
+            blockTradeNumber:this.blockTradeIndex+1,
+            basketWidth:width
         };
+    },
+
+    finishObserveTradeBlock(reason){
+        this.log(`BLOCK ${this.blockNumber} END | ${reason} | block P/L ${this.money(this.blockPnl)}`);
+        this.cycleLoss=0;
+        this.cycleIndex=0;
+        this.currentBasketStake=this.baseStake();
+        this.blockNumber++;
+        this.resetObserveTradeBlock();
     },
 
     advanceObserveTradeBlock(){
         if(this.rule()!=='observe5trade5') return;
         this.blockTradeIndex++;
         if(this.blockTradeIndex>=5){
-            this.log(`BLOCK ${this.blockNumber} COMPLETE | 5 forward baskets finished. Starting a fresh 5-digit observation window.`);
-            this.blockNumber++;
-            this.resetObserveTradeBlock();
+            this.finishObserveTradeBlock('maximum 5 baskets reached');
         }else{
             this.render();
         }
@@ -11512,6 +11533,7 @@ window.top2BasketLab = {
         this.frozenAbsentPool=[];
         this.blockTradeIndex=0;
         this.blockNumber=1;
+        this.blockPnl=0;
         this.loadEmpirical();
         this.render();
         const outcomeEl=q('t2-outcome');
@@ -11563,70 +11585,58 @@ window.top2BasketLab = {
             }
         }
 
-        // Shadow settlement: first future public tick after both proposal quotes are accepted.
+        // Shadow settlement: first future public tick after all proposal quotes are accepted.
         if(!this.isLive() && this.awaitingOutcome && Number.isInteger(actual)){
             const b=this.awaitingOutcome;
-            const hitA=actual===b.a.digit;
-            const hitB=actual===b.b.digit;
-            const win=hitA||hitB;
-            let pnl;
-            if(hitA) pnl=b.payoutA - b.totalStake;
-            else if(hitB) pnl=b.payoutB - b.totalStake;
-            else pnl=-b.totalStake;
+            const hitIndex=b.targets.indexOf(actual);
+            const win=hitIndex>=0;
+            const pnl=win ? Number(b.payouts[hitIndex])-b.totalStake : -b.totalStake;
 
             this.stats.baskets++;
             this.stats[win?'wins':'losses']++;
             this.stats.pnl += pnl;
+            if(b.picks?.rule==='OBSERVE5_TRADE5') this.blockPnl += pnl;
             this.recordEmpirical(win,b.breakEvenProbability,b.picks?.rule);
 
             this.history.push({
-                timestamp: new Date().toISOString(),
-                mode: 'SHADOW',
-                symbol: this.symbol(),
-                cycleIndexBeforeSettlement: this.cycleIndex,
-                topDigit1: b.a.digit,
-                topDigit1Probability: b.a.p,
-                topDigit2: b.b.digit,
-                topDigit2Probability: b.b.p,
-                selectionRule: b.picks.rule || 'MODEL_TOP2',
-                last5Window: b.picks.window5 || null,
-                frozenAbsentPool: b.picks.absentPool || null,
-                blockNumber: b.picks.blockNumber || null,
-                blockTradeNumber: b.picks.blockTradeNumber || null,
-                combinedModelProbability: b.picks.combinedP,
-                totalBasketStake: b.totalStake,
-                legStake1: b.askA,
-                legStake2: b.askB,
-                payout1: b.payoutA,
-                payout2: b.payoutB,
-                exactExpectedValue: b.ev,
-                exactEvPerDollar: b.evPerDollar,
-                breakEvenProbability: b.breakEvenProbability,
-                worstHitProfit: b.worstHitProfit,
-                actualDigit: actual,
-                result: win ? 'WIN' : 'LOSS',
-                profit: pnl,
-                cycleLossBefore: this.cycleLoss
+                timestamp:new Date().toISOString(),mode:'SHADOW',symbol:this.symbol(),
+                cycleIndexBeforeSettlement:this.cycleIndex,
+                topDigit1:b.picks.a.digit,topDigit1Probability:b.picks.a.p,
+                topDigit2:b.picks.b.digit,topDigit2Probability:b.picks.b.p,
+                topDigit3:b.picks.c?.digit ?? null,topDigit3Probability:b.picks.c?.p ?? null,
+                basketWidth:b.targets.length,
+                selectionRule:b.picks.rule || 'MODEL_TOP2',
+                last5Window:b.picks.window5 || null,
+                frozenAbsentPool:b.picks.absentPool || null,
+                blockNumber:b.picks.blockNumber || null,
+                blockTradeNumber:b.picks.blockTradeNumber || null,
+                combinedModelProbability:b.picks.combinedP,
+                totalBasketStake:b.totalStake,legBuyPrices:b.asks,
+                exactExpectedValue:b.ev,exactEvPerDollar:b.evPerDollar,
+                breakEvenProbability:b.breakEvenProbability,worstHitProfit:b.worstHitProfit,
+                actualDigit:actual,result:win?'WIN':'LOSS',profit:pnl,
+                blockPnlAfter:this.blockPnl,cycleLossBefore:this.cycleLoss
             });
 
             if(win){
                 this.showOutcome(true,pnl,`outcome ${actual}`);
-                this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | cycle recovered`);
-                const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
-                this.cycleLoss=0;
-                this.cycleIndex=0;
-                this.currentBasketStake=this.baseStake();
-            } else {
+                this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | block P/L ${this.money(this.blockPnl)}`);
+                this.cycleLoss=0; this.cycleIndex=0; this.currentBasketStake=this.baseStake();
+            }else{
                 this.showOutcome(false,pnl,`outcome ${actual}`);
-                this.log(`SHADOW BASKET MISS | outcome ${actual} | -$${b.totalStake.toFixed(2)}`);
-                const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
-                this.cycleLoss += b.totalStake;
-                this.cycleIndex++;
+                this.log(`SHADOW BASKET MISS | outcome ${actual} | ${this.money(pnl)} | block P/L ${this.money(this.blockPnl)}`);
+                this.cycleLoss += b.totalStake; this.cycleIndex++;
             }
 
             this.awaitingOutcome=null;
             this.busy=false;
-            if(b.picks?.rule==='OBSERVE5_TRADE5') this.advanceObserveTradeBlock();
+            if(b.picks?.rule==='OBSERVE5_TRADE5'){
+                if(this.blockPnl >= this.targetProfit()){
+                    this.finishObserveTradeBlock(`profit target $${this.targetProfit().toFixed(2)} reached early`);
+                }else{
+                    this.advanceObserveTradeBlock();
+                }
+            }
             this.render();
 
             if(this.stats.baskets>=this.maxTrades()){
@@ -11679,9 +11689,11 @@ window.top2BasketLab = {
 
         if(useObserve5 || useLast5){
             q('t2-d1').textContent=`${picks.a.digit} (absent)`;
-            q('t2-d2').textContent=`${picks.b.digit} (absent)`;
+            q('t2-d2').textContent=picks.c
+                ? `${picks.b.digit} + ${picks.c.digit} (absent)`
+                : `${picks.b.digit} (absent)`;
             q('t2-combined-p').textContent=useObserve5
-                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5`
+                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5 · ${picks.basketWidth||2} digits`
                 : 'Rule test';
         }else{
             q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
@@ -11716,27 +11728,32 @@ window.top2BasketLab = {
             );
             return;
         }
-        const legStake = Math.max(0.35, Number((totalStake/2).toFixed(2)));
-        totalStake = Number((legStake*2).toFixed(2));
+
+        const width=(picks?.c && this.rule()==='observe5trade5') ? 3 : 2;
+        const legs=width===3 ? ['a','b','c'] : ['a','b'];
+        const cents=Math.max(width*35,Math.round(Number(totalStake)*100));
+        const baseCents=Math.floor(cents/width);
+        const stakes=legs.map((_,i)=>(i===width-1 ? cents-baseCents*(width-1) : baseCents)/100);
+        totalStake=Number(stakes.reduce((x,y)=>x+y,0).toFixed(2));
 
         const pairId=`T2-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
         this.pendingProposalPair={
-            pairId,picks,totalStake,legStake,isRecoverySizing,
+            pairId,picks,totalStake,width,legs,stakes,isRecoverySizing,
             proposals:{},createdAt:Date.now()
         };
         this.busy=true;
 
-        for(const leg of ['a','b']){
+        legs.forEach((leg,idx)=>{
             const p=picks[leg];
             const reqId=getNextReqId();
             this.pending.set(reqId,{
                 kind:'top2-proposal',pairId,leg,
                 digit:p.digit,pModel:p.p,support:p.support,
-                totalStake,legStake,isRecoverySizing
+                totalStake,legStake:stakes[idx],isRecoverySizing
             });
             const sent=sendRequest({
                 proposal:1,
-                amount:legStake,
+                amount:stakes[idx],
                 basis:'stake',
                 contract_type:'DIGITMATCH',
                 currency:'USD',
@@ -11749,14 +11766,11 @@ window.top2BasketLab = {
             if(sent===null){
                 this.pending.delete(reqId);
                 this.busy=false;
-                this.status('Could not request both Match proposals.',false);
-                return;
+                this.status('Could not request all Match proposals.',false);
             }
-        }
+        });
 
-        this.status(
-            `${isRecoverySizing?'Recovery sizing':'Quoting'} Top-2 ${picks.a.digit} + ${picks.b.digit} at $${totalStake.toFixed(2)} basket stake...`
-        );
+        this.status(`${isRecoverySizing?'Recovery sizing':'Quoting'} ${width}-digit basket ${legs.map(l=>picks[l].digit).join(' + ')} at $${totalStake.toFixed(2)} total...`);
     },
 
     handleProposal(proposal,reqId){
@@ -11770,7 +11784,7 @@ window.top2BasketLab = {
         if(!proposal?.id){
             this.busy=false;
             this.pendingProposalPair=null;
-            this.status('One Top-2 proposal quote was unavailable.',false);
+            this.status('One Match proposal quote was unavailable.',false);
             return true;
         }
 
@@ -11781,75 +11795,57 @@ window.top2BasketLab = {
             ctx
         };
 
-        if(!pair.proposals.a || !pair.proposals.b) return true;
+        if(!pair.legs.every(l=>pair.proposals[l])) return true;
 
-        const A=pair.proposals.a, B=pair.proposals.b;
-        const S=Number((A.ask+B.ask).toFixed(2));
-        if(!(A.ask>0 && B.ask>0 && A.payout>0 && B.payout>0)){
+        const Q=pair.legs.map(l=>pair.proposals[l]);
+        const S=Number(Q.reduce((sum,x)=>sum+x.ask,0).toFixed(2));
+        if(!Q.every(x=>x.ask>0 && x.payout>0)){
             this.busy=false;
             this.pendingProposalPair=null;
-            this.status('Invalid Top-2 proposal economics.',false);
+            this.status('Invalid basket proposal economics.',false);
             return true;
         }
 
-        // Exact expected-value calculation for mutually exclusive outcomes.
-        const pA=pair.picks.a.p, pB=pair.picks.b.p;
-        const expectedReturn = pA*A.payout + pB*B.payout;
-        const ev = expectedReturn - S;
-        const evPerDollar = ev / S;
+        const expectedReturn=pair.legs.reduce((sum,l,i)=>sum+Number(pair.picks[l].p||0)*Q[i].payout,0);
+        const ev=expectedReturn-S;
+        const evPerDollar=ev/S;
+        const hitProfits=Q.map(x=>x.payout-S);
+        const worstHitProfit=Math.min(...hitProfits);
+        const avgWinningPayout=Q.reduce((sum,x)=>sum+x.payout,0)/Q.length;
+        const equivalentBE=avgWinningPayout>0 ? S/avgWinningPayout : NaN;
+        const basketEdge=Number.isFinite(equivalentBE) ? pair.picks.combinedP-equivalentBE : NaN;
 
-        const hitProfitA=A.payout-S;
-        const hitProfitB=B.payout-S;
-        const worstHitProfit=Math.min(hitProfitA,hitProfitB);
-
-        // Equal-payout equivalent combined break-even for display only.
-        const avgWinningPayout=(A.payout+B.payout)/2;
-        const equivalentBE = avgWinningPayout>0 ? S/avgWinningPayout : NaN;
-        const basketEdge = Number.isFinite(equivalentBE) ? pair.picks.combinedP-equivalentBE : NaN;
-
-        q('t2-basket-edge').textContent = Number.isFinite(basketEdge)
-            ? `${basketEdge>=0?'+':''}${(basketEdge*100).toFixed(2)} pp`
-            : '—';
+        q('t2-basket-edge').textContent=Number.isFinite(basketEdge)
+            ? `${basketEdge>=0?'+':''}${(basketEdge*100).toFixed(2)} pp` : '—';
         q('t2-basket-edge').className=`t2-v ${basketEdge>=this.minEdge()?'good metric-profit':'bad metric-loss'}`;
         q('t2-hit-profit').textContent=this.money(worstHitProfit);
         q('t2-hit-profit').className=`t2-v ${worstHitProfit>0?'metric-profit':worstHitProfit<0?'metric-loss':'metric-neutral'}`;
 
-        // If recovering, use live worst-case profit factor to solve exact basket stake.
-        // Because payout scales approximately linearly with stake:
-        // requiredTotalStake = (cycleLoss + targetProfit) / worstProfitFactor
-        const worstProfitFactor = worstHitProfit / S;
+        const worstProfitFactor=worstHitProfit/S;
 
         if(this.cycleLoss>0 && !pair.isRecoverySizing){
             if(!(worstProfitFactor>0)){
-                this.busy=false;
-                this.pendingProposalPair=null;
-                this.status('Current Top-2 payout cannot support recovery sizing.',false);
+                this.busy=false; this.pendingProposalPair=null;
+                this.status('Current payout cannot support recovery sizing.',false);
                 return true;
             }
-
-            const needed = (this.cycleLoss + this.targetProfit()) / worstProfitFactor;
-            const safeNeeded = Math.max(this.baseStake(), Math.ceil(needed*100)/100);
-
-            if(safeNeeded > this.maxBasketStake() + 1e-9){
-                this.stopForRecoveryLimit(
-                    `Required recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
-                );
+            const needed=(this.cycleLoss+this.targetProfit())/worstProfitFactor;
+            const safeNeeded=Math.max(this.baseStake(),Math.ceil(needed*100)/100);
+            if(safeNeeded>this.maxBasketStake()+1e-9){
+                this.stopForRecoveryLimit(`Required recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`);
                 return true;
             }
-
-            // Requote at the exact recovery stake because Deriv payout can vary.
-            if(Math.abs(safeNeeded-S) > 0.02){
-                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next basket ≈ $${safeNeeded.toFixed(2)} total = $${(safeNeeded/2).toFixed(2)} + $${(safeNeeded/2).toFixed(2)}`);
+            if(Math.abs(safeNeeded-S)>0.02){
+                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next ${pair.width}-digit basket ≈ $${safeNeeded.toFixed(2)} total`);
                 this.pendingProposalPair=null;
                 this.requestPair(pair.picks,safeNeeded,true);
                 return true;
             }
         }
 
-        // On the recovery requote, verify that a hit on EITHER leg really covers losses + target.
         if(this.cycleLoss>0){
             const minRequired=this.cycleLoss+this.targetProfit();
-            if(worstHitProfit+1e-9 < minRequired){
+            if(worstHitProfit+1e-9<minRequired){
                 if(!(worstProfitFactor>0)){
                     this.busy=false; this.pendingProposalPair=null;
                     this.status('Recovery quote cannot recover the cycle.',false);
@@ -11857,10 +11853,8 @@ window.top2BasketLab = {
                 }
                 const needed=(this.cycleLoss+this.targetProfit())/worstProfitFactor;
                 const safeNeeded=Math.ceil((needed+0.02)*100)/100;
-                if(safeNeeded > this.maxBasketStake() + 1e-9){
-                    this.stopForRecoveryLimit(
-                        `Required verified recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
-                    );
+                if(safeNeeded>this.maxBasketStake()+1e-9){
+                    this.stopForRecoveryLimit(`Required verified recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`);
                     return true;
                 }
                 this.pendingProposalPair=null;
@@ -11872,82 +11866,62 @@ window.top2BasketLab = {
         this.currentBasketStake=S;
         this.render();
 
-        // MODEL mode uses the EV gate.
-        // LAST-5 EXCLUSION is a direct rule test, so the model edge gate is bypassed.
-        const isLast5Rule = pair.picks?.rule === 'LAST5_EXCLUSION';
-        const isObserve5Rule = pair.picks?.rule === 'OBSERVE5_TRADE5';
-        if(!isLast5Rule && !isObserve5Rule && evPerDollar < this.minEdge()){
+        const isLast5Rule=pair.picks?.rule==='LAST5_EXCLUSION';
+        const isObserve5Rule=pair.picks?.rule==='OBSERVE5_TRADE5';
+        if(!isLast5Rule && !isObserve5Rule && evPerDollar<this.minEdge()){
             this.stats.blocked++;
-            this.busy=false;
-            this.pendingProposalPair=null;
-            this.status(
-                `WAIT: exact basket EV ${(evPerDollar*100).toFixed(2)}% of stake is below +${(this.minEdge()*100).toFixed(2)}%.`,
-                false
-            );
+            this.busy=false; this.pendingProposalPair=null;
+            this.status(`WAIT: exact basket EV ${(evPerDollar*100).toFixed(2)}% is below gate.`,false);
             return true;
         }
 
-        if(isLast5Rule){
-            this.status(
-                `ROLLING LAST-5 ARMED: recent [${pair.picks.window5.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
-                true
-            );
-        }
+        const targets=pair.legs.map(l=>pair.picks[l].digit);
         if(isObserve5Rule){
-            this.status(
-                `BLOCK ${pair.picks.blockNumber} TRADE ${pair.picks.blockTradeNumber}/5 · frozen absent pool [${pair.picks.absentPool.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
-                true
-            );
+            this.status(`BLOCK ${pair.picks.blockNumber} TRADE ${pair.picks.blockTradeNumber}/5 · frozen absent [${pair.picks.absentPool.join(', ')}] · targets ${targets.join(' + ')}`,true);
         }
 
         if(!this.isLive()){
             this.awaitingOutcome={
-                picks:pair.picks,
-                a:pair.picks.a,b:pair.picks.b,
+                picks:pair.picks,legs:pair.legs,targets,
                 totalStake:S,
-                payoutA:A.payout,payoutB:B.payout,
-                askA:A.ask,askB:B.ask,
+                payouts:Q.map(x=>x.payout),
+                asks:Q.map(x=>x.ask),
                 ev,evPerDollar,worstHitProfit,
                 breakEvenProbability:equivalentBE
             };
             this.pendingProposalPair=null;
-            this.status(
-                `SHADOW ARMED: ${pair.picks.a.digit} + ${pair.picks.b.digit} | basket $${S.toFixed(2)} | exact EV ${(evPerDollar*100).toFixed(2)}%`,
-                true
-            );
-            this.log(`SHADOW BASKET | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | $${S.toFixed(2)} total | worst hit ${this.money(worstHitProfit)}`);
+            this.busy=false;
+            this.status(`SHADOW ARMED: ${targets.join(' + ')} | basket $${S.toFixed(2)}`,true);
+            this.log(`SHADOW BASKET | digits ${targets.join('+')} | $${S.toFixed(2)} total | worst hit ${this.money(worstHitProfit)}`);
             return true;
         }
 
-        // LIVE: buy both proposals immediately as one basket.
         const livePairId=pair.pairId;
         this.pendingBuyPair={
             pairId:livePairId,picks:pair.picks,totalStake:S,
-            quotes:{a:A,b:B},buys:{},
+            legs:pair.legs,targets,
+            quotes:Object.fromEntries(pair.legs.map((l,i)=>[l,Q[i]])),
+            buys:{},
             ev,evPerDollar,worstHitProfit,
             breakEvenProbability:equivalentBE,
             startedAt:Date.now()
         };
         this.pendingProposalPair=null;
 
-        for(const leg of ['a','b']){
-            const Q=this.pendingBuyPair.quotes[leg];
+        pair.legs.forEach(leg=>{
+            const quote=this.pendingBuyPair.quotes[leg];
             const buyReqId=getNextReqId();
-            this.pending.set(buyReqId,{
-                kind:'top2-buy',pairId:livePairId,leg,
-                digit:pair.picks[leg].digit
-            });
-            const sent=sendRequest({buy:Q.id,price:Q.ask,req_id:buyReqId});
+            this.pending.set(buyReqId,{kind:'top2-buy',pairId:livePairId,leg,digit:pair.picks[leg].digit});
+            const sent=sendRequest({buy:quote.id,price:quote.ask,req_id:buyReqId});
             if(sent===null){
                 this.pending.delete(buyReqId);
                 this.busy=false;
-                this.status('One Top-2 buy could not be sent. Stop and inspect before retrying.',false);
-                this.log('CRITICAL: basket buy send failed on one leg.');
-                return true;
+                this.status('One basket buy could not be sent. Stop and inspect before retrying.',false);
+                this.log('CRITICAL: multi-leg basket buy send failed; purchases are sequential/non-atomic.');
             }
-        }
+        });
 
-        this.status(`BUYING Top-2 ${pair.picks.a.digit} + ${pair.picks.b.digit}...`,true);
+        this.status(`BUYING ${pair.width}-digit basket ${targets.join(' + ')}...`,true);
         return true;
     },
 
@@ -11961,8 +11935,8 @@ window.top2BasketLab = {
 
         if(!buy?.contract_id){
             this.busy=false;
-            this.status('One Top-2 purchase was not confirmed. Stop and inspect.',false);
-            this.log(`CRITICAL: buy confirmation missing for digit ${ctx.digit}.`);
+            this.status('One basket purchase was not confirmed. Stop and inspect.',false);
+            this.log(`CRITICAL: buy confirmation missing for digit ${ctx.digit}; multi-leg buys are sequential/non-atomic.`);
             return true;
         }
 
@@ -11973,24 +11947,16 @@ window.top2BasketLab = {
         };
 
         const monitorReqId=getNextReqId();
-        sendRequest({
-            proposal_open_contract:1,
-            contract_id:Number(buy.contract_id),
-            subscribe:1,
-            req_id:monitorReqId
-        });
+        sendRequest({proposal_open_contract:1,contract_id:Number(buy.contract_id),subscribe:1,req_id:monitorReqId});
 
-        if(!pair.buys.a || !pair.buys.b) return true;
+        if(!pair.legs.every(l=>pair.buys[l])) return true;
 
         this.stats.baskets++;
         this.render();
-        this.log(`${this.mode().toUpperCase()} BASKET #${this.stats.baskets} | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | total $${pair.totalStake.toFixed(2)} = $${(pair.totalStake/2).toFixed(2)} + $${(pair.totalStake/2).toFixed(2)}`);
-        this.status(`Both contracts open · wins if next digit is ${pair.picks.a.digit} or ${pair.picks.b.digit}.`,true);
+        this.log(`${this.mode().toUpperCase()} BASKET #${this.stats.baskets} | digits ${pair.targets.join('+')} | total $${pair.totalStake.toFixed(2)} | ${pair.legs.length} legs`);
+        this.status(`All ${pair.legs.length} contracts open · wins if next digit is ${pair.targets.join(' or ')}.`,true);
 
-        if(this.stats.baskets>=this.maxTrades()){
-            // Let the current basket settle, then stop.
-            this.running=false;
-        }
+        if(this.stats.baskets>=this.maxTrades()) this.running=false;
         return true;
     },
 
@@ -11999,10 +11965,10 @@ window.top2BasketLab = {
         if(!pair) return false;
 
         let leg=null;
-        if(pair.buys.a && Number(poc?.contract_id)===pair.buys.a.contractId) leg='a';
-        if(pair.buys.b && Number(poc?.contract_id)===pair.buys.b.contractId) leg='b';
+        for(const l of pair.legs){
+            if(pair.buys[l] && Number(poc?.contract_id)===pair.buys[l].contractId){ leg=l; break; }
+        }
         if(!leg) return false;
-
         if(!(poc.is_sold || poc.status==='sold')) return true;
 
         const b=pair.buys[leg];
@@ -12011,69 +11977,76 @@ window.top2BasketLab = {
         b.profit=Number(poc.profit ?? 0);
         b.status=poc.status;
 
-        if(!(pair.buys.a?.settled && pair.buys.b?.settled)) return true;
+        if(!pair.legs.every(l=>pair.buys[l]?.settled)) return true;
 
-        const pnl=Number(pair.buys.a.profit||0)+Number(pair.buys.b.profit||0);
+        const pnl=pair.legs.reduce((sum,l)=>sum+Number(pair.buys[l].profit||0),0);
         const win=pnl>0;
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += pnl;
+        if(pair.picks?.rule==='OBSERVE5_TRADE5') this.blockPnl += pnl;
         this.recordEmpirical(win,pair.breakEvenProbability,pair.picks?.rule);
 
-        this.history.push({
-            timestamp: new Date().toISOString(),
-            mode: this.mode().toUpperCase(),
-            symbol: this.symbol(),
-            cycleIndexBeforeSettlement: this.cycleIndex,
-            topDigit1: pair.picks.a.digit,
-            topDigit1Probability: pair.picks.a.p,
-            topDigit2: pair.picks.b.digit,
-            topDigit2Probability: pair.picks.b.p,
-            selectionRule: pair.picks.rule || 'MODEL_TOP2',
-            last5Window: pair.picks.window5 || null,
-            frozenAbsentPool: pair.picks.absentPool || null,
-            blockNumber: pair.picks.blockNumber || null,
-            blockTradeNumber: pair.picks.blockTradeNumber || null,
-            combinedModelProbability: pair.picks.combinedP,
-            totalBasketStake: pair.totalStake,
-            leg1BuyPrice: pair.buys.a.buyPrice,
-            leg2BuyPrice: pair.buys.b.buyPrice,
-            contractId1: pair.buys.a.contractId,
-            contractId2: pair.buys.b.contractId,
-            leg1Profit: pair.buys.a.profit,
-            leg2Profit: pair.buys.b.profit,
-            exactExpectedValue: pair.ev,
-            exactEvPerDollar: pair.evPerDollar,
-            breakEvenProbability: pair.breakEvenProbability,
-            worstHitProfit: pair.worstHitProfit,
-            result: win ? 'WIN' : 'LOSS',
-            profit: pnl,
-            cycleLossBefore: this.cycleLoss
-        });
+        const hist={
+            timestamp:new Date().toISOString(),
+            mode:this.mode().toUpperCase(),symbol:this.symbol(),
+            cycleIndexBeforeSettlement:this.cycleIndex,
+            topDigit1:pair.picks.a.digit,topDigit1Probability:pair.picks.a.p,
+            topDigit2:pair.picks.b.digit,topDigit2Probability:pair.picks.b.p,
+            topDigit3:pair.picks.c?.digit ?? null,topDigit3Probability:pair.picks.c?.p ?? null,
+            basketWidth:pair.legs.length,
+            selectionRule:pair.picks.rule || 'MODEL_TOP2',
+            last5Window:pair.picks.window5 || null,
+            frozenAbsentPool:pair.picks.absentPool || null,
+            blockNumber:pair.picks.blockNumber || null,
+            blockTradeNumber:pair.picks.blockTradeNumber || null,
+            combinedModelProbability:pair.picks.combinedP,
+            totalBasketStake:pair.totalStake,
+            legBuyPrices:pair.legs.map(l=>pair.buys[l].buyPrice),
+            contractIds:pair.legs.map(l=>pair.buys[l].contractId),
+            legProfits:pair.legs.map(l=>pair.buys[l].profit),
+            exactExpectedValue:pair.ev,exactEvPerDollar:pair.evPerDollar,
+            breakEvenProbability:pair.breakEvenProbability,
+            worstHitProfit:pair.worstHitProfit,
+            result:win?'WIN':'LOSS',profit:pnl,
+            blockPnlAfter:this.blockPnl,
+            cycleLossBefore:this.cycleLoss
+        };
+        // Backward-compatible fields for first 2 legs.
+        hist.leg1BuyPrice=pair.buys.a?.buyPrice ?? null;
+        hist.leg2BuyPrice=pair.buys.b?.buyPrice ?? null;
+        hist.contractId1=pair.buys.a?.contractId ?? null;
+        hist.contractId2=pair.buys.b?.contractId ?? null;
+        hist.leg1Profit=pair.buys.a?.profit ?? null;
+        hist.leg2Profit=pair.buys.b?.profit ?? null;
+        this.history.push(hist);
 
         if(win){
             this.showOutcome(true,pnl,this.mode().toUpperCase());
-            this.log(`${this.mode().toUpperCase()} BASKET WIN | ${this.money(pnl)} | cycle recovered`);
-            const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
-            this.cycleLoss=0;
-            this.cycleIndex=0;
-            this.currentBasketStake=this.baseStake();
+            this.log(`${this.mode().toUpperCase()} BASKET WIN | ${this.money(pnl)} | block P/L ${this.money(this.blockPnl)}`);
+            this.cycleLoss=0; this.cycleIndex=0; this.currentBasketStake=this.baseStake();
         }else{
             this.showOutcome(false,pnl,this.mode().toUpperCase());
-            this.log(`${this.mode().toUpperCase()} BASKET MISS | ${this.money(pnl)}`);
-            const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
+            this.log(`${this.mode().toUpperCase()} BASKET MISS | ${this.money(pnl)} | block P/L ${this.money(this.blockPnl)}`);
             this.cycleLoss += Math.abs(pnl);
             this.cycleIndex++;
         }
 
         this.pendingBuyPair=null;
         this.busy=false;
-        if(pair.picks?.rule==='OBSERVE5_TRADE5') this.advanceObserveTradeBlock();
+
+        if(pair.picks?.rule==='OBSERVE5_TRADE5'){
+            if(this.blockPnl >= this.targetProfit()){
+                this.finishObserveTradeBlock(`profit target $${this.targetProfit().toFixed(2)} reached early`);
+            }else{
+                this.advanceObserveTradeBlock();
+            }
+        }
         this.render();
 
         if(!this.running || this.stats.baskets>=this.maxTrades()){
             this.stop(`Basket settled. Max ${this.maxTrades()} trades reached.`);
         }else{
-            this.status(win?'Cycle complete. Waiting for next Top-2 setup.':'Recovery cycle active. Re-ranking Top-2 on the next tick.',win);
+            this.status(win?'Waiting for the next observation/trade setup.':'Recovery cycle active within this block.',win);
         }
         return true;
     },
@@ -12124,8 +12097,12 @@ window.top2BasketLab = {
                 maxBasketStake:this.maxBasketStake(),
                 minimumBasketEdge:this.minEdge(),
                 maxBasketTrades:this.maxTrades(),
+                basketWidth:this.basketWidth(),
+                stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
-                    ? 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_NEXT_5_ROTATING_PAIRS'
+                    ? (this.basketWidth()===3
+                        ? 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_ROTATING_TRIPLETS_STOP_ON_BLOCK_PROFIT'
+                        : 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_ROTATING_PAIRS_STOP_ON_BLOCK_PROFIT')
                     : (this.rule()==='last5'
                         ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
                         : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES'),
@@ -12150,7 +12127,9 @@ window.top2BasketLab = {
                 phase:this.blockPhase,
                 observationWindow:[...this.observationWindow],
                 frozenAbsentPool:[...this.frozenAbsentPool],
-                completedTradesInBlock:this.blockTradeIndex
+                completedTradesInBlock:this.blockTradeIndex,
+                blockPnl:this.blockPnl,
+                basketWidth:this.basketWidth()
             },
             summary:{
                 completedBaskets:completed,
@@ -12199,6 +12178,12 @@ window.top2BasketLab = {
         });
         q('t2-rule')?.addEventListener('change',()=>{
             if(this.running) this.stop('Selection rule changed. Press START again.');
+            this.resetObserveTradeBlock();
+            this.loadEmpirical();
+            this.render();
+        });
+        q('t2-width')?.addEventListener('change',()=>{
+            if(this.running) this.stop('Basket width changed. Press START again.');
             this.resetObserveTradeBlock();
             this.loadEmpirical();
             this.render();
