@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V46: V45 + exact-cent block-profit stop fix -->
+    <!-- V47: score all 10 digits after each 5-tick observation and trade exactly top 7 -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11191,10 +11191,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Multi-Digit Match V46: invalid 5-tick windows re-observe immediately, and block-profit stopping is evaluated
-      in integer cents. A displayed +$0.90 result now satisfies a $0.90 target even when JavaScript internally stores
-      0.8999999999999977. Once the target is reached, that block ends immediately and a fresh observation begins.
-      Live multi-leg buys remain sequential/non-atomic at Deriv.
+      Multi-Digit Match V47: every 5-tick observation window is used. The five digits are context only; no digit is
+      excluded because it appeared recently. All 10 digits are scored, ranked, and the top selected width (default 7)
+      are traded. The composite score uses next-tick model probability, recent frequency over 5/20/50 ticks, and a
+      small recency component. A +$0.90 target ends the block immediately using cent-safe arithmetic.
     </div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
@@ -11208,7 +11208,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V1.9-CENT-PROFIT-STOP',
+    version: 'MULTIDIGIT-MATCH-V2.0-SCORED-TOP7',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11268,7 +11268,7 @@ window.top2BasketLab = {
     },
     recordEmpirical(win,breakEven,ruleTag=null){
         const r=ruleTag || this.rule();
-        if(r!=='LAST5_EXCLUSION' && r!=='OBSERVE5_TRADE5') return;
+        if(r!=='LAST5_EXCLUSION' && r!=='OBSERVE5_SCORED_TOP7') return;
         const now=new Date().toISOString();
         if(!this.empirical.firstAt) this.empirical.firstAt=now;
         this.empirical.n += 1;
@@ -11318,9 +11318,9 @@ window.top2BasketLab = {
                 opt.disabled=!compatible;
                 opt.hidden=!compatible;
             }
-            ruleEl.title=`${width}-digit mode is locked to OBSERVE 5 → TRADE UP TO 5.`;
+            ruleEl.title=`${width}-digit mode is locked to OBSERVE 5 → SCORE ALL 10.`;
             if(note){
-                note.textContent=`LOCKED: ${width}-digit mode uses OBSERVE 5 → freeze absent pool → trade up to 5 baskets.`;
+                note.textContent=`LOCKED: ${width}-digit mode uses OBSERVE 5 → score all 10 digits → trade top ${width}.`;
                 note.style.display='';
             }
         }else if(ruleEl){
@@ -11383,7 +11383,7 @@ window.top2BasketLab = {
             set('t2-block-phase',this.blockPhase==='OBSERVE'
                 ? `OBSERVE ${this.observationWindow.length}/5`
                 : `TRADE ${Math.min(this.blockTradeIndex+1,5)}/5`);
-            set('t2-absent-pool',this.frozenAbsentPool.length ? this.frozenAbsentPool.join(' · ') : '—');
+            set('t2-absent-pool',this.blockPhase==='TRADE' ? 'Scored top targets' : '—');
             set('t2-block-trade',`${Math.min(this.blockTradeIndex,5)}/5 completed`);
             set('t2-block-pnl',this.money(this.blockPnl));
             setSignClass('t2-block-pnl',this.blockPnl);
@@ -11432,96 +11432,125 @@ window.top2BasketLab = {
     freezeObservationBlock(){
         if(this.observationWindow.length!==5) return false;
 
-        const seen=new Set(this.observationWindow);
+        // V47: every completed 5-tick window is valid.
+        // We no longer require 7 absent digits. The five ticks are context only.
         this.frozenAbsentPool=[];
-        for(let d=0; d<=9; d++){
-            if(!seen.has(d)) this.frozenAbsentPool.push(d);
-        }
-
-        const width=this.basketWidth();
-
-        // CRITICAL STATE FIX:
-        // Never enter TRADE unless the frozen pool can actually supply every
-        // target required by the selected basket width.
-        if(this.frozenAbsentPool.length < width){
-            const observed=[...this.observationWindow];
-            const absentCount=this.frozenAbsentPool.length;
-
-            this.log(
-                `WINDOW SKIPPED | observed [${observed.join(', ')}] | ` +
-                `${absentCount} absent digits < required width ${width} | re-observing immediately`
-            );
-
-            // Return directly to observation. The very next public tick becomes
-            // tick 1 of a new 5-tick window. No cooldown or waiting TRADE state.
-            this.blockPhase='OBSERVE';
-            this.observationWindow=[];
-            this.frozenAbsentPool=[];
-            this.blockTradeIndex=0;
-            this.blockPnl=0;
-
-            const last5El=q('t2-last5');
-            if(last5El) last5El.value='—';
-
-            this.status(
-                `Need ${width} absent digits. Previous window had only ${absentCount}; collecting a fresh 5 ticks now.`
-            );
-            this.render();
-            return false;
-        }
-
         this.blockPhase='TRADE';
         this.blockTradeIndex=0;
+
+        const ranked=this.rankAllDigits();
+        const chosen=ranked.slice(0,this.basketWidth()).map(x=>x.digit);
+
         this.log(
             `BLOCK ${this.blockNumber} READY | observed [${this.observationWindow.join(', ')}] | ` +
-            `absent pool [${this.frozenAbsentPool.join(', ')}] | width ${width}`
+            `ranked top ${this.basketWidth()} [${chosen.join(', ')}]`
         );
         this.render();
         return true;
     },
+    rankAllDigits(){
+        const symbol=this.symbol();
+        const last5=this.recentDigits.slice(-5);
+        const last20=this.recentDigits.slice(-20);
+        const last50=this.recentDigits.slice(-50);
+
+        const count=(arr,d)=>arr.reduce((n,x)=>n+(x===d?1:0),0);
+        const rows=[];
+
+        for(let d=0; d<=9; d++){
+            let modelP=0.10;
+            let support=0;
+            let model=null;
+
+            try{
+                const m=window.nextTickModel?.getPrediction?.(symbol,d);
+                if(m?.ready && Number.isFinite(Number(m.probability))){
+                    modelP=Number(m.probability);
+                    support=Number(m.effectiveSupport||0);
+                    model={...m};
+                }
+            }catch(_){}
+
+            const f5=last5.length ? count(last5,d)/last5.length : 0.10;
+            const f20=last20.length ? count(last20,d)/last20.length : 0.10;
+            const f50=last50.length ? count(last50,d)/last50.length : 0.10;
+
+            const lastSeen=this.digitLastSeenTick[d];
+            const rawGap=lastSeen<0 ? 20 : Math.max(0,this.observedTickIndex-lastSeen);
+            const gap=Math.min(rawGap,20);
+
+            // Transparent experimental composite:
+            // 60% next-tick model, 15% last-20 frequency,
+            // 10% last-50 frequency, 10% last-5 frequency,
+            // 5% recency (smaller gap receives slightly higher score).
+            const recencyScore=1-(gap/20);
+            const score=
+                0.60*modelP +
+                0.15*f20 +
+                0.10*f50 +
+                0.10*f5 +
+                0.05*recencyScore;
+
+            rows.push({
+                digit:d,score,modelP,support,model,
+                f5,f20,f50,gap,recencyScore
+            });
+        }
+
+        rows.sort((a,b)=>
+            (b.score-a.score) ||
+            (b.modelP-a.modelP) ||
+            (a.digit-b.digit)
+        );
+        return rows;
+    },
 
     observe5Trade5Pair(){
         if(this.blockPhase!=='TRADE' || this.blockTradeIndex>=5) return null;
-        const pool=this.frozenAbsentPool;
+
         const width=this.basketWidth();
+        const ranked=this.rankAllDigits();
+        if(ranked.length<width) return null;
 
-        // Defensive self-heal: an undersized pool must never leave the engine
-        // permanently stuck in TRADE.
-        if(pool.length<width){
-            this.log(
-                `STATE SELF-HEAL | TRADE had ${pool.length} targets but width ${width} is required | returning to OBSERVE`
-            );
-            this.blockPhase='OBSERVE';
-            this.observationWindow=[];
-            this.frozenAbsentPool=[];
-            this.blockTradeIndex=0;
-            this.blockPnl=0;
-            const last5El=q('t2-last5');
-            if(last5El) last5El.value='—';
-            this.render();
-            return null;
-        }
-
-        const start=(width*this.blockTradeIndex)%pool.length;
-        const digits=[];
-        for(let k=0;k<width;k++) digits.push(pool[(start+k)%pool.length]);
+        const selected=ranked.slice(0,width);
+        const digits=selected.map(x=>x.digit);
 
         const picks={
             digits,
-            combinedP:width*0.10,
-            rule:'OBSERVE5_TRADE5',
+            combinedP:selected.reduce((s,x)=>s+x.modelP,0),
+            rule:'OBSERVE5_SCORED_TOP7',
             window5:[...this.observationWindow],
-            absentPool:[...pool],
+            absentPool:null,
+            rankedDigits:ranked.map(x=>({
+                digit:x.digit,
+                score:x.score,
+                modelP:x.modelP,
+                f5:x.f5,
+                f20:x.f20,
+                f50:x.f50,
+                gap:x.gap
+            })),
             blockNumber:this.blockNumber,
             blockTradeNumber:this.blockTradeIndex+1,
             basketWidth:width
         };
-        digits.forEach((d,i)=>{
-            picks[String.fromCharCode(97+i)]={digit:d,p:0.10,support:5,model:null};
+
+        selected.forEach((x,i)=>{
+            picks[String.fromCharCode(97+i)]={
+                digit:x.digit,
+                p:x.modelP,
+                support:x.support,
+                model:x.model,
+                score:x.score,
+                f5:x.f5,
+                f20:x.f20,
+                f50:x.f50,
+                gap:x.gap
+            };
         });
+
         return picks;
     },
-
     finishObserveTradeBlock(reason){
         this.log(`BLOCK ${this.blockNumber} END | ${reason} | block P/L ${this.money(this.blockPnl)}`);
         this.cycleLoss=0;
@@ -11710,7 +11739,7 @@ window.top2BasketLab = {
             this.stats.baskets++;
             this.stats[win?'wins':'losses']++;
             this.stats.pnl += pnl;
-            if(b.picks?.rule==='OBSERVE5_TRADE5') this.blockPnl += pnl;
+            if(b.picks?.rule==='OBSERVE5_SCORED_TOP7') this.blockPnl += pnl;
             this.recordEmpirical(win,b.breakEvenProbability,b.picks?.rule);
 
             this.history.push({
@@ -11723,6 +11752,7 @@ window.top2BasketLab = {
                 selectionRule:b.picks.rule || 'MODEL_TOP2',
                 last5Window:b.picks.window5 || null,
                 frozenAbsentPool:b.picks.absentPool || null,
+                rankedDigits:b.picks.rankedDigits || null,
                 blockNumber:b.picks.blockNumber || null,
                 blockTradeNumber:b.picks.blockTradeNumber || null,
                 combinedModelProbability:b.picks.combinedP,
@@ -11745,7 +11775,7 @@ window.top2BasketLab = {
 
             this.awaitingOutcome=null;
             this.busy=false;
-            if(b.picks?.rule==='OBSERVE5_TRADE5'){
+            if(b.picks?.rule==='OBSERVE5_SCORED_TOP7'){
                 if(this.blockTargetReached()){
                     this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached (cent-safe stop)`);
                 }else{
@@ -11804,8 +11834,8 @@ window.top2BasketLab = {
 
         if(useObserve5 || useLast5){
             const ds=picks.digits || [picks.a?.digit,picks.b?.digit].filter(Number.isFinite);
-            q('t2-d1').textContent=ds.length?`${ds[0]} (absent)`:'—';
-            q('t2-d2').textContent=ds.length>1?`${ds.slice(1).join(' + ')} (absent)`:'—';
+            q('t2-d1').textContent=ds.length?`${ds[0]} (ranked #1)`:'—';
+            q('t2-d2').textContent=ds.length>1?`${ds.slice(1).join(' + ')} (ranked targets)`:'—';
             q('t2-combined-p').textContent=useObserve5
                 ? `${picks.basketWidth||ds.length}/10 digits · Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5`
                 : 'Rule test';
@@ -11836,13 +11866,13 @@ window.top2BasketLab = {
     },
 
     requestPair(picks,totalStake,isRecoverySizing){
-        const width=(picks?.rule==='OBSERVE5_TRADE5') ? this.basketWidth() : 2;
+        const width=(picks?.rule==='OBSERVE5_SCORED_TOP7') ? this.basketWidth() : 2;
         const legs=Array.from({length:width},(_,i)=>String.fromCharCode(97+i));
 
         // For Observe-5 width experiments, the first quote uses a small stake merely
         // to learn the live payout multiple. We then re-quote the exact total stake
         // needed to target the requested net hit profit.
-        if(!isRecoverySizing && picks?.rule==='OBSERVE5_TRADE5' && this.cycleLoss===0){
+        if(!isRecoverySizing && picks?.rule==='OBSERVE5_SCORED_TOP7' && this.cycleLoss===0){
             totalStake=Math.max(width*0.35, 1.00);
         }
 
@@ -11941,7 +11971,7 @@ window.top2BasketLab = {
         q('t2-hit-profit').textContent=this.money(worstHitProfit);
         q('t2-hit-profit').className=`t2-v ${worstHitProfit>0?'metric-profit':worstHitProfit<0?'metric-loss':'metric-neutral'}`;
 
-        const isObserve5Rule=pair.picks?.rule==='OBSERVE5_TRADE5';
+        const isObserve5Rule=pair.picks?.rule==='OBSERVE5_SCORED_TOP7';
         const isLast5Rule=pair.picks?.rule==='LAST5_EXCLUSION';
         const worstProfitFactor=worstHitProfit/S;
 
@@ -12115,7 +12145,7 @@ window.top2BasketLab = {
         const win=pnl>0;
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += pnl;
-        if(pair.picks?.rule==='OBSERVE5_TRADE5') this.blockPnl += pnl;
+        if(pair.picks?.rule==='OBSERVE5_SCORED_TOP7') this.blockPnl += pnl;
         this.recordEmpirical(win,pair.breakEvenProbability,pair.picks?.rule);
 
         const hist={
@@ -12129,6 +12159,7 @@ window.top2BasketLab = {
             selectionRule:pair.picks.rule || 'MODEL_TOP2',
             last5Window:pair.picks.window5 || null,
             frozenAbsentPool:pair.picks.absentPool || null,
+            rankedDigits:pair.picks.rankedDigits || null,
             blockNumber:pair.picks.blockNumber || null,
             blockTradeNumber:pair.picks.blockTradeNumber || null,
             combinedModelProbability:pair.picks.combinedP,
@@ -12166,7 +12197,7 @@ window.top2BasketLab = {
         this.pendingBuyPair=null;
         this.busy=false;
 
-        if(pair.picks?.rule==='OBSERVE5_TRADE5'){
+        if(pair.picks?.rule==='OBSERVE5_SCORED_TOP7'){
             if(this.blockTargetReached()){
                 this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached (cent-safe stop)`);
             }else{
@@ -12238,6 +12269,9 @@ window.top2BasketLab = {
                 tradeStateRequiresPoolAtLeastBasketWidth:true,
                 profitStopUsesIntegerCents:true,
                 oneTargetProfitWinEndsBlock:true,
+                selectionUsesAllTenDigits:true,
+                observedDigitsAreNotExcluded:true,
+                rankingMethod:'0.60_modelP + 0.15_freq20 + 0.10_freq50 + 0.10_freq5 + 0.05_recency',
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
