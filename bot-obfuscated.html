@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V41: V40 + selectable 2-7 digit baskets + fixed hit-profit targeting -->
+    <!-- V42: V41 + rule/width consistency lock for Observe-5 multi-digit mode -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11188,12 +11188,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Default experiment supports 2–7 Match targets per basket. In 7-digit mode the bot only trades when the frozen
-      absent pool has at least 7 digits. It first reads the live uniform Match payout, then sizes the total basket so
-      the worst single target hit aims to net the configured hit profit (default $0.90), including recovery of current
-      block losses when possible. A profitable block stops early; otherwise it ends after 5 baskets. New blocks reset
-      recovery. Persistent evidence remains separated by symbol, rule, and basket width. Live multi-leg buys are
-      sequential/non-atomic, so partial fills remain possible.
+      Multi-digit widths 3–7 are locked to OBSERVE 5 → TRADE UP TO 5; MODEL TOP-2 and rolling Last-5 are disabled
+      whenever width exceeds 2. The bot observes 5 digits, freezes the absent pool, and trades only when that pool has
+      enough digits for the selected width. It sizes from live Match payout toward the configured hit-profit target
+      (default $0.90), subject to recovery-depth and max-basket caps. Live multi-leg buys remain sequential/non-atomic.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11207,7 +11205,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.4-UPTO7-TARGET-HIT-PROFIT',
+    version: 'TOP2-BASKET-V1.5-RULE-WIDTH-LOCK',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11298,6 +11296,23 @@ window.top2BasketLab = {
         return Math.max(2,Math.min(7,n));
     },
     targetHitProfit(){ return Math.max(0.01,Number(q('t2-hit-target')?.value || 0.90)); },
+    enforceRuleWidthConsistency(){
+        const ruleEl=q('t2-rule');
+        const width=this.basketWidth();
+        if(width>2 && ruleEl){
+            if(ruleEl.value!=='observe5trade5'){
+                ruleEl.value='observe5trade5';
+                this.log(`Rule auto-corrected to OBSERVE 5 → TRADE UP TO 5 because basket width is ${width}.`);
+            }
+            for(const opt of ruleEl.options){
+                opt.disabled = opt.value!=='observe5trade5';
+            }
+            ruleEl.title=`${width}-digit baskets require the Observe-5 frozen absent-pool rule.`;
+        }else if(ruleEl){
+            for(const opt of ruleEl.options) opt.disabled=false;
+            ruleEl.title='Choose the selection rule.';
+        }
+    },
     symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
 
     log(msg){
@@ -11315,6 +11330,7 @@ window.top2BasketLab = {
     money(v){ return `${v>=0?'+':'-'}$${Math.abs(Number(v||0)).toFixed(2)}`; },
 
     render(){
+        this.enforceRuleWidthConsistency();
         const set=(id,v)=>{const el=q(id); if(el) el.textContent=v;};
         const setSignClass=(id,value)=>{
             const el=q(id); if(!el) return;
@@ -11507,6 +11523,13 @@ window.top2BasketLab = {
     },
 
     async start(){
+        this.enforceRuleWidthConsistency();
+        if(this.basketWidth()>2 && this.rule()!=='observe5trade5'){
+            this.status(`Basket width ${this.basketWidth()} requires OBSERVE 5 → TRADE UP TO 5.`,false);
+            this.log('Start blocked: incompatible rule/width combination.');
+            return;
+        }
+
         if(!(await window.checkExperimentalAdminAccess(false))){
             this.running=false;
             this.busy=false;
@@ -11558,7 +11581,7 @@ window.top2BasketLab = {
         const outcomeEl=q('t2-outcome');
         if(outcomeEl){outcomeEl.className='t2-outcome neutral';outcomeEl.textContent='LAST RESULT: —';}
         this.status(`Armed in ${this.mode().toUpperCase()} mode.`);
-        this.log(`START ${this.mode().toUpperCase()} | base basket $${this.baseStake().toFixed(2)} total = $${(this.baseStake()/2).toFixed(2)} + $${(this.baseStake()/2).toFixed(2)} | target $${this.targetProfit().toFixed(2)} | max recovery depth ${this.maxRecoveryDepth()} | max basket $${this.maxBasketStake().toFixed(2)}`);
+        this.log(`START ${this.mode().toUpperCase()} | rule ${this.rule()} | width ${this.basketWidth()} | target hit profit $${this.targetHitProfit().toFixed(2)} | max recovery depth ${this.maxRecoveryDepth()} | max basket $${this.maxBasketStake().toFixed(2)}`);
         if(this.isLive() && (!window.ws || window.ws.readyState!==WebSocket.OPEN)){
             if(typeof connectWebSocket==='function') connectWebSocket();
         }
@@ -12135,6 +12158,7 @@ window.top2BasketLab = {
                 maxBasketTrades:this.maxTrades(),
                 basketWidth:this.basketWidth(),
                 targetHitProfit:this.targetHitProfit(),
+                enforcedRuleWidthCompatibility:true,
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
@@ -12198,6 +12222,7 @@ window.top2BasketLab = {
         const adminPanel=q('top2-basket-lab');
         if(adminPanel) adminPanel.style.display='';
         this.currentBasketStake=this.baseStake();
+        this.enforceRuleWidthConsistency();
         this.loadEmpirical();
         this.render();
 
@@ -12212,6 +12237,10 @@ window.top2BasketLab = {
             this.render();
         });
         q('t2-rule')?.addEventListener('change',()=>{
+            if(this.basketWidth()>2 && q('t2-rule')?.value!=='observe5trade5'){
+                q('t2-rule').value='observe5trade5';
+                this.status(`${this.basketWidth()}-digit baskets require OBSERVE 5 → TRADE UP TO 5.`,false);
+            }
             if(this.running) this.stop('Selection rule changed. Press START again.');
             this.resetObserveTradeBlock();
             this.loadEmpirical();
@@ -12219,6 +12248,7 @@ window.top2BasketLab = {
         });
         q('t2-width')?.addEventListener('change',()=>{
             if(this.running) this.stop('Basket width changed. Press START again.');
+            this.enforceRuleWidthConsistency();
             this.resetObserveTradeBlock();
             this.loadEmpirical();
             this.render();
