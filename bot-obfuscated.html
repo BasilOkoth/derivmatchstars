@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V29: V28 + admin-only access for Digit Differs and Top-2 Basket panels/engines -->
+    <!-- V30: V29 + Digit Differs/Top-2 now use the same /api/capture-access admin authorization flow as TailGuard -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -10228,6 +10228,104 @@ window.isBotRunning = true;
 </div>
 
 
+
+<script>
+(() => {
+    'use strict';
+
+    let experimentalAdminAuthorized = null;
+    let experimentalAdminCheckInFlight = null;
+    let experimentalAdminLastCheckedAt = 0;
+    const EXPERIMENTAL_ADMIN_RECHECK_MS = 60000;
+
+    window.checkExperimentalAdminAccess = async function(force = false) {
+        const now = Date.now();
+
+        if (
+            !force &&
+            experimentalAdminAuthorized !== null &&
+            (now - experimentalAdminLastCheckedAt) < EXPERIMENTAL_ADMIN_RECHECK_MS
+        ) {
+            window.__experimentalAdminAuthorized = experimentalAdminAuthorized === true;
+            return experimentalAdminAuthorized === true;
+        }
+
+        if (experimentalAdminCheckInFlight) {
+            return experimentalAdminCheckInFlight;
+        }
+
+        experimentalAdminCheckInFlight = (async () => {
+            try {
+                const accountId =
+                    localStorage.getItem('active_account') ||
+                    localStorage.getItem('derivAccount') ||
+                    localStorage.getItem('derivDemoAccount') ||
+                    localStorage.getItem('derivRealAccount') ||
+                    '';
+
+                const token =
+                    localStorage.getItem('active_token') ||
+                    localStorage.getItem('derivToken') ||
+                    localStorage.getItem('derivTokenDemo') ||
+                    localStorage.getItem('derivTokenReal') ||
+                    '';
+
+                if (!token || !accountId) {
+                    experimentalAdminAuthorized = false;
+                    experimentalAdminLastCheckedAt = Date.now();
+                    window.__experimentalAdminAuthorized = false;
+                    return false;
+                }
+
+                const response = await fetch('/api/capture-access', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        account_id: accountId
+                    })
+                });
+
+                if (!response.ok) {
+                    experimentalAdminAuthorized = false;
+                    experimentalAdminLastCheckedAt = Date.now();
+                    window.__experimentalAdminAuthorized = false;
+                    return false;
+                }
+
+                const data = await response.json().catch(() => ({}));
+
+                experimentalAdminAuthorized = !!(
+                    data.allowed === true ||
+                    data.authorized === true ||
+                    data.captureAllowed === true ||
+                    data.captureAdmin === true ||
+                    data.ok === true
+                );
+
+                experimentalAdminLastCheckedAt = Date.now();
+                window.__experimentalAdminAuthorized = experimentalAdminAuthorized === true;
+                return experimentalAdminAuthorized === true;
+            } catch (_) {
+                experimentalAdminAuthorized = false;
+                experimentalAdminLastCheckedAt = Date.now();
+                window.__experimentalAdminAuthorized = false;
+                return false;
+            } finally {
+                experimentalAdminCheckInFlight = null;
+            }
+        })();
+
+        return experimentalAdminCheckInFlight;
+    };
+
+    window.__experimentalAdminAuthorized = false;
+})();
+</script>
+
 <script>
 (() => {
 'use strict';
@@ -10302,8 +10400,8 @@ window.digitDiffersLab = {
         return best;
     },
 
-    start() {
-        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) {
+    async start() {
+        if (!(await window.checkExperimentalAdminAccess(false))) {
             this.running = false;
             this.busy = false;
             this.status('Admin access required.', false);
@@ -10340,7 +10438,7 @@ window.digitDiffersLab = {
     },
 
     onTick(tick) {
-        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return;
+        if (window.__experimentalAdminAuthorized !== true) return;
         this.render();
         if (!this.running) return;
 
@@ -10551,7 +10649,7 @@ window.digitDiffersLab = {
     },
 
     handleApi(data) {
-        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return false;
+        if (window.__experimentalAdminAuthorized !== true) return false;
         if (!data) return false;
         if (data.error && this.pending.has(data.req_id)) {
             this.pending.delete(data.req_id);
@@ -10572,8 +10670,8 @@ window.digitDiffersLab = {
         return false;
     },
 
-    initUi() {
-        const isAdmin = !!(window.isExperimentalAdmin && window.isExperimentalAdmin());
+    async initUi() {
+        const isAdmin = await window.checkExperimentalAdminAccess(false);
         if (!isAdmin) {
             const adminPanel = $('differs-lab');
             if (adminPanel) adminPanel.style.display = 'none';
@@ -10854,8 +10952,8 @@ window.top2BasketLab = {
         return {a,b,combinedP:a.p+b.p};
     },
 
-    start(){
-        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())){
+    async start(){
+        if(!(await window.checkExperimentalAdminAccess(false))){
             this.running=false;
             this.busy=false;
             this.status('Admin access required.',false);
@@ -10901,7 +10999,7 @@ window.top2BasketLab = {
     },
 
     onTick(tick){
-        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return;
+        if(window.__experimentalAdminAuthorized !== true) return;
         this.render();
         if(!this.running) return;
 
@@ -11273,7 +11371,7 @@ window.top2BasketLab = {
     },
 
     handleApi(data){
-        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return false;
+        if(window.__experimentalAdminAuthorized !== true) return false;
         if(!data) return false;
 
         if(data.error && this.pending.has(data.req_id)){
@@ -11297,8 +11395,8 @@ window.top2BasketLab = {
         return false;
     },
 
-    initUi(){
-        const isAdmin=!!(window.isExperimentalAdmin && window.isExperimentalAdmin());
+    async initUi(){
+        const isAdmin=await window.checkExperimentalAdminAccess(false);
         if(!isAdmin){
             const adminPanel=q('top2-basket-lab');
             if(adminPanel) adminPanel.style.display='none';
