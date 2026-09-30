@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V34: V33 + compact experimental cards and clearer profit/loss color coding -->
+    <!-- V36: V35 + explicit DEMO/REAL execution, strong WIN/LOSS colors, visible export -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -560,6 +560,24 @@
     max-height:68vh !important;
   }
 }
+
+
+/* === V36 DEMO/REAL + OUTCOME VISUALS === */
+#top2-basket-lab .t2-outcome,#differs-lab .ddl-outcome{
+  margin-top:7px;border-radius:10px;padding:8px 10px;text-align:center;
+  font-size:.78rem;font-weight:1000;letter-spacing:.04em;
+  border:1px solid rgba(148,163,184,.25);background:rgba(30,41,59,.72);color:#e5e7eb;
+}
+#top2-basket-lab .t2-outcome.win,#differs-lab .ddl-outcome.win{
+  color:#dcfce7!important;background:rgba(22,163,74,.30)!important;border-color:#4ade80!important;
+  box-shadow:0 0 18px rgba(34,197,94,.20);
+}
+#top2-basket-lab .t2-outcome.loss,#differs-lab .ddl-outcome.loss{
+  color:#fee2e2!important;background:rgba(220,38,38,.30)!important;border-color:#f87171!important;
+  box-shadow:0 0 18px rgba(239,68,68,.18);
+}
+#t2-export,#ddl-export{background:#4f46e5!important;color:#fff!important;border:1px solid rgba(165,180,252,.40)!important}
+#t2-export:hover,#ddl-export:hover{filter:brightness(1.12)}
 
 </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
@@ -10272,7 +10290,8 @@ window.isBotRunning = true;
         <label>Execution</label>
         <select id="ddl-mode">
           <option value="shadow">SHADOW — no purchase</option>
-          <option value="live">LIVE — can purchase</option>
+          <option value="demo">DEMO — actual demo contracts</option>
+          <option value="real">REAL — actual real-money contracts</option>
         </select>
       </div>
       <div class="ddl-field">
@@ -10312,6 +10331,7 @@ window.isBotRunning = true;
       <div class="ddl-card"><div class="ddl-k">Losses</div><div id="ddl-losses" class="ddl-v bad">0</div></div>
       <div class="ddl-card"><div class="ddl-k">P/L</div><div id="ddl-pnl" class="ddl-v">$0.00</div></div>
     </div>
+    <div id="ddl-outcome" class="ddl-outcome neutral">LAST RESULT: —</div>
 
     <div id="ddl-status" class="ddl-status">Ready. It will avoid the model's lowest-probability digit.</div>
 
@@ -10322,9 +10342,8 @@ window.isBotRunning = true;
     </div>
 
     <div class="ddl-mini-note">
-      LIVE mode uses Deriv <b>DIGITDIFF</b>. The lab buys only when model support is ready
-      and estimated Differs win probability clears the live quote break-even by the selected edge.
-      Flat stake only; no Martingale is used in this lab.
+      Choose SHADOW, DEMO, or REAL. DEMO and REAL place actual Deriv <b>DIGITDIFF</b> contracts on the
+      currently selected matching account. Green = WIN/profit, red = LOSS. Use ⬇ EXPORT anytime for the JSON report.
     </div>
     <div id="ddl-log" class="ddl-log">Digit Differs Lab ready.</div>
   </div>
@@ -10469,6 +10488,8 @@ window.digitDiffersLab = {
     lastQuote: null,
 
     mode() { return $('ddl-mode')?.value || 'shadow'; },
+    isLive() { return this.mode() !== 'shadow'; },
+    selectedAccountMode() { return String(localStorage.getItem('selectedAccountMode') || 'DEMO').toLowerCase(); },
     stake() { return Math.max(0.35, Number($('ddl-stake')?.value || 10)); },
     maxTrades() { return Math.max(1, Math.min(10, Number($('ddl-max')?.value || 10))); },
     minEdge() { return Math.max(0, Number($('ddl-edge')?.value || 0.10)) / 100; },
@@ -10506,8 +10527,8 @@ window.digitDiffersLab = {
         setSignClass('ddl-pnl', this.stats.pnl);
         const badge = $('ddl-mode-badge');
         if (badge) {
-            const live = this.mode() === 'live';
-            badge.textContent = live ? 'LIVE' : 'SHADOW';
+            const live = this.isLive();
+            badge.textContent = live ? this.mode().toUpperCase() : 'SHADOW';
             badge.className = `ddl-badge ${live ? 'live' : 'shadow'}`;
         }
         const sym = $('ddl-symbol');
@@ -10545,6 +10566,13 @@ window.digitDiffersLab = {
         return best;
     },
 
+    showOutcome(win, profit, label='') {
+        const el = $('ddl-outcome');
+        if (!el) return;
+        el.className = `ddl-outcome ${win ? 'win' : 'loss'}`;
+        el.textContent = `${win ? 'WIN ✓' : 'LOSS ✕'}${label ? ' · ' + label : ''} · ${profit >= 0 ? '+' : '-'}$${Math.abs(profit).toFixed(2)}`;
+    },
+
     async start() {
         if (!(await window.checkExperimentalAdminAccess(false))) {
             this.running = false;
@@ -10554,7 +10582,13 @@ window.digitDiffersLab = {
         }
         if (this.running) return;
 
-        if (this.mode() === 'live' && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
+        if (this.isLive() && this.selectedAccountMode() !== this.mode()) {
+            this.status(`Account mismatch: panel is ${this.mode().toUpperCase()} but main account is ${this.selectedAccountMode().toUpperCase()}. Switch the main account toggle first.`, false);
+            this.log('Start blocked: account mismatch.');
+            return;
+        }
+
+        if (this.isLive() && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
             this.status('Stop the main Digit Match bot before starting LIVE Differs.', false);
             this.log('LIVE start blocked because the main bot is active.');
             return;
@@ -10567,10 +10601,12 @@ window.digitDiffersLab = {
         this.history = [];
         this.sessionStartedAt = new Date().toISOString();
         this.render();
+        const outcomeEl = $('ddl-outcome');
+        if (outcomeEl) { outcomeEl.className='ddl-outcome neutral'; outcomeEl.textContent='LAST RESULT: —'; }
         this.status(`Armed in ${this.mode().toUpperCase()} mode. Waiting for a model-ready tick.`);
         this.log(`Started ${this.mode().toUpperCase()} | stake $${this.stake().toFixed(2)} | max ${this.maxTrades()} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
 
-        if (this.mode() === 'live' && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+        if (this.isLive() && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
             this.log('Opening authenticated trading connection...');
             if (typeof connectWebSocket === 'function') connectWebSocket();
         }
@@ -10619,6 +10655,7 @@ window.digitDiffersLab = {
                 result: win ? 'WIN' : 'LOSS',
                 profit: pnl
             });
+            this.showOutcome(win, pnl, `outcome ${actual}`);
             this.log(`SHADOW ${win?'WIN':'LOSS'} | avoided ${s.digit}, outcome ${actual} | ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
             const ddlLog=$('ddl-log'); if(ddlLog){ddlLog.classList.toggle('log-profit',win);ddlLog.classList.toggle('log-loss',!win);}
             this.shadowOpen = null;
@@ -10642,13 +10679,13 @@ window.digitDiffersLab = {
         $('ddl-pdigit').textContent = `${(pick.pDigit*100).toFixed(2)}%`;
         $('ddl-pwin').textContent = `${(pick.pWin*100).toFixed(2)}%`;
 
-        if (this.mode() === 'live' && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
+        if (this.isLive() && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
             this.status('Main Digit Match bot became active; LIVE Differs is paused.', false);
             return;
         }
 
         if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
-            if (this.mode() === 'live' && typeof connectWebSocket === 'function') connectWebSocket();
+            if (this.isLive() && typeof connectWebSocket === 'function') connectWebSocket();
             this.status('Waiting for authenticated trading connection.');
             return;
         }
@@ -10736,7 +10773,7 @@ window.digitDiffersLab = {
             return true;
         }
 
-        if (this.mode() === 'shadow') {
+        if (!this.isLive()) {
             this.shadowOpen = {...ctx, ask, payout, be, edge, ev, winProfit};
             this.status(
                 `SHADOW ARMED: avoid ${ctx.digit} | win P ${(ctx.pWin*100).toFixed(2)}% | edge +${(edge*100).toFixed(2)} pp`,
@@ -10803,7 +10840,7 @@ window.digitDiffersLab = {
         this.stats.pnl += profit;
         this.history.push({
             timestamp: new Date().toISOString(),
-            mode: 'LIVE',
+            mode: this.mode().toUpperCase(),
             symbol: this.active.symbol,
             avoidedDigit: this.active.digit,
             modelDigitProbability: this.active.pDigit,
@@ -10818,7 +10855,8 @@ window.digitDiffersLab = {
             result: win ? 'WIN' : 'LOSS',
             profit
         });
-        this.log(`LIVE ${win?'WIN':'LOSS'} | avoided ${this.active.digit} | ${profit>=0?'+':''}$${profit.toFixed(2)}`);
+        this.showOutcome(win, profit, this.mode().toUpperCase());
+        this.log(`${this.mode().toUpperCase()} ${win?'WIN':'LOSS'} | avoided ${this.active.digit} | ${profit>=0?'+':''}$${profit.toFixed(2)}`);
         const ddlLog=$('ddl-log'); if(ddlLog){ddlLog.classList.toggle('log-profit',win);ddlLog.classList.toggle('log-loss',!win);}
         this.status(`${win?'WIN':'LOSS'} · ${profit>=0?'+':''}$${profit.toFixed(2)}`, win);
 
@@ -11054,7 +11092,8 @@ if (document.readyState === 'loading') {
         <label>Execution</label>
         <select id="t2-mode">
           <option value="shadow">SHADOW — no purchase</option>
-          <option value="live">LIVE — can purchase</option>
+          <option value="demo">DEMO — actual demo contracts</option>
+          <option value="real">REAL — actual real-money contracts</option>
         </select>
       </div>
       <div class="t2-field">
@@ -11070,12 +11109,23 @@ if (document.readyState === 'loading') {
         <input id="t2-target-profit" type="number" value="1" min="0" step="0.01">
       </div>
       <div class="t2-field">
+        <label>Selection rule</label>
+        <select id="t2-rule">
+          <option value="last5" selected>LAST-5 EXCLUSION</option>
+          <option value="model">MODEL TOP-2</option>
+        </select>
+      </div>
+      <div class="t2-field">
         <label>Minimum basket edge (pp)</label>
         <input id="t2-edge" type="number" value="0.10" min="0" step="0.05">
       </div>
       <div class="t2-field">
         <label>Max basket trades</label>
         <input id="t2-max" type="number" value="10" min="1" max="10" step="1">
+      </div>
+      <div class="t2-field">
+        <label>Last 5 digits</label>
+        <input id="t2-last5" value="—" readonly>
       </div>
     </div>
 
@@ -11090,6 +11140,7 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Basket trades</div><div id="t2-trades" class="t2-v">0</div></div>
       <div class="t2-card"><div class="t2-k">Session P/L</div><div id="t2-pnl" class="t2-v">$0.00</div></div>
     </div>
+    <div id="t2-outcome" class="t2-outcome neutral">LAST RESULT: —</div>
 
     <div id="t2-status" class="t2-status">
       Ready. It will split the basket stake equally across the two highest-probability Match digits.
@@ -11102,10 +11153,9 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      One basket trade = two simultaneous DIGITMATCH contracts on the same next tick.
-      After a basket miss, the next total basket stake is calculated from accumulated cycle losses
-      and the live worst-case winning payout, then split equally between the new Top-2 digits.
-      No fixed 1.15× multiplier is used here.
+      Choose SHADOW, DEMO, or REAL. DEMO and REAL place actual Deriv DIGITMATCH contracts on the currently
+      selected matching account. LAST-5 EXCLUSION tracks the recent 5 digits and trades 2 absent digits.
+      Green = WIN/profit, red = LOSS/negative P/L. Use ⬇ EXPORT anytime for the JSON report.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11132,12 +11182,18 @@ window.top2BasketLab = {
     cycleLoss: 0,
     cycleIndex: 0,
     currentBasketStake: 0,
+    recentDigits: [],
+    digitLastSeenTick: Array(10).fill(-1),
+    observedTickIndex: 0,
 
     mode(){ return q('t2-mode')?.value || 'shadow'; },
+    isLive(){ return this.mode() !== 'shadow'; },
+    selectedAccountMode(){ return String(localStorage.getItem('selectedAccountMode') || 'DEMO').toLowerCase(); },
     baseStake(){ return Math.max(0.70, Number(q('t2-base-stake')?.value || 10)); },
     targetProfit(){ return Math.max(0, Number(q('t2-target-profit')?.value || 1)); },
     minEdge(){ return Math.max(0, Number(q('t2-edge')?.value || 0.10)) / 100; },
     maxTrades(){ return Math.max(1, Math.min(10, Number(q('t2-max')?.value || 10))); },
+    rule(){ return q('t2-rule')?.value || 'last5'; },
     symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
 
     log(msg){
@@ -11169,8 +11225,8 @@ window.top2BasketLab = {
         setSignClass('t2-cycle-loss',this.cycleLoss > 0 ? -this.cycleLoss : 0);
         const badge=q('t2-mode-badge');
         if(badge){
-            const live=this.mode()==='live';
-            badge.textContent=live?'LIVE':'SHADOW';
+            const live=this.isLive();
+            badge.textContent=live?this.mode().toUpperCase():'SHADOW';
             badge.className=`t2-badge ${live?'live':'shadow'}`;
         }
         const sym=q('t2-symbol'); if(sym) sym.value=this.symbol();
@@ -11187,6 +11243,36 @@ window.top2BasketLab = {
             stopBtn.disabled=!this.running && !this.pendingBuyPair && !this.awaitingOutcome;
             stopBtn.style.opacity=(!this.running && !this.pendingBuyPair && !this.awaitingOutcome)?'0.55':'1';
         }
+    },
+
+
+    last5Pair(){
+        if(this.recentDigits.length < 5) return null;
+
+        const window5 = this.recentDigits.slice(-5);
+        const seen = new Set(window5);
+        const absent = [];
+
+        for(let d=0; d<=9; d++){
+            if(seen.has(d)) continue;
+            absent.push({ digit:d, lastSeen:this.digitLastSeenTick[d] });
+        }
+
+        if(absent.length < 2) return null;
+
+        absent.sort((a,b)=>{
+            if(a.lastSeen === b.lastSeen) return a.digit - b.digit;
+            return a.lastSeen - b.lastSeen;
+        });
+
+        const a=absent[0], b=absent[1];
+        return {
+            a:{digit:a.digit,p:0.10,support:5,model:null},
+            b:{digit:b.digit,p:0.10,support:5,model:null},
+            combinedP:0.20,
+            rule:'LAST5_EXCLUSION',
+            window5
+        };
     },
 
     topTwo(){
@@ -11207,6 +11293,13 @@ window.top2BasketLab = {
         return {a,b,combinedP:a.p+b.p};
     },
 
+    showOutcome(win,pnl,label=''){
+        const el=q('t2-outcome');
+        if(!el) return;
+        el.className=`t2-outcome ${win?'win':'loss'}`;
+        el.textContent=`${win?'WIN ✓':'LOSS ✕'}${label?' · '+label:''} · ${this.money(pnl)}`;
+    },
+
     async start(){
         if(!(await window.checkExperimentalAdminAccess(false))){
             this.running=false;
@@ -11216,10 +11309,15 @@ window.top2BasketLab = {
         }
         if(this.running) return;
 
-        if(this.mode()==='live'){
+        if(this.isLive()){
+            if(this.selectedAccountMode() !== this.mode()){
+                this.status(`Account mismatch: panel is ${this.mode().toUpperCase()} but main account is ${this.selectedAccountMode().toUpperCase()}. Switch the main account toggle first.`, false);
+                this.log('Start blocked: account mismatch.');
+                return;
+            }
             if(
                 window.isBotRunning ||
-                (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
+                (window.digitDiffersLab?.running && window.digitDiffersLab.isLive()) ||
                 (typeof hasOpenContract==='function' && hasOpenContract())
             ){
                 this.status('Stop other LIVE trading engines before starting Top-2.',false);
@@ -11240,10 +11338,15 @@ window.top2BasketLab = {
         this.cycleLoss=0;
         this.cycleIndex=0;
         this.currentBasketStake=this.baseStake();
+        this.recentDigits=[];
+        this.digitLastSeenTick=Array(10).fill(-1);
+        this.observedTickIndex=0;
         this.render();
+        const outcomeEl=q('t2-outcome');
+        if(outcomeEl){outcomeEl.className='t2-outcome neutral';outcomeEl.textContent='LAST RESULT: —';}
         this.status(`Armed in ${this.mode().toUpperCase()} mode.`);
         this.log(`START ${this.mode().toUpperCase()} | base basket $${this.baseStake().toFixed(2)} | target cycle profit $${this.targetProfit().toFixed(2)} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
-        if(this.mode()==='live' && (!window.ws || window.ws.readyState!==WebSocket.OPEN)){
+        if(this.isLive() && (!window.ws || window.ws.readyState!==WebSocket.OPEN)){
             if(typeof connectWebSocket==='function') connectWebSocket();
         }
     },
@@ -11265,8 +11368,18 @@ window.top2BasketLab = {
             : String(tick?.quote ?? '');
         const actual = formatted ? Number.parseInt(formatted[formatted.length-1],10) : NaN;
 
+        if(Number.isInteger(actual)){
+            this.observedTickIndex++;
+            this.recentDigits.push(actual);
+            if(this.recentDigits.length > 50) this.recentDigits.shift();
+            this.digitLastSeenTick[actual] = this.observedTickIndex;
+            const last5 = this.recentDigits.slice(-5);
+            const last5El = q('t2-last5');
+            if(last5El) last5El.value = last5.length ? last5.join(' · ') : '—';
+        }
+
         // Shadow settlement: first future public tick after both proposal quotes are accepted.
-        if(this.mode()==='shadow' && this.awaitingOutcome && Number.isInteger(actual)){
+        if(!this.isLive() && this.awaitingOutcome && Number.isInteger(actual)){
             const b=this.awaitingOutcome;
             const hitA=actual===b.a.digit;
             const hitB=actual===b.b.digit;
@@ -11289,6 +11402,8 @@ window.top2BasketLab = {
                 topDigit1Probability: b.a.p,
                 topDigit2: b.b.digit,
                 topDigit2Probability: b.b.p,
+                selectionRule: b.picks.rule || 'MODEL_TOP2',
+                last5Window: b.picks.window5 || null,
                 combinedModelProbability: b.picks.combinedP,
                 totalBasketStake: b.totalStake,
                 legStake1: b.askA,
@@ -11305,12 +11420,14 @@ window.top2BasketLab = {
             });
 
             if(win){
+                this.showOutcome(true,pnl,`outcome ${actual}`);
                 this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | cycle recovered`);
                 const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
                 this.cycleLoss=0;
                 this.cycleIndex=0;
                 this.currentBasketStake=this.baseStake();
             } else {
+                this.showOutcome(false,pnl,`outcome ${actual}`);
                 this.log(`SHADOW BASKET MISS | outcome ${actual} | -$${b.totalStake.toFixed(2)}`);
                 const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
                 this.cycleLoss += b.totalStake;
@@ -11329,7 +11446,7 @@ window.top2BasketLab = {
 
         if(this.busy || this.awaitingOutcome || this.stats.baskets>=this.maxTrades()) return;
 
-        if(this.mode()==='live' && (
+        if(this.isLive() && (
             window.isBotRunning ||
             (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
             (typeof hasOpenContract==='function' && hasOpenContract())
@@ -11338,18 +11455,30 @@ window.top2BasketLab = {
             return;
         }
 
-        const picks=this.topTwo();
+        const useLast5 = this.rule() === 'last5';
+        const picks = useLast5 ? this.last5Pair() : this.topTwo();
+
         if(!picks){
-            this.status('Waiting for two model-ready digits.');
+            this.status(
+                useLast5
+                    ? 'Collecting the first 5 public digits for the Last-5 Exclusion rule.'
+                    : 'Waiting for two model-ready digits.'
+            );
             return;
         }
 
-        q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
-        q('t2-d2').textContent=`${picks.b.digit} (${(picks.b.p*100).toFixed(2)}%)`;
-        q('t2-combined-p').textContent=`${(picks.combinedP*100).toFixed(2)}%`;
+        if(useLast5){
+            q('t2-d1').textContent=`${picks.a.digit} (absent)`;
+            q('t2-d2').textContent=`${picks.b.digit} (absent)`;
+            q('t2-combined-p').textContent='Rule test';
+        }else{
+            q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
+            q('t2-d2').textContent=`${picks.b.digit} (${(picks.b.p*100).toFixed(2)}%)`;
+            q('t2-combined-p').textContent=`${(picks.combinedP*100).toFixed(2)}%`;
+        }
 
         if(!window.ws || window.ws.readyState!==WebSocket.OPEN){
-            if(this.mode()==='live' && typeof connectWebSocket==='function') connectWebSocket();
+            if(this.isLive() && typeof connectWebSocket==='function') connectWebSocket();
             this.status('Waiting for authenticated trading connection.');
             return;
         }
@@ -11503,8 +11632,10 @@ window.top2BasketLab = {
         this.currentBasketStake=S;
         this.render();
 
-        // Use exact EV as the gate. basketEdge is display-friendly approximation.
-        if(evPerDollar < this.minEdge()){
+        // MODEL mode uses the EV gate.
+        // LAST-5 EXCLUSION is a direct rule test, so the model edge gate is bypassed.
+        const isLast5Rule = pair.picks?.rule === 'LAST5_EXCLUSION';
+        if(!isLast5Rule && evPerDollar < this.minEdge()){
             this.stats.blocked++;
             this.busy=false;
             this.pendingProposalPair=null;
@@ -11515,7 +11646,14 @@ window.top2BasketLab = {
             return true;
         }
 
-        if(this.mode()==='shadow'){
+        if(isLast5Rule){
+            this.status(
+                `LAST-5 RULE ARMED: recent [${pair.picks.window5.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
+                true
+            );
+        }
+
+        if(!this.isLive()){
             this.awaitingOutcome={
                 picks:pair.picks,
                 a:pair.picks.a,b:pair.picks.b,
@@ -11633,13 +11771,15 @@ window.top2BasketLab = {
 
         this.history.push({
             timestamp: new Date().toISOString(),
-            mode: 'LIVE',
+            mode: this.mode().toUpperCase(),
             symbol: this.symbol(),
             cycleIndexBeforeSettlement: this.cycleIndex,
             topDigit1: pair.picks.a.digit,
             topDigit1Probability: pair.picks.a.p,
             topDigit2: pair.picks.b.digit,
             topDigit2Probability: pair.picks.b.p,
+            selectionRule: pair.picks.rule || 'MODEL_TOP2',
+            last5Window: pair.picks.window5 || null,
             combinedModelProbability: pair.picks.combinedP,
             totalBasketStake: pair.totalStake,
             leg1BuyPrice: pair.buys.a.buyPrice,
@@ -11657,13 +11797,15 @@ window.top2BasketLab = {
         });
 
         if(win){
-            this.log(`LIVE BASKET WIN | ${this.money(pnl)} | cycle recovered`);
+            this.showOutcome(true,pnl,this.mode().toUpperCase());
+            this.log(`${this.mode().toUpperCase()} BASKET WIN | ${this.money(pnl)} | cycle recovered`);
             const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
             this.cycleLoss=0;
             this.cycleIndex=0;
             this.currentBasketStake=this.baseStake();
         }else{
-            this.log(`LIVE BASKET MISS | ${this.money(pnl)}`);
+            this.showOutcome(false,pnl,this.mode().toUpperCase());
+            this.log(`${this.mode().toUpperCase()} BASKET MISS | ${this.money(pnl)}`);
             const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
             this.cycleLoss += Math.abs(pnl);
             this.cycleIndex++;
@@ -11725,7 +11867,9 @@ window.top2BasketLab = {
                 targetCycleProfit:this.targetProfit(),
                 minimumBasketEdge:this.minEdge(),
                 maxBasketTrades:this.maxTrades(),
-                selectionPolicy:'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES',
+                selectionPolicy:this.rule()==='last5'
+                    ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
+                    : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES',
                 recoverySizing:'EXACT_CYCLE_LOSS_PLUS_TARGET_FROM_LIVE_WORST_HIT_PAYOUT'
             },
             summary:{
