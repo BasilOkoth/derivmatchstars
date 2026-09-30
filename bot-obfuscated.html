@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V59 FULL REPORT: comprehensive downloadable diagnostic report including DNA/features/auditor/logs/timing; INSTANT unchanged -->
+    <!-- V57 DNA RUNTIME FIX: Randomness Auditor variable fix + single public market feed; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -536,7 +536,7 @@
                                 
                                 <div>
                                     <label class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                                    <input type="number" id="calc_max_trades" value="10" min="1" max="10" step="1" 
+                                    <input type="number" id="calc_max_trades" value="10" min="1" step="1" 
                                         class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
                                 </div>
                                 
@@ -643,7 +643,7 @@
                     <!-- Max Trades -->
                     <div>
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="10" min="1" max="10" step="1" 
+                        <input type="number" id="maxTrades" value="10" min="1" step="1" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
                         <p class="text-[10px] text-gray-500 mt-1">Choose 1–10. The hard safety cap is 10 purchased contracts per cycle.</p>
                     </div>
@@ -837,10 +837,7 @@
                 ['cycle-performance-panel', 'cycle-performance'],
                 ['tail-risk-panel', 'tail-risk'],
                 ['tail-precursor-panel', 'tail-precursor'],
-                ['post-stop-depth-panel', 'post-stop-depth'],
-                ['digit-dna-panel', 'digit-dna'],
-                ['digit-feature-panel', 'digit-feature'],
-                ['randomness-auditor-panel', 'randomness-auditor']
+                ['post-stop-depth-panel', 'post-stop-depth']
             ];
 
             for (const [id, key] of configs) {
@@ -1000,16 +997,7 @@
                 pending: null,
                 n: 0,
                 hits: 0,
-                byDigit: Array.from({length:10},()=>({n:0,hits:0})),
-                t0: { n:0, hits:0 },
-                horizons: {
-                    1:{n:0,hits:0},
-                    2:{n:0,hits:0},
-                    3:{n:0,hits:0},
-                    4:{n:0,hits:0},
-                    5:{n:0,hits:0}
-                },
-                queue: []
+                byDigit: Array.from({length:10},()=>({n:0,hits:0}))
             },
 
             digits() {
@@ -1266,16 +1254,7 @@
                     margin,
                     forwardN:this.forward.n,
                     forwardHits:this.forward.hits,
-                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null,
-                    t0N:this.forward.t0.n,
-                    t0Hits:this.forward.t0.hits,
-                    t0Rate:this.forward.t0.n?this.forward.t0.hits/this.forward.t0.n:null,
-                    horizonStats:Object.fromEntries(
-                        Object.entries(this.forward.horizons).map(([k,v])=>[
-                            k,
-                            {n:v.n,hits:v.hits,rate:v.n?v.hits/v.n:null}
-                        ])
-                    )
+                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null
                 };
                 this.lastSnapshot=snap;
                 this.render(snap);
@@ -1294,50 +1273,22 @@
                 this.forward.pending=null;
             },
 
-            scoreTimingQueue(actualDigit) {
-                const nextQueue=[];
-                for(const f of (this.forward.queue || [])){
-                    const age=Number(f.age||0)+1;
-                    if(age>=1 && age<=5){
-                        const h=this.forward.horizons[age];
-                        h.n++;
-                        if(Number(f.digit)===Number(actualDigit)) h.hits++;
-                    }
-                    if(age<5) nextQueue.push({...f,age});
-                }
-                this.forward.queue=nextQueue;
-            },
-
-            armNextForecast(symbol=null, snapshot=null) {
-                const s=snapshot || this.analyze(symbol);
+            armNextForecast(symbol=null) {
+                const s=this.analyze(symbol);
                 if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
-                const f={
+                this.forward.pending={
                     digit:Number(s.topDigit),
                     similarity:Number(s.topSimilarity||0),
-                    at:Date.now(),
-                    age:0
+                    at:Date.now()
                 };
-                this.forward.pending={...f};
-                this.forward.queue.push({...f});
             },
 
             onNewTick(actualDigit,symbol=null) {
-                // 1) Score forecasts made BEFORE this tick.
+                // Score the forecast that existed BEFORE this tick.
                 this.scorePendingOutcome(actualDigit);
-                this.scoreTimingQueue(actualDigit);
-
-                // 2) Analyze the state AFTER this tick has arrived. If the DNA top
-                //    equals the just-seen digit, that is T+0 recognition: useful for
-                //    diagnostics, but already too late to count as a DIGITMATCH win.
-                const s=this.analyze(symbol);
-                if(s?.ready && Number.isInteger(Number(s.topDigit))){
-                    this.forward.t0.n++;
-                    if(Number(s.topDigit)===Number(actualDigit)) this.forward.t0.hits++;
-                }
-
-                // 3) Freeze this post-tick DNA state as the prediction for the NEXT
-                //    unseen tick. Trading usefulness is therefore measured at T+1.
-                this.armNextForecast(symbol,s);
+                // Then learn through lastDigits (already updated by main engine) and
+                // freeze a DNA forecast for the NEXT unseen tick.
+                this.armNextForecast(symbol);
             },
 
             ensurePanel() {
@@ -1354,16 +1305,13 @@
                     <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
                     <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
                     <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
-                    <span class="text-gray-400">DNA separation:</span><span id="dna-separation" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Forward T+1:</span><span id="dna-forward" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">T+0 recognition:</span><span id="dna-t0" class="font-bold text-yellow-300">-</span>
+                    <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
                   </div>
-                  <div id="dna-timing" class="mt-2 text-[11px] text-cyan-200">Timing profile warming…</div>
                   <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
                   <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
                   <div class="mt-2 text-[10px] text-gray-500">
                     DNA = historical precursor fingerprint, not a guaranteed probability.
-                    Every profile uses only ticks that occurred BEFORE each labelled digit. Trading relevance is measured at T+1; T+0 means the digit was recognized only after it had already arrived.
+                    Every profile uses only ticks that occurred BEFORE each labelled digit.
                   </div>
                 `;
                 ref.parentElement.appendChild(panel);
@@ -1378,22 +1326,9 @@
                 set('dna-history',`${s.historyN||0}${s.ready?' ✓':' · learning'}`);
                 set('dna-top',s.ready?String(s.topDigit):'-');
                 set('dna-sim',s.ready?`${(Number(s.topSimilarity||0)*100).toFixed(1)}%`:'-');
-                set('dna-separation',s.ready?`${(Number(s.margin||0)*100).toFixed(1)} pp`:'-');
                 set('dna-forward',s.forwardN
                     ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
                     : 'collecting');
-                set('dna-t0',s.t0N
-                    ? `${s.t0Hits}/${s.t0N} = ${(s.t0Rate*100).toFixed(2)}%`
-                    : 'collecting');
-
-                const timing=document.getElementById('dna-timing');
-                if(timing){
-                    const hs=s.horizonStats||{};
-                    timing.innerHTML=[1,2,3,4,5].map(h=>{
-                        const x=hs[h]||{};
-                        return `T+${h}: ${x.n||0}${x.n?` / ${(Number(x.rate||0)*100).toFixed(2)}%`:''}`;
-                    }).join(' · ') + '<br><span class="text-gray-500">Only T+1 is the one-tick DIGITMATCH target.</span>';
-                }
 
                 const top3=document.getElementById('dna-top3');
                 if(top3){
@@ -3108,7 +3043,7 @@ function buildDigitDecision(digit) {
 // =====================================================
 
 function canTradeDigit(d, regime, tradeCount) {
-  if (tradeCount >= Math.min(Number(window.maxTrades ?? 10), Number(window.HARD_MAX_TRADES ?? 10))) {
+  if (tradeCount >= (window.maxTrades ?? 10)) {
     return { ok: false, reason: "MAX_TRADES_REACHED" };
   }
 
@@ -4589,7 +4524,7 @@ window.tailPrecursorLab = {
                 <button id="downloadResearchReportBtn"
                         onclick="downloadMatchStarResearchReport()"
                         class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded">
-                    ⬇ DOWNLOAD FULL DIAGNOSTIC REPORT
+                    ⬇ DOWNLOAD RESEARCH REPORT
                 </button>
             </div>
 
@@ -5483,7 +5418,7 @@ window.cyclePerformance = {
             }
 
             const report = {
-                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V2_FULL_DIAGNOSTIC',
+                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V1',
                 generatedAt: new Date().toISOString(),
                 runtime: 'MATCHSTAR V16',
                 symbol,
@@ -5497,13 +5432,7 @@ window.cyclePerformance = {
                     tradeCount: Number(window.tradeCount || 0),
                     currentStake: Number(window.currentStake || 0),
                     currentBalance: Number(window.currentBalance || 0),
-                    sessionPnL: Number(window.netProfit || 0),
-                    executionLock: !!window.executionLock,
-                    nextTradeAllowed: !!window.nextTradeAllowed,
-                    stopAfterWin: !!window.stopAfterWin,
-                    activeContract: safeClone(window.activeContract),
-                    pendingProposalCount: Number(window.pendingProposals?.size || 0),
-                    reconciliationMismatch: !!window.reconciliationMismatch
+                    sessionPnL: Number(window.netProfit || 0)
                 },
 
                 configuration: {
@@ -5549,56 +5478,6 @@ window.cyclePerformance = {
                             : null,
                     regime: safeClone(regime),
                     recommendation: safeClone(rec)
-                },
-
-                digitDNAResearch: {
-                    version: window.digitDNAEngine?.version || null,
-                    config: safeClone(window.DIGIT_DNA_CONFIG),
-                    snapshot: safeClone(window.digitDNAEngine?.lastSnapshot),
-                    forward: safeClone(window.digitDNAEngine?.forward),
-                    timingMeaning: {
-                        T0: 'Digit recognized only after/current tick arrived; not tradable as the new one-tick contract outcome.',
-                        T1: 'First unseen tick after forecast; primary one-tick DIGITMATCH target.',
-                        T2: 'Second unseen tick after forecast.',
-                        T3: 'Third unseen tick after forecast.',
-                        T4: 'Fourth unseen tick after forecast.',
-                        T5: 'Fifth unseen tick after forecast.'
-                    }
-                },
-
-                digitFeatureResearch: {
-                    version: window.digitFeatureEngine?.version || null,
-                    config: safeClone(window.DIGIT_FEATURE_CONFIG),
-                    snapshot: safeClone(window.digitFeatureEngine?.lastSnapshot)
-                },
-
-                randomnessAuditorResearch: {
-                    version: window.randomnessAuditor?.version || null,
-                    config: safeClone(window.RANDOMNESS_AUDITOR_CONFIG),
-                    snapshot: safeClone(window.randomnessAuditor?.lastSnapshot)
-                },
-
-                digitIntelligenceResearch: {
-                    warmupTicks: Number(window.digitIntelligenceEngine?.warmupTicks || 0),
-                    targetWarmupTicks: Number(window.digitIntelligenceEngine?.targetWarmupTicks || 0),
-                    warmupDone: !!window.digitIntelligenceEngine?.warmupDone,
-                    tickIndex: Number(window.digitIntelligenceEngine?.tickIndex || 0),
-                    digitStats: safeClone(window.digitIntelligenceEngine?.digitStats || []),
-                    regime: safeClone(regime),
-                    recommendation: safeClone(rec)
-                },
-
-                marketEvidence: {
-                    lastDigits: safeClone((window.lastDigits || []).slice(-1500)),
-                    recentMarketTicks: safeClone((window.recentMarketTicks || []).slice(-200)),
-                    tickFormat: safeClone(window.tickFormat),
-                    totalTicksReceived: Number(window.totalTicksReceived || 0),
-                    tickRateWindowCount: Array.isArray(window.tickTimestamps) ? window.tickTimestamps.length : 0
-                },
-
-                liveLog: {
-                    text: document.getElementById('log-area')?.innerText || '',
-                    html: document.getElementById('log-area')?.innerHTML || ''
                 },
 
                 cyclePerformance: {
@@ -5677,19 +5556,6 @@ window.cyclePerformance = {
                 tailRiskModel:
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
-                uiSnapshot: {
-                    digitDNAVisible: !document.getElementById('digit-dna-panel')?.classList?.contains('hidden'),
-                    digitFeatureVisible: !document.getElementById('digit-feature-panel')?.classList?.contains('hidden'),
-                    randomnessAuditorVisible: !document.getElementById('randomness-auditor-panel')?.classList?.contains('hidden'),
-                    digitAnalysisVisible: !document.getElementById('digit-analysis-panel')?.classList?.contains('hidden')
-                },
-
-                buildInfo: {
-                    version: document.body?.dataset?.version || 'DIGITMATCHSTAR-V59-FULL-DIAGNOSTIC-REPORT',
-                    hardMaxTrades: Number(window.HARD_MAX_TRADES || 10),
-                    reportIncludesSecrets: false
-                },
-
                 storageKeys: {
                     cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
                     forwardShadow: `matchstar_shadow_v1_${symbol}`,
@@ -5700,10 +5566,7 @@ window.cyclePerformance = {
                     'Post-stop depth observations use future public ticks only and do not represent real trades after the safety stop.',
                     'Capped cycles without an observed post-stop target are classified as censored rather than known tails.',
                     'Technical stops are excluded from market-tail recovery statistics.',
-                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.',
-                    'DNA similarity is a precursor-state similarity score, not a calibrated next-tick probability.',
-                    'T+0 recognition is too late for a new one-tick DIGITMATCH purchase; T+1 is the primary tradable forecast horizon.',
-                    'The report intentionally excludes authentication tokens and private credentials.'
+                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.'
                 ]
             };
 
@@ -5719,11 +5582,6 @@ window.cyclePerformance = {
                 `Depth classes: 11–15 ${tc.postStop11to15 ?? 0} · 16–20 ${tc.postStop16to20 ?? 0} · 21–30 ${tc.postStop21to30 ?? 0} · 31+ ${tc.postStop31plus ?? 0}`,
                 `Post-stop resolved: ${ps.resolved ?? 0} · average depth ${Number.isFinite(ps.average) ? ps.average.toFixed(1) : '-'} · deepest ${ps.deepest ?? '-'}`,
                 `Forward shadow: ${ntmState?.shadowTicks ?? 0} ticks · top-pick hit ${report.nextTickResearch.topPickHitRate !== null ? (report.nextTickResearch.topPickHitRate * 100).toFixed(2) + '%' : '-'} · Brier ${report.nextTickResearch.brierScore !== null ? report.nextTickResearch.brierScore.toFixed(4) : '-'}`,
-                `DNA T+1: ${report.digitDNAResearch?.snapshot?.forwardN ?? 0} forecasts · hits ${report.digitDNAResearch?.snapshot?.forwardHits ?? 0} · rate ${report.digitDNAResearch?.snapshot?.forwardHitRate !== null && report.digitDNAResearch?.snapshot?.forwardHitRate !== undefined ? (report.digitDNAResearch.snapshot.forwardHitRate*100).toFixed(2)+'%' : '-'}`,
-                `DNA T+0: ${report.digitDNAResearch?.snapshot?.t0N ?? 0} observations · hits ${report.digitDNAResearch?.snapshot?.t0Hits ?? 0} · rate ${report.digitDNAResearch?.snapshot?.t0Rate !== null && report.digitDNAResearch?.snapshot?.t0Rate !== undefined ? (report.digitDNAResearch.snapshot.t0Rate*100).toFixed(2)+'%' : '-'}`,
-                `Current DNA top: ${report.digitDNAResearch?.snapshot?.topDigit ?? '-'} · similarity ${report.digitDNAResearch?.snapshot?.topSimilarity !== undefined ? (Number(report.digitDNAResearch.snapshot.topSimilarity)*100).toFixed(1)+'%' : '-'} · separation ${report.digitDNAResearch?.snapshot?.margin !== undefined ? (Number(report.digitDNAResearch.snapshot.margin)*100).toFixed(1)+' pp' : '-'}`,
-                `Feature top: ${report.digitFeatureResearch?.snapshot?.topDigit ?? '-'} · signal ${report.digitFeatureResearch?.snapshot?.signalStrength !== undefined ? (Number(report.digitFeatureResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
-                `Auditor top: ${report.randomnessAuditorResearch?.snapshot?.topDigit ?? '-'} · signal ${report.randomnessAuditorResearch?.snapshot?.signalStrength !== undefined ? (Number(report.randomnessAuditorResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
                 '',
                 'Upload this JSON file directly into ChatGPT for analysis.'
             ].join('\n');
@@ -5744,7 +5602,7 @@ window.cyclePerformance = {
 
             const a = document.createElement('a');
             a.href = url;
-            a.download = `digitmatchstar-full-diagnostic-${symbol}-${stamp}.json`;
+            a.download = `matchstar-research-${symbol}-${stamp}.json`;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -5752,7 +5610,7 @@ window.cyclePerformance = {
             setTimeout(() => URL.revokeObjectURL(url), 1000);
 
             log(
-                `📥 FULL diagnostic report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
+                `📥 Research report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
                 `${report.postStopDepthResearch?.stats?.resolved || 0} resolved post-stop continuations`,
                 'SYSTEM'
             );
@@ -5782,7 +5640,7 @@ window.cyclePerformance = {
             try {
                 const baseStake = parseFloat(document.getElementById('calc_base_stake').value) || 1.0;
                 const multiplier = parseFloat(document.getElementById('calc_multiplier').value) || 1.15;
-                const maxTrades = window.clampMaxTrades(document.getElementById('calc_max_trades').value);
+                const maxTrades = parseInt(document.getElementById('calc_max_trades').value) || 10;
                 const bankrollLimit = parseFloat(document.getElementById('calc_bankroll_limit').value) || 50.0;
                 
                 if (baseStake <= 0 || multiplier <= 1.0 || maxTrades <= 0) {
@@ -5825,7 +5683,6 @@ window.cyclePerformance = {
                 document.getElementById('baseStake').value = baseStake.toFixed(2);
                 document.getElementById('multiplier').value = multiplier.toFixed(2);
                 document.getElementById('maxTrades').value = maxTrades;
-                document.getElementById('calc_max_trades').value = maxTrades;
                 
                 // Update calculator results
                 document.getElementById('calc_total_required').textContent = `$${totalRequired.toFixed(2)}`;
@@ -5884,7 +5741,7 @@ window.cyclePerformance = {
         function syncCalculatorWithMain() {
             const baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             const multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            const maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
+            const maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
             
             document.getElementById('calc_base_stake').value = baseStake.toFixed(2);
             document.getElementById('calc_multiplier').value = multiplier.toFixed(2);
@@ -6206,14 +6063,8 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.baseStake = 1.0;
         window.currentStake = 1.0;
         window.multiplier = 1.15;
-        window.HARD_MAX_TRADES = 10;
-        window.clampMaxTrades = function(value) {
-            const n = parseInt(value, 10);
-            if (!Number.isFinite(n)) return window.HARD_MAX_TRADES;
-            return Math.max(1, Math.min(window.HARD_MAX_TRADES, n));
-        };
-        window.maxTrades = window.HARD_MAX_TRADES;
-        window.maxCycleTrades = window.HARD_MAX_TRADES;
+        window.maxTrades = 10;
+        window.maxCycleTrades = Math.min(window.maxTrades, 10);
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
@@ -7931,9 +7782,8 @@ function rotateHybridDigit(reason = '') {
             document.getElementById('multiplier').addEventListener('change', syncCalculatorWithMain);
             document.getElementById('maxTrades').addEventListener('change', () => {
                 syncCalculatorWithMain();
-                window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
-            document.getElementById('maxTrades').value = window.maxTrades;
-                window.maxCycleTrades = window.HARD_MAX_TRADES;
+                window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+                window.maxCycleTrades = Math.min(window.maxTrades, 10);
                 window.TAIL_RISK_CONFIG.maxCycleLoss = null;
                 if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
                 if (typeof log === 'function') log(`🧯 Max Trades updated to ${window.maxTrades}; exposure cap recalculated automatically`, 'CONFIG');
@@ -8309,7 +8159,7 @@ function rotateHybridDigit(reason = '') {
             const fastResult = observeActiveContractTick(tickData);
 
             if (window.isBotRunning && fastResult?.fastLoss && !window.stopAfterWin) {
-                if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
+                if (window.tradeCount >= window.maxTrades) {
                     window.nextTradeAllowed = false;
                     log(`🛑 Max trades reached (${window.maxTrades}) after fast loss`, 'CRITICAL');
                     stopBot('Maximum trades reached');
@@ -8865,7 +8715,7 @@ function rotateHybridDigit(reason = '') {
         function defaultTailDollarCap() {
             const base = Number(document.getElementById('baseStake')?.value || window.baseStake || 1);
             const mult = Number(document.getElementById('multiplier')?.value || window.multiplier || 1.15);
-            const hardTrades = window.clampMaxTrades(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
+            const hardTrades = Number(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
             return projectedProgressionExposure(base, mult, hardTrades);
         }
 
@@ -8895,7 +8745,7 @@ function rotateHybridDigit(reason = '') {
             const nextStake = Number(window.currentStake || window.baseStake || 0);
             const nextLossExposure = Number((exposure + nextStake).toFixed(2));
             const dollarCap = getTailDollarCap();
-            const maxCycleTrades = window.clampMaxTrades(window.maxTrades || window.maxCycleTrades || 10);
+            const maxCycleTrades = Number(window.maxTrades || window.maxCycleTrades || 10);
             const currentTrades = getCurrentCycleTradeCount();
 
             return {
@@ -9128,7 +8978,7 @@ function rotateHybridDigit(reason = '') {
                 return;
             }
             
-            if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
+            if (window.tradeCount >= window.maxTrades) {
                 log(`🛑 Max trades reached (${window.maxTrades})`, 'CRITICAL');
                 updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
                 stopBot('Maximum trades reached');
@@ -9242,14 +9092,6 @@ window.executionLock = true;
                     'TRADE'
                 );
 
-                if (Number(tick.digit) === Number(selectedDigit)) {
-                    log(
-                        `ℹ️ T+0 DNA/decision match: current digit ${tick.digit} already equals target ${selectedDigit}, ` +
-                        `but this tick occurred BEFORE purchase. It cannot settle the new contract; the first eligible post-buy tick is T+1.`,
-                        'ENGINE'
-                    );
-                }
-
                 playAudioFeedback('EXECUTION');
                 executeTrade(tick);
 
@@ -9317,9 +9159,8 @@ window.executionLock = true;
         function updateStake(winOrLoss) {
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
-            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
-            document.getElementById('maxTrades').value = window.maxTrades;
-            window.maxCycleTrades = window.HARD_MAX_TRADES;
+            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
 
             if (winOrLoss === 'win') {
                 window.lastTradeWon = true;
@@ -9360,9 +9201,8 @@ window.executionLock = true;
                 return;
             }
             
-            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
-            document.getElementById('maxTrades').value = window.maxTrades;
-            window.maxCycleTrades = window.HARD_MAX_TRADES;
+            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             
             const token = getStoredDerivToken();
             if (!token) {
@@ -9397,11 +9237,11 @@ window.isBotRunning = true;
             
             log('🚀 Starting bot...', 'SYSTEM');
             log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
-            log(`📊 Max Trades: ${window.maxTrades} (hard cap ${window.HARD_MAX_TRADES})`, 'SYSTEM');
+            log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
             log(`🧯 User-selected cycle cap: ${window.maxTrades} trades`, 'SYSTEM');
 
             // Recalculate from the user's CURRENT Max Trades every time START is pressed.
-            window.maxCycleTrades = window.HARD_MAX_TRADES;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
             log(
@@ -10216,7 +10056,7 @@ window.isBotRunning = true;
             // V21: if the buffered tick is the proven first tick after the
             // Deriv-aligned barrier and it is a miss, use the same fast pipeline.
             if (result?.fastLoss && window.isBotRunning && !window.stopAfterWin) {
-                if (window.tradeCount >= Math.min(window.maxTrades, window.HARD_MAX_TRADES || 10)) {
+                if (window.tradeCount >= window.maxTrades) {
                     window.nextTradeAllowed = false;
                     stopBot('Maximum trades reached');
                     return;
@@ -10508,9 +10348,8 @@ window.isBotRunning = true;
 
         // Reset all state
         function resetAllState() {
-            window.maxTrades = window.clampMaxTrades(document.getElementById('maxTrades').value);
-            document.getElementById('maxTrades').value = window.maxTrades;
-            window.maxCycleTrades = window.HARD_MAX_TRADES;
+            window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             window.cycleRotations = 0;
             
             updateStake('initial');
@@ -11600,9 +11439,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V59-FULL-DIAGNOSTIC-REPORT"
+data-version="DIGITMATCHSTAR-V57-DNA-RUNTIME-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-2-TIMING" data-hard-max-trades="10" data-ai-panels-minimizable="true" data-full-diagnostic-report="v2" data-public-market-parser="single-feed-v57" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-auditor-panel="always-visible"></div>
 </body>
 </html>
