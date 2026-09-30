@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.3 DNA T+1 PERFORMANCE: forward-only DNA evaluation + persistent performance breakdowns; trading/recovery logic unchanged -->
+    <!-- V57.4 OVERNIGHT RESEARCH: DEMO-only continuous TailGuard sessions + wake lock + persistent overnight archive; strategy unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -5893,11 +5893,18 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.1-OBSERVABILITY-ONLY',
+                    version: 'DIGITMATCHSTAR-V57.4-OVERNIGHT-RESEARCH',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: false,
                     maxTradesBehaviorChanged: false,
                     reportIncludesSecrets: false
+                },
+
+                tailGuardOvernightResearch: {
+                    state: safeClone(window.DMSTailGuardAutopilot?.getState?.() || null),
+                    archive: safeClone(window.DMSTailGuardAutopilot?.getOvernightArchive?.() || []),
+                    wakeLockSupported: !!navigator.wakeLock,
+                    note: 'Overnight automation is DEMO-only. Wake Lock keeps the display awake only when supported and while the page remains eligible.'
                 },
 
                 storageKeys: {
@@ -11115,15 +11122,18 @@ window.isBotRunning = true;
         'use strict';
 
         const TG_AP = Object.freeze({
-            version: 'TG-AUTOPILOT-2.6-RUN-5-MORE',
+            version: 'TG-AUTOPILOT-2.7-OVERNIGHT-RESEARCH',
             maxCyclesPerDay: 5,
-            maxTradesPerCycle: 10,
             pollMs: 500,
-            demoOnly: true
+            demoOnly: true,
+            overnightContinuous: true
         });
 
-        const STATE_KEY = 'digitmatchstar_tailguard_autopilot_v21';
+        const STATE_KEY = 'digitmatchstar_tailguard_autopilot_v22';
+        const ARCHIVE_KEY = 'digitmatchstar_overnight_research_archive_v1';
         const MIN_KEY = 'matchstar_panel_min_tailguard-autopilot';
+
+        let screenWakeLock = null;
 
         let adminAuthorized = null;
         let adminCheckInFlight = false;
@@ -11208,6 +11218,7 @@ window.isBotRunning = true;
             pauseBtn = null;
             exportBtn = null;
             moreBtn = null;
+            overnightBtn = null;
         }
 
         let panel = null;
@@ -11218,6 +11229,7 @@ window.isBotRunning = true;
         let pauseBtn = null;
         let exportBtn = null;
         let moreBtn = null;
+        let overnightBtn = null;
         let initialized = false;
         let lastActionAt = 0;
 
@@ -11248,12 +11260,111 @@ window.isBotRunning = true;
                 lastStopReason: raw.lastStopReason || null,
                 startedAt: raw.startedAt || null,
                 lastCompletedAt: raw.lastCompletedAt || null,
-                extraCyclesToday: Number(raw.extraCyclesToday || 0)
+                extraCyclesToday: Number(raw.extraCyclesToday || 0),
+                overnightEnabled: raw.overnightEnabled === true,
+                overnightStartedAt: raw.overnightStartedAt || null,
+                overnightCycles: Number(raw.overnightCycles || 0)
             };
         }
 
         function saveState(state) {
             try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (_) {}
+        }
+
+        function loadOvernightArchive() {
+            try {
+                const raw = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || '[]');
+                return Array.isArray(raw) ? raw : [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        function saveOvernightArchive(rows) {
+            try {
+                localStorage.setItem(ARCHIVE_KEY, JSON.stringify((rows || []).slice(-2000)));
+            } catch (_) {}
+        }
+
+        function archiveCompletedCycles(ids) {
+            if (!Array.isArray(ids) || !ids.length) return;
+            const wanted = new Set(ids.map(String));
+            const cycles = cycleHistory().filter(c => c?.id && wanted.has(String(c.id)));
+            if (!cycles.length) return;
+
+            const archive = loadOvernightArchive();
+            const known = new Set(archive.map(x => String(x.id)));
+
+            for (const c of cycles) {
+                if (known.has(String(c.id))) continue;
+                const dnaPerf = window.digitDNAEngine?.t1Performance?.() || null;
+                archive.push({
+                    id: String(c.id),
+                    capturedAt: new Date().toISOString(),
+                    symbol: c.symbol || document.getElementById('symbol')?.value || null,
+                    status: c.status || null,
+                    startedAt: c.startedAt || null,
+                    endedAt: c.endedAt || null,
+                    targetDigit: c.digit ?? null,
+                    tradeCount: Array.isArray(c.trades) ? c.trades.length : 0,
+                    totalInvestment: Number(c.totalInvestment || 0),
+                    totalPayout: Number(c.totalPayout || 0),
+                    netPnL: Number(c.netPnL || 0),
+                    maxStake: Number(c.maxStake || 0),
+                    winningTradeNumber: c.winningTradeNumber ?? null,
+                    finalReason: c.finalReason || null,
+                    tailClass: c.tailClass || null,
+                    dnaT1Overall: dnaPerf?.overall || null,
+                    dnaTop: window.digitDNAEngine?.lastSnapshot?.topDigit ?? null,
+                    dnaSimilarity: window.digitDNAEngine?.lastSnapshot?.topSimilarity ?? null,
+                    featureTop: window.digitFeatureEngine?.lastSnapshot?.topDigit ?? null,
+                    auditorTop: window.randomnessAuditor?.lastSnapshot?.topDigit ?? null,
+                    recommendation: window.digitIntelligenceEngine?.currentRecommendation
+                        ? {
+                            digit: window.digitIntelligenceEngine.currentRecommendation.digit,
+                            score: window.digitIntelligenceEngine.currentRecommendation.score,
+                            source: window.digitIntelligenceEngine.currentRecommendation.source
+                          }
+                        : null
+                });
+            }
+            saveOvernightArchive(archive);
+        }
+
+        async function acquireScreenWakeLock() {
+            const state = loadState();
+            if (!state.overnightEnabled) return false;
+            if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return false;
+            try {
+                if (!screenWakeLock) {
+                    screenWakeLock = await navigator.wakeLock.request('screen');
+                    screenWakeLock.addEventListener('release', () => {
+                        screenWakeLock = null;
+                    });
+                }
+                return true;
+            } catch (_) {
+                screenWakeLock = null;
+                return false;
+            }
+        }
+
+        async function releaseScreenWakeLock() {
+            try {
+                if (screenWakeLock) await screenWakeLock.release();
+            } catch (_) {}
+            screenWakeLock = null;
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && loadState().overnightEnabled) {
+                acquireScreenWakeLock().catch(() => {});
+            }
+        });
+
+        function selectedMaxTrades() {
+            const n = parseInt(document.getElementById('maxTrades')?.value, 10);
+            return Number.isFinite(n) ? n : null;
         }
 
         function todayCycleTarget(state = loadState()) {
@@ -11370,17 +11481,19 @@ window.isBotRunning = true;
 
             if (fresh.length) {
                 state.cyclesToday += fresh.length;
+                if (state.overnightEnabled) state.overnightCycles += fresh.length;
                 state.lastCompletedAt = new Date().toISOString();
                 state.knownCompletedIds = Array.from(
                     new Set([...state.knownCompletedIds, ...fresh])
                 ).slice(-1000);
+                archiveCompletedCycles(fresh);
                 saveState(state);
             }
 
             return state;
         }
 
-        function setMaxTrades10() {
+        function legacySetMaxTrades10_UNUSED() {
             const input = document.getElementById('maxTrades');
             if (!input) return false;
 
@@ -11527,6 +11640,10 @@ window.isBotRunning = true;
                             style="width:100%;border:1px solid #15803d;background:#166534;color:#dcfce7;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
                             ▶ Run 5 more
                         </button>
+                        <button id="tg-ap-overnight" type="button"
+                            style="grid-column:1 / -1;width:100%;border:1px solid #7c3aed;background:#4c1d95;color:#ede9fe;padding:8px;border-radius:8px;cursor:pointer;font-weight:900">
+                            🌙 Overnight research: OFF
+                        </button>
                         <button id="tg-ap-pause" type="button"
                             style="grid-column:1 / -1;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
                             Pause autopilot
@@ -11543,6 +11660,7 @@ window.isBotRunning = true;
             pauseBtn = panel.querySelector('#tg-ap-pause');
             exportBtn = panel.querySelector('#tg-ap-export');
             moreBtn = panel.querySelector('#tg-ap-more');
+            overnightBtn = panel.querySelector('#tg-ap-overnight');
 
             minimizeBtn.addEventListener('click', () => {
                 setMinimized(body.style.display !== 'none');
@@ -11579,6 +11697,30 @@ window.isBotRunning = true;
                 setTimeout(() => { tick().catch(() => {}); }, 100);
             });
 
+            overnightBtn?.addEventListener('click', async () => {
+                const s = refreshDailyCounter();
+                s.overnightEnabled = !s.overnightEnabled;
+                s.enabled = true;
+                s.lastStopReason = null;
+
+                if (s.overnightEnabled) {
+                    s.overnightStartedAt = new Date().toISOString();
+                    s.overnightCycles = 0;
+                    saveState(s);
+                    await acquireScreenWakeLock();
+                    statusEl.textContent = 'Overnight research enabled — continuous DEMO sessions';
+                    statusEl.style.color = '#c4b5fd';
+                } else {
+                    saveState(s);
+                    await releaseScreenWakeLock();
+                    statusEl.textContent = 'Overnight research disabled';
+                    statusEl.style.color = '#38bdf8';
+                }
+
+                render(s, accountMode(), currentExecutionMode(), isRunning());
+                setTimeout(() => { tick().catch(() => {}); }, 100);
+            });
+
             pauseBtn.addEventListener('click', () => {
                 const s = loadState();
                 s.enabled = !s.enabled;
@@ -11604,16 +11746,18 @@ window.isBotRunning = true;
             if (!statusEl || !detailEl) return;
 
             const targetToday = todayCycleTarget(state);
-            const complete = state.cyclesToday >= targetToday;
+            const complete = !state.overnightEnabled && state.cyclesToday >= targetToday;
             const blocked = account !== 'DEMO';
 
             statusEl.textContent = message ||
-                (complete ? 'Daily research complete' :
+                (state.overnightEnabled ? '🌙 Overnight continuous research active' :
+                complete ? 'Daily research complete' :
                 blocked ? 'Waiting for confirmed DEMO account' :
                 running === true ? 'Autonomous research running' :
                 'Preparing research');
 
             statusEl.style.color =
+                state.overnightEnabled ? '#c4b5fd' :
                 complete ? '#4ade80' :
                 account === 'REAL' ? '#f87171' :
                 '#38bdf8';
@@ -11622,14 +11766,24 @@ window.isBotRunning = true;
                 Account: <b>${account}</b><br>
                 Mode: <b>${mode}</b><br>
                 Bot: <b>${running === true ? 'RUNNING' : running === false ? 'STOPPED' : 'UNKNOWN'}</b><br>
-                Today: <b>${state.cyclesToday}/${targetToday} completed cycles</b><br>
+                Today: <b>${state.cyclesToday}${state.overnightEnabled ? ' · continuous overnight' : `/${targetToday}`}</b><br>
+                Overnight cycles: <b>${Number(state.overnightCycles || 0)}</b><br>
+                Archive records: <b>${loadOvernightArchive().length}</b><br>
                 Extra allowance: <b>+${Number(state.extraCyclesToday || 0)}</b><br>
-                Active cycle trades: <b>${activeCycleTradeCount()}/${TG_AP.maxTradesPerCycle}</b><br>
-                Max trades/cycle: <b>${TG_AP.maxTradesPerCycle}</b><br>
+                Active cycle trades: <b>${activeCycleTradeCount()}</b><br>
+                User Max Trades: <b>${selectedMaxTrades() ?? '-'}</b> · preserved, not overridden<br>
+                Screen wake lock: <b>${screenWakeLock ? 'ACTIVE' : (state.overnightEnabled ? 'REQUESTED / browser dependent' : 'OFF')}</b><br>
                 TailGuard: <b>SHADOW RESEARCH</b><br>
                 Autopilot: <b>${state.enabled ? 'ENABLED' : 'PAUSED'}</b>
                 ${state.lastStopReason ? `<br>Last stop: <b>${String(state.lastStopReason).replace(/[&<>]/g, '')}</b>` : ''}
             `;
+
+            if (overnightBtn) {
+                overnightBtn.textContent = state.overnightEnabled
+                    ? '🌙 Overnight research: ON — stop in morning'
+                    : '🌙 Overnight research: OFF';
+                overnightBtn.style.background = state.overnightEnabled ? '#6d28d9' : '#4c1d95';
+            }
 
             if (pauseBtn) {
                 pauseBtn.textContent = state.enabled ? 'Pause autopilot' : 'Resume autopilot';
@@ -11682,10 +11836,13 @@ window.isBotRunning = true;
                 return;
             }
 
-            setMaxTrades10();
+
+            if (state.overnightEnabled) {
+                acquireScreenWakeLock().catch(() => {});
+            }
 
             const targetToday = todayCycleTarget(state);
-            if (state.cyclesToday >= targetToday) {
+            if (!state.overnightEnabled && state.cyclesToday >= targetToday) {
                 if (running !== false) {
                     stopExistingBot(`Daily research limit reached: ${targetToday} cycles`);
                 }
@@ -11748,6 +11905,7 @@ window.isBotRunning = true;
                 s.lastCompletedAt = null;
                 s.lastStopReason = null;
                 s.extraCyclesToday = 0;
+                if (!s.overnightEnabled) s.overnightCycles = 0;
                 saveState(s);
                 return s;
             },
@@ -11758,6 +11916,27 @@ window.isBotRunning = true;
                 s.lastStopReason = null;
                 saveState(s);
                 return s;
+            },
+            overnightOn() {
+                const s = refreshDailyCounter();
+                s.overnightEnabled = true;
+                s.overnightStartedAt = new Date().toISOString();
+                s.overnightCycles = 0;
+                s.enabled = true;
+                s.lastStopReason = null;
+                saveState(s);
+                acquireScreenWakeLock().catch(() => {});
+                return s;
+            },
+            overnightOff() {
+                const s = loadState();
+                s.overnightEnabled = false;
+                saveState(s);
+                releaseScreenWakeLock().catch(() => {});
+                return s;
+            },
+            getOvernightArchive() {
+                return loadOvernightArchive();
             },
             getState() {
                 return loadState();
@@ -11789,9 +11968,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.3-DNA-T1-PERFORMANCE"
+data-version="DIGITMATCHSTAR-V57.4-OVERNIGHT-RESEARCH"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="demo-only-continuous" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 </body>
 </html>
