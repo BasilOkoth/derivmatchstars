@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V37: V36 + exact recovery with configurable recovery caps -->
+    <!-- V38: V37 + persistent Last-5 empirical tracker with CI and break-even comparison -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11149,6 +11149,14 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Session P/L</div><div id="t2-pnl" class="t2-v">$0.00</div></div>
     </div>
     <div id="t2-outcome" class="t2-outcome neutral">LAST RESULT: —</div>
+    <div class="grid grid-cols-3 gap-2 mt-2">
+      <div class="t2-card"><div class="t2-k">Lifetime N</div><div id="t2-emp-n" class="t2-v">0</div></div>
+      <div class="t2-card"><div class="t2-k">Empirical hit rate</div><div id="t2-emp-rate" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Avg break-even</div><div id="t2-emp-be" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Observed margin</div><div id="t2-emp-margin" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">95% CI</div><div id="t2-emp-ci" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Lifetime W / L</div><div id="t2-emp-wl" class="t2-v">0 / 0</div></div>
+    </div>
 
     <div id="t2-status" class="t2-status">
       Ready. It will split the basket stake equally across the two highest-probability Match digits.
@@ -11158,13 +11166,14 @@ if (document.readyState === 'loading') {
       <button id="t2-start" class="t2-btn t2-start">▶ START TOP-2</button>
       <button id="t2-stop" class="t2-btn t2-stop">■ STOP</button>
       <button id="t2-export" class="t2-btn t2-stop">⬇ EXPORT</button>
+      <button id="t2-reset-emp" class="t2-btn t2-stop" title="Clear lifetime Last-5 empirical statistics">↺ RESET DATA</button>
     </div>
 
     <div class="t2-note">
-      Basket stake is TOTAL exposure and is split equally across the two Match contracts: $10 = $5 + $5.
-      Recovery keeps the base basket while it is sufficient, then calculates only the exact larger total needed
-      for cycle losses + target profit. Recovery stops at the selected max depth or max basket stake.
-      Green = WIN/profit, red = LOSS. Use ⬇ EXPORT anytime.
+      Basket stake is TOTAL exposure and splits equally: $10 = $5 + $5. Last-5 empirical statistics now persist
+      across sessions in this browser for each symbol. The panel tracks lifetime N, wins/losses, hit rate, average
+      live break-even, observed margin, and Wilson 95% CI. Recovery remains capped by max depth and max basket stake.
+      Use ⬇ EXPORT to include both session and persistent evidence.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11178,7 +11187,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.0',
+    version: 'TOP2-BASKET-V1.1-EMPIRICAL-PERSIST',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11194,6 +11203,55 @@ window.top2BasketLab = {
     recentDigits: [],
     digitLastSeenTick: Array(10).fill(-1),
     observedTickIndex: 0,
+    empirical: { n:0, wins:0, losses:0, sumBreakEven:0, firstAt:null, updatedAt:null },
+
+    empiricalKey(){
+        return `t2_empirical_last5_${this.symbol()}`;
+    },
+    loadEmpirical(){
+        try{
+            const raw=localStorage.getItem(this.empiricalKey());
+            const x=raw ? JSON.parse(raw) : null;
+            if(x && Number.isFinite(Number(x.n))){
+                this.empirical={
+                    n:Number(x.n||0), wins:Number(x.wins||0), losses:Number(x.losses||0),
+                    sumBreakEven:Number(x.sumBreakEven||0), firstAt:x.firstAt||null, updatedAt:x.updatedAt||null
+                };
+            }else{
+                this.empirical={n:0,wins:0,losses:0,sumBreakEven:0,firstAt:null,updatedAt:null};
+            }
+        }catch(_){
+            this.empirical={n:0,wins:0,losses:0,sumBreakEven:0,firstAt:null,updatedAt:null};
+        }
+        return this.empirical;
+    },
+    saveEmpirical(){
+        try{ localStorage.setItem(this.empiricalKey(),JSON.stringify(this.empirical)); }catch(_){}
+    },
+    wilson95(wins,n){
+        wins=Number(wins||0); n=Number(n||0);
+        if(!(n>0)) return {lower:null,upper:null};
+        const z=1.959963984540054, p=wins/n, z2=z*z, denom=1+z2/n;
+        const center=(p+z2/(2*n))/denom;
+        const half=(z*Math.sqrt((p*(1-p)/n)+(z2/(4*n*n))))/denom;
+        return {lower:Math.max(0,center-half),upper:Math.min(1,center+half)};
+    },
+    recordEmpirical(win,breakEven){
+        if(this.rule()!=='last5') return;
+        const now=new Date().toISOString();
+        if(!this.empirical.firstAt) this.empirical.firstAt=now;
+        this.empirical.n += 1;
+        if(win) this.empirical.wins += 1; else this.empirical.losses += 1;
+        if(Number.isFinite(Number(breakEven))) this.empirical.sumBreakEven += Number(breakEven);
+        this.empirical.updatedAt=now;
+        this.saveEmpirical();
+    },
+    resetEmpirical(){
+        this.empirical={n:0,wins:0,losses:0,sumBreakEven:0,firstAt:null,updatedAt:null};
+        try{localStorage.removeItem(this.empiricalKey());}catch(_){}
+        this.render();
+        this.log('Persistent Last-5 empirical statistics reset.');
+    },
 
     mode(){ return q('t2-mode')?.value || 'shadow'; },
     isLive(){ return this.mode() !== 'shadow'; },
@@ -11234,6 +11292,20 @@ window.top2BasketLab = {
         set('t2-pnl',this.money(this.stats.pnl));
         setSignClass('t2-pnl',this.stats.pnl);
         setSignClass('t2-cycle-loss',this.cycleLoss > 0 ? -this.cycleLoss : 0);
+
+        const en=Number(this.empirical?.n||0), ew=Number(this.empirical?.wins||0), el=Number(this.empirical?.losses||0);
+        const er=en>0 ? ew/en : NaN;
+        const ebe=en>0 ? Number(this.empirical?.sumBreakEven||0)/en : NaN;
+        const em=(Number.isFinite(er)&&Number.isFinite(ebe)) ? er-ebe : NaN;
+        const ci=this.wilson95(ew,en);
+        set('t2-emp-n',en);
+        set('t2-emp-rate',Number.isFinite(er)?`${(er*100).toFixed(2)}%`:'—');
+        set('t2-emp-be',Number.isFinite(ebe)?`${(ebe*100).toFixed(2)}%`:'—');
+        set('t2-emp-margin',Number.isFinite(em)?`${em>=0?'+':''}${(em*100).toFixed(2)} pp`:'—');
+        set('t2-emp-ci',(ci.lower!==null&&ci.upper!==null)?`${(ci.lower*100).toFixed(1)}–${(ci.upper*100).toFixed(1)}%`:'—');
+        set('t2-emp-wl',`${ew} / ${el}`);
+        if(Number.isFinite(em)) setSignClass('t2-emp-margin',em);
+
         const badge=q('t2-mode-badge');
         if(badge){
             const live=this.isLive();
@@ -11403,6 +11475,7 @@ window.top2BasketLab = {
             this.stats.baskets++;
             this.stats[win?'wins':'losses']++;
             this.stats.pnl += pnl;
+            this.recordEmpirical(win,b.breakEvenProbability);
 
             this.history.push({
                 timestamp: new Date().toISOString(),
@@ -11423,6 +11496,7 @@ window.top2BasketLab = {
                 payout2: b.payoutB,
                 exactExpectedValue: b.ev,
                 exactEvPerDollar: b.evPerDollar,
+                breakEvenProbability: b.breakEvenProbability,
                 worstHitProfit: b.worstHitProfit,
                 actualDigit: actual,
                 result: win ? 'WIN' : 'LOSS',
@@ -11706,7 +11780,8 @@ window.top2BasketLab = {
                 totalStake:S,
                 payoutA:A.payout,payoutB:B.payout,
                 askA:A.ask,askB:B.ask,
-                ev,evPerDollar,worstHitProfit
+                ev,evPerDollar,worstHitProfit,
+                breakEvenProbability:equivalentBE
             };
             this.pendingProposalPair=null;
             this.status(
@@ -11723,6 +11798,7 @@ window.top2BasketLab = {
             pairId:livePairId,picks:pair.picks,totalStake:S,
             quotes:{a:A,b:B},buys:{},
             ev,evPerDollar,worstHitProfit,
+            breakEvenProbability:equivalentBE,
             startedAt:Date.now()
         };
         this.pendingProposalPair=null;
@@ -11814,6 +11890,7 @@ window.top2BasketLab = {
         const win=pnl>0;
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += pnl;
+        this.recordEmpirical(win,pair.breakEvenProbability);
 
         this.history.push({
             timestamp: new Date().toISOString(),
@@ -11836,6 +11913,7 @@ window.top2BasketLab = {
             leg2Profit: pair.buys.b.profit,
             exactExpectedValue: pair.ev,
             exactEvPerDollar: pair.evPerDollar,
+            breakEvenProbability: pair.breakEvenProbability,
             worstHitProfit: pair.worstHitProfit,
             result: win ? 'WIN' : 'LOSS',
             profit: pnl,
@@ -11920,6 +11998,19 @@ window.top2BasketLab = {
                     : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES',
                 recoverySizing:'EXACT_CYCLE_LOSS_PLUS_TARGET_FROM_LIVE_WORST_HIT_PAYOUT'
             },
+            empiricalLast5:{
+                storageScope:'THIS_BROWSER_THIS_SYMBOL',
+                symbol:this.symbol(),
+                n:Number(this.empirical?.n||0),
+                wins:Number(this.empirical?.wins||0),
+                losses:Number(this.empirical?.losses||0),
+                hitRate:Number(this.empirical?.n||0)>0 ? Number(this.empirical.wins||0)/Number(this.empirical.n) : 0,
+                averageBreakEven:Number(this.empirical?.n||0)>0 ? Number(this.empirical.sumBreakEven||0)/Number(this.empirical.n) : null,
+                observedMargin:Number(this.empirical?.n||0)>0 ? (Number(this.empirical.wins||0)/Number(this.empirical.n))-(Number(this.empirical.sumBreakEven||0)/Number(this.empirical.n)) : null,
+                wilson95:this.wilson95(Number(this.empirical?.wins||0),Number(this.empirical?.n||0)),
+                firstAt:this.empirical?.firstAt||null,
+                updatedAt:this.empirical?.updatedAt||null
+            },
             summary:{
                 completedBaskets:completed,
                 wins,
@@ -11952,13 +12043,21 @@ window.top2BasketLab = {
         const adminPanel=q('top2-basket-lab');
         if(adminPanel) adminPanel.style.display='';
         this.currentBasketStake=this.baseStake();
+        this.loadEmpirical();
         this.render();
 
         q('t2-start')?.addEventListener('click',()=>this.start());
         q('t2-stop')?.addEventListener('click',()=>this.stop());
         q('t2-export')?.addEventListener('click',()=>this.exportReport());
+        q('t2-reset-emp')?.addEventListener('click',()=>{
+            if(confirm('Reset all persistent Last-5 empirical statistics for this symbol?')) this.resetEmpirical();
+        });
         q('t2-mode')?.addEventListener('change',()=>{
             if(this.running) this.stop('Mode changed. Press START again.');
+            this.render();
+        });
+        q('symbol')?.addEventListener('change',()=>{
+            this.loadEmpirical();
             this.render();
         });
 
