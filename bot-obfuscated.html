@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V27: smart AI entry override (+0.10 pp preferred, -0.05 pp floor, 2x persistence, tail-risk veto) + V26 recovery/differs -->
+    <!-- V29: V28 + admin-only access for Digit Differs and Top-2 Basket panels/engines -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -411,6 +411,52 @@
 @media(max-width:640px){
   #differs-lab{top:70px;right:6px;left:6px;width:auto}
   #differs-lab .ddl-body{max-height:70vh}
+}
+
+
+/* === V28 TOP-2 MATCH BASKET === */
+#top2-basket-lab{
+  position:fixed;top:118px;left:18px;width:min(450px,calc(100vw - 24px));
+  z-index:9997;background:rgba(15,23,42,.985);border:1px solid rgba(168,85,247,.5);
+  border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.58);backdrop-filter:blur(14px);
+  color:#e5e7eb;overflow:hidden;
+}
+#top2-basket-lab .t2-head{
+  touch-action:none;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:11px 12px;background:linear-gradient(135deg,rgba(126,34,206,.28),rgba(59,130,246,.18));
+  border-bottom:1px solid rgba(148,163,184,.18);cursor:move;user-select:none
+}
+#top2-basket-lab .t2-title{font-weight:900;font-size:.95rem;color:#d8b4fe;letter-spacing:.01em}
+#top2-basket-lab .t2-badge{font-size:.66rem;font-weight:900;padding:4px 7px;border-radius:999px;background:#334155;color:#cbd5e1}
+#top2-basket-lab .t2-badge.live{background:#7f1d1d;color:#fecaca}
+#top2-basket-lab .t2-badge.shadow{background:#581c87;color:#f3e8ff}
+#top2-basket-lab .t2-icon{
+  width:28px;height:28px;border-radius:8px;border:1px solid rgba(148,163,184,.24);
+  background:rgba(15,23,42,.7);color:#e2e8f0;font-weight:900;cursor:pointer
+}
+#top2-basket-lab .t2-body{padding:12px;max-height:76vh;overflow:auto}
+#top2-basket-lab.minimized .t2-body{display:none}
+#top2-basket-lab .t2-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+#top2-basket-lab .t2-field label{display:block;font-size:.67rem;font-weight:800;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+#top2-basket-lab input,#top2-basket-lab select{
+  width:100%;border-radius:9px;border:1px solid #475569;background:#0f172a;color:#fff;
+  padding:8px 9px;font-size:.82rem;outline:none
+}
+#top2-basket-lab input:focus,#top2-basket-lab select:focus{border-color:#c084fc;box-shadow:0 0 0 2px rgba(192,132,252,.12)}
+#top2-basket-lab .t2-card{border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.56);border-radius:11px;padding:9px}
+#top2-basket-lab .t2-k{font-size:.64rem;text-transform:uppercase;color:#64748b;font-weight:800;letter-spacing:.04em}
+#top2-basket-lab .t2-v{font-size:.95rem;color:#f8fafc;font-weight:900;margin-top:2px}
+#top2-basket-lab .t2-v.good{color:#86efac} #top2-basket-lab .t2-v.bad{color:#fca5a5}
+#top2-basket-lab .t2-status{margin-top:9px;padding:9px 10px;border-radius:10px;background:#020617;border:1px solid rgba(148,163,184,.16);font-size:.76rem;line-height:1.4}
+#top2-basket-lab .t2-actions{display:flex;gap:8px;margin-top:10px}
+#top2-basket-lab .t2-btn{flex:1;border:0;border-radius:10px;padding:9px 10px;font-size:.78rem;font-weight:900;cursor:pointer}
+#top2-basket-lab .t2-start{background:#7e22ce;color:white}.t2-start:hover{filter:brightness(1.08)}
+#top2-basket-lab .t2-stop{background:#334155;color:white}
+#top2-basket-lab .t2-note{font-size:.66rem;color:#64748b;margin-top:8px;line-height:1.35}
+#top2-basket-lab .t2-log{height:104px;overflow:auto;margin-top:9px;padding:8px;border-radius:9px;background:#020617;border:1px solid rgba(148,163,184,.12);font-size:.66rem;color:#e9d5ff;white-space:pre-wrap}
+@media(max-width:640px){
+  #top2-basket-lab{top:86px;left:6px;right:6px;width:auto}
+  #top2-basket-lab .t2-body{max-height:70vh}
 }
 
 </style>
@@ -10108,7 +10154,7 @@ window.isBotRunning = true;
     <script src="/screen-recorder-safe-v5-2.js"></script>
 
 <!-- V25 Digit Differs Lab -->
-<div id="differs-lab">
+<div id="differs-lab" style="display:none">
   <div class="ddl-head" id="differs-lab-handle">
     <div class="flex items-center gap-2 min-w-0">
       <div class="ddl-title">↔️ Digit Differs Lab</div>
@@ -10257,6 +10303,12 @@ window.digitDiffersLab = {
     },
 
     start() {
+        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) {
+            this.running = false;
+            this.busy = false;
+            this.status('Admin access required.', false);
+            return;
+        }
         if (this.running) return;
 
         if (this.mode() === 'live' && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
@@ -10288,6 +10340,7 @@ window.digitDiffersLab = {
     },
 
     onTick(tick) {
+        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return;
         this.render();
         if (!this.running) return;
 
@@ -10498,6 +10551,7 @@ window.digitDiffersLab = {
     },
 
     handleApi(data) {
+        if (!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return false;
         if (!data) return false;
         if (data.error && this.pending.has(data.req_id)) {
             this.pending.delete(data.req_id);
@@ -10519,6 +10573,16 @@ window.digitDiffersLab = {
     },
 
     initUi() {
+        const isAdmin = !!(window.isExperimentalAdmin && window.isExperimentalAdmin());
+        if (!isAdmin) {
+            const adminPanel = $('differs-lab');
+            if (adminPanel) adminPanel.style.display = 'none';
+            this.running = false;
+            this.busy = false;
+            return;
+        }
+        const adminPanel = $('differs-lab');
+        if (adminPanel) adminPanel.style.display = '';
         this.render();
         $('ddl-start')?.addEventListener('click', () => this.start());
         $('ddl-stop')?.addEventListener('click', () => this.stop());
@@ -10639,6 +10703,734 @@ if (document.readyState === 'loading') {
 } else {
     window.digitDiffersLab.initUi();
 }
+})();
+</script>
+
+
+<!-- V28 Top-2 Match Basket -->
+<div id="top2-basket-lab" style="display:none">
+  <div class="t2-head" id="top2-basket-handle">
+    <div class="flex items-center gap-2 min-w-0">
+      <div class="t2-title">🎯 Top-2 Match Basket</div>
+      <span id="t2-mode-badge" class="t2-badge shadow">SHADOW</span>
+    </div>
+    <div class="flex gap-1">
+      <button id="t2-min" class="t2-icon" title="Minimize">−</button>
+    </div>
+  </div>
+  <div class="t2-body">
+    <div class="t2-grid">
+      <div class="t2-field">
+        <label>Execution</label>
+        <select id="t2-mode">
+          <option value="shadow">SHADOW — no purchase</option>
+          <option value="live">LIVE — can purchase</option>
+        </select>
+      </div>
+      <div class="t2-field">
+        <label>Symbol</label>
+        <input id="t2-symbol" value="Linked to main symbol" readonly>
+      </div>
+      <div class="t2-field">
+        <label>Base basket stake ($)</label>
+        <input id="t2-base-stake" type="number" value="10" min="0.70" step="0.02">
+      </div>
+      <div class="t2-field">
+        <label>Target cycle profit ($)</label>
+        <input id="t2-target-profit" type="number" value="1" min="0" step="0.01">
+      </div>
+      <div class="t2-field">
+        <label>Minimum basket edge (pp)</label>
+        <input id="t2-edge" type="number" value="0.10" min="0" step="0.05">
+      </div>
+      <div class="t2-field">
+        <label>Max basket trades</label>
+        <input id="t2-max" type="number" value="10" min="1" max="10" step="1">
+      </div>
+    </div>
+
+    <div class="grid grid-cols-3 gap-2 mt-3">
+      <div class="t2-card"><div class="t2-k">Top digit 1</div><div id="t2-d1" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Top digit 2</div><div id="t2-d2" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Combined model P</div><div id="t2-combined-p" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Basket stake</div><div id="t2-basket-stake" class="t2-v">$10.00</div></div>
+      <div class="t2-card"><div class="t2-k">Live basket edge</div><div id="t2-basket-edge" class="t2-v">Awaiting</div></div>
+      <div class="t2-card"><div class="t2-k">Worst hit profit</div><div id="t2-hit-profit" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Cycle losses</div><div id="t2-cycle-loss" class="t2-v">$0.00</div></div>
+      <div class="t2-card"><div class="t2-k">Basket trades</div><div id="t2-trades" class="t2-v">0</div></div>
+      <div class="t2-card"><div class="t2-k">Session P/L</div><div id="t2-pnl" class="t2-v">$0.00</div></div>
+    </div>
+
+    <div id="t2-status" class="t2-status">
+      Ready. It will split the basket stake equally across the two highest-probability Match digits.
+    </div>
+
+    <div class="t2-actions">
+      <button id="t2-start" class="t2-btn t2-start">▶ START TOP-2</button>
+      <button id="t2-stop" class="t2-btn t2-stop">■ STOP</button>
+    </div>
+
+    <div class="t2-note">
+      One basket trade = two simultaneous DIGITMATCH contracts on the same next tick.
+      After a basket miss, the next total basket stake is calculated from accumulated cycle losses
+      and the live worst-case winning payout, then split equally between the new Top-2 digits.
+      No fixed 1.15× multiplier is used here.
+    </div>
+    <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
+  </div>
+</div>
+
+
+<script>
+(() => {
+'use strict';
+
+const q = (id) => document.getElementById(id);
+
+window.top2BasketLab = {
+    version: 'TOP2-BASKET-V1.0',
+    running: false,
+    busy: false,
+    awaitingOutcome: null,
+    pending: new Map(),
+    pendingProposalPair: null,
+    pendingBuyPair: null,
+    stats: { baskets:0, wins:0, losses:0, pnl:0, blocked:0 },
+    cycleLoss: 0,
+    cycleIndex: 0,
+    currentBasketStake: 0,
+
+    mode(){ return q('t2-mode')?.value || 'shadow'; },
+    baseStake(){ return Math.max(0.70, Number(q('t2-base-stake')?.value || 10)); },
+    targetProfit(){ return Math.max(0, Number(q('t2-target-profit')?.value || 1)); },
+    minEdge(){ return Math.max(0, Number(q('t2-edge')?.value || 0.10)) / 100; },
+    maxTrades(){ return Math.max(1, Math.min(10, Number(q('t2-max')?.value || 10))); },
+    symbol(){ return q('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
+
+    log(msg){
+        const el=q('t2-log'); if(!el) return;
+        el.textContent += `\n[${new Date().toLocaleTimeString()}] ${msg}`;
+        el.scrollTop = el.scrollHeight;
+    },
+    status(msg, good=null){
+        const el=q('t2-status'); if(!el) return;
+        el.textContent=msg;
+        el.style.borderColor = good===true ? 'rgba(34,197,94,.45)' :
+                               good===false ? 'rgba(239,68,68,.45)' :
+                               'rgba(148,163,184,.16)';
+    },
+    money(v){ return `${v>=0?'+':'-'}$${Math.abs(Number(v||0)).toFixed(2)}`; },
+
+    render(){
+        const set=(id,v)=>{const el=q(id); if(el) el.textContent=v;};
+        set('t2-trades',this.stats.baskets);
+        set('t2-cycle-loss',`$${Math.max(0,this.cycleLoss).toFixed(2)}`);
+        set('t2-basket-stake',`$${Math.max(0,this.currentBasketStake || this.baseStake()).toFixed(2)}`);
+        set('t2-pnl',this.money(this.stats.pnl));
+        const badge=q('t2-mode-badge');
+        if(badge){
+            const live=this.mode()==='live';
+            badge.textContent=live?'LIVE':'SHADOW';
+            badge.className=`t2-badge ${live?'live':'shadow'}`;
+        }
+        const sym=q('t2-symbol'); if(sym) sym.value=this.symbol();
+    },
+
+    topTwo(){
+        const symbol=this.symbol();
+        if(!window.nextTickModel || typeof window.nextTickModel.getPrediction!=='function') return null;
+        const rows=[];
+        for(let d=0; d<=9; d++){
+            const m=window.nextTickModel.getPrediction(symbol,d);
+            if(!m?.ready) continue;
+            const p=Number(m.probability);
+            const support=Number(m.effectiveSupport||0);
+            if(!Number.isFinite(p)) continue;
+            rows.push({digit:d,p,support,model:{...m}});
+        }
+        if(rows.length<2) return null;
+        rows.sort((a,b)=>b.p-a.p);
+        const a=rows[0], b=rows[1];
+        return {a,b,combinedP:a.p+b.p};
+    },
+
+    start(){
+        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())){
+            this.running=false;
+            this.busy=false;
+            this.status('Admin access required.',false);
+            return;
+        }
+        if(this.running) return;
+
+        if(this.mode()==='live'){
+            if(
+                window.isBotRunning ||
+                (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
+                (typeof hasOpenContract==='function' && hasOpenContract())
+            ){
+                this.status('Stop other LIVE trading engines before starting Top-2.',false);
+                this.log('LIVE start blocked because another trading engine is active.');
+                return;
+            }
+        }
+
+        this.running=true;
+        this.busy=false;
+        this.awaitingOutcome=null;
+        this.pending.clear();
+        this.pendingProposalPair=null;
+        this.pendingBuyPair=null;
+        this.stats={baskets:0,wins:0,losses:0,pnl:0,blocked:0};
+        this.cycleLoss=0;
+        this.cycleIndex=0;
+        this.currentBasketStake=this.baseStake();
+        this.render();
+        this.status(`Armed in ${this.mode().toUpperCase()} mode.`);
+        this.log(`START ${this.mode().toUpperCase()} | base basket $${this.baseStake().toFixed(2)} | target cycle profit $${this.targetProfit().toFixed(2)} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
+        if(this.mode()==='live' && (!window.ws || window.ws.readyState!==WebSocket.OPEN)){
+            if(typeof connectWebSocket==='function') connectWebSocket();
+        }
+    },
+
+    stop(reason='Stopped by user'){
+        this.running=false;
+        this.status(reason);
+        this.log(reason);
+        this.render();
+    },
+
+    onTick(tick){
+        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return;
+        this.render();
+        if(!this.running) return;
+
+        const formatted = typeof canonicalTickString==='function'
+            ? canonicalTickString(tick?.quote,tick,tick?.symbol)
+            : String(tick?.quote ?? '');
+        const actual = formatted ? Number.parseInt(formatted[formatted.length-1],10) : NaN;
+
+        // Shadow settlement: first future public tick after both proposal quotes are accepted.
+        if(this.mode()==='shadow' && this.awaitingOutcome && Number.isInteger(actual)){
+            const b=this.awaitingOutcome;
+            const hitA=actual===b.a.digit;
+            const hitB=actual===b.b.digit;
+            const win=hitA||hitB;
+            let pnl;
+            if(hitA) pnl=b.payoutA - b.totalStake;
+            else if(hitB) pnl=b.payoutB - b.totalStake;
+            else pnl=-b.totalStake;
+
+            this.stats.baskets++;
+            this.stats[win?'wins':'losses']++;
+            this.stats.pnl += pnl;
+
+            if(win){
+                this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | cycle recovered`);
+                this.cycleLoss=0;
+                this.cycleIndex=0;
+                this.currentBasketStake=this.baseStake();
+            } else {
+                this.log(`SHADOW BASKET MISS | outcome ${actual} | -$${b.totalStake.toFixed(2)}`);
+                this.cycleLoss += b.totalStake;
+                this.cycleIndex++;
+            }
+
+            this.awaitingOutcome=null;
+            this.busy=false;
+            this.render();
+
+            if(this.stats.baskets>=this.maxTrades()){
+                this.stop(`Max ${this.maxTrades()} basket trades reached.`);
+                return;
+            }
+        }
+
+        if(this.busy || this.awaitingOutcome || this.stats.baskets>=this.maxTrades()) return;
+
+        if(this.mode()==='live' && (
+            window.isBotRunning ||
+            (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
+            (typeof hasOpenContract==='function' && hasOpenContract())
+        )){
+            this.status('Another LIVE engine is active; Top-2 paused.',false);
+            return;
+        }
+
+        const picks=this.topTwo();
+        if(!picks){
+            this.status('Waiting for two model-ready digits.');
+            return;
+        }
+
+        q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
+        q('t2-d2').textContent=`${picks.b.digit} (${(picks.b.p*100).toFixed(2)}%)`;
+        q('t2-combined-p').textContent=`${(picks.combinedP*100).toFixed(2)}%`;
+
+        if(!window.ws || window.ws.readyState!==WebSocket.OPEN){
+            if(this.mode()==='live' && typeof connectWebSocket==='function') connectWebSocket();
+            this.status('Waiting for authenticated trading connection.');
+            return;
+        }
+
+        // First quote with current provisional stake.
+        const provisional = Math.max(this.baseStake(), this.currentBasketStake || this.baseStake());
+        this.requestPair(picks, provisional, false);
+    },
+
+    requestPair(picks,totalStake,isRecoverySizing){
+        const legStake = Math.max(0.35, Number((totalStake/2).toFixed(2)));
+        totalStake = Number((legStake*2).toFixed(2));
+
+        const pairId=`T2-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+        this.pendingProposalPair={
+            pairId,picks,totalStake,legStake,isRecoverySizing,
+            proposals:{},createdAt:Date.now()
+        };
+        this.busy=true;
+
+        for(const leg of ['a','b']){
+            const p=picks[leg];
+            const reqId=getNextReqId();
+            this.pending.set(reqId,{
+                kind:'top2-proposal',pairId,leg,
+                digit:p.digit,pModel:p.p,support:p.support,
+                totalStake,legStake,isRecoverySizing
+            });
+            const sent=sendRequest({
+                proposal:1,
+                amount:legStake,
+                basis:'stake',
+                contract_type:'DIGITMATCH',
+                currency:'USD',
+                duration:1,
+                duration_unit:'t',
+                underlying_symbol:this.symbol(),
+                barrier:String(p.digit),
+                req_id:reqId
+            });
+            if(sent===null){
+                this.pending.delete(reqId);
+                this.busy=false;
+                this.status('Could not request both Match proposals.',false);
+                return;
+            }
+        }
+
+        this.status(
+            `${isRecoverySizing?'Recovery sizing':'Quoting'} Top-2 ${picks.a.digit} + ${picks.b.digit} at $${totalStake.toFixed(2)} basket stake...`
+        );
+    },
+
+    handleProposal(proposal,reqId){
+        const ctx=this.pending.get(reqId);
+        if(!ctx || ctx.kind!=='top2-proposal') return false;
+        this.pending.delete(reqId);
+
+        const pair=this.pendingProposalPair;
+        if(!pair || pair.pairId!==ctx.pairId) return true;
+
+        if(!proposal?.id){
+            this.busy=false;
+            this.pendingProposalPair=null;
+            this.status('One Top-2 proposal quote was unavailable.',false);
+            return true;
+        }
+
+        pair.proposals[ctx.leg]={
+            id:proposal.id,
+            ask:Number(proposal.ask_price),
+            payout:Number(proposal.payout),
+            ctx
+        };
+
+        if(!pair.proposals.a || !pair.proposals.b) return true;
+
+        const A=pair.proposals.a, B=pair.proposals.b;
+        const S=Number((A.ask+B.ask).toFixed(2));
+        if(!(A.ask>0 && B.ask>0 && A.payout>0 && B.payout>0)){
+            this.busy=false;
+            this.pendingProposalPair=null;
+            this.status('Invalid Top-2 proposal economics.',false);
+            return true;
+        }
+
+        // Exact expected-value calculation for mutually exclusive outcomes.
+        const pA=pair.picks.a.p, pB=pair.picks.b.p;
+        const expectedReturn = pA*A.payout + pB*B.payout;
+        const ev = expectedReturn - S;
+        const evPerDollar = ev / S;
+
+        const hitProfitA=A.payout-S;
+        const hitProfitB=B.payout-S;
+        const worstHitProfit=Math.min(hitProfitA,hitProfitB);
+
+        // Equal-payout equivalent combined break-even for display only.
+        const avgWinningPayout=(A.payout+B.payout)/2;
+        const equivalentBE = avgWinningPayout>0 ? S/avgWinningPayout : NaN;
+        const basketEdge = Number.isFinite(equivalentBE) ? pair.picks.combinedP-equivalentBE : NaN;
+
+        q('t2-basket-edge').textContent = Number.isFinite(basketEdge)
+            ? `${basketEdge>=0?'+':''}${(basketEdge*100).toFixed(2)} pp`
+            : '—';
+        q('t2-basket-edge').className=`t2-v ${basketEdge>=this.minEdge()?'good':'bad'}`;
+        q('t2-hit-profit').textContent=this.money(worstHitProfit);
+
+        // If recovering, use live worst-case profit factor to solve exact basket stake.
+        // Because payout scales approximately linearly with stake:
+        // requiredTotalStake = (cycleLoss + targetProfit) / worstProfitFactor
+        const worstProfitFactor = worstHitProfit / S;
+
+        if(this.cycleLoss>0 && !pair.isRecoverySizing){
+            if(!(worstProfitFactor>0)){
+                this.busy=false;
+                this.pendingProposalPair=null;
+                this.status('Current Top-2 payout cannot support recovery sizing.',false);
+                return true;
+            }
+
+            const needed = (this.cycleLoss + this.targetProfit()) / worstProfitFactor;
+            const safeNeeded = Math.max(this.baseStake(), Math.ceil(needed*100)/100);
+
+            // Requote at the exact recovery stake because Deriv payout can vary.
+            if(Math.abs(safeNeeded-S) > 0.02){
+                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next basket ≈ $${safeNeeded.toFixed(2)}`);
+                this.pendingProposalPair=null;
+                this.requestPair(pair.picks,safeNeeded,true);
+                return true;
+            }
+        }
+
+        // On the recovery requote, verify that a hit on EITHER leg really covers losses + target.
+        if(this.cycleLoss>0){
+            const minRequired=this.cycleLoss+this.targetProfit();
+            if(worstHitProfit+1e-9 < minRequired){
+                if(!(worstProfitFactor>0)){
+                    this.busy=false; this.pendingProposalPair=null;
+                    this.status('Recovery quote cannot recover the cycle.',false);
+                    return true;
+                }
+                const needed=(this.cycleLoss+this.targetProfit())/worstProfitFactor;
+                const safeNeeded=Math.ceil((needed+0.02)*100)/100;
+                this.pendingProposalPair=null;
+                this.requestPair(pair.picks,safeNeeded,true);
+                return true;
+            }
+        }
+
+        this.currentBasketStake=S;
+        this.render();
+
+        // Use exact EV as the gate. basketEdge is display-friendly approximation.
+        if(evPerDollar < this.minEdge()){
+            this.stats.blocked++;
+            this.busy=false;
+            this.pendingProposalPair=null;
+            this.status(
+                `WAIT: exact basket EV ${(evPerDollar*100).toFixed(2)}% of stake is below +${(this.minEdge()*100).toFixed(2)}%.`,
+                false
+            );
+            return true;
+        }
+
+        if(this.mode()==='shadow'){
+            this.awaitingOutcome={
+                picks:pair.picks,
+                a:pair.picks.a,b:pair.picks.b,
+                totalStake:S,
+                payoutA:A.payout,payoutB:B.payout,
+                askA:A.ask,askB:B.ask,
+                ev,evPerDollar,worstHitProfit
+            };
+            this.pendingProposalPair=null;
+            this.status(
+                `SHADOW ARMED: ${pair.picks.a.digit} + ${pair.picks.b.digit} | basket $${S.toFixed(2)} | exact EV ${(evPerDollar*100).toFixed(2)}%`,
+                true
+            );
+            this.log(`SHADOW BASKET | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | $${S.toFixed(2)} total | worst hit ${this.money(worstHitProfit)}`);
+            return true;
+        }
+
+        // LIVE: buy both proposals immediately as one basket.
+        const livePairId=pair.pairId;
+        this.pendingBuyPair={
+            pairId:livePairId,picks:pair.picks,totalStake:S,
+            quotes:{a:A,b:B},buys:{},
+            ev,evPerDollar,worstHitProfit,
+            startedAt:Date.now()
+        };
+        this.pendingProposalPair=null;
+
+        for(const leg of ['a','b']){
+            const Q=this.pendingBuyPair.quotes[leg];
+            const buyReqId=getNextReqId();
+            this.pending.set(buyReqId,{
+                kind:'top2-buy',pairId:livePairId,leg,
+                digit:pair.picks[leg].digit
+            });
+            const sent=sendRequest({buy:Q.id,price:Q.ask,req_id:buyReqId});
+            if(sent===null){
+                this.pending.delete(buyReqId);
+                this.busy=false;
+                this.status('One Top-2 buy could not be sent. Stop and inspect before retrying.',false);
+                this.log('CRITICAL: basket buy send failed on one leg.');
+                return true;
+            }
+        }
+
+        this.status(`BUYING Top-2 ${pair.picks.a.digit} + ${pair.picks.b.digit}...`,true);
+        return true;
+    },
+
+    handleBuy(buy,reqId){
+        const ctx=this.pending.get(reqId);
+        if(!ctx || ctx.kind!=='top2-buy') return false;
+        this.pending.delete(reqId);
+
+        const pair=this.pendingBuyPair;
+        if(!pair || pair.pairId!==ctx.pairId) return true;
+
+        if(!buy?.contract_id){
+            this.busy=false;
+            this.status('One Top-2 purchase was not confirmed. Stop and inspect.',false);
+            this.log(`CRITICAL: buy confirmation missing for digit ${ctx.digit}.`);
+            return true;
+        }
+
+        pair.buys[ctx.leg]={
+            contractId:Number(buy.contract_id),
+            buyPrice:Number(buy.buy_price ?? pair.quotes[ctx.leg].ask),
+            settled:false,profit:null,status:null
+        };
+
+        const monitorReqId=getNextReqId();
+        sendRequest({
+            proposal_open_contract:1,
+            contract_id:Number(buy.contract_id),
+            subscribe:1,
+            req_id:monitorReqId
+        });
+
+        if(!pair.buys.a || !pair.buys.b) return true;
+
+        this.stats.baskets++;
+        this.render();
+        this.log(`LIVE BASKET #${this.stats.baskets} | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | total $${pair.totalStake.toFixed(2)}`);
+        this.status(`Both contracts open · wins if next digit is ${pair.picks.a.digit} or ${pair.picks.b.digit}.`,true);
+
+        if(this.stats.baskets>=this.maxTrades()){
+            // Let the current basket settle, then stop.
+            this.running=false;
+        }
+        return true;
+    },
+
+    handleOpenContract(poc){
+        const pair=this.pendingBuyPair;
+        if(!pair) return false;
+
+        let leg=null;
+        if(pair.buys.a && Number(poc?.contract_id)===pair.buys.a.contractId) leg='a';
+        if(pair.buys.b && Number(poc?.contract_id)===pair.buys.b.contractId) leg='b';
+        if(!leg) return false;
+
+        if(!(poc.is_sold || poc.status==='sold')) return true;
+
+        const b=pair.buys[leg];
+        if(b.settled) return true;
+        b.settled=true;
+        b.profit=Number(poc.profit ?? 0);
+        b.status=poc.status;
+
+        if(!(pair.buys.a?.settled && pair.buys.b?.settled)) return true;
+
+        const pnl=Number(pair.buys.a.profit||0)+Number(pair.buys.b.profit||0);
+        const win=pnl>0;
+        this.stats[win?'wins':'losses']++;
+        this.stats.pnl += pnl;
+
+        if(win){
+            this.log(`LIVE BASKET WIN | ${this.money(pnl)} | cycle recovered`);
+            this.cycleLoss=0;
+            this.cycleIndex=0;
+            this.currentBasketStake=this.baseStake();
+        }else{
+            this.log(`LIVE BASKET MISS | ${this.money(pnl)}`);
+            this.cycleLoss += Math.abs(pnl);
+            this.cycleIndex++;
+        }
+
+        this.pendingBuyPair=null;
+        this.busy=false;
+        this.render();
+
+        if(!this.running || this.stats.baskets>=this.maxTrades()){
+            this.stop(`Basket settled. Max ${this.maxTrades()} trades reached.`);
+        }else{
+            this.status(win?'Cycle complete. Waiting for next Top-2 setup.':'Recovery cycle active. Re-ranking Top-2 on the next tick.',win);
+        }
+        return true;
+    },
+
+    handleApi(data){
+        if(!(window.isExperimentalAdmin && window.isExperimentalAdmin())) return false;
+        if(!data) return false;
+
+        if(data.error && this.pending.has(data.req_id)){
+            const ctx=this.pending.get(data.req_id);
+            this.pending.delete(data.req_id);
+            this.busy=false;
+            this.status(`Deriv error: ${data.error.message || data.error.code}`,false);
+            this.log(`ERROR ${data.error.code||''}: ${data.error.message||'Unknown error'}`);
+            return true;
+        }
+
+        if(data.msg_type==='proposal' && this.pending.has(data.req_id)){
+            return this.handleProposal(data.proposal,data.req_id);
+        }
+        if(data.msg_type==='buy' && this.pending.has(data.req_id)){
+            return this.handleBuy(data.buy,data.req_id);
+        }
+        if(data.msg_type==='proposal_open_contract' && this.pendingBuyPair){
+            return this.handleOpenContract(data.proposal_open_contract);
+        }
+        return false;
+    },
+
+    initUi(){
+        const isAdmin=!!(window.isExperimentalAdmin && window.isExperimentalAdmin());
+        if(!isAdmin){
+            const adminPanel=q('top2-basket-lab');
+            if(adminPanel) adminPanel.style.display='none';
+            this.running=false;
+            this.busy=false;
+            return;
+        }
+        const adminPanel=q('top2-basket-lab');
+        if(adminPanel) adminPanel.style.display='';
+        this.currentBasketStake=this.baseStake();
+        this.render();
+
+        q('t2-start')?.addEventListener('click',()=>this.start());
+        q('t2-stop')?.addEventListener('click',()=>this.stop());
+        q('t2-mode')?.addEventListener('change',()=>{
+            if(this.running) this.stop('Mode changed. Press START again.');
+            this.render();
+        });
+
+        const panel=q('top2-basket-lab'),handle=q('top2-basket-handle'),min=q('t2-min');
+        let minimized=localStorage.getItem('t2_minimized')==='1';
+        const applyMin=()=>{
+            panel?.classList.toggle('minimized',minimized);
+            if(min){min.textContent=minimized?'+':'−';min.title=minimized?'Expand':'Minimize';}
+            localStorage.setItem('t2_minimized',minimized?'1':'0');
+        };
+        min?.addEventListener('click',(e)=>{e.stopPropagation();minimized=!minimized;applyMin();});
+        applyMin();
+
+        try{
+            const pos=JSON.parse(localStorage.getItem('t2_position')||'null');
+            if(pos && window.innerWidth>640){
+                panel.style.left=`${pos.left}px`;
+                panel.style.top=`${pos.top}px`;
+                panel.style.right='auto';
+            }
+        }catch(_){}
+
+        let drag=null;
+        const begin=(x,y)=>{
+            if(!panel || window.innerWidth<=640) return;
+            const r=panel.getBoundingClientRect();
+            panel.style.left=`${r.left}px`;panel.style.top=`${r.top}px`;panel.style.right='auto';panel.style.bottom='auto';
+            drag={dx:x-r.left,dy:y-r.top};document.body.style.userSelect='none';
+        };
+        const move=(x,y)=>{
+            if(!drag||!panel)return;
+            const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
+            const maxT=Math.max(0,window.innerHeight-44);
+            panel.style.left=`${Math.min(maxL,Math.max(0,x-drag.dx))}px`;
+            panel.style.top=`${Math.min(maxT,Math.max(0,y-drag.dy))}px`;
+        };
+        const end=()=>{
+            if(!drag||!panel)return;
+            const r=panel.getBoundingClientRect();
+            localStorage.setItem('t2_position',JSON.stringify({left:r.left,top:r.top}));
+            drag=null;document.body.style.userSelect='';
+        };
+
+        handle?.addEventListener('mousedown',(e)=>{if(e.target.closest('button'))return;e.preventDefault();begin(e.clientX,e.clientY);});
+        document.addEventListener('mousemove',(e)=>{if(drag)move(e.clientX,e.clientY);});
+        document.addEventListener('mouseup',end);
+
+        handle?.addEventListener('touchstart',(e)=>{
+            if(e.target.closest('button'))return;
+            const t=e.touches?.[0];if(!t)return;e.preventDefault();begin(t.clientX,t.clientY);
+        },{passive:false});
+        document.addEventListener('touchmove',(e)=>{
+            if(!drag)return;const t=e.touches?.[0];if(!t)return;e.preventDefault();move(t.clientX,t.clientY);
+        },{passive:false});
+        document.addEventListener('touchend',end);
+        document.addEventListener('touchcancel',end);
+    }
+};
+
+// Chain into the already wrapped API dispatcher from V25/V27.
+if(typeof handleAPIResponse==='function'){
+    const __top2PrevApi=handleAPIResponse;
+    handleAPIResponse=function(data){
+        if(window.top2BasketLab?.handleApi(data)) return;
+        return __top2PrevApi(data);
+    };
+}
+
+// Observe the canonical public tick after the main model updates.
+if(typeof handleTick==='function'){
+    const __top2PrevTick=handleTick;
+    handleTick=function(tick){
+        const result=__top2PrevTick(tick);
+        try{window.top2BasketLab?.onTick(tick);}catch(e){console.error('Top-2 Basket tick error',e);}
+        return result;
+    };
+}
+
+// Do not let the main bot start while LIVE Top-2 is armed/open.
+if(typeof startBot==='function'){
+    const __top2PrevStart=startBot;
+    startBot=function(){
+        if(
+            window.top2BasketLab?.running &&
+            window.top2BasketLab.mode()==='live'
+        ){
+            window.top2BasketLab.status('Stop LIVE Top-2 before starting Digit Match.',false);
+            window.top2BasketLab.log('Main bot start blocked while LIVE Top-2 is armed.');
+            return;
+        }
+        return __top2PrevStart();
+    };
+}
+
+if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>window.top2BasketLab.initUi(),{once:true});
+}else{
+    window.top2BasketLab.initUi();
+}
+})();
+</script>
+
+
+<script>
+(() => {
+    window.isExperimentalAdmin = function() {
+        try {
+            if (window.isAdmin === true) return true;
+            if (String(window.currentUserRole || '').toLowerCase() === 'admin') return true;
+            if (String(window.userRole || '').toLowerCase() === 'admin') return true;
+            if (String(window.sessionState?.role || '').toLowerCase() === 'admin') return true;
+            if (String(window.authUser?.role || '').toLowerCase() === 'admin') return true;
+            if (String(window.currentUser?.role || '').toLowerCase() === 'admin') return true;
+        } catch (_) {}
+        return false;
+    };
 })();
 </script>
 
