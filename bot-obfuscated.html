@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V32: V31 + global delegated drag controller for Digit Differs and Top-2 Basket -->
+    <!-- V33: V32 + clear RUNNING button states + JSON report export for Digit Differs and Top-2 Basket -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -10229,6 +10229,7 @@ window.isBotRunning = true;
     <div class="ddl-actions">
       <button id="ddl-start" class="ddl-btn ddl-start">▶ START DIFFERS</button>
       <button id="ddl-stop" class="ddl-btn ddl-stop">■ STOP</button>
+      <button id="ddl-export" class="ddl-btn ddl-stop">⬇ EXPORT</button>
     </div>
 
     <div class="ddl-mini-note">
@@ -10241,6 +10242,27 @@ window.isBotRunning = true;
 </div>
 
 
+
+
+<script>
+(() => {
+    'use strict';
+    window.downloadJsonReport = function(filename, payload) {
+        const blob = new Blob(
+            [JSON.stringify(payload, null, 2)],
+            { type: 'application/json;charset=utf-8' }
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+})();
+</script>
 
 <script>
 (() => {
@@ -10353,6 +10375,8 @@ window.digitDiffersLab = {
     active: null,
     shadowOpen: null,
     stats: { trades: 0, wins: 0, losses: 0, pnl: 0, blocked: 0 },
+    history: [],
+    sessionStartedAt: null,
     lastQuote: null,
 
     mode() { return $('ddl-mode')?.value || 'shadow'; },
@@ -10393,6 +10417,19 @@ window.digitDiffersLab = {
         }
         const sym = $('ddl-symbol');
         if (sym) sym.value = this.symbol();
+
+        const startBtn = $('ddl-start');
+        const stopBtn = $('ddl-stop');
+        if (startBtn) {
+            startBtn.textContent = this.running ? '● DIFFERS RUNNING' : '▶ START DIFFERS';
+            startBtn.disabled = !!this.running;
+            startBtn.style.opacity = this.running ? '0.72' : '1';
+            startBtn.style.cursor = this.running ? 'default' : 'pointer';
+        }
+        if (stopBtn) {
+            stopBtn.disabled = !this.running && !this.active;
+            stopBtn.style.opacity = (!this.running && !this.active) ? '0.55' : '1';
+        }
     },
 
     bestAvoidDigit() {
@@ -10432,6 +10469,8 @@ window.digitDiffersLab = {
         this.busy = false;
         this.shadowOpen = null;
         this.stats = { trades:0, wins:0, losses:0, pnl:0, blocked:0 };
+        this.history = [];
+        this.sessionStartedAt = new Date().toISOString();
         this.render();
         this.status(`Armed in ${this.mode().toUpperCase()} mode. Waiting for a model-ready tick.`);
         this.log(`Started ${this.mode().toUpperCase()} | stake $${this.stake().toFixed(2)} | max ${this.maxTrades()} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
@@ -10468,6 +10507,23 @@ window.digitDiffersLab = {
             this.stats.trades++;
             this.stats[win ? 'wins' : 'losses']++;
             this.stats.pnl += pnl;
+            this.history.push({
+                timestamp: new Date().toISOString(),
+                mode: 'SHADOW',
+                symbol: s.symbol,
+                avoidedDigit: s.digit,
+                modelDigitProbability: s.pDigit,
+                estimatedWinProbability: s.pWin,
+                support: s.support,
+                stake: s.ask,
+                payout: s.payout,
+                breakEven: s.be,
+                edge: s.edge,
+                expectedValue: s.ev,
+                actualDigit: actual,
+                result: win ? 'WIN' : 'LOSS',
+                profit: pnl
+            });
             this.log(`SHADOW ${win?'WIN':'LOSS'} | avoided ${s.digit}, outcome ${actual} | ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
             this.shadowOpen = null;
             this.busy = false;
@@ -10648,6 +10704,23 @@ window.digitDiffersLab = {
         const win = profit > 0;
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += profit;
+        this.history.push({
+            timestamp: new Date().toISOString(),
+            mode: 'LIVE',
+            symbol: this.active.symbol,
+            avoidedDigit: this.active.digit,
+            modelDigitProbability: this.active.pDigit,
+            estimatedWinProbability: this.active.pWin,
+            support: this.active.support,
+            stake: this.active.buyPrice,
+            payoutQuoted: this.active.payout,
+            breakEven: this.active.be,
+            edge: this.active.edge,
+            expectedValue: this.active.ev,
+            contractId: this.active.contractId,
+            result: win ? 'WIN' : 'LOSS',
+            profit
+        });
         this.log(`LIVE ${win?'WIN':'LOSS'} | avoided ${this.active.digit} | ${profit>=0?'+':''}$${profit.toFixed(2)}`);
         this.status(`${win?'WIN':'LOSS'} · ${profit>=0?'+':''}$${profit.toFixed(2)}`, win);
 
@@ -10683,6 +10756,40 @@ window.digitDiffersLab = {
         return false;
     },
 
+
+    exportReport() {
+        const now = new Date();
+        const payload = {
+            schema: 'DIGITDIFFERS_REPORT_V1',
+            generatedAt: now.toISOString(),
+            version: this.version,
+            sessionStartedAt: this.sessionStartedAt,
+            symbol: this.symbol(),
+            mode: this.mode().toUpperCase(),
+            config: {
+                stake: this.stake(),
+                maxTrades: this.maxTrades(),
+                minimumEdge: this.minEdge(),
+                digitPolicy: 'LOWEST_NEXT_TICK_PROBABILITY',
+                flatStake: true
+            },
+            summary: {
+                trades: this.stats.trades,
+                wins: this.stats.wins,
+                losses: this.stats.losses,
+                winRate: this.stats.trades ? this.stats.wins / this.stats.trades : 0,
+                sessionPnL: this.stats.pnl,
+                blockedByEdgeGate: this.stats.blocked
+            },
+            trades: this.history
+        };
+
+        const stamp = now.toISOString().replace(/[:.]/g, '-');
+        const file = `digit-differs-${this.symbol()}-${stamp}.json`;
+        window.downloadJsonReport(file, payload);
+        this.log(`Exported report: ${file}`);
+    },
+
     async initUi() {
         const isAdmin = await window.checkExperimentalAdminAccess(false);
         if (!isAdmin) {
@@ -10697,6 +10804,7 @@ window.digitDiffersLab = {
         this.render();
         $('ddl-start')?.addEventListener('click', () => this.start());
         $('ddl-stop')?.addEventListener('click', () => this.stop());
+        $('ddl-export')?.addEventListener('click', () => this.exportReport());
         $('ddl-mode')?.addEventListener('change', () => {
             if (this.running) this.stop('Mode changed. Press START again.');
             this.render();
@@ -10892,6 +11000,7 @@ if (document.readyState === 'loading') {
     <div class="t2-actions">
       <button id="t2-start" class="t2-btn t2-start">▶ START TOP-2</button>
       <button id="t2-stop" class="t2-btn t2-stop">■ STOP</button>
+      <button id="t2-export" class="t2-btn t2-stop">⬇ EXPORT</button>
     </div>
 
     <div class="t2-note">
@@ -10920,6 +11029,8 @@ window.top2BasketLab = {
     pendingProposalPair: null,
     pendingBuyPair: null,
     stats: { baskets:0, wins:0, losses:0, pnl:0, blocked:0 },
+    history: [],
+    sessionStartedAt: null,
     cycleLoss: 0,
     cycleIndex: 0,
     currentBasketStake: 0,
@@ -10958,6 +11069,19 @@ window.top2BasketLab = {
             badge.className=`t2-badge ${live?'live':'shadow'}`;
         }
         const sym=q('t2-symbol'); if(sym) sym.value=this.symbol();
+
+        const startBtn=q('t2-start');
+        const stopBtn=q('t2-stop');
+        if(startBtn){
+            startBtn.textContent=this.running ? '● TOP-2 RUNNING' : '▶ START TOP-2';
+            startBtn.disabled=!!this.running;
+            startBtn.style.opacity=this.running?'0.72':'1';
+            startBtn.style.cursor=this.running?'default':'pointer';
+        }
+        if(stopBtn){
+            stopBtn.disabled=!this.running && !this.pendingBuyPair && !this.awaitingOutcome;
+            stopBtn.style.opacity=(!this.running && !this.pendingBuyPair && !this.awaitingOutcome)?'0.55':'1';
+        }
     },
 
     topTwo(){
@@ -11006,6 +11130,8 @@ window.top2BasketLab = {
         this.pendingProposalPair=null;
         this.pendingBuyPair=null;
         this.stats={baskets:0,wins:0,losses:0,pnl:0,blocked:0};
+        this.history=[];
+        this.sessionStartedAt=new Date().toISOString();
         this.cycleLoss=0;
         this.cycleIndex=0;
         this.currentBasketStake=this.baseStake();
@@ -11048,6 +11174,30 @@ window.top2BasketLab = {
             this.stats.baskets++;
             this.stats[win?'wins':'losses']++;
             this.stats.pnl += pnl;
+
+            this.history.push({
+                timestamp: new Date().toISOString(),
+                mode: 'SHADOW',
+                symbol: this.symbol(),
+                cycleIndexBeforeSettlement: this.cycleIndex,
+                topDigit1: b.a.digit,
+                topDigit1Probability: b.a.p,
+                topDigit2: b.b.digit,
+                topDigit2Probability: b.b.p,
+                combinedModelProbability: b.picks.combinedP,
+                totalBasketStake: b.totalStake,
+                legStake1: b.askA,
+                legStake2: b.askB,
+                payout1: b.payoutA,
+                payout2: b.payoutB,
+                exactExpectedValue: b.ev,
+                exactEvPerDollar: b.evPerDollar,
+                worstHitProfit: b.worstHitProfit,
+                actualDigit: actual,
+                result: win ? 'WIN' : 'LOSS',
+                profit: pnl,
+                cycleLossBefore: this.cycleLoss
+            });
 
             if(win){
                 this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | cycle recovered`);
@@ -11373,6 +11523,31 @@ window.top2BasketLab = {
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += pnl;
 
+        this.history.push({
+            timestamp: new Date().toISOString(),
+            mode: 'LIVE',
+            symbol: this.symbol(),
+            cycleIndexBeforeSettlement: this.cycleIndex,
+            topDigit1: pair.picks.a.digit,
+            topDigit1Probability: pair.picks.a.p,
+            topDigit2: pair.picks.b.digit,
+            topDigit2Probability: pair.picks.b.p,
+            combinedModelProbability: pair.picks.combinedP,
+            totalBasketStake: pair.totalStake,
+            leg1BuyPrice: pair.buys.a.buyPrice,
+            leg2BuyPrice: pair.buys.b.buyPrice,
+            contractId1: pair.buys.a.contractId,
+            contractId2: pair.buys.b.contractId,
+            leg1Profit: pair.buys.a.profit,
+            leg2Profit: pair.buys.b.profit,
+            exactExpectedValue: pair.ev,
+            exactEvPerDollar: pair.evPerDollar,
+            worstHitProfit: pair.worstHitProfit,
+            result: win ? 'WIN' : 'LOSS',
+            profit: pnl,
+            cycleLossBefore: this.cycleLoss
+        });
+
         if(win){
             this.log(`LIVE BASKET WIN | ${this.money(pnl)} | cycle recovered`);
             this.cycleLoss=0;
@@ -11421,6 +11596,48 @@ window.top2BasketLab = {
         return false;
     },
 
+
+    exportReport(){
+        const now=new Date();
+        const trades=this.history || [];
+        const completed=trades.length;
+        const wins=trades.filter(x=>x.result==='WIN').length;
+        const losses=trades.filter(x=>x.result==='LOSS').length;
+        const payload={
+            schema:'TOP2_MATCH_BASKET_REPORT_V1',
+            generatedAt:now.toISOString(),
+            version:this.version,
+            sessionStartedAt:this.sessionStartedAt,
+            symbol:this.symbol(),
+            mode:this.mode().toUpperCase(),
+            config:{
+                baseBasketStake:this.baseStake(),
+                targetCycleProfit:this.targetProfit(),
+                minimumBasketEdge:this.minEdge(),
+                maxBasketTrades:this.maxTrades(),
+                selectionPolicy:'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES',
+                recoverySizing:'EXACT_CYCLE_LOSS_PLUS_TARGET_FROM_LIVE_WORST_HIT_PAYOUT'
+            },
+            summary:{
+                completedBaskets:completed,
+                wins,
+                losses,
+                hitRate:completed ? wins/completed : 0,
+                sessionPnL:this.stats.pnl,
+                blockedByEdgeGate:this.stats.blocked,
+                currentCycleLoss:this.cycleLoss,
+                currentCycleIndex:this.cycleIndex,
+                largestBasketStake:trades.reduce((m,x)=>Math.max(m,Number(x.totalBasketStake||0)),0),
+                maxRecoveryDepth:trades.reduce((m,x)=>Math.max(m,Number(x.cycleIndexBeforeSettlement||0)),0)
+            },
+            baskets:trades
+        };
+        const stamp=now.toISOString().replace(/[:.]/g,'-');
+        const file=`top2-basket-${this.symbol()}-${stamp}.json`;
+        window.downloadJsonReport(file,payload);
+        this.log(`Exported report: ${file}`);
+    },
+
     async initUi(){
         const isAdmin=await window.checkExperimentalAdminAccess(false);
         if(!isAdmin){
@@ -11437,6 +11654,7 @@ window.top2BasketLab = {
 
         q('t2-start')?.addEventListener('click',()=>this.start());
         q('t2-stop')?.addEventListener('click',()=>this.stop());
+        q('t2-export')?.addEventListener('click',()=>this.exportReport());
         q('t2-mode')?.addEventListener('change',()=>{
             if(this.running) this.stop('Mode changed. Press START again.');
             this.render();
