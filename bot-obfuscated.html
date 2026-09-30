@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V45: V43 + 7-digit state-machine fix: invalid 5-tick windows re-observe immediately -->
+    <!-- V46: V45 + exact-cent block-profit stop fix -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11191,10 +11191,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Multi-Digit Match state fix: after every 5 observed ticks, the engine enters TRADE only when the frozen
-      absent pool contains at least the selected basket width. An undersized window is discarded immediately and the
-      next public tick starts a fresh observation window—no cooldown and no stuck TRADE state. Once valid, proposals
-      and multi-leg buys are sent back-to-back. Live buys remain sequential/non-atomic at Deriv.
+      Multi-Digit Match V46: invalid 5-tick windows re-observe immediately, and block-profit stopping is evaluated
+      in integer cents. A displayed +$0.90 result now satisfies a $0.90 target even when JavaScript internally stores
+      0.8999999999999977. Once the target is reached, that block ends immediately and a fresh observation begins.
+      Live multi-leg buys remain sequential/non-atomic at Deriv.
     </div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
@@ -11208,7 +11208,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V1.8-7DIGIT-STATE-FIX',
+    version: 'MULTIDIGIT-MATCH-V1.9-CENT-PROFIT-STOP',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11299,6 +11299,10 @@ window.top2BasketLab = {
         return Math.max(2,Math.min(7,n));
     },
     targetHitProfit(){ return Math.max(0.01,Number(q('t2-hit-target')?.value || 0.90)); },
+    cents(v){ return Math.round((Number(v)||0)*100); },
+    blockTargetReached(){
+        return this.cents(this.blockPnl) >= this.cents(this.targetHitProfit());
+    },
     enforceRuleWidthConsistency(){
         const ruleEl=q('t2-rule');
         const width=this.basketWidth();
@@ -11742,8 +11746,8 @@ window.top2BasketLab = {
             this.awaitingOutcome=null;
             this.busy=false;
             if(b.picks?.rule==='OBSERVE5_TRADE5'){
-                if(this.blockPnl >= this.targetHitProfit()){
-                    this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached early`);
+                if(this.blockTargetReached()){
+                    this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached (cent-safe stop)`);
                 }else{
                     this.advanceObserveTradeBlock();
                 }
@@ -12163,8 +12167,8 @@ window.top2BasketLab = {
         this.busy=false;
 
         if(pair.picks?.rule==='OBSERVE5_TRADE5'){
-            if(this.blockPnl >= this.targetHitProfit()){
-                this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached early`);
+            if(this.blockTargetReached()){
+                this.finishObserveTradeBlock(`profit target $${this.targetHitProfit().toFixed(2)} reached (cent-safe stop)`);
             }else{
                 this.advanceObserveTradeBlock();
             }
@@ -12232,6 +12236,8 @@ window.top2BasketLab = {
                 effectiveRule:this.rule(),
                 invalidObservationWindowsReobserveImmediately:true,
                 tradeStateRequiresPoolAtLeastBasketWidth:true,
+                profitStopUsesIntegerCents:true,
+                oneTargetProfitWinEndsBlock:true,
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
