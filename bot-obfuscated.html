@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V56 DIGIT-DNA ENGINE: learns what happens BEFORE each digit; AI AUTO only; INSTANT unchanged -->
+    <!-- V57 STABILITY FIX: predictions scope + duplicate public subscription guard + single warm-up owner -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1930,7 +1930,7 @@
                     margin,
                     signalStrength,
                     rows,
-                    predictions
+                    predictions: probabilities
                 };
 
                 this.lastSnapshot=snap;
@@ -7392,6 +7392,27 @@ function rotateHybridDigit(reason = '') {
         function subscribePublicTicks(symbol) {
             if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
 
+            window.publicTickSubscriptionState = window.publicTickSubscriptionState || {
+                socket: null,
+                symbol: null,
+                requested: false,
+                subscriptionId: null
+            };
+
+            const publicSub = window.publicTickSubscriptionState;
+            if (
+                publicSub.socket === window.marketWs &&
+                publicSub.symbol === symbol &&
+                publicSub.requested
+            ) {
+                return;
+            }
+
+            publicSub.socket = window.marketWs;
+            publicSub.symbol = symbol;
+            publicSub.requested = true;
+            publicSub.subscriptionId = null;
+
             window.tickFormat.symbol = symbol;
             const cachedPrecision = window.tickFormat.pipSizeBySymbol[symbol];
             if (cachedPrecision) {
@@ -7402,10 +7423,18 @@ function rotateHybridDigit(reason = '') {
             sendMarketRequest({
                 ticks: symbol,
                 subscribe: 1,
-                req_id: marketNextReqId()
+                req_id: marketNextReqId(),
+                passthrough: { matchstar_public_tick_stream: true, symbol }
             });
 
-            log(`📡 Public market stream subscribed: ${symbol}`, 'SYSTEM');
+            log(`📡 Public market stream subscription requested: ${symbol}`, 'SYSTEM');
+
+            setTimeout(() => {
+                if (window.isBotRunning && window.totalTicksReceived === 0) {
+                    log('⚠️ No public ticks received yet. Checking connection...', 'WARNING');
+                    updateConnectionStatus();
+                }
+            }, 2000);
         }
 
         function schedulePublicMarketReconnect() {
@@ -7449,6 +7478,12 @@ function rotateHybridDigit(reason = '') {
             window.marketWs.onopen = () => {
                 window.marketIsConnecting = false;
                 window.marketReconnectAttempts = 0;
+                window.publicTickSubscriptionState = {
+                    socket: window.marketWs,
+                    symbol: null,
+                    requested: false,
+                    subscriptionId: null
+                };
                 log('🟢 Public market WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
 
@@ -7502,6 +7537,12 @@ function rotateHybridDigit(reason = '') {
                         data?.error?.message ||
                         data?.errors?.[0]?.message ||
                         'Public market API error';
+
+                    if (/already subscribed/i.test(String(message))) {
+                        console.warn('Duplicate public tick subscription ignored:', message);
+                        return;
+                    }
+
                     log(`❌ Public market error: ${message}`, 'ERROR');
                     return;
                 }
@@ -7584,6 +7625,10 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 if (data.msg_type === 'tick' && data.tick) {
+                    if (data.subscription?.id && window.publicTickSubscriptionState) {
+                        window.publicTickSubscriptionState.subscriptionId = data.subscription.id;
+                    }
+
                     const selectedSymbol = document.getElementById('symbol')?.value;
                     const tickSymbol =
                         data.tick?.symbol ||
@@ -7633,6 +7678,12 @@ function rotateHybridDigit(reason = '') {
 
             window.marketWs.onclose = () => {
                 window.marketIsConnecting = false;
+                window.publicTickSubscriptionState = {
+                    socket: null,
+                    symbol: null,
+                    requested: false,
+                    subscriptionId: null
+                };
                 log('🔌 Public market WebSocket disconnected', 'NETWORK');
                 updateConnectionStatus();
                 schedulePublicMarketReconnect();
@@ -7652,6 +7703,13 @@ function rotateHybridDigit(reason = '') {
                 } catch (_) {}
                 window.marketWs = null;
             }
+
+            window.publicTickSubscriptionState = {
+                socket: null,
+                symbol: null,
+                requested: false,
+                subscriptionId: null
+            };
 
             connectPublicMarketData(true);
         }
@@ -8217,20 +8275,13 @@ function rotateHybridDigit(reason = '') {
                     subscribeToTicks(document.getElementById('symbol').value);
                     subscribeToBalance();
                     
-                    // Request warm-up ticks for engine
-                    if (window.digitIntelligenceEngine.enabled) {
-                        setTimeout(() => {
-                            requestWarmupTicks();
-                        }, 1000);
-                    }
+                    // V57: the public market socket is the single AI warm-up owner.
+                    log('🧠 AI warm-up source: public market channel', 'ENGINE');
                 }
             } else if (data.msg_type === 'history') {
-                // Process warm-up ticks for engine
-                if (window.digitIntelligenceEngine.enabled && data.history && data.history.prices) {
-                    window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
-                    log(`🧠 Processed ${data.history.prices.length} warm-up ticks`, 'ENGINE');
-                }
-            
+                // V57: ignore authenticated history; public channel owns warm-up.
+                console.debug('Authenticated history ignored; public channel owns warm-up.');
+
             } else if (data.msg_type === 'proposal') {
                 handleProposalResponse(data.proposal, data.req_id);
             } else if (data.msg_type === 'buy') {
@@ -11451,9 +11502,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V56-DIGIT-DNA-ENGINE"
+data-version="DIGITMATCHSTAR-V57-STABILITY-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-predictions-fix="true" data-public-subscription-guard="true" data-single-warmup-owner="public" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
 </body>
 </html>
