@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V48: history-aware all-10 ranking with transition probability, smoothed frequencies, and explicit excluded 3 -->
+    <!-- V49: exclusion-confidence gate for bottom-3 risk before trading top 7 -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11135,6 +11135,14 @@ if (document.readyState === 'loading') {
           Target hit profit ($)
           <input id="t2-hit-target" type="number" min="0.01" step="0.01" value="0.90">
         </label>
+        <label class="t2-inline">
+          Max excluded-3 risk
+          <input id="t2-max-excluded-risk" type="number" min="0.01" max="0.30" step="0.01" value="0.08">
+        </label>
+        <label class="t2-inline">
+          Min ranking spread
+          <input id="t2-min-ranking-spread" type="number" min="0" max="0.20" step="0.005" value="0.015">
+        </label>
         <div id="t2-rule-lock-note" class="t2-note" style="margin-top:6px">
           7-digit mode observes 5 ticks as context, then ranks all 10 digits using rolling history and trades the top 7.
         </div>
@@ -11191,10 +11199,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Multi-Digit Match V48: the 5 observed ticks are context only. Ranking uses the app's rolling history instead
-      of pretending those same 5 ticks are 20- and 50-tick samples. Frequencies are shrunk toward the neutral 10% prior,
-      transition probability is included, all 10 digits are ranked, the top 7 are traded, and the bottom 3 are shown as
-      the excluded set. A +$0.90 target still ends the block immediately using cent-safe arithmetic.
+      Multi-Digit Match V49 adds an exclusion-confidence gate. After ranking all 10 digits, the bot measures the
+      bottom-3 score mass and the separation between the weakest selected digit and strongest excluded digit. It trades
+      only when excluded risk is at or below the configured maximum and ranking spread is at or above the configured
+      minimum; otherwise the setup is skipped and a fresh 5-tick observation begins immediately.
     </div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
@@ -11208,7 +11216,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V2.1-HISTORY-AWARE-TOP7',
+    version: 'MULTIDIGIT-MATCH-V2.2-EXCLUSION-CONFIDENCE-GATE',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11231,6 +11239,9 @@ window.top2BasketLab = {
     blockNumber: 1,
     blockPnl: 0,
     lastRanking: [],
+    lastExcludedRisk: null,
+    lastRankingSpread: null,
+    skippedByConfidence: 0,
     empirical: { n:0, wins:0, losses:0, sumBreakEven:0, firstAt:null, updatedAt:null },
 
     empiricalKey(){
@@ -11300,6 +11311,8 @@ window.top2BasketLab = {
         return Math.max(2,Math.min(7,n));
     },
     targetHitProfit(){ return Math.max(0.01,Number(q('t2-hit-target')?.value || 0.90)); },
+    maxExcludedRisk(){ return Math.max(0.01, Math.min(0.30, Number(q('t2-max-excluded-risk')?.value || 0.08))); },
+    minRankingSpread(){ return Math.max(0, Number(q('t2-min-ranking-spread')?.value || 0.015)); },
     cents(v){ return Math.round((Number(v)||0)*100); },
     blockTargetReached(){
         return this.cents(this.blockPnl) >= this.cents(this.targetHitProfit());
@@ -11437,19 +11450,56 @@ window.top2BasketLab = {
     freezeObservationBlock(){
         if(this.observationWindow.length!==5) return false;
 
-        // V47: every completed 5-tick window is valid.
-        // We no longer require 7 absent digits. The five ticks are context only.
+        const ranked=this.rankAllDigits();
+        const width=this.basketWidth();
+        const chosen=ranked.slice(0,width);
+        const excluded=ranked.slice(width);
+
+        const totalScore=ranked.reduce((s,x)=>s+Math.max(0,x.score),0);
+        const excludedScore=excluded.reduce((s,x)=>s+Math.max(0,x.score),0);
+        const excludedRisk=totalScore>0 ? excludedScore/totalScore : 0.30;
+
+        const selectedFloor=chosen.length ? chosen[chosen.length-1].score : 0;
+        const excludedCeil=excluded.length ? excluded[0].score : 0;
+        const rankingSpread=selectedFloor-excludedCeil;
+
+        this.lastExcludedRisk=excludedRisk;
+        this.lastRankingSpread=rankingSpread;
+
+        const riskOk=excludedRisk <= this.maxExcludedRisk();
+        const spreadOk=rankingSpread >= this.minRankingSpread();
+
+        if(!riskOk || !spreadOk){
+            this.skippedByConfidence++;
+            this.log(
+                `SKIP SETUP | observed [${this.observationWindow.join(', ')}] | ` +
+                `excluded [${excluded.map(x=>x.digit).join(', ')}] | ` +
+                `risk ${(excludedRisk*100).toFixed(2)}% ${riskOk?'OK':'HIGH'} | ` +
+                `spread ${rankingSpread.toFixed(4)} ${spreadOk?'OK':'LOW'}`
+            );
+
+            this.blockPhase='OBSERVE';
+            this.observationWindow=[];
+            this.frozenAbsentPool=[];
+            this.blockTradeIndex=0;
+            this.blockPnl=0;
+            const last5El=q('t2-last5');
+            if(last5El) last5El.value='—';
+            this.status(
+                `Setup skipped: excluded risk ${(excludedRisk*100).toFixed(1)}% / spread ${rankingSpread.toFixed(3)}. Re-observing.`
+            );
+            this.render();
+            return false;
+        }
+
         this.frozenAbsentPool=[];
         this.blockPhase='TRADE';
         this.blockTradeIndex=0;
 
-        const ranked=this.rankAllDigits();
-        const chosen=ranked.slice(0,this.basketWidth()).map(x=>x.digit);
-        const excluded=ranked.slice(this.basketWidth()).map(x=>x.digit);
-
         this.log(
             `BLOCK ${this.blockNumber} READY | observed [${this.observationWindow.join(', ')}] | ` +
-            `selected [${chosen.join(', ')}] | excluded [${excluded.join(', ')}] | history ${ranked[0]?.historyN||0} ticks`
+            `selected [${chosen.map(x=>x.digit).join(', ')}] | excluded [${excluded.map(x=>x.digit).join(', ')}] | ` +
+            `risk ${(excludedRisk*100).toFixed(2)}% | spread ${rankingSpread.toFixed(4)} | history ${ranked[0]?.historyN||0}`
         );
         this.render();
         return true;
@@ -11573,6 +11623,9 @@ window.top2BasketLab = {
                 gap:x.gap,
                 historyN:x.historyN
             })),
+            excludedDigits:ranked.slice(width).map(x=>x.digit),
+            excludedRisk:this.lastExcludedRisk,
+            rankingSpread:this.lastRankingSpread,
             blockNumber:this.blockNumber,
             blockTradeNumber:this.blockTradeIndex+1,
             basketWidth:width
@@ -11723,6 +11776,9 @@ window.top2BasketLab = {
         this.blockNumber=1;
         this.blockPnl=0;
         this.lastRanking=[];
+        this.lastExcludedRisk=null;
+        this.lastRankingSpread=null;
+        this.skippedByConfidence=0;
         this.loadEmpirical();
         this.render();
         const outcomeEl=q('t2-outcome');
@@ -11798,6 +11854,9 @@ window.top2BasketLab = {
                 last5Window:b.picks.window5 || null,
                 frozenAbsentPool:b.picks.absentPool || null,
                 rankedDigits:b.picks.rankedDigits || null,
+                excludedDigits:b.picks.excludedDigits || null,
+                excludedRisk:b.picks.excludedRisk ?? null,
+                rankingSpread:b.picks.rankingSpread ?? null,
                 blockNumber:b.picks.blockNumber || null,
                 blockTradeNumber:b.picks.blockTradeNumber || null,
                 combinedModelProbability:b.picks.combinedP,
@@ -12205,6 +12264,9 @@ window.top2BasketLab = {
             last5Window:pair.picks.window5 || null,
             frozenAbsentPool:pair.picks.absentPool || null,
             rankedDigits:pair.picks.rankedDigits || null,
+            excludedDigits:pair.picks.excludedDigits || null,
+            excludedRisk:pair.picks.excludedRisk ?? null,
+            rankingSpread:pair.picks.rankingSpread ?? null,
             blockNumber:pair.picks.blockNumber || null,
             blockTradeNumber:pair.picks.blockTradeNumber || null,
             combinedModelProbability:pair.picks.combinedP,
@@ -12319,6 +12381,9 @@ window.top2BasketLab = {
                 selectionUsesAllTenDigits:true,
                 observedDigitsAreNotExcluded:true,
                 rankingMethod:'0.45_modelP + 0.20_transitionP + 0.15_smoothedFreq20 + 0.10_smoothedFreq50 + 0.05_smoothedFreq5 + 0.05_recency',
+                exclusionConfidenceGate:true,
+                maxExcludedRisk:this.maxExcludedRisk(),
+                minRankingSpread:this.minRankingSpread(),
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_CONTEXT_SCORE_ALL_10_TRADE_TOP_${this.basketWidth()}_EXCLUDE_BOTTOM_${10-this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
@@ -12350,7 +12415,10 @@ window.top2BasketLab = {
                 blockPnl:this.blockPnl,
                 basketWidth:this.basketWidth(),
                 excludedDigits:this.lastRanking.length ? this.lastRanking.slice(this.basketWidth()).map(x=>x.digit) : [],
-                rankingHistoryN:this.lastRanking[0]?.historyN || 0
+                rankingHistoryN:this.lastRanking[0]?.historyN || 0,
+                excludedRisk:this.lastExcludedRisk,
+                rankingSpread:this.lastRankingSpread,
+                skippedByConfidence:this.skippedByConfidence
             },
             summary:{
                 completedBaskets:completed,
@@ -12359,6 +12427,9 @@ window.top2BasketLab = {
                 hitRate:completed ? wins/completed : 0,
                 sessionPnL:this.stats.pnl,
                 blockedByEdgeGate:this.stats.blocked,
+                skippedByExclusionConfidence:Number(this.skippedByConfidence||0),
+                lastExcludedRisk:this.lastExcludedRisk,
+                lastRankingSpread:this.lastRankingSpread,
                 currentCycleLoss:this.cycleLoss,
                 currentCycleIndex:this.cycleIndex,
                 largestBasketStake:trades.reduce((m,x)=>Math.max(m,Number(x.totalBasketStake||0)),0),
