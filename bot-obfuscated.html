@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V24 AI recovery redesign: entry +0.10 pp; recovery 0.00 pp; dynamic best-digit recovery; no redundant cycle-profit veto; hard 10-contract cycle cap; INSTANT unchanged -->
+    <!-- V25: V24 recovery corrections + polished executable Digit Differs Lab (draggable/minimizable, shadow/live, lowest-probability digit, live EV gate) -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -365,7 +365,55 @@
         .edge-score-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#64748b,#22c55e)}
         .edge-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;border:1px solid rgba(148,163,184,.25);background:rgba(30,41,59,.75)}
 
-    </style>
+    
+/* === V25 DIGIT DIFFERS LAB === */
+#differs-lab{
+  position:fixed;top:92px;right:18px;width:min(430px,calc(100vw - 24px));
+  z-index:9998;background:rgba(15,23,42,.98);border:1px solid rgba(34,211,238,.45);
+  border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.55);backdrop-filter:blur(14px);
+  color:#e5e7eb;overflow:hidden;
+}
+#differs-lab .ddl-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:11px 12px;background:linear-gradient(135deg,rgba(8,145,178,.26),rgba(79,70,229,.18));
+  border-bottom:1px solid rgba(148,163,184,.18);cursor:move;user-select:none;
+}
+#differs-lab .ddl-title{font-weight:900;font-size:.95rem;color:#67e8f9;letter-spacing:.01em}
+#differs-lab .ddl-badge{font-size:.66rem;font-weight:900;padding:4px 7px;border-radius:999px;background:#334155;color:#cbd5e1}
+#differs-lab .ddl-badge.live{background:#7f1d1d;color:#fecaca}
+#differs-lab .ddl-badge.shadow{background:#164e63;color:#cffafe}
+#differs-lab .ddl-icon{
+  width:28px;height:28px;border-radius:8px;border:1px solid rgba(148,163,184,.24);
+  background:rgba(15,23,42,.7);color:#e2e8f0;font-weight:900;cursor:pointer
+}
+#differs-lab .ddl-body{padding:12px;max-height:76vh;overflow:auto}
+#differs-lab.minimized .ddl-body{display:none}
+#differs-lab .ddl-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+#differs-lab .ddl-field label{display:block;font-size:.67rem;font-weight:800;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+#differs-lab input,#differs-lab select{
+  width:100%;border-radius:9px;border:1px solid #475569;background:#0f172a;color:#fff;
+  padding:8px 9px;font-size:.82rem;outline:none
+}
+#differs-lab input:focus,#differs-lab select:focus{border-color:#22d3ee;box-shadow:0 0 0 2px rgba(34,211,238,.12)}
+#differs-lab .ddl-card{
+  border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.56);border-radius:11px;padding:9px
+}
+#differs-lab .ddl-k{font-size:.64rem;text-transform:uppercase;color:#64748b;font-weight:800;letter-spacing:.04em}
+#differs-lab .ddl-v{font-size:.95rem;color:#f8fafc;font-weight:900;margin-top:2px}
+#differs-lab .ddl-v.good{color:#86efac} #differs-lab .ddl-v.bad{color:#fca5a5}
+#differs-lab .ddl-status{margin-top:9px;padding:9px 10px;border-radius:10px;background:#020617;border:1px solid rgba(148,163,184,.16);font-size:.76rem;line-height:1.4}
+#differs-lab .ddl-actions{display:flex;gap:8px;margin-top:10px}
+#differs-lab .ddl-btn{flex:1;border:0;border-radius:10px;padding:9px 10px;font-size:.78rem;font-weight:900;cursor:pointer}
+#differs-lab .ddl-start{background:#0891b2;color:white}.ddl-start:hover{filter:brightness(1.08)}
+#differs-lab .ddl-stop{background:#334155;color:white}
+#differs-lab .ddl-mini-note{font-size:.66rem;color:#64748b;margin-top:8px;line-height:1.35}
+#differs-lab .ddl-log{height:92px;overflow:auto;margin-top:9px;padding:8px;border-radius:9px;background:#020617;border:1px solid rgba(148,163,184,.12);font-size:.66rem;color:#a5f3fc;white-space:pre-wrap}
+@media(max-width:640px){
+  #differs-lab{top:70px;right:6px;left:6px;width:auto}
+  #differs-lab .ddl-body{max-height:70vh}
+}
+
+</style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
@@ -642,13 +690,13 @@
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
                         <input type="number" id="maxTrades" value="10" min="1" step="1" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Choose any whole-number cycle limit. There is no fixed 10-trade cap.</p>
+                        <p class="text-[10px] text-gray-500 mt-1">Choose 1–10. The hard safety cap is 10 purchased contracts per cycle.</p>
                     </div>
 
                     <!-- Max Trades is now the single user-defined cycle cap -->
                     <div class="flex items-end">
                         <p class="text-[11px] leading-relaxed text-gray-400">
-                            Max Trades is user-defined and controls the full cycle. Higher values can increase exposure sharply.
+                            Max Trades controls the full cycle and is capped at 10 purchased contracts.
                         </p>
                     </div>
                     
@@ -5444,7 +5492,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
         
         function chooseBestRecoveryDigit() {
-            if (!window.nextTickModel || typeof window.nextTickModel.getDigitModel !== 'function') {
+            if (!window.nextTickModel || typeof window.nextTickModel.getPrediction !== 'function') {
                 return null;
             }
 
@@ -5457,7 +5505,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
 
             for (let digit = 0; digit <= 9; digit++) {
                 try {
-                    const model = window.nextTickModel.getDigitModel(symbol, digit);
+                    const model = window.nextTickModel.getPrediction(symbol, digit);
                     if (!model || !model.ready) continue;
 
                     const probability = Number(model.probability);
@@ -8191,28 +8239,6 @@ window.isBotRunning = true;
                 return;
             }
 
-            // Recovery must also be economically capable of restoring the cycle to profit
-            // if the proposed contract wins. This is separate from positive expected edge:
-            // both conditions must be satisfied in AI AUTO. INSTANT remains user-directed.
-            if (
-                isRecovery &&
-                pending.executionMode === 'ai' &&
-                recoveryNet <= 0
-            ) {
-                rollbackUnsentTrade(pending.stake);
-                log(
-                    `🧱 RECOVERY QUOTE VETO: cycle net if win ${recoveryNet.toFixed(2)} | recovery paused`,
-                    'CRITICAL'
-                );
-                updateTradeStatus(
-                    'RECOVERY WAIT',
-                    'Live quote cannot restore the cycle above $0',
-                    `Cycle net if win ${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)} · waiting for a viable quote`,
-                    'loss'
-                );
-                return;
-            }
-
             executeBuy(
                 proposal.id,
                 proposal.ask_price,
@@ -9859,5 +9885,512 @@ window.isBotRunning = true;
     <script src="/rise-fall-cloud-ui-v1.js"></script>
     <script src="/rise-fall-stable-dashboard-v4-red-green.js"></script>
     <script src="/screen-recorder-safe-v5-2.js"></script>
+
+<!-- V25 Digit Differs Lab -->
+<div id="differs-lab">
+  <div class="ddl-head" id="differs-lab-handle">
+    <div class="flex items-center gap-2 min-w-0">
+      <div class="ddl-title">↔️ Digit Differs Lab</div>
+      <span id="ddl-mode-badge" class="ddl-badge shadow">SHADOW</span>
+    </div>
+    <div class="flex gap-1">
+      <button id="ddl-min" class="ddl-icon" title="Minimize">−</button>
+    </div>
+  </div>
+  <div class="ddl-body">
+    <div class="ddl-grid">
+      <div class="ddl-field">
+        <label>Execution</label>
+        <select id="ddl-mode">
+          <option value="shadow">SHADOW — no purchase</option>
+          <option value="live">LIVE — can purchase</option>
+        </select>
+      </div>
+      <div class="ddl-field">
+        <label>Symbol</label>
+        <input id="ddl-symbol" value="Linked to main symbol" readonly>
+      </div>
+      <div class="ddl-field">
+        <label>Stake ($)</label>
+        <input id="ddl-stake" type="number" value="10" min="0.35" step="0.01">
+      </div>
+      <div class="ddl-field">
+        <label>Max trades</label>
+        <input id="ddl-max" type="number" value="10" min="1" max="10" step="1">
+      </div>
+      <div class="ddl-field">
+        <label>Minimum edge (pp)</label>
+        <input id="ddl-edge" type="number" value="0.10" min="0" step="0.05">
+      </div>
+      <div class="ddl-field">
+        <label>Digit policy</label>
+        <input value="Lowest next-tick P" readonly>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-3 gap-2 mt-3">
+      <div class="ddl-card"><div class="ddl-k">Avoid digit</div><div id="ddl-digit" class="ddl-v">—</div></div>
+      <div class="ddl-card"><div class="ddl-k">P(digit)</div><div id="ddl-pdigit" class="ddl-v">—</div></div>
+      <div class="ddl-card"><div class="ddl-k">Differs win P</div><div id="ddl-pwin" class="ddl-v">—</div></div>
+      <div class="ddl-card"><div class="ddl-k">Live break-even</div><div id="ddl-be" class="ddl-v">Awaiting</div></div>
+      <div class="ddl-card"><div class="ddl-k">Live edge</div><div id="ddl-liveedge" class="ddl-v">—</div></div>
+      <div class="ddl-card"><div class="ddl-k">Win profit</div><div id="ddl-profit" class="ddl-v">—</div></div>
+    </div>
+
+    <div class="grid grid-cols-4 gap-2 mt-2">
+      <div class="ddl-card"><div class="ddl-k">Trades</div><div id="ddl-trades" class="ddl-v">0</div></div>
+      <div class="ddl-card"><div class="ddl-k">Wins</div><div id="ddl-wins" class="ddl-v good">0</div></div>
+      <div class="ddl-card"><div class="ddl-k">Losses</div><div id="ddl-losses" class="ddl-v bad">0</div></div>
+      <div class="ddl-card"><div class="ddl-k">P/L</div><div id="ddl-pnl" class="ddl-v">$0.00</div></div>
+    </div>
+
+    <div id="ddl-status" class="ddl-status">Ready. It will avoid the model's lowest-probability digit.</div>
+
+    <div class="ddl-actions">
+      <button id="ddl-start" class="ddl-btn ddl-start">▶ START DIFFERS</button>
+      <button id="ddl-stop" class="ddl-btn ddl-stop">■ STOP</button>
+    </div>
+
+    <div class="ddl-mini-note">
+      LIVE mode uses Deriv <b>DIGITDIFF</b>. The lab buys only when model support is ready
+      and estimated Differs win probability clears the live quote break-even by the selected edge.
+      Flat stake only; no Martingale is used in this lab.
+    </div>
+    <div id="ddl-log" class="ddl-log">Digit Differs Lab ready.</div>
+  </div>
+</div>
+
+
+<script>
+(() => {
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+
+window.digitDiffersLab = {
+    version: 'DIFFERS-LAB-V1.0',
+    running: false,
+    busy: false,
+    pending: new Map(),
+    active: null,
+    shadowOpen: null,
+    stats: { trades: 0, wins: 0, losses: 0, pnl: 0, blocked: 0 },
+    lastQuote: null,
+
+    mode() { return $('ddl-mode')?.value || 'shadow'; },
+    stake() { return Math.max(0.35, Number($('ddl-stake')?.value || 10)); },
+    maxTrades() { return Math.max(1, Math.min(10, Number($('ddl-max')?.value || 10))); },
+    minEdge() { return Math.max(0, Number($('ddl-edge')?.value || 0.10)) / 100; },
+    symbol() { return $('symbol')?.value || window.tickFormat?.symbol || 'R_10'; },
+
+    log(message) {
+        const el = $('ddl-log');
+        if (!el) return;
+        const t = new Date().toLocaleTimeString();
+        el.textContent += `\n[${t}] ${message}`;
+        el.scrollTop = el.scrollHeight;
+    },
+
+    status(message, good = null) {
+        const el = $('ddl-status');
+        if (el) {
+            el.textContent = message;
+            el.style.borderColor = good === true ? 'rgba(34,197,94,.45)' :
+                                   good === false ? 'rgba(239,68,68,.45)' :
+                                   'rgba(148,163,184,.16)';
+        }
+    },
+
+    render() {
+        const set = (id, v) => { const el=$(id); if(el) el.textContent=v; };
+        set('ddl-trades', this.stats.trades);
+        set('ddl-wins', this.stats.wins);
+        set('ddl-losses', this.stats.losses);
+        set('ddl-pnl', `${this.stats.pnl >= 0 ? '+' : '-'}$${Math.abs(this.stats.pnl).toFixed(2)}`);
+        const badge = $('ddl-mode-badge');
+        if (badge) {
+            const live = this.mode() === 'live';
+            badge.textContent = live ? 'LIVE' : 'SHADOW';
+            badge.className = `ddl-badge ${live ? 'live' : 'shadow'}`;
+        }
+        const sym = $('ddl-symbol');
+        if (sym) sym.value = this.symbol();
+    },
+
+    bestAvoidDigit() {
+        const symbol = this.symbol();
+        if (!window.nextTickModel || typeof window.nextTickModel.getPrediction !== 'function') return null;
+
+        let best = null;
+        for (let d=0; d<=9; d++) {
+            const row = window.nextTickModel.getPrediction(symbol, d);
+            if (!row?.ready) continue;
+            const p = Number(row.probability);
+            const support = Number(row.effectiveSupport || 0);
+            if (!Number.isFinite(p)) continue;
+            if (!best || p < best.pDigit) {
+                best = { digit:d, pDigit:p, pWin:1-p, support, snapshot:{...row} };
+            }
+        }
+        return best;
+    },
+
+    start() {
+        if (this.running) return;
+
+        if (this.mode() === 'live' && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
+            this.status('Stop the main Digit Match bot before starting LIVE Differs.', false);
+            this.log('LIVE start blocked because the main bot is active.');
+            return;
+        }
+
+        this.running = true;
+        this.busy = false;
+        this.shadowOpen = null;
+        this.stats = { trades:0, wins:0, losses:0, pnl:0, blocked:0 };
+        this.render();
+        this.status(`Armed in ${this.mode().toUpperCase()} mode. Waiting for a model-ready tick.`);
+        this.log(`Started ${this.mode().toUpperCase()} | stake $${this.stake().toFixed(2)} | max ${this.maxTrades()} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
+
+        if (this.mode() === 'live' && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+            this.log('Opening authenticated trading connection...');
+            if (typeof connectWebSocket === 'function') connectWebSocket();
+        }
+    },
+
+    stop(reason='Stopped by user') {
+        this.running = false;
+        this.busy = !!this.active;
+        this.shadowOpen = null;
+        this.status(reason);
+        this.log(reason);
+    },
+
+    onTick(tick) {
+        this.render();
+        if (!this.running) return;
+
+        const formatted = typeof canonicalTickString === 'function'
+            ? canonicalTickString(tick?.quote, tick, tick?.symbol)
+            : String(tick?.quote ?? '');
+        const actual = formatted ? Number.parseInt(formatted[formatted.length-1],10) : NaN;
+
+        // Settle a shadow contract on the first future public tick.
+        if (this.shadowOpen && Number.isInteger(actual)) {
+            const s = this.shadowOpen;
+            const win = actual !== s.digit;
+            const pnl = win ? s.winProfit : -s.stake;
+            this.stats.trades++;
+            this.stats[win ? 'wins' : 'losses']++;
+            this.stats.pnl += pnl;
+            this.log(`SHADOW ${win?'WIN':'LOSS'} | avoided ${s.digit}, outcome ${actual} | ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
+            this.shadowOpen = null;
+            this.busy = false;
+            this.render();
+            if (this.stats.trades >= this.maxTrades()) {
+                this.stop(`Max ${this.maxTrades()} shadow trades reached.`);
+                return;
+            }
+        }
+
+        if (this.busy || this.active || this.stats.trades >= this.maxTrades()) return;
+
+        const pick = this.bestAvoidDigit();
+        if (!pick) {
+            this.status('Waiting for enough model support across digits.');
+            return;
+        }
+
+        $('ddl-digit').textContent = String(pick.digit);
+        $('ddl-pdigit').textContent = `${(pick.pDigit*100).toFixed(2)}%`;
+        $('ddl-pwin').textContent = `${(pick.pWin*100).toFixed(2)}%`;
+
+        if (this.mode() === 'live' && (window.isBotRunning || (typeof hasOpenContract === 'function' && hasOpenContract()))) {
+            this.status('Main Digit Match bot became active; LIVE Differs is paused.', false);
+            return;
+        }
+
+        if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+            if (this.mode() === 'live' && typeof connectWebSocket === 'function') connectWebSocket();
+            this.status('Waiting for authenticated trading connection.');
+            return;
+        }
+
+        this.requestProposal(pick);
+    },
+
+    requestProposal(pick) {
+        const reqId = getNextReqId();
+        const stake = this.stake();
+        const symbol = this.symbol();
+
+        const ctx = {
+            kind:'differs-proposal',
+            reqId, stake, symbol,
+            digit:pick.digit,
+            pDigit:pick.pDigit,
+            pWin:pick.pWin,
+            support:pick.support,
+            snapshot:pick.snapshot,
+            createdAt:Date.now()
+        };
+        this.pending.set(reqId, ctx);
+        this.busy = true;
+        this.status(`Quoting DIGITDIFF ${pick.digit}...`);
+
+        const sent = sendRequest({
+            proposal:1,
+            amount:Number(stake.toFixed(2)),
+            basis:'stake',
+            contract_type:'DIGITDIFF',
+            currency:'USD',
+            duration:1,
+            duration_unit:'t',
+            underlying_symbol:symbol,
+            barrier:String(pick.digit),
+            req_id:reqId
+        });
+
+        if (sent === null) {
+            this.pending.delete(reqId);
+            this.busy=false;
+            this.status('Proposal could not be sent.', false);
+        }
+    },
+
+    handleProposal(proposal, reqId) {
+        const ctx = this.pending.get(reqId);
+        if (!ctx || ctx.kind !== 'differs-proposal') return false;
+        this.pending.delete(reqId);
+
+        if (!proposal?.id) {
+            this.busy=false;
+            this.status('Differs quote unavailable.', false);
+            return true;
+        }
+
+        const ask = Number(proposal.ask_price);
+        const payout = Number(proposal.payout);
+        if (!(ask>0) || !(payout>0)) {
+            this.busy=false;
+            this.status('Invalid Differs quote.', false);
+            return true;
+        }
+
+        const be = ask / payout;
+        const edge = ctx.pWin - be;
+        const ev = (ctx.pWin * payout) - ask;
+        const winProfit = payout - ask;
+        this.lastQuote = { ask,payout,be,edge,ev,winProfit };
+
+        $('ddl-be').textContent = `${(be*100).toFixed(2)}%`;
+        $('ddl-liveedge').textContent = `${edge>=0?'+':''}${(edge*100).toFixed(2)} pp`;
+        $('ddl-profit').textContent = `${winProfit>=0?'+':''}$${winProfit.toFixed(2)}`;
+        $('ddl-liveedge').className = `ddl-v ${edge >= this.minEdge() ? 'good':'bad'}`;
+
+        if (edge < this.minEdge()) {
+            this.stats.blocked++;
+            this.busy=false;
+            this.status(
+                `WAIT: edge ${(edge*100).toFixed(2)} pp is below +${(this.minEdge()*100).toFixed(2)} pp.`,
+                false
+            );
+            return true;
+        }
+
+        if (this.mode() === 'shadow') {
+            this.shadowOpen = {...ctx, ask, payout, be, edge, ev, winProfit};
+            this.status(
+                `SHADOW ARMED: avoid ${ctx.digit} | win P ${(ctx.pWin*100).toFixed(2)}% | edge +${(edge*100).toFixed(2)} pp`,
+                true
+            );
+            this.log(`SHADOW trade armed | differs ${ctx.digit} | stake $${ask.toFixed(2)} | win profit $${winProfit.toFixed(2)} | edge +${(edge*100).toFixed(2)} pp`);
+            return true;
+        }
+
+        const buyReqId = getNextReqId();
+        this.pending.set(buyReqId, {...ctx, kind:'differs-buy', proposalId:proposal.id, ask, payout, be, edge, ev, winProfit});
+        const sent = sendRequest({buy:proposal.id, price:ask, req_id:buyReqId});
+        if (sent === null) {
+            this.pending.delete(buyReqId);
+            this.busy=false;
+            this.status('Buy could not be sent.', false);
+        } else {
+            this.status(`BUYING DIGITDIFF ${ctx.digit}...`, true);
+        }
+        return true;
+    },
+
+    handleBuy(buy, reqId) {
+        const ctx = this.pending.get(reqId);
+        if (!ctx || ctx.kind !== 'differs-buy') return false;
+        this.pending.delete(reqId);
+
+        if (!buy?.contract_id) {
+            this.busy=false;
+            this.status('Differs purchase was not confirmed.', false);
+            return true;
+        }
+
+        const contractId = Number(buy.contract_id);
+        this.active = {
+            ...ctx,
+            contractId,
+            buyPrice:Number(buy.buy_price ?? ctx.ask),
+            openedAt:Date.now()
+        };
+        this.stats.trades++;
+        this.render();
+        this.log(`LIVE PURCHASE #${this.stats.trades} | DIGITDIFF ${ctx.digit} | $${this.active.buyPrice.toFixed(2)}`);
+        this.status(`Contract ${contractId} open · wins if next digit ≠ ${ctx.digit}.`, true);
+
+        const monitorReqId = getNextReqId();
+        sendRequest({
+            proposal_open_contract:1,
+            contract_id:contractId,
+            subscribe:1,
+            req_id:monitorReqId
+        });
+        return true;
+    },
+
+    handleOpenContract(poc) {
+        if (!this.active || Number(poc?.contract_id) !== Number(this.active.contractId)) return false;
+
+        if (!(poc.is_sold || poc.status === 'sold')) return true;
+
+        const profit = Number(poc.profit ?? 0);
+        const win = profit > 0;
+        this.stats[win?'wins':'losses']++;
+        this.stats.pnl += profit;
+        this.log(`LIVE ${win?'WIN':'LOSS'} | avoided ${this.active.digit} | ${profit>=0?'+':''}$${profit.toFixed(2)}`);
+        this.status(`${win?'WIN':'LOSS'} · ${profit>=0?'+':''}$${profit.toFixed(2)}`, win);
+
+        this.active=null;
+        this.busy=false;
+        this.render();
+
+        if (this.stats.trades >= this.maxTrades()) {
+            this.stop(`Max ${this.maxTrades()} live trades reached.`);
+        }
+        return true;
+    },
+
+    handleApi(data) {
+        if (!data) return false;
+        if (data.error && this.pending.has(data.req_id)) {
+            this.pending.delete(data.req_id);
+            this.busy=false;
+            this.status(`Deriv error: ${data.error.message || data.error.code}`, false);
+            this.log(`ERROR ${data.error.code || ''}: ${data.error.message || 'Unknown error'}`);
+            return true;
+        }
+        if (data.msg_type === 'proposal' && this.pending.has(data.req_id)) {
+            return this.handleProposal(data.proposal, data.req_id);
+        }
+        if (data.msg_type === 'buy' && this.pending.has(data.req_id)) {
+            return this.handleBuy(data.buy, data.req_id);
+        }
+        if (data.msg_type === 'proposal_open_contract' && this.active) {
+            return this.handleOpenContract(data.proposal_open_contract);
+        }
+        return false;
+    },
+
+    initUi() {
+        this.render();
+        $('ddl-start')?.addEventListener('click', () => this.start());
+        $('ddl-stop')?.addEventListener('click', () => this.stop());
+        $('ddl-mode')?.addEventListener('change', () => {
+            if (this.running) this.stop('Mode changed. Press START again.');
+            this.render();
+        });
+
+        const panel=$('differs-lab'), handle=$('differs-lab-handle'), min=$('ddl-min');
+        let minimized = localStorage.getItem('ddl_minimized') === '1';
+        const applyMin=()=>{
+            panel?.classList.toggle('minimized',minimized);
+            if(min){min.textContent=minimized?'+':'−';min.title=minimized?'Expand':'Minimize';}
+            localStorage.setItem('ddl_minimized', minimized?'1':'0');
+        };
+        min?.addEventListener('click',(e)=>{e.stopPropagation(); minimized=!minimized;applyMin();});
+        applyMin();
+
+        try {
+            const pos=JSON.parse(localStorage.getItem('ddl_position')||'null');
+            if(pos && window.innerWidth>640){
+                panel.style.left=`${pos.left}px`; panel.style.top=`${pos.top}px`; panel.style.right='auto';
+            }
+        } catch(_){}
+
+        let drag=null;
+        handle?.addEventListener('pointerdown',(e)=>{
+            if(e.target.closest('button')) return;
+            if(window.innerWidth<=640) return;
+            const r=panel.getBoundingClientRect();
+            drag={dx:e.clientX-r.left,dy:e.clientY-r.top};
+            handle.setPointerCapture?.(e.pointerId);
+        });
+        handle?.addEventListener('pointermove',(e)=>{
+            if(!drag) return;
+            const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
+            const maxT=Math.max(0,window.innerHeight-48);
+            const left=Math.min(maxL,Math.max(0,e.clientX-drag.dx));
+            const top=Math.min(maxT,Math.max(0,e.clientY-drag.dy));
+            panel.style.left=`${left}px`;panel.style.top=`${top}px`;panel.style.right='auto';
+        });
+        const endDrag=()=>{
+            if(!drag)return;
+            const r=panel.getBoundingClientRect();
+            localStorage.setItem('ddl_position',JSON.stringify({left:r.left,top:r.top}));
+            drag=null;
+        };
+        handle?.addEventListener('pointerup',endDrag);
+        handle?.addEventListener('pointercancel',endDrag);
+    }
+};
+
+// Intercept Differs responses before the main Digit Match dispatcher.
+if (typeof handleAPIResponse === 'function') {
+    const __matchstarApi = handleAPIResponse;
+    handleAPIResponse = function(data) {
+        if (window.digitDiffersLab?.handleApi(data)) return;
+        return __matchstarApi(data);
+    };
+}
+
+// Let the lab observe the canonical public tick after the main model has updated.
+if (typeof handleTick === 'function') {
+    const __matchstarTick = handleTick;
+    handleTick = function(tick) {
+        const result = __matchstarTick(tick);
+        try { window.digitDiffersLab?.onTick(tick); } catch(e) {
+            console.error('Digit Differs Lab tick error', e);
+        }
+        return result;
+    };
+}
+
+// Prevent simultaneous live execution engines on the same account connection.
+if (typeof startBot === 'function') {
+    const __matchstarStart = startBot;
+    startBot = function() {
+        if (window.digitDiffersLab?.running && window.digitDiffersLab.mode() === 'live') {
+            window.digitDiffersLab.status('Stop LIVE Differs before starting Digit Match.', false);
+            window.digitDiffersLab.log('Main bot start blocked while LIVE Differs is armed.');
+            return;
+        }
+        return __matchstarStart();
+    };
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded',()=>window.digitDiffersLab.initUi(),{once:true});
+} else {
+    window.digitDiffersLab.initUi();
+}
+})();
+</script>
+
 </body>
 </html>
