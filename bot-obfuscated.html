@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.4 OVERNIGHT RESEARCH: DEMO-only continuous TailGuard sessions + wake lock + persistent overnight archive; strategy unchanged -->
+    <!-- V57.4.1 OVERNIGHT TOGGLE FIX: synchronous ON/OFF + non-blocking wake lock; DEMO-only overnight research -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -5893,7 +5893,7 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.4-OVERNIGHT-RESEARCH',
+                    version: 'DIGITMATCHSTAR-V57.4.1-OVERNIGHT-TOGGLE-FIX',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: false,
                     maxTradesBehaviorChanged: false,
@@ -11592,6 +11592,58 @@ window.isBotRunning = true;
             saveMinimized(minimized);
         }
 
+        function setOvernightResearch(enabled) {
+            const s = refreshDailyCounter();
+            const wantOn = enabled === undefined ? !s.overnightEnabled : !!enabled;
+
+            if (wantOn && accountMode() !== 'DEMO') {
+                s.overnightEnabled = false;
+                saveState(s);
+                if (statusEl) {
+                    statusEl.textContent = 'Select DEMO account first, then turn Overnight research ON';
+                    statusEl.style.color = '#fbbf24';
+                }
+                render(s, accountMode(), currentExecutionMode(), isRunning());
+                return false;
+            }
+
+            s.overnightEnabled = wantOn;
+            s.enabled = true;
+            s.lastStopReason = null;
+
+            if (wantOn) {
+                s.overnightStartedAt = new Date().toISOString();
+                if (!Number.isFinite(Number(s.overnightCycles))) s.overnightCycles = 0;
+            }
+
+            // Save and render immediately. Wake lock must never block the UI toggle.
+            saveState(s);
+            render(s, accountMode(), currentExecutionMode(), isRunning(),
+                wantOn
+                    ? '🌙 Overnight research ON — continuous DEMO sessions'
+                    : 'Overnight research OFF'
+            );
+
+            if (wantOn) {
+                acquireScreenWakeLock().then(ok => {
+                    const now = loadState();
+                    if (now.overnightEnabled) {
+                        render(now, accountMode(), currentExecutionMode(), isRunning(),
+                            ok
+                                ? '🌙 Overnight research ON · screen wake lock ACTIVE'
+                                : '🌙 Overnight research ON · wake lock unavailable; keep device sleep disabled'
+                        );
+                    }
+                }).catch(() => {});
+                setTimeout(() => { tick().catch(() => {}); }, 50);
+            } else {
+                releaseScreenWakeLock().catch(() => {});
+            }
+            return true;
+        }
+
+        window.setOvernightResearch = setOvernightResearch;
+
         function ensurePanel() {
             if (adminAuthorized !== true) {
                 hideTailGuardCompletely();
@@ -11641,6 +11693,7 @@ window.isBotRunning = true;
                             ▶ Run 5 more
                         </button>
                         <button id="tg-ap-overnight" type="button"
+                            onclick="setOvernightResearch()"
                             style="grid-column:1 / -1;width:100%;border:1px solid #7c3aed;background:#4c1d95;color:#ede9fe;padding:8px;border-radius:8px;cursor:pointer;font-weight:900">
                             🌙 Overnight research: OFF
                         </button>
@@ -11694,30 +11747,6 @@ window.isBotRunning = true;
                 statusEl.style.color = '#4ade80';
 
                 // Let the normal loop re-confirm DEMO + AI AUTO before starting.
-                setTimeout(() => { tick().catch(() => {}); }, 100);
-            });
-
-            overnightBtn?.addEventListener('click', async () => {
-                const s = refreshDailyCounter();
-                s.overnightEnabled = !s.overnightEnabled;
-                s.enabled = true;
-                s.lastStopReason = null;
-
-                if (s.overnightEnabled) {
-                    s.overnightStartedAt = new Date().toISOString();
-                    s.overnightCycles = 0;
-                    saveState(s);
-                    await acquireScreenWakeLock();
-                    statusEl.textContent = 'Overnight research enabled — continuous DEMO sessions';
-                    statusEl.style.color = '#c4b5fd';
-                } else {
-                    saveState(s);
-                    await releaseScreenWakeLock();
-                    statusEl.textContent = 'Overnight research disabled';
-                    statusEl.style.color = '#38bdf8';
-                }
-
-                render(s, accountMode(), currentExecutionMode(), isRunning());
                 setTimeout(() => { tick().catch(() => {}); }, 100);
             });
 
@@ -11918,22 +11947,12 @@ window.isBotRunning = true;
                 return s;
             },
             overnightOn() {
-                const s = refreshDailyCounter();
-                s.overnightEnabled = true;
-                s.overnightStartedAt = new Date().toISOString();
-                s.overnightCycles = 0;
-                s.enabled = true;
-                s.lastStopReason = null;
-                saveState(s);
-                acquireScreenWakeLock().catch(() => {});
-                return s;
+                setOvernightResearch(true);
+                return loadState();
             },
             overnightOff() {
-                const s = loadState();
-                s.overnightEnabled = false;
-                saveState(s);
-                releaseScreenWakeLock().catch(() => {});
-                return s;
+                setOvernightResearch(false);
+                return loadState();
             },
             getOvernightArchive() {
                 return loadOvernightArchive();
@@ -11968,7 +11987,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.4-OVERNIGHT-RESEARCH"
+data-version="DIGITMATCHSTAR-V57.4.1-OVERNIGHT-TOGGLE-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="demo-only-continuous" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
