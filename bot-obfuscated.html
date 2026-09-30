@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V22 AI recovery EV gate: AI AUTO requires positive live edge on entry AND recovery; INSTANT remains manual/ungated -->
+    <!-- V23 AI edge thresholds: entry requires +0.20 pp; recovery requires +0.10 pp; cycle-positive recovery quote still required; INSTANT remains manual/ungated -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1920,11 +1920,13 @@ window.EV_GATE_CONFIG = {
     // AI AUTO only. INSTANT remains a manual execution mode.
     applyToInstant: false,
 
-    // AI AUTO live-edge threshold for both initial entries and recovery trades.
-    // +0.005 = require at least +0.50 percentage points above live break-even.
-    // This small positive buffer avoids treating a barely break-even model estimate as an edge.
+    // AI AUTO uses separate positive live-edge thresholds.
+    // Entry: +0.002 = +0.20 percentage points above live break-even.
+    // Recovery: +0.001 = +0.10 percentage points above live break-even.
+    // Recovery remains selective, but slightly less strict so cycles do not stall unnecessarily.
     // P90 and other entry-safety gates remain active.
-    minEdge: 0.005,
+    minEdge: 0.002,
+    recoveryMinEdge: 0.001,
 
     // Exact-next-tick empirical model readiness.
     minEffectiveSupport: 20,
@@ -2384,24 +2386,28 @@ window.nextTickModel = {
         let approved = true;
         let reason = 'EV_GATE_NOT_APPLIED';
 
+        const minEdgeRequired =
+            mode === 'recovery'
+                ? Number(window.EV_GATE_CONFIG.recoveryMinEdge ?? window.EV_GATE_CONFIG.minEdge)
+                : Number(window.EV_GATE_CONFIG.minEdge);
+
         if (gateApplies) {
             if (!model?.ready) {
                 approved = false;
                 reason = 'NEXT_TICK_MODEL_NOT_READY';
-            } else if (edge < window.EV_GATE_CONFIG.minEdge) {
+            } else if (edge < minEdgeRequired) {
                 approved = false;
                 reason = 'EDGE_BELOW_THRESHOLD';
             } else {
                 approved = true;
-                reason = edge >= 0
-                    ? 'POSITIVE_LIVE_EDGE'
-                    : 'EDGE_WITHIN_EXPERIMENTAL_BAND';
+                reason = 'POSITIVE_LIVE_EDGE';
             }
         }
 
         const result = {
             approved,
             reason,
+            minEdgeRequired,
             modelProbability: p,
             breakEvenProbability: breakEven,
             edge,
@@ -2447,7 +2453,10 @@ window.nextTickModel = {
                 <span id="ntm-edge" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Entry threshold:</span>
-                <span id="ntm-threshold" class="font-bold text-orange-300">+0.50 pp</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">+0.20 pp</span>
+
+                <span class="text-gray-400">Recovery threshold:</span>
+                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">+0.10 pp</span>
 
                 <span class="text-gray-400">Expected value:</span>
                 <span id="ntm-ev" class="font-bold text-white">-</span>
@@ -4229,6 +4238,11 @@ window.cyclePerformance = {
                             : null,
                     maxS20: Number(window.SURVIVAL_CFG?.maxS20 ?? NaN),
                     evEntryThreshold: Number(window.EV_GATE_CONFIG?.minEdge ?? NaN),
+                    evRecoveryThreshold: Number(
+                        window.EV_GATE_CONFIG?.recoveryMinEdge ??
+                        window.EV_GATE_CONFIG?.minEdge ??
+                        NaN
+                    ),
                     minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
                 },
 
@@ -8096,7 +8110,12 @@ window.isBotRunning = true;
             ) {
                 rollbackUnsentTrade(pending.stake);
 
-                const thresholdPp = window.EV_GATE_CONFIG.minEdge * 100;
+                const thresholdPp = Number(
+                    evaluation.minEdgeRequired ??
+                    (isRecovery
+                        ? window.EV_GATE_CONFIG.recoveryMinEdge
+                        : window.EV_GATE_CONFIG.minEdge)
+                ) * 100;
                 const phase = isRecovery ? 'RECOVERY' : 'ENTRY';
                 log(
                     `🧱 ${phase} EV VETO: ${evaluation.reason} | ` +
