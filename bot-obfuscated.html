@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.1 OBSERVABILITY ONLY: minimizable AI panels + full diagnostic export; trading/recovery logic unchanged -->
+    <!-- V57.2 VISIBLE CONTROLS: direct minimize buttons + always-visible full export; trading/recovery logic unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -720,6 +720,10 @@
                         <div class="trade-actions">
                             <button id="toggleButton" onclick="toggleBot()" class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150">🚀 START BOT</button>
                             <button id="s20Button" onclick="openS20Config()" class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150" title="Tail-risk cap">🧯 S20: <span id="s20Value">5</span>%</button>
+                            <button id="fullDataTopBtn" type="button" onclick="downloadMatchStarResearchReport()"
+                                    class="bg-cyan-700 text-white font-bold hover:bg-cyan-600 transition duration-150">
+                                ⬇ EXPORT DATA
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -728,7 +732,14 @@
         
         <!-- LOG AREA -->
         <div id="log-column" class="w-full flex flex-col">
-            <h2 class="text-lg font-bold text-gray-300 mb-2 border-b border-gray-700 pb-1">Live Log</h2>
+            <div class="flex items-center justify-between gap-2 mb-2 border-b border-gray-700 pb-1">
+                <h2 class="text-lg font-bold text-gray-300">Live Log</h2>
+                <button id="fullObservabilityExportBtn" type="button"
+                        onclick="downloadMatchStarResearchReport()"
+                        class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded">
+                    ⬇ EXPORT FULL DATA
+                </button>
+            </div>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
 [00:00:00] 🤖 Deriv Bot Initialized
 [00:00:00] 📊 Ready to connect to live market
@@ -744,6 +755,29 @@
         // UI ONLY — MINIMIZABLE PANELS
         // No trading logic, cycle logic, or existing history storage is changed.
         // ============================================================================
+
+        function toggleResearchPanel(bodyId, buttonId, storageKey) {
+            const body = document.getElementById(bodyId);
+            const btn = document.getElementById(buttonId);
+            if (!body) return;
+            const willHide = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', willHide);
+            if (btn) btn.textContent = willHide ? '+' : '−';
+            try {
+                localStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
+            } catch (_) {}
+        }
+
+        function restoreResearchPanelState(bodyId, buttonId, storageKey) {
+            let minimized = false;
+            try {
+                minimized = localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
+            } catch (_) {}
+            const body = document.getElementById(bodyId);
+            const btn = document.getElementById(buttonId);
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) btn.textContent = minimized ? '+' : '−';
+        }
 
         function getPanelMinimizedState(key, fallback = false) {
             try {
@@ -1303,21 +1337,29 @@
                 panel.id='digit-dna-panel';
                 panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-pink-500/30 text-xs';
                 panel.innerHTML=`
-                  <div class="font-bold text-pink-300 mb-2">🧬 DIGIT DNA · WHAT HAPPENS BEFORE EACH DIGIT</div>
-                  <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                    <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
-                    <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
-                    <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
-                    <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="font-bold text-pink-300">🧬 DIGIT DNA · WHAT HAPPENS BEFORE EACH DIGIT</div>
+                    <button id="dna-min-btn" type="button"
+                            onclick="toggleResearchPanel('dna-min-body','dna-min-btn','digit-dna')"
+                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
                   </div>
-                  <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
-                  <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
-                  <div class="mt-2 text-[10px] text-gray-500">
-                    DNA = historical precursor fingerprint, not a guaranteed probability.
-                    Every profile uses only ticks that occurred BEFORE each labelled digit.
+                  <div id="dna-min-body">
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                      <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
+                      <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
+                      <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
+                      <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                    </div>
+                    <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
+                    <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
+                    <div class="mt-2 text-[10px] text-gray-500">
+                      DNA = historical precursor fingerprint, not a guaranteed probability.
+                      Every profile uses only ticks that occurred BEFORE each labelled digit.
+                    </div>
                   </div>
                 `;
                 ref.parentElement.appendChild(panel);
+                restoreResearchPanelState('dna-min-body','dna-min-btn','digit-dna');
             },
 
             render(s=null) {
@@ -1662,23 +1704,31 @@
                 panel.id='digit-feature-panel';
                 panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-emerald-500/30 text-xs';
                 panel.innerHTML=`
-                  <div class="font-bold text-emerald-300 mb-2">🧬 DIGIT FEATURE ENGINE · AI AUTO</div>
-                  <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                    <span class="text-gray-400">History:</span><span id="dfe-history" class="font-bold text-white">warming</span>
-                    <span class="text-gray-400">Top feature digit:</span><span id="dfe-top" class="font-bold text-emerald-300">-</span>
-                    <span class="text-gray-400">Feature signal:</span><span id="dfe-signal" class="font-bold text-cyan-300">-</span>
-                    <span class="text-gray-400">Entropy 20/50/100:</span><span id="dfe-entropy" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Entropy trend:</span><span id="dfe-entropy-trend" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Lag-1 MI:</span><span id="dfe-mi" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Run length:</span><span id="dfe-run" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Tick interval:</span><span id="dfe-interval" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Price direction:</span><span id="dfe-direction" class="font-bold text-white">-</span>
-                    <span class="text-gray-400">Short volatility:</span><span id="dfe-volatility" class="font-bold text-white">-</span>
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="font-bold text-emerald-300">🧬 DIGIT FEATURE ENGINE · AI AUTO</div>
+                    <button id="dfe-min-btn" type="button"
+                            onclick="toggleResearchPanel('dfe-min-body','dfe-min-btn','digit-feature')"
+                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
                   </div>
-                  <div id="dfe-top3" class="mt-2 text-[11px] text-gray-300">Top features warming…</div>
-                  <div class="mt-2 text-[10px] text-gray-500">Ranking features only · no claim of predictive edge · INSTANT unchanged.</div>
+                  <div id="dfe-min-body">
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                      <span class="text-gray-400">History:</span><span id="dfe-history" class="font-bold text-white">warming</span>
+                      <span class="text-gray-400">Top feature digit:</span><span id="dfe-top" class="font-bold text-emerald-300">-</span>
+                      <span class="text-gray-400">Feature signal:</span><span id="dfe-signal" class="font-bold text-cyan-300">-</span>
+                      <span class="text-gray-400">Entropy 20/50/100:</span><span id="dfe-entropy" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Entropy trend:</span><span id="dfe-entropy-trend" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Lag-1 MI:</span><span id="dfe-mi" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Run length:</span><span id="dfe-run" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Tick interval:</span><span id="dfe-interval" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Price direction:</span><span id="dfe-direction" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Short volatility:</span><span id="dfe-volatility" class="font-bold text-white">-</span>
+                    </div>
+                    <div id="dfe-top3" class="mt-2 text-[11px] text-gray-300">Top features warming…</div>
+                    <div class="mt-2 text-[10px] text-gray-500">Ranking features only · no claim of predictive edge · INSTANT unchanged.</div>
+                  </div>
                 `;
                 ref.parentElement.appendChild(panel);
+                restoreResearchPanelState('dfe-min-body','dfe-min-btn','digit-feature');
             },
 
             render(s=null) {
@@ -1958,8 +2008,13 @@
                 panel.id='randomness-auditor-panel';
                 panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
                 panel.innerHTML=`
-                    <div class="font-bold text-fuchsia-300 mb-2">🔐 RANDOMNESS AUDITOR · AI AUTO</div>
-                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="font-bold text-fuchsia-300">🔐 RANDOMNESS AUDITOR · AI AUTO</div>
+                      <button id="ra-min-btn" type="button"
+                              onclick="toggleResearchPanel('ra-min-body','ra-min-btn','randomness-auditor')"
+                              class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
+                    </div>
+                    <div id="ra-min-body" class="grid grid-cols-2 gap-x-2 gap-y-1">
                         <span class="text-gray-400">History:</span><span id="ra-history" class="font-bold text-white">warming</span>
                         <span class="text-gray-400">Conditional entropy:</span><span id="ra-entropy" class="font-bold text-white">-</span>
                         <span class="text-gray-400">Lag-1 mutual info:</span><span id="ra-mi" class="font-bold text-white">-</span>
@@ -1970,6 +2025,7 @@
                     </div>
                 `;
                 anchor.parentElement.appendChild(panel);
+                restoreResearchPanelState('ra-min-body','ra-min-btn','randomness-auditor');
             },
 
             render(snap=null) {
@@ -11502,7 +11558,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.1-OBSERVABILITY-ONLY"
+data-version="DIGITMATCHSTAR-V57.2-VISIBLE-CONTROLS"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-auditor-panel="always-visible"></div>
