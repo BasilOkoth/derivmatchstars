@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V26: 3-trade recovery digit lock before re-ranking + reliable mouse/touch draggable Digit Differs Lab -->
+    <!-- V27: smart AI entry override (+0.10 pp preferred, -0.05 pp floor, 2x persistence, tail-risk veto) + V26 recovery/differs -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1974,6 +1974,16 @@ window.EV_GATE_CONFIG = {
     // Recovery re-ranks all 10 digits on each attempt and may switch digits without resetting the cycle.
     minEdge: 0.001,
     recoveryMinEdge: 0.000,
+
+    // Smart entry override:
+    // +0.10 pp remains the preferred entry threshold.
+    // If the same digit remains selected for 2 consecutive proposal evaluations,
+    // entry may proceed down to -0.05 pp provided support is ready and digit tail risk
+    // is not elevated (s20 > 5% vetoes the override).
+    smartOverrideEnabled: true,
+    smartOverrideFloor: -0.0005,
+    smartOverridePersistence: 2,
+    smartOverrideMaxS20: 0.05,
 
     // Exact-next-tick empirical model readiness.
     minEffectiveSupport: 20,
@@ -4285,6 +4295,10 @@ window.cyclePerformance = {
                             : null,
                     maxS20: Number(window.SURVIVAL_CFG?.maxS20 ?? NaN),
                     evEntryThreshold: Number(window.EV_GATE_CONFIG?.minEdge ?? NaN),
+                    smartOverrideEnabled: !!window.EV_GATE_CONFIG?.smartOverrideEnabled,
+                    smartOverrideFloor: Number(window.EV_GATE_CONFIG?.smartOverrideFloor ?? NaN),
+                    smartOverridePersistence: Number(window.EV_GATE_CONFIG?.smartOverridePersistence ?? NaN),
+                    smartOverrideMaxS20: Number(window.EV_GATE_CONFIG?.smartOverrideMaxS20 ?? NaN),
                     evRecoveryThreshold: Number(
                         window.EV_GATE_CONFIG?.recoveryMinEdge ??
                         window.EV_GATE_CONFIG?.minEdge ??
@@ -4905,6 +4919,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.recoveryDigitLock = null;
         window.recoveryDigitTrades = 0;
         window.recoveryDigitTradeLimit = 3;
+        window.smartEntryOverrideState = {
+            digit: null,
+            streak: 0,
+            lastEvaluatedAt: 0
+        };
         window.cycleLosses = 0;
         window.accountBalance = 0.0;
         window.startingBalance = 0.0;
@@ -5495,6 +5514,78 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
 
         
+
+        function updateSmartEntryPersistence(digit) {
+            const d = Number(digit);
+            const state = window.smartEntryOverrideState || {
+                digit: null,
+                streak: 0,
+                lastEvaluatedAt: 0
+            };
+
+            if (!Number.isInteger(d) || d < 0 || d > 9) {
+                state.digit = null;
+                state.streak = 0;
+                state.lastEvaluatedAt = Date.now();
+                window.smartEntryOverrideState = state;
+                return 0;
+            }
+
+            if (state.digit === d) {
+                state.streak = Number(state.streak || 0) + 1;
+            } else {
+                state.digit = d;
+                state.streak = 1;
+            }
+
+            state.lastEvaluatedAt = Date.now();
+            window.smartEntryOverrideState = state;
+            return state.streak;
+        }
+
+        function resetSmartEntryPersistence(reason = '') {
+            window.smartEntryOverrideState = {
+                digit: null,
+                streak: 0,
+                lastEvaluatedAt: Date.now()
+            };
+            if (reason) {
+                log(`🧠 SMART OVERRIDE persistence reset (${reason})`, 'ENGINE');
+            }
+        }
+
+        function smartOverrideTailCheck(digit) {
+            const maxS20 = Number(window.EV_GATE_CONFIG?.smartOverrideMaxS20 ?? 0.05);
+            const survival = getSurvivalForDigit(digit);
+
+            // Tail-risk data is advisory. Missing/learning data does not create another delay.
+            if (!survival) {
+                return {
+                    ok: true,
+                    available: false,
+                    reason: 'TAIL_DATA_LEARNING',
+                    s20: null
+                };
+            }
+
+            const s20 = Number(survival.s20);
+            if (!Number.isFinite(s20)) {
+                return {
+                    ok: true,
+                    available: false,
+                    reason: 'TAIL_DATA_LEARNING',
+                    s20: null
+                };
+            }
+
+            return {
+                ok: s20 <= maxS20,
+                available: true,
+                reason: s20 <= maxS20 ? 'TAIL_LOW' : 'TAIL_ELEVATED',
+                s20
+            };
+        }
+
         function chooseBestRecoveryDigit() {
             if (!window.nextTickModel || typeof window.nextTickModel.getPrediction !== 'function') {
                 return null;
@@ -8229,11 +8320,79 @@ window.isBotRunning = true;
                 'PNL'
             );
 
-            // V22 AI EDGE GATE:
-            // INSTANT remains a manual execution mode and is never vetoed by the model.
-            // AI AUTO must clear the SAME live probability/EV gate on the first entry
-            // and on every recovery attempt. A recovery trade is no longer allowed
-            // simply because the cycle is already in a loss state.
+            // V27 AI EDGE GATE + SMART ENTRY OVERRIDE
+            // Preferred entry threshold stays at +0.10 pp.
+            // A new-cycle AI entry can override that preferred threshold when:
+            //   1) the same digit has persisted for >= 2 consecutive proposal evaluations,
+            //   2) live edge is no worse than -0.05 pp,
+            //   3) the next-tick model is ready / support is sufficient,
+            //   4) available tail-risk evidence is not elevated (s20 <= 5%).
+            // Recovery remains at its separate 0.00 pp rule.
+            let smartOverride = null;
+
+            if (
+                pending.executionMode === 'ai' &&
+                !isRecovery &&
+                window.EV_GATE_CONFIG?.smartOverrideEnabled
+            ) {
+                const persistence = updateSmartEntryPersistence(pending.predictedDigit);
+                const floor = Number(window.EV_GATE_CONFIG.smartOverrideFloor ?? -0.0005);
+                const requiredPersistence = Math.max(
+                    1,
+                    Number(window.EV_GATE_CONFIG.smartOverridePersistence ?? 2)
+                );
+                const tailCheck = smartOverrideTailCheck(pending.predictedDigit);
+
+                const modelReady =
+                    !!pending.modelSnapshot?.ready &&
+                    Number(pending.modelSnapshot?.effectiveSupport || 0) >=
+                        Number(window.EV_GATE_CONFIG?.minEffectiveSupport || 0);
+
+                const qualifies =
+                    evaluation.reason === 'EDGE_BELOW_THRESHOLD' &&
+                    modelReady &&
+                    Number.isFinite(evaluation.edge) &&
+                    evaluation.edge >= floor &&
+                    persistence >= requiredPersistence &&
+                    tailCheck.ok;
+
+                smartOverride = {
+                    qualifies,
+                    persistence,
+                    requiredPersistence,
+                    floor,
+                    tailCheck,
+                    modelReady
+                };
+
+                if (qualifies) {
+                    evaluation.approved = true;
+                    evaluation.reason = 'SMART_OVERRIDE';
+                    evaluation.smartOverride = smartOverride;
+
+                    log(
+                        `🧠 SMART OVERRIDE → BUY | digit ${pending.predictedDigit} | ` +
+                        `edge ${(evaluation.edge * 100).toFixed(2)} pp | ` +
+                        `preferred +${(Number(window.EV_GATE_CONFIG.minEdge) * 100).toFixed(2)} pp | ` +
+                        `floor ${(floor * 100).toFixed(2)} pp | ` +
+                        `persistence ${persistence}/${requiredPersistence} | ` +
+                        (
+                            tailCheck.available
+                                ? `tail s20 ${(tailCheck.s20 * 100).toFixed(1)}%`
+                                : 'tail risk learning'
+                        ),
+                        'PNL'
+                    );
+
+                    updateTradeStatus(
+                        'SMART OVERRIDE 🧠',
+                        `Digit ${pending.predictedDigit} persisted ${persistence} evaluations`,
+                        `Edge ${(evaluation.edge * 100).toFixed(2)} pp · executing without waiting for +0.10 pp`,
+                        'win'
+                    );
+                }
+            }
+
             if (
                 pending.executionMode === 'ai' &&
                 !evaluation.approved
@@ -8247,28 +8406,47 @@ window.isBotRunning = true;
                         : window.EV_GATE_CONFIG.minEdge)
                 ) * 100;
                 const phase = isRecovery ? 'RECOVERY' : 'ENTRY';
+
+                let extra = '';
+                if (!isRecovery && smartOverride) {
+                    const floorPp = smartOverride.floor * 100;
+                    const tailText = smartOverride.tailCheck.available
+                        ? `tail s20 ${(smartOverride.tailCheck.s20 * 100).toFixed(1)}%`
+                        : 'tail learning';
+                    extra =
+                        ` | override: ${smartOverride.persistence}/${smartOverride.requiredPersistence} persistence` +
+                        ` | floor ${floorPp.toFixed(2)} pp | ${tailText}`;
+                }
+
                 log(
                     `🧱 ${phase} EV VETO: ${evaluation.reason} | ` +
                     `edge ${(evaluation.edge * 100).toFixed(2)} pp < ` +
                     `${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp | ` +
-                    `no contract purchased | trade count unchanged`,
+                    `no contract purchased | trade count unchanged${extra}`,
                     'ENGINE'
                 );
 
                 updateTradeStatus(
                     isRecovery ? 'RECOVERY WAIT' : 'AI AUTO ARMED',
-                    `Waiting for edge ≥ ${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp`,
+                    isRecovery
+                        ? `Waiting for recovery edge ≥ ${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp`
+                        : `Preferred +0.10 pp · smart override available after 2 persistent evaluations`,
                     `Current edge ${(evaluation.edge * 100).toFixed(2)} pp · no trade counted`,
                     'normal'
                 );
 
-                // For a new cycle, release the candidate lock so AI can select a new digit.
-                // During recovery, preserve the selected digit and current recovery stake;
-                // the bot simply waits for a later tick/quote that clears the edge gate.
-                if (!isRecovery && typeof clearSessionDigitLock === 'function') {
-                    clearSessionDigitLock(`ENTRY_EV:${evaluation.reason}`);
-                }
+                // IMPORTANT: do not clear the entry digit lock merely because +0.10 pp
+                // was missed; persistence needs the same selected digit to survive long
+                // enough for the smart override to become eligible.
                 return;
+            }
+
+            if (!isRecovery && pending.executionMode === 'ai' && evaluation.approved) {
+                // This candidate has now been accepted for purchase; the next new cycle
+                // must earn its own persistence streak.
+                resetSmartEntryPersistence(
+                    evaluation.reason === 'SMART_OVERRIDE' ? 'smart entry accepted' : 'standard entry accepted'
+                );
             }
 
             executeBuy(
