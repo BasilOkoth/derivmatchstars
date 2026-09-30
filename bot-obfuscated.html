@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V33: V32 + clear RUNNING button states + JSON report export for Digit Differs and Top-2 Basket -->
+    <!-- V34: V33 + compact experimental cards and clearer profit/loss color coding -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -470,6 +470,95 @@
 #differs-lab-handle:active,
 #top2-basket-handle:active{
   cursor:grabbing !important;
+}
+
+
+/* === V34 COMPACT EXPERIMENTAL PANELS + PROFIT/LOSS COLORS === */
+#differs-lab{
+  width:min(360px,calc(100vw - 24px)) !important;
+  max-height:72vh !important;
+}
+#top2-basket-lab{
+  width:min(380px,calc(100vw - 24px)) !important;
+  max-height:72vh !important;
+}
+#differs-lab .ddl-body,
+#top2-basket-lab .t2-body{
+  padding:9px !important;
+  max-height:66vh !important;
+}
+#differs-lab .ddl-grid,
+#top2-basket-lab .t2-grid{
+  gap:6px !important;
+}
+#differs-lab .ddl-card,
+#top2-basket-lab .t2-card{
+  padding:7px !important;
+  min-height:0 !important;
+}
+#differs-lab .ddl-k,
+#top2-basket-lab .t2-k{
+  font-size:.58rem !important;
+}
+#differs-lab .ddl-v,
+#top2-basket-lab .t2-v{
+  font-size:.82rem !important;
+  line-height:1.15 !important;
+}
+#differs-lab input,
+#differs-lab select,
+#top2-basket-lab input,
+#top2-basket-lab select{
+  padding:6px 7px !important;
+  font-size:.74rem !important;
+}
+#differs-lab .ddl-status,
+#top2-basket-lab .t2-status{
+  padding:7px 8px !important;
+  font-size:.68rem !important;
+  margin-top:7px !important;
+}
+#differs-lab .ddl-actions,
+#top2-basket-lab .t2-actions{
+  gap:5px !important;
+  margin-top:7px !important;
+}
+#differs-lab .ddl-btn,
+#top2-basket-lab .t2-btn{
+  padding:7px 6px !important;
+  font-size:.68rem !important;
+}
+#differs-lab .ddl-log,
+#top2-basket-lab .t2-log{
+  height:74px !important;
+  font-size:.60rem !important;
+}
+#differs-lab .ddl-mini-note,
+#top2-basket-lab .t2-note{
+  font-size:.60rem !important;
+}
+.metric-profit{
+  color:#4ade80 !important;
+  background:rgba(34,197,94,.08) !important;
+  border-color:rgba(34,197,94,.28) !important;
+}
+.metric-loss{
+  color:#f87171 !important;
+  background:rgba(239,68,68,.08) !important;
+  border-color:rgba(239,68,68,.28) !important;
+}
+.metric-neutral{
+  color:#e5e7eb !important;
+}
+.log-profit{ color:#86efac !important; }
+.log-loss{ color:#fca5a5 !important; }
+@media(max-width:640px){
+  #differs-lab,#top2-basket-lab{
+    width:auto !important;
+    left:6px !important;
+    right:6px !important;
+    max-height:68vh !important;
+  }
 }
 
 </style>
@@ -10405,10 +10494,16 @@ window.digitDiffersLab = {
 
     render() {
         const set = (id, v) => { const el=$(id); if(el) el.textContent=v; };
+        const setSignClass = (id, value) => {
+            const el=$(id); if(!el) return;
+            el.classList.remove('metric-profit','metric-loss','metric-neutral');
+            el.classList.add(value > 0 ? 'metric-profit' : value < 0 ? 'metric-loss' : 'metric-neutral');
+        };
         set('ddl-trades', this.stats.trades);
         set('ddl-wins', this.stats.wins);
         set('ddl-losses', this.stats.losses);
         set('ddl-pnl', `${this.stats.pnl >= 0 ? '+' : '-'}$${Math.abs(this.stats.pnl).toFixed(2)}`);
+        setSignClass('ddl-pnl', this.stats.pnl);
         const badge = $('ddl-mode-badge');
         if (badge) {
             const live = this.mode() === 'live';
@@ -10525,6 +10620,7 @@ window.digitDiffersLab = {
                 profit: pnl
             });
             this.log(`SHADOW ${win?'WIN':'LOSS'} | avoided ${s.digit}, outcome ${actual} | ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
+            const ddlLog=$('ddl-log'); if(ddlLog){ddlLog.classList.toggle('log-profit',win);ddlLog.classList.toggle('log-loss',!win);}
             this.shadowOpen = null;
             this.busy = false;
             this.render();
@@ -10627,7 +10723,8 @@ window.digitDiffersLab = {
         $('ddl-be').textContent = `${(be*100).toFixed(2)}%`;
         $('ddl-liveedge').textContent = `${edge>=0?'+':''}${(edge*100).toFixed(2)} pp`;
         $('ddl-profit').textContent = `${winProfit>=0?'+':''}$${winProfit.toFixed(2)}`;
-        $('ddl-liveedge').className = `ddl-v ${edge >= this.minEdge() ? 'good':'bad'}`;
+        $('ddl-liveedge').className = `ddl-v ${edge >= this.minEdge() ? 'good metric-profit':'bad metric-loss'}`;
+        $('ddl-profit').className = `ddl-v ${winProfit > 0 ? 'metric-profit' : winProfit < 0 ? 'metric-loss' : 'metric-neutral'}`;
 
         if (edge < this.minEdge()) {
             this.stats.blocked++;
@@ -10722,6 +10819,7 @@ window.digitDiffersLab = {
             profit
         });
         this.log(`LIVE ${win?'WIN':'LOSS'} | avoided ${this.active.digit} | ${profit>=0?'+':''}$${profit.toFixed(2)}`);
+        const ddlLog=$('ddl-log'); if(ddlLog){ddlLog.classList.toggle('log-profit',win);ddlLog.classList.toggle('log-loss',!win);}
         this.status(`${win?'WIN':'LOSS'} · ${profit>=0?'+':''}$${profit.toFixed(2)}`, win);
 
         this.active=null;
@@ -11058,10 +11156,17 @@ window.top2BasketLab = {
 
     render(){
         const set=(id,v)=>{const el=q(id); if(el) el.textContent=v;};
+        const setSignClass=(id,value)=>{
+            const el=q(id); if(!el) return;
+            el.classList.remove('metric-profit','metric-loss','metric-neutral');
+            el.classList.add(value>0?'metric-profit':value<0?'metric-loss':'metric-neutral');
+        };
         set('t2-trades',this.stats.baskets);
         set('t2-cycle-loss',`$${Math.max(0,this.cycleLoss).toFixed(2)}`);
         set('t2-basket-stake',`$${Math.max(0,this.currentBasketStake || this.baseStake()).toFixed(2)}`);
         set('t2-pnl',this.money(this.stats.pnl));
+        setSignClass('t2-pnl',this.stats.pnl);
+        setSignClass('t2-cycle-loss',this.cycleLoss > 0 ? -this.cycleLoss : 0);
         const badge=q('t2-mode-badge');
         if(badge){
             const live=this.mode()==='live';
@@ -11201,11 +11306,13 @@ window.top2BasketLab = {
 
             if(win){
                 this.log(`SHADOW BASKET WIN | outcome ${actual} | ${this.money(pnl)} | cycle recovered`);
+                const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
                 this.cycleLoss=0;
                 this.cycleIndex=0;
                 this.currentBasketStake=this.baseStake();
             } else {
                 this.log(`SHADOW BASKET MISS | outcome ${actual} | -$${b.totalStake.toFixed(2)}`);
+                const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
                 this.cycleLoss += b.totalStake;
                 this.cycleIndex++;
             }
@@ -11347,8 +11454,9 @@ window.top2BasketLab = {
         q('t2-basket-edge').textContent = Number.isFinite(basketEdge)
             ? `${basketEdge>=0?'+':''}${(basketEdge*100).toFixed(2)} pp`
             : '—';
-        q('t2-basket-edge').className=`t2-v ${basketEdge>=this.minEdge()?'good':'bad'}`;
+        q('t2-basket-edge').className=`t2-v ${basketEdge>=this.minEdge()?'good metric-profit':'bad metric-loss'}`;
         q('t2-hit-profit').textContent=this.money(worstHitProfit);
+        q('t2-hit-profit').className=`t2-v ${worstHitProfit>0?'metric-profit':worstHitProfit<0?'metric-loss':'metric-neutral'}`;
 
         // If recovering, use live worst-case profit factor to solve exact basket stake.
         // Because payout scales approximately linearly with stake:
@@ -11550,11 +11658,13 @@ window.top2BasketLab = {
 
         if(win){
             this.log(`LIVE BASKET WIN | ${this.money(pnl)} | cycle recovered`);
+            const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-profit');logEl.classList.remove('log-loss');}
             this.cycleLoss=0;
             this.cycleIndex=0;
             this.currentBasketStake=this.baseStake();
         }else{
             this.log(`LIVE BASKET MISS | ${this.money(pnl)}`);
+            const logEl=q('t2-log'); if(logEl){logEl.classList.add('log-loss');logEl.classList.remove('log-profit');}
             this.cycleLoss += Math.abs(pnl);
             this.cycleIndex++;
         }
