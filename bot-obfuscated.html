@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V38: V37 + persistent Last-5 empirical tracker with CI and break-even comparison -->
+    <!-- V39: V38 + Observe-5 / Trade-5 frozen absent-pool experiment -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11119,7 +11119,8 @@ if (document.readyState === 'loading') {
       <div class="t2-field">
         <label>Selection rule</label>
         <select id="t2-rule">
-          <option value="last5" selected>LAST-5 EXCLUSION</option>
+          <option value="observe5trade5" selected>OBSERVE 5 → TRADE NEXT 5</option>
+          <option value="last5">ROLLING LAST-5 EXCLUSION</option>
           <option value="model">MODEL TOP-2</option>
         </select>
       </div>
@@ -11132,7 +11133,7 @@ if (document.readyState === 'loading') {
         <input id="t2-max" type="number" value="10" min="1" max="10" step="1">
       </div>
       <div class="t2-field">
-        <label>Last 5 digits</label>
+        <label>Observation / Last 5 digits</label>
         <input id="t2-last5" value="—" readonly>
       </div>
     </div>
@@ -11147,6 +11148,9 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Cycle losses</div><div id="t2-cycle-loss" class="t2-v">$0.00</div></div>
       <div class="t2-card"><div class="t2-k">Basket trades</div><div id="t2-trades" class="t2-v">0</div></div>
       <div class="t2-card"><div class="t2-k">Session P/L</div><div id="t2-pnl" class="t2-v">$0.00</div></div>
+      <div class="t2-card"><div class="t2-k">Block phase</div><div id="t2-block-phase" class="t2-v">OBSERVE 0/5</div></div>
+      <div class="t2-card"><div class="t2-k">Frozen absent pool</div><div id="t2-absent-pool" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Trade in block</div><div id="t2-block-trade" class="t2-v">0/5</div></div>
     </div>
     <div id="t2-outcome" class="t2-outcome neutral">LAST RESULT: —</div>
     <div class="grid grid-cols-3 gap-2 mt-2">
@@ -11170,10 +11174,11 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Basket stake is TOTAL exposure and splits equally: $10 = $5 + $5. Last-5 empirical statistics now persist
-      across sessions in this browser for each symbol. The panel tracks lifetime N, wins/losses, hit rate, average
-      live break-even, observed margin, and Wilson 95% CI. Recovery remains capped by max depth and max basket stake.
-      Use ⬇ EXPORT to include both session and persistent evidence.
+      Default rule: OBSERVE 5 → TRADE NEXT 5. The bot observes 5 public outcome digits with no purchase, freezes
+      every digit absent from that observation window, then executes exactly 5 forward baskets using rotating pairs
+      from that frozen pool. It does not recalculate the pool during those 5 trades. After the fifth settled basket,
+      it discards the block and observes a fresh 5 digits. Persistent empirical evidence is stored separately by
+      symbol and rule. Basket stake is total exposure and splits equally; recovery caps remain active.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11187,7 +11192,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'TOP2-BASKET-V1.1-EMPIRICAL-PERSIST',
+    version: 'TOP2-BASKET-V1.2-OBSERVE5-TRADE5',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11203,10 +11208,18 @@ window.top2BasketLab = {
     recentDigits: [],
     digitLastSeenTick: Array(10).fill(-1),
     observedTickIndex: 0,
+    blockPhase: 'OBSERVE',
+    observationWindow: [],
+    frozenAbsentPool: [],
+    blockTradeIndex: 0,
+    blockNumber: 1,
     empirical: { n:0, wins:0, losses:0, sumBreakEven:0, firstAt:null, updatedAt:null },
 
     empiricalKey(){
-        return `t2_empirical_last5_${this.symbol()}`;
+        const r=this.rule();
+        if(r==='observe5trade5') return `t2_empirical_observe5trade5_${this.symbol()}`;
+        if(r==='last5') return `t2_empirical_last5_${this.symbol()}`;
+        return `t2_empirical_model_${this.symbol()}`;
     },
     loadEmpirical(){
         try{
@@ -11236,8 +11249,9 @@ window.top2BasketLab = {
         const half=(z*Math.sqrt((p*(1-p)/n)+(z2/(4*n*n))))/denom;
         return {lower:Math.max(0,center-half),upper:Math.min(1,center+half)};
     },
-    recordEmpirical(win,breakEven){
-        if(this.rule()!=='last5') return;
+    recordEmpirical(win,breakEven,ruleTag=null){
+        const r=ruleTag || this.rule();
+        if(r!=='LAST5_EXCLUSION' && r!=='OBSERVE5_TRADE5') return;
         const now=new Date().toISOString();
         if(!this.empirical.firstAt) this.empirical.firstAt=now;
         this.empirical.n += 1;
@@ -11250,7 +11264,7 @@ window.top2BasketLab = {
         this.empirical={n:0,wins:0,losses:0,sumBreakEven:0,firstAt:null,updatedAt:null};
         try{localStorage.removeItem(this.empiricalKey());}catch(_){}
         this.render();
-        this.log('Persistent Last-5 empirical statistics reset.');
+        this.log('Persistent empirical statistics reset for the selected rule.');
     },
 
     mode(){ return q('t2-mode')?.value || 'shadow'; },
@@ -11306,6 +11320,18 @@ window.top2BasketLab = {
         set('t2-emp-wl',`${ew} / ${el}`);
         if(Number.isFinite(em)) setSignClass('t2-emp-margin',em);
 
+        if(this.rule()==='observe5trade5'){
+            set('t2-block-phase',this.blockPhase==='OBSERVE'
+                ? `OBSERVE ${this.observationWindow.length}/5`
+                : `TRADE ${Math.min(this.blockTradeIndex+1,5)}/5`);
+            set('t2-absent-pool',this.frozenAbsentPool.length ? this.frozenAbsentPool.join(' · ') : '—');
+            set('t2-block-trade',`${Math.min(this.blockTradeIndex,5)}/5 completed`);
+        }else{
+            set('t2-block-phase','—');
+            set('t2-absent-pool','—');
+            set('t2-block-trade','—');
+        }
+
         const badge=q('t2-mode-badge');
         if(badge){
             const live=this.isLive();
@@ -11328,6 +11354,63 @@ window.top2BasketLab = {
         }
     },
 
+
+    resetObserveTradeBlock(){
+        this.blockPhase='OBSERVE';
+        this.observationWindow=[];
+        this.frozenAbsentPool=[];
+        this.blockTradeIndex=0;
+        const el=q('t2-last5'); if(el) el.value='—';
+        this.render();
+    },
+
+    freezeObservationBlock(){
+        if(this.observationWindow.length!==5) return false;
+        const seen=new Set(this.observationWindow);
+        this.frozenAbsentPool=[];
+        for(let d=0; d<=9; d++) if(!seen.has(d)) this.frozenAbsentPool.push(d);
+        if(this.frozenAbsentPool.length<2) return false;
+        this.blockPhase='TRADE';
+        this.blockTradeIndex=0;
+        this.log(`BLOCK ${this.blockNumber} FROZEN | observed [${this.observationWindow.join(', ')}] | absent pool [${this.frozenAbsentPool.join(', ')}]`);
+        this.render();
+        return true;
+    },
+
+    observe5Trade5Pair(){
+        if(this.blockPhase!=='TRADE' || this.frozenAbsentPool.length<2 || this.blockTradeIndex>=5) return null;
+        const pool=this.frozenAbsentPool;
+        const m=pool.length;
+
+        // Rotate through the frozen absent pool. The pool is NOT recalculated during these 5 trades.
+        const i=(2*this.blockTradeIndex)%m;
+        let j=(i+1)%m;
+        if(j===i) j=(j+1)%m;
+
+        const a=pool[i], b=pool[j];
+        return {
+            a:{digit:a,p:0.10,support:5,model:null},
+            b:{digit:b,p:0.10,support:5,model:null},
+            combinedP:0.20,
+            rule:'OBSERVE5_TRADE5',
+            window5:[...this.observationWindow],
+            absentPool:[...pool],
+            blockNumber:this.blockNumber,
+            blockTradeNumber:this.blockTradeIndex+1
+        };
+    },
+
+    advanceObserveTradeBlock(){
+        if(this.rule()!=='observe5trade5') return;
+        this.blockTradeIndex++;
+        if(this.blockTradeIndex>=5){
+            this.log(`BLOCK ${this.blockNumber} COMPLETE | 5 forward baskets finished. Starting a fresh 5-digit observation window.`);
+            this.blockNumber++;
+            this.resetObserveTradeBlock();
+        }else{
+            this.render();
+        }
+    },
 
     last5Pair(){
         if(this.recentDigits.length < 5) return null;
@@ -11424,6 +11507,12 @@ window.top2BasketLab = {
         this.recentDigits=[];
         this.digitLastSeenTick=Array(10).fill(-1);
         this.observedTickIndex=0;
+        this.blockPhase='OBSERVE';
+        this.observationWindow=[];
+        this.frozenAbsentPool=[];
+        this.blockTradeIndex=0;
+        this.blockNumber=1;
+        this.loadEmpirical();
         this.render();
         const outcomeEl=q('t2-outcome');
         if(outcomeEl){outcomeEl.className='t2-outcome neutral';outcomeEl.textContent='LAST RESULT: —';}
@@ -11456,9 +11545,22 @@ window.top2BasketLab = {
             this.recentDigits.push(actual);
             if(this.recentDigits.length > 50) this.recentDigits.shift();
             this.digitLastSeenTick[actual] = this.observedTickIndex;
-            const last5 = this.recentDigits.slice(-5);
-            const last5El = q('t2-last5');
-            if(last5El) last5El.value = last5.length ? last5.join(' · ') : '—';
+
+            const last5El=q('t2-last5');
+            if(this.rule()==='observe5trade5'){
+                // Only the dedicated observation phase contributes to the frozen 5-digit window.
+                // Outcomes from the following 5 trade baskets do not modify that frozen pool.
+                if(this.blockPhase==='OBSERVE' && !this.busy && !this.awaitingOutcome && !this.pendingBuyPair){
+                    if(this.observationWindow.length<5) this.observationWindow.push(actual);
+                    if(last5El) last5El.value=this.observationWindow.join(' · ');
+                    if(this.observationWindow.length===5) this.freezeObservationBlock();
+                }else if(last5El && this.observationWindow.length){
+                    last5El.value=this.observationWindow.join(' · ');
+                }
+            }else{
+                const last5=this.recentDigits.slice(-5);
+                if(last5El) last5El.value=last5.length ? last5.join(' · ') : '—';
+            }
         }
 
         // Shadow settlement: first future public tick after both proposal quotes are accepted.
@@ -11475,7 +11577,7 @@ window.top2BasketLab = {
             this.stats.baskets++;
             this.stats[win?'wins':'losses']++;
             this.stats.pnl += pnl;
-            this.recordEmpirical(win,b.breakEvenProbability);
+            this.recordEmpirical(win,b.breakEvenProbability,b.picks?.rule);
 
             this.history.push({
                 timestamp: new Date().toISOString(),
@@ -11488,6 +11590,9 @@ window.top2BasketLab = {
                 topDigit2Probability: b.b.p,
                 selectionRule: b.picks.rule || 'MODEL_TOP2',
                 last5Window: b.picks.window5 || null,
+                frozenAbsentPool: b.picks.absentPool || null,
+                blockNumber: b.picks.blockNumber || null,
+                blockTradeNumber: b.picks.blockTradeNumber || null,
                 combinedModelProbability: b.picks.combinedP,
                 totalBasketStake: b.totalStake,
                 legStake1: b.askA,
@@ -11521,6 +11626,7 @@ window.top2BasketLab = {
 
             this.awaitingOutcome=null;
             this.busy=false;
+            if(b.picks?.rule==='OBSERVE5_TRADE5') this.advanceObserveTradeBlock();
             this.render();
 
             if(this.stats.baskets>=this.maxTrades()){
@@ -11547,22 +11653,36 @@ window.top2BasketLab = {
             return;
         }
 
-        const useLast5 = this.rule() === 'last5';
-        const picks = useLast5 ? this.last5Pair() : this.topTwo();
+        const currentRule=this.rule();
+        const useObserve5=currentRule==='observe5trade5';
+        const useLast5=currentRule==='last5';
+
+        if(useObserve5 && this.blockPhase==='OBSERVE'){
+            this.status(`BLOCK ${this.blockNumber}: observing ${this.observationWindow.length}/5 digits before trading.`);
+            return;
+        }
+
+        const picks = useObserve5
+            ? this.observe5Trade5Pair()
+            : (useLast5 ? this.last5Pair() : this.topTwo());
 
         if(!picks){
             this.status(
-                useLast5
-                    ? 'Collecting the first 5 public digits for the Last-5 Exclusion rule.'
-                    : 'Waiting for two model-ready digits.'
+                useObserve5
+                    ? `BLOCK ${this.blockNumber}: waiting for frozen absent-pool trade setup.`
+                    : (useLast5
+                        ? 'Collecting the first 5 public digits for the rolling Last-5 Exclusion rule.'
+                        : 'Waiting for two model-ready digits.')
             );
             return;
         }
 
-        if(useLast5){
+        if(useObserve5 || useLast5){
             q('t2-d1').textContent=`${picks.a.digit} (absent)`;
             q('t2-d2').textContent=`${picks.b.digit} (absent)`;
-            q('t2-combined-p').textContent='Rule test';
+            q('t2-combined-p').textContent=useObserve5
+                ? `Block ${picks.blockNumber} · Trade ${picks.blockTradeNumber}/5`
+                : 'Rule test';
         }else{
             q('t2-d1').textContent=`${picks.a.digit} (${(picks.a.p*100).toFixed(2)}%)`;
             q('t2-d2').textContent=`${picks.b.digit} (${(picks.b.p*100).toFixed(2)}%)`;
@@ -11755,7 +11875,8 @@ window.top2BasketLab = {
         // MODEL mode uses the EV gate.
         // LAST-5 EXCLUSION is a direct rule test, so the model edge gate is bypassed.
         const isLast5Rule = pair.picks?.rule === 'LAST5_EXCLUSION';
-        if(!isLast5Rule && evPerDollar < this.minEdge()){
+        const isObserve5Rule = pair.picks?.rule === 'OBSERVE5_TRADE5';
+        if(!isLast5Rule && !isObserve5Rule && evPerDollar < this.minEdge()){
             this.stats.blocked++;
             this.busy=false;
             this.pendingProposalPair=null;
@@ -11768,7 +11889,13 @@ window.top2BasketLab = {
 
         if(isLast5Rule){
             this.status(
-                `LAST-5 RULE ARMED: recent [${pair.picks.window5.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
+                `ROLLING LAST-5 ARMED: recent [${pair.picks.window5.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
+                true
+            );
+        }
+        if(isObserve5Rule){
+            this.status(
+                `BLOCK ${pair.picks.blockNumber} TRADE ${pair.picks.blockTradeNumber}/5 · frozen absent pool [${pair.picks.absentPool.join(', ')}] · testing ${pair.picks.a.digit} + ${pair.picks.b.digit}`,
                 true
             );
         }
@@ -11890,7 +12017,7 @@ window.top2BasketLab = {
         const win=pnl>0;
         this.stats[win?'wins':'losses']++;
         this.stats.pnl += pnl;
-        this.recordEmpirical(win,pair.breakEvenProbability);
+        this.recordEmpirical(win,pair.breakEvenProbability,pair.picks?.rule);
 
         this.history.push({
             timestamp: new Date().toISOString(),
@@ -11903,6 +12030,9 @@ window.top2BasketLab = {
             topDigit2Probability: pair.picks.b.p,
             selectionRule: pair.picks.rule || 'MODEL_TOP2',
             last5Window: pair.picks.window5 || null,
+            frozenAbsentPool: pair.picks.absentPool || null,
+            blockNumber: pair.picks.blockNumber || null,
+            blockTradeNumber: pair.picks.blockTradeNumber || null,
             combinedModelProbability: pair.picks.combinedP,
             totalBasketStake: pair.totalStake,
             leg1BuyPrice: pair.buys.a.buyPrice,
@@ -11937,6 +12067,7 @@ window.top2BasketLab = {
 
         this.pendingBuyPair=null;
         this.busy=false;
+        if(pair.picks?.rule==='OBSERVE5_TRADE5') this.advanceObserveTradeBlock();
         this.render();
 
         if(!this.running || this.stats.baskets>=this.maxTrades()){
@@ -11993,13 +12124,16 @@ window.top2BasketLab = {
                 maxBasketStake:this.maxBasketStake(),
                 minimumBasketEdge:this.minEdge(),
                 maxBasketTrades:this.maxTrades(),
-                selectionPolicy:this.rule()==='last5'
-                    ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
-                    : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES',
+                selectionPolicy:this.rule()==='observe5trade5'
+                    ? 'OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_NEXT_5_ROTATING_PAIRS'
+                    : (this.rule()==='last5'
+                        ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
+                        : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES'),
                 recoverySizing:'EXACT_CYCLE_LOSS_PLUS_TARGET_FROM_LIVE_WORST_HIT_PAYOUT'
             },
-            empiricalLast5:{
-                storageScope:'THIS_BROWSER_THIS_SYMBOL',
+            empiricalRule:{
+                rule:this.rule(),
+                storageScope:'THIS_BROWSER_THIS_SYMBOL_AND_RULE',
                 symbol:this.symbol(),
                 n:Number(this.empirical?.n||0),
                 wins:Number(this.empirical?.wins||0),
@@ -12010,6 +12144,13 @@ window.top2BasketLab = {
                 wilson95:this.wilson95(Number(this.empirical?.wins||0),Number(this.empirical?.n||0)),
                 firstAt:this.empirical?.firstAt||null,
                 updatedAt:this.empirical?.updatedAt||null
+            },
+            blockState:{
+                blockNumber:this.blockNumber,
+                phase:this.blockPhase,
+                observationWindow:[...this.observationWindow],
+                frozenAbsentPool:[...this.frozenAbsentPool],
+                completedTradesInBlock:this.blockTradeIndex
             },
             summary:{
                 completedBaskets:completed,
@@ -12050,10 +12191,16 @@ window.top2BasketLab = {
         q('t2-stop')?.addEventListener('click',()=>this.stop());
         q('t2-export')?.addEventListener('click',()=>this.exportReport());
         q('t2-reset-emp')?.addEventListener('click',()=>{
-            if(confirm('Reset all persistent Last-5 empirical statistics for this symbol?')) this.resetEmpirical();
+            if(confirm('Reset all persistent empirical statistics for this symbol and selected rule?')) this.resetEmpirical();
         });
         q('t2-mode')?.addEventListener('change',()=>{
             if(this.running) this.stop('Mode changed. Press START again.');
+            this.render();
+        });
+        q('t2-rule')?.addEventListener('change',()=>{
+            if(this.running) this.stop('Selection rule changed. Press START again.');
+            this.resetObserveTradeBlock();
+            this.loadEmpirical();
             this.render();
         });
         q('symbol')?.addEventListener('change',()=>{
