@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V54 PUBLIC-MARKET FIX: branch-isolated market handlers + safe auditor refresh; INSTANT unchanged -->
+    <!-- V56 DIGIT-DNA ENGINE: learns what happens BEFORE each digit; AI AUTO only; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -960,6 +960,755 @@
 
 
 
+
+
+        // ============================================================================
+        // DIGITMATCHSTAR V56 — DIGIT DNA / PRECURSOR FINGERPRINT ENGINE
+        //
+        // For each digit 0..9, learn the conditions that existed BEFORE that digit
+        // appeared. Every historical event is labelled only after it occurred, and
+        // the feature vector uses preceding ticks only:
+        //   • exact predecessor distributions at lags 1..5
+        //   • preceding 2-, 3- and 4-digit contexts
+        //   • entropy of the previous 10 / 20 ticks
+        //   • target frequency in the previous 20 ticks
+        //   • target gap immediately before the hit
+        //   • run length immediately before the hit
+        //
+        // The current live context is compared with every digit's historical
+        // precursor fingerprint. "DNA match" is a similarity/ranking score, NOT a
+        // calibrated probability. A forward top-pick tracker measures whether this
+        // fingerprint has genuine predictive value on unseen ticks.
+        // ============================================================================
+        window.DIGIT_DNA_CONFIG = {
+            enabled: true,
+            historyWindow: 1500,
+            minEventsPerDigit: 12,
+            precursorWindow: 20,
+            lagDepth: 5,
+            aiBlend: 0.20,
+            overrideSimilarity: 0.82
+        };
+
+        window.digitDNAEngine = {
+            version: 'DNA-1',
+            lastSnapshot: null,
+            forward: {
+                pending: null,
+                n: 0,
+                hits: 0,
+                byDigit: Array.from({length:10},()=>({n:0,hits:0}))
+            },
+
+            digits() {
+                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
+                    .map(Number)
+                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    .slice(-window.DIGIT_DNA_CONFIG.historyWindow);
+            },
+
+            entropy(arr) {
+                if (!arr?.length) return 1;
+                const c=Array(10).fill(0);
+                arr.forEach(d=>c[d]++);
+                let h=0;
+                for(const n of c){
+                    if(!n) continue;
+                    const p=n/arr.length;
+                    h-=p*Math.log2(p);
+                }
+                return h/Math.log2(10);
+            },
+
+            runLengthBefore(arr, idx) {
+                if(idx<=0) return 0;
+                const d=arr[idx-1];
+                let n=1;
+                for(let j=idx-2;j>=0 && arr[j]===d;j--) n++;
+                return n;
+            },
+
+            previousGap(arr, idx, target) {
+                for(let j=idx-1;j>=0;j--){
+                    if(arr[j]===target) return idx-j-1;
+                }
+                return idx;
+            },
+
+            freqBefore(arr, idx, target, w=20) {
+                const s=arr.slice(Math.max(0,idx-w),idx);
+                if(!s.length) return 0.10;
+                let n=0;
+                s.forEach(d=>{if(d===target)n++;});
+                return n/s.length;
+            },
+
+            contextBefore(arr, idx, k) {
+                if(idx<k) return null;
+                return arr.slice(idx-k,idx).join('');
+            },
+
+            buildProfiles(arr) {
+                const cfg=window.DIGIT_DNA_CONFIG;
+                const profiles=Array.from({length:10},(_,digit)=>({
+                    digit,
+                    events:0,
+                    lagCounts:Array.from({length:cfg.lagDepth},()=>Array(10).fill(1)), // smoothing
+                    contexts2:{}, contexts3:{}, contexts4:{},
+                    entropy10:[], entropy20:[],
+                    freq20:[], preGap:[], runLength:[]
+                }));
+
+                for(let i=Math.max(20,cfg.lagDepth); i<arr.length; i++){
+                    const target=arr[i];
+                    const p=profiles[target];
+                    p.events++;
+
+                    for(let lag=1;lag<=cfg.lagDepth;lag++){
+                        const d=arr[i-lag];
+                        if(Number.isInteger(d)) p.lagCounts[lag-1][d]++;
+                    }
+
+                    for(const k of [2,3,4]){
+                        const key=this.contextBefore(arr,i,k);
+                        if(key!==null){
+                            const map=p[`contexts${k}`];
+                            map[key]=(map[key]||0)+1;
+                        }
+                    }
+
+                    p.entropy10.push(this.entropy(arr.slice(Math.max(0,i-10),i)));
+                    p.entropy20.push(this.entropy(arr.slice(Math.max(0,i-20),i)));
+                    p.freq20.push(this.freqBefore(arr,i,target,20));
+                    p.preGap.push(this.previousGap(arr,i,target));
+                    p.runLength.push(this.runLengthBefore(arr,i));
+                }
+
+                const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
+                const sd=a=>{
+                    if(a.length<2) return 0;
+                    const m=mean(a);
+                    return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1));
+                };
+                const topContexts=map=>Object.entries(map)
+                    .sort((a,b)=>b[1]-a[1])
+                    .slice(0,5)
+                    .map(([context,count])=>({context,count}));
+
+                return profiles.map(p=>{
+                    const lagP=p.lagCounts.map(row=>{
+                        const t=row.reduce((s,x)=>s+x,0);
+                        return row.map(x=>x/t);
+                    });
+                    return {
+                        digit:p.digit,
+                        events:p.events,
+                        lagP,
+                        top2:topContexts(p.contexts2),
+                        top3:topContexts(p.contexts3),
+                        top4:topContexts(p.contexts4),
+                        meanEntropy10:mean(p.entropy10),
+                        sdEntropy10:sd(p.entropy10),
+                        meanEntropy20:mean(p.entropy20),
+                        sdEntropy20:sd(p.entropy20),
+                        meanFreq20:mean(p.freq20),
+                        sdFreq20:sd(p.freq20),
+                        meanPreGap:mean(p.preGap),
+                        sdPreGap:sd(p.preGap),
+                        meanRun:mean(p.runLength),
+                        sdRun:sd(p.runLength)
+                    };
+                });
+            },
+
+            gaussianSimilarity(x, mean, sd, fallbackScale=1) {
+                if(!Number.isFinite(x)||!Number.isFinite(mean)) return 0.5;
+                const scale=Math.max(Number(sd)||0,fallbackScale);
+                const z=(x-mean)/scale;
+                return Math.exp(-0.5*z*z);
+            },
+
+            contextRate(arr, target, k) {
+                if(arr.length<=k) return {p:0.10,support:0};
+                const ctx=arr.slice(-k).join('');
+                let support=0,hits=0;
+                for(let i=k;i<arr.length;i++){
+                    if(arr.slice(i-k,i).join('')===ctx){
+                        support++;
+                        if(arr[i]===target) hits++;
+                    }
+                }
+                // Beta-like smoothing around 10%.
+                const prior=10;
+                return {p:(hits+prior*0.10)/(support+prior),support,ctx};
+            },
+
+            currentFeatures(arr,target) {
+                const n=arr.length;
+                return {
+                    lags:Array.from({length:window.DIGIT_DNA_CONFIG.lagDepth},(_,j)=>
+                        n-1-j>=0 ? arr[n-1-j] : null
+                    ),
+                    entropy10:this.entropy(arr.slice(-10)),
+                    entropy20:this.entropy(arr.slice(-20)),
+                    freq20:this.freqBefore(arr,n,target,20),
+                    gap:this.previousGap(arr,n,target),
+                    runLength:this.runLengthBefore(arr,n),
+                    c2:this.contextRate(arr,target,2),
+                    c3:this.contextRate(arr,target,3),
+                    c4:this.contextRate(arr,target,4)
+                };
+            },
+
+            scoreProfile(profile, current) {
+                if(!profile || profile.events < window.DIGIT_DNA_CONFIG.minEventsPerDigit){
+                    return {score:0,parts:{}};
+                }
+
+                // Likelihood of current last 5 digits under the historical
+                // predecessor distribution for this target.
+                let lagLog=0, lagN=0;
+                current.lags.forEach((d,i)=>{
+                    if(Number.isInteger(d)){
+                        const p=Math.max(1e-6,Number(profile.lagP?.[i]?.[d]||0.10));
+                        lagLog+=Math.log(p/0.10); // relative to uniform
+                        lagN++;
+                    }
+                });
+                const lagScore=lagN ? 1/(1+Math.exp(-(lagLog/lagN))) : 0.5;
+
+                const e10=this.gaussianSimilarity(
+                    current.entropy10,profile.meanEntropy10,profile.sdEntropy10,0.05
+                );
+                const e20=this.gaussianSimilarity(
+                    current.entropy20,profile.meanEntropy20,profile.sdEntropy20,0.04
+                );
+                const f20=this.gaussianSimilarity(
+                    current.freq20,profile.meanFreq20,profile.sdFreq20,0.03
+                );
+                const gap=this.gaussianSimilarity(
+                    current.gap,profile.meanPreGap,profile.sdPreGap,3
+                );
+                const run=this.gaussianSimilarity(
+                    current.runLength,profile.meanRun,profile.sdRun,1
+                );
+
+                // Exact current suffix conditional rates are powerful when supported,
+                // but sparse contexts are downweighted automatically.
+                const ctxScore=(c,kMin)=>{
+                    const rel=Math.min(1,c.support/kMin);
+                    const pNorm=Math.max(0,Math.min(1,(c.p-0.02)/0.20));
+                    return rel*pNorm+(1-rel)*0.5;
+                };
+                const c2=ctxScore(current.c2,12);
+                const c3=ctxScore(current.c3,8);
+                const c4=ctxScore(current.c4,5);
+
+                const score=
+                    0.28*lagScore+
+                    0.15*c2+
+                    0.10*c3+
+                    0.07*c4+
+                    0.08*e10+
+                    0.07*e20+
+                    0.08*f20+
+                    0.12*gap+
+                    0.05*run;
+
+                return {
+                    score,
+                    parts:{lagScore,c2,c3,c4,e10,e20,f20,gap,run}
+                };
+            },
+
+            analyze(symbol=null) {
+                const arr=this.digits();
+                const profiles=this.buildProfiles(arr);
+                const rows=[];
+
+                for(let d=0;d<10;d++){
+                    const current=this.currentFeatures(arr,d);
+                    const scored=this.scoreProfile(profiles[d],current);
+                    rows.push({
+                        digit:d,
+                        similarity:scored.score,
+                        parts:scored.parts,
+                        profile:profiles[d],
+                        current
+                    });
+                }
+
+                rows.sort((a,b)=>b.similarity-a.similarity || a.digit-b.digit);
+                const top=rows[0], second=rows[1];
+                const margin=Math.max(0,(top?.similarity||0)-(second?.similarity||0));
+
+                const snap={
+                    ready: arr.length>=100 && profiles.every(p=>p.events>=window.DIGIT_DNA_CONFIG.minEventsPerDigit),
+                    historyN:arr.length,
+                    symbol,
+                    rows,
+                    profiles,
+                    topDigit:top?.digit ?? null,
+                    topSimilarity:top?.similarity ?? 0,
+                    secondSimilarity:second?.similarity ?? 0,
+                    margin,
+                    forwardN:this.forward.n,
+                    forwardHits:this.forward.hits,
+                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null
+                };
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            scorePendingOutcome(actualDigit) {
+                const p=this.forward.pending;
+                if(!p) return;
+                this.forward.n++;
+                const hit=Number(p.digit)===Number(actualDigit);
+                if(hit) this.forward.hits++;
+                const row=this.forward.byDigit[p.digit];
+                row.n++;
+                if(hit) row.hits++;
+                this.forward.pending=null;
+            },
+
+            armNextForecast(symbol=null) {
+                const s=this.analyze(symbol);
+                if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
+                this.forward.pending={
+                    digit:Number(s.topDigit),
+                    similarity:Number(s.topSimilarity||0),
+                    at:Date.now()
+                };
+            },
+
+            onNewTick(actualDigit,symbol=null) {
+                // Score the forecast that existed BEFORE this tick.
+                this.scorePendingOutcome(actualDigit);
+                // Then learn through lastDigits (already updated by main engine) and
+                // freeze a DNA forecast for the NEXT unseen tick.
+                this.armNextForecast(symbol);
+            },
+
+            ensurePanel() {
+                if(document.getElementById('digit-dna-panel')) return;
+                const ref=document.getElementById('digit-analysis-panel');
+                if(!ref || !ref.parentElement) return;
+
+                const panel=document.createElement('div');
+                panel.id='digit-dna-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-pink-500/30 text-xs';
+                panel.innerHTML=`
+                  <div class="font-bold text-pink-300 mb-2">🧬 DIGIT DNA · WHAT HAPPENS BEFORE EACH DIGIT</div>
+                  <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
+                    <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
+                    <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
+                    <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                  </div>
+                  <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
+                  <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
+                  <div class="mt-2 text-[10px] text-gray-500">
+                    DNA = historical precursor fingerprint, not a guaranteed probability.
+                    Every profile uses only ticks that occurred BEFORE each labelled digit.
+                  </div>
+                `;
+                ref.parentElement.appendChild(panel);
+            },
+
+            render(s=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                s=s||this.lastSnapshot;
+                if(!s) return;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                set('dna-history',`${s.historyN||0}${s.ready?' ✓':' · learning'}`);
+                set('dna-top',s.ready?String(s.topDigit):'-');
+                set('dna-sim',s.ready?`${(Number(s.topSimilarity||0)*100).toFixed(1)}%`:'-');
+                set('dna-forward',s.forwardN
+                    ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
+                    : 'collecting');
+
+                const top3=document.getElementById('dna-top3');
+                if(top3){
+                    top3.innerHTML=s.rows.slice(0,3).map((r,i)=>{
+                        const p=r.profile;
+                        const pred1=p?.lagP?.[0]
+                            ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
+                            : null;
+                        return `#${i+1} <b>Digit ${r.digit}</b> · match ${(r.similarity*100).toFixed(1)}% · `+
+                               `events ${p?.events||0} · most common immediate predecessor `+
+                               `${pred1 ? pred1.d+' ('+(pred1.v*100).toFixed(1)+'%)' : '-'}`;
+                    }).join('<br>');
+                }
+
+                const all=document.getElementById('dna-all');
+                if(all){
+                    all.innerHTML=s.rows
+                      .slice()
+                      .sort((a,b)=>a.digit-b.digit)
+                      .map(r=>{
+                        const p=r.profile;
+                        const pred1=p?.lagP?.[0]
+                          ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
+                          : null;
+                        return `<div class="mb-1">
+                          <b class="text-pink-200">DNA ${r.digit}</b>:
+                          events ${p?.events||0} · before-hit predecessor ${pred1?pred1.d:'-'} ·
+                          mean pre-gap ${Number(p?.meanPreGap||0).toFixed(1)} ·
+                          mean H20 ${Number(p?.meanEntropy20||0).toFixed(3)} ·
+                          mean target F20 ${(Number(p?.meanFreq20||0)*100).toFixed(1)}% ·
+                          current match ${(r.similarity*100).toFixed(1)}%
+                        </div>`;
+                      }).join('');
+                }
+            }
+        };
+
+        // ============================================================================
+        // DIGITMATCHSTAR V55 — DIGIT FEATURE ENGINE
+        //
+        // Feature engineering discussed for cryptanalysis-style AI:
+        //   • multi-window digit frequencies (5/20/50/100/200)
+        //   • frequency momentum / acceleration
+        //   • 10x10 transition probabilities
+        //   • 2-, 3- and 4-gram conditional next-digit probabilities
+        //   • current gap, gap/average-gap and recent run length
+        //   • entropy at 20/50/100 ticks and entropy trend
+        //   • lag-1 mutual information
+        //   • tick interval, price direction and short volatility context
+        //
+        // This engine is a ranking feature source for AI AUTO only.
+        // It does not change INSTANT execution and does not claim these features
+        // are predictive until forward evidence demonstrates that.
+        // ============================================================================
+        window.DIGIT_FEATURE_CONFIG = {
+            enabled: true,
+            windows: [5,20,50,100,200],
+            maxHistory: 1000,
+            minHistory: 50,
+            ngramPrior: 2.0,
+            aiBlend: 0.25,
+            overrideSignal: 0.70
+        };
+
+        window.digitFeatureEngine = {
+            version: 'DFE-1',
+            lastSnapshot: null,
+
+            safeDigits() {
+                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
+                    .map(Number)
+                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    .slice(-window.DIGIT_FEATURE_CONFIG.maxHistory);
+            },
+
+            entropyOf(arr) {
+                if (!arr?.length) return 1;
+                const counts=Array(10).fill(0);
+                arr.forEach(d=>counts[d]++);
+                let h=0;
+                for(const c of counts){
+                    if(!c) continue;
+                    const p=c/arr.length;
+                    h -= p*Math.log2(p);
+                }
+                return h/Math.log2(10);
+            },
+
+            mutualInformationLag1(arr) {
+                if (!arr || arr.length < 30) return 0;
+                const joint=Array.from({length:10},()=>Array(10).fill(0));
+                const a=Array(10).fill(0), b=Array(10).fill(0);
+                let n=0;
+                for(let i=0;i<arr.length-1;i++){
+                    const x=arr[i], y=arr[i+1];
+                    joint[x][y]++; a[x]++; b[y]++; n++;
+                }
+                if(!n) return 0;
+                let mi=0;
+                for(let x=0;x<10;x++) for(let y=0;y<10;y++){
+                    const c=joint[x][y];
+                    if(!c) continue;
+                    const pxy=c/n, px=a[x]/n, py=b[y]/n;
+                    mi += pxy*Math.log2(pxy/(px*py));
+                }
+                return Math.max(0,mi);
+            },
+
+            freq(arr, digit, n) {
+                const s=arr.slice(-Math.min(n,arr.length));
+                if(!s.length) return 0.10;
+                let hits=0;
+                for(const d of s) if(d===digit) hits++;
+                // Light shrinkage toward 10%.
+                const prior=5;
+                return (hits + prior*0.10)/(s.length+prior);
+            },
+
+            gap(arr,digit) {
+                for(let i=arr.length-1;i>=0;i--){
+                    if(arr[i]===digit) return arr.length-1-i;
+                }
+                return arr.length;
+            },
+
+            averageGap(arr,digit) {
+                const pos=[];
+                for(let i=0;i<arr.length;i++) if(arr[i]===digit) pos.push(i);
+                if(pos.length<2) return 10;
+                let total=0;
+                for(let i=1;i<pos.length;i++) total += pos[i]-pos[i-1]-1;
+                return total/(pos.length-1);
+            },
+
+            runLength(arr) {
+                if(!arr.length) return 0;
+                const d=arr[arr.length-1];
+                let n=1;
+                for(let i=arr.length-2;i>=0 && arr[i]===d;i--) n++;
+                return n;
+            },
+
+            conditional(arr, contextLength, digit) {
+                if(arr.length <= contextLength) return {p:0.10,support:0};
+                const ctx=arr.slice(-contextLength);
+                const counts=Array(10).fill(window.DIGIT_FEATURE_CONFIG.ngramPrior);
+                let support=0;
+                for(let i=0;i+contextLength<arr.length;i++){
+                    let ok=true;
+                    for(let j=0;j<contextLength;j++){
+                        if(arr[i+j]!==ctx[j]) {ok=false;break;}
+                    }
+                    if(!ok) continue;
+                    const next=arr[i+contextLength];
+                    if(Number.isInteger(next)){
+                        counts[next]++; support++;
+                    }
+                }
+                const total=counts.reduce((s,x)=>s+x,0);
+                return {p:counts[digit]/total,support};
+            },
+
+            transition(arr,digit) {
+                if(arr.length<2) return {p:0.10,support:0};
+                const prev=arr[arr.length-1];
+                const counts=Array(10).fill(2);
+                let support=0;
+                for(let i=0;i<arr.length-1;i++){
+                    if(arr[i]===prev){
+                        counts[arr[i+1]]++; support++;
+                    }
+                }
+                const total=counts.reduce((s,x)=>s+x,0);
+                return {p:counts[digit]/total,support};
+            },
+
+            marketContext() {
+                const rows=Array.isArray(window.recentMarketTicks)
+                    ? window.recentMarketTicks.slice(-40) : [];
+
+                const prices=rows.map(x=>Number(x.price)).filter(Number.isFinite);
+                const times=rows.map(x=>Number(x.raw?.epoch || 0)).filter(x=>x>0);
+
+                let direction=0, volatility=0, meanInterval=null;
+                if(prices.length>=2){
+                    const diffs=[];
+                    for(let i=1;i<prices.length;i++) diffs.push(prices[i]-prices[i-1]);
+                    direction=diffs.reduce((s,x)=>s+Math.sign(x),0)/diffs.length;
+                    const mean=diffs.reduce((s,x)=>s+x,0)/diffs.length;
+                    volatility=Math.sqrt(diffs.reduce((s,x)=>s+(x-mean)*(x-mean),0)/diffs.length);
+                }
+                if(times.length>=2){
+                    const ints=[];
+                    for(let i=1;i<times.length;i++) if(times[i]>times[i-1]) ints.push(times[i]-times[i-1]);
+                    if(ints.length) meanInterval=ints.reduce((s,x)=>s+x,0)/ints.length;
+                }
+                return {direction,volatility,meanInterval,n:rows.length};
+            },
+
+            analyze(symbol=null) {
+                const arr=this.safeDigits();
+                const n=arr.length;
+                const cfg=window.DIGIT_FEATURE_CONFIG;
+
+                const e20=this.entropyOf(arr.slice(-20));
+                const e50=this.entropyOf(arr.slice(-50));
+                const e100=this.entropyOf(arr.slice(-100));
+                const entropyTrend=e20-e100;
+                const mi=this.mutualInformationLag1(arr.slice(-Math.min(500,n)));
+                const runLength=this.runLength(arr);
+                const market=this.marketContext();
+
+                if(n<cfg.minHistory){
+                    const snap={
+                        ready:false,historyN:n,symbol,
+                        entropy20:e20,entropy50:e50,entropy100:e100,
+                        entropyTrend,mutualInformation:mi,
+                        runLength,market,rows:[],topDigit:null,signalStrength:0
+                    };
+                    this.lastSnapshot=snap;
+                    this.render(snap);
+                    return snap;
+                }
+
+                const rows=[];
+                for(let d=0;d<10;d++){
+                    const f5=this.freq(arr,d,5);
+                    const f20=this.freq(arr,d,20);
+                    const f50=this.freq(arr,d,50);
+                    const f100=this.freq(arr,d,100);
+                    const f200=this.freq(arr,d,200);
+
+                    const momentum=f20-f100;
+                    const acceleration=(f5-f20)-(f20-f50);
+
+                    const tr=this.transition(arr,d);
+                    const n2=this.conditional(arr,2,d);
+                    const n3=this.conditional(arr,3,d);
+                    const n4=this.conditional(arr,4,d);
+
+                    const gap=this.gap(arr,d);
+                    const avgGap=Math.max(0.5,this.averageGap(arr,d));
+                    const gapRatio=gap/avgGap;
+
+                    // Reliability shrinks sparse n-grams toward 10%.
+                    const r2=Math.min(1,n2.support/12);
+                    const r3=Math.min(1,n3.support/8);
+                    const r4=Math.min(1,n4.support/5);
+                    const p2=r2*n2.p+(1-r2)*0.10;
+                    const p3=r3*n3.p+(1-r3)*0.10;
+                    const p4=r4*n4.p+(1-r4)*0.10;
+
+                    // Feature score is a ranking score, not a probability.
+                    const raw =
+                        0.18*tr.p +
+                        0.18*p2 +
+                        0.12*p3 +
+                        0.07*p4 +
+                        0.15*f20 +
+                        0.10*f50 +
+                        0.08*f100 +
+                        0.05*f200 +
+                        0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
+                        0.03*Math.max(0,Math.min(0.30,0.10+acceleration));
+
+                    rows.push({
+                        digit:d,score:raw,
+                        f5,f20,f50,f100,f200,momentum,acceleration,
+                        transitionP:tr.p,transitionSupport:tr.support,
+                        ngram2P:p2,ngram2Support:n2.support,
+                        ngram3P:p3,ngram3Support:n3.support,
+                        ngram4P:p4,ngram4Support:n4.support,
+                        gap,avgGap,gapRatio,
+                        entropy20:e20,entropy50:e50,entropy100:e100,
+                        entropyTrend,mutualInformation:mi,runLength,
+                        priceDirection:market.direction,
+                        priceVolatility:market.volatility,
+                        meanTickInterval:market.meanInterval
+                    });
+                }
+
+                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
+                const scores=rows.map(r=>r.score);
+                const total=scores.reduce((s,x)=>s+x,0)||1;
+                rows.forEach(r=>r.scoreShare=r.score/total);
+
+                const top=rows[0], second=rows[1];
+                const margin=Math.max(0,(top?.scoreShare||0)-(second?.scoreShare||0));
+                const entropySignal=Math.max(0,1-e20);
+                const miSignal=Math.min(1,mi/0.10);
+                const marginSignal=Math.min(1,margin/0.025);
+                const contextSupport=Math.min(
+                    1,
+                    ((top?.transitionSupport||0)+(top?.ngram2Support||0)+(top?.ngram3Support||0))/60
+                );
+                const signalStrength=
+                    0.30*entropySignal+
+                    0.25*miSignal+
+                    0.30*marginSignal+
+                    0.15*contextSupport;
+
+                const snap={
+                    ready:true,historyN:n,symbol,
+                    entropy20:e20,entropy50:e50,entropy100:e100,
+                    entropyTrend,mutualInformation:mi,runLength,market,
+                    topDigit:top?.digit ?? null,
+                    topScore:top?.score ?? null,
+                    topShare:top?.scoreShare ?? null,
+                    secondShare:second?.scoreShare ?? null,
+                    margin,signalStrength,rows
+                };
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            rowForDigit(digit) {
+                const s=this.lastSnapshot || this.analyze();
+                return s?.rows?.find(r=>Number(r.digit)===Number(digit)) || null;
+            },
+
+            ensurePanel() {
+                if(document.getElementById('digit-feature-panel')) return;
+                const ref=document.getElementById('digit-analysis-panel');
+                if(!ref || !ref.parentElement) return;
+
+                const panel=document.createElement('div');
+                panel.id='digit-feature-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-emerald-500/30 text-xs';
+                panel.innerHTML=`
+                  <div class="font-bold text-emerald-300 mb-2">🧬 DIGIT FEATURE ENGINE · AI AUTO</div>
+                  <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <span class="text-gray-400">History:</span><span id="dfe-history" class="font-bold text-white">warming</span>
+                    <span class="text-gray-400">Top feature digit:</span><span id="dfe-top" class="font-bold text-emerald-300">-</span>
+                    <span class="text-gray-400">Feature signal:</span><span id="dfe-signal" class="font-bold text-cyan-300">-</span>
+                    <span class="text-gray-400">Entropy 20/50/100:</span><span id="dfe-entropy" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Entropy trend:</span><span id="dfe-entropy-trend" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Lag-1 MI:</span><span id="dfe-mi" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Run length:</span><span id="dfe-run" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Tick interval:</span><span id="dfe-interval" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Price direction:</span><span id="dfe-direction" class="font-bold text-white">-</span>
+                    <span class="text-gray-400">Short volatility:</span><span id="dfe-volatility" class="font-bold text-white">-</span>
+                  </div>
+                  <div id="dfe-top3" class="mt-2 text-[11px] text-gray-300">Top features warming…</div>
+                  <div class="mt-2 text-[10px] text-gray-500">Ranking features only · no claim of predictive edge · INSTANT unchanged.</div>
+                `;
+                ref.parentElement.appendChild(panel);
+            },
+
+            render(s=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                s=s||this.lastSnapshot;
+                if(!s) return;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                set('dfe-history',`${s.historyN||0}${s.ready?' ✓':' · warming'}`);
+                set('dfe-top',s.ready?String(s.topDigit):'-');
+                set('dfe-signal',s.ready?`${(Number(s.signalStrength||0)*100).toFixed(1)}%`:'-');
+                set('dfe-entropy',`${Number(s.entropy20||0).toFixed(3)} / ${Number(s.entropy50||0).toFixed(3)} / ${Number(s.entropy100||0).toFixed(3)}`);
+                set('dfe-entropy-trend',`${Number(s.entropyTrend||0)>=0?'+':''}${Number(s.entropyTrend||0).toFixed(4)}`);
+                set('dfe-mi',`${Number(s.mutualInformation||0).toFixed(4)} bits`);
+                set('dfe-run',String(s.runLength||0));
+                set('dfe-interval',Number.isFinite(s.market?.meanInterval)?`${Number(s.market.meanInterval).toFixed(2)} s`:'-');
+                set('dfe-direction',Number.isFinite(s.market?.direction)?Number(s.market.direction).toFixed(3):'-');
+                set('dfe-volatility',Number.isFinite(s.market?.volatility)?Number(s.market.volatility).toFixed(5):'-');
+
+                const top3=document.getElementById('dfe-top3');
+                if(top3){
+                    if(!s.ready){
+                        top3.textContent='Top features warming…';
+                    } else {
+                        top3.innerHTML=s.rows.slice(0,3).map((r,i)=>
+                          `#${i+1} <b>${r.digit}</b> · F20 ${(r.f20*100).toFixed(1)}% · T ${(r.transitionP*100).toFixed(1)}% · `+
+                          `2g ${(r.ngram2P*100).toFixed(1)}% · 3g ${(r.ngram3P*100).toFixed(1)}% · 4g ${(r.ngram4P*100).toFixed(1)}% · gap ${r.gap}`
+                        ).join('<br>');
+                    }
+                }
+            }
+        };
+
         // ============================================================================
         // DIGITMATCHSTAR V52 — CRYPTANALYSIS-STYLE RANDOMNESS AUDITOR
         // AI AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
@@ -1809,6 +2558,101 @@ survivalTop = survivalTop3[0] || null;
                     }
                 }
 
+                // V56 Digit DNA overlay: compare the CURRENT precursor state with
+                // what historically happened immediately BEFORE each digit appeared.
+                const dnaSnap = window.digitDNAEngine?.analyze?.(
+                    document.getElementById('symbol')?.value || window.currentSymbol || null
+                ) || null;
+
+                if (dnaSnap?.ready && Number.isInteger(Number(dnaSnap.topDigit))) {
+                    const dnaNorm=Math.max(0,Math.min(1,Number(dnaSnap.topSimilarity||0)));
+                    if (!best) {
+                        const ds=this.digitStats[dnaSnap.topDigit] || {};
+                        best={
+                            digit:Number(dnaSnap.topDigit),
+                            score:dnaNorm,
+                            P10:0.10,
+                            P5:0.10,
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-DNA',
+                            digitDNA:dnaSnap
+                        };
+                    } else if (Number(best.digit) === Number(dnaSnap.topDigit)) {
+                        const w=Number(window.DIGIT_DNA_CONFIG?.aiBlend||0.20);
+                        best.score=Math.max(0,Math.min(1,(1-w)*Number(best.score||0)+w*dnaNorm));
+                        best.source=`${best.source||'AI'}+DNA`;
+                        best.digitDNA=dnaSnap;
+                    } else if (Number(dnaSnap.topSimilarity||0) >= Number(window.DIGIT_DNA_CONFIG?.overrideSimilarity||0.82)) {
+                        const ds=this.digitStats[dnaSnap.topDigit] || {};
+                        best={
+                            digit:Number(dnaSnap.topDigit),
+                            score:dnaNorm,
+                            P10:0.10,
+                            P5:0.10,
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-DNA',
+                            digitDNA:dnaSnap
+                        };
+                    } else {
+                        best.digitDNA=dnaSnap;
+                    }
+                }
+
+                // V55 digit-feature overlay: rank with higher-order and multi-window
+                // features before the Randomness Auditor makes its final assist.
+                const featureSnap = window.digitFeatureEngine?.analyze?.(
+                    document.getElementById('symbol')?.value || window.currentSymbol || null
+                ) || null;
+
+                if (featureSnap?.ready && Number.isInteger(Number(featureSnap.topDigit))) {
+                    const fr = featureSnap.rows?.find?.(
+                        x => Number(x.digit) === Number(featureSnap.topDigit)
+                    ) || null;
+                    const featureNorm = Math.max(
+                        0,
+                        Math.min(1, 0.50 + Number(featureSnap.signalStrength||0)*0.50)
+                    );
+
+                    if (!best) {
+                        const ds=this.digitStats[featureSnap.topDigit] || {};
+                        best={
+                            digit:Number(featureSnap.topDigit),
+                            score:featureNorm,
+                            P10:Number(fr?.f20||0.10),
+                            P5:Number(fr?.f5||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-FEATURES',
+                            digitFeatures:featureSnap
+                        };
+                    } else if (Number(best.digit) === Number(featureSnap.topDigit)) {
+                        const w=Number(window.DIGIT_FEATURE_CONFIG?.aiBlend||0.25);
+                        best.score=Math.max(0,Math.min(1,(1-w)*Number(best.score||0)+w*featureNorm));
+                        best.source=`${best.source||'AI'}+FEATURES`;
+                        best.digitFeatures=featureSnap;
+                    } else if (Number(featureSnap.signalStrength||0) >= Number(window.DIGIT_FEATURE_CONFIG?.overrideSignal||0.70)) {
+                        const ds=this.digitStats[featureSnap.topDigit] || {};
+                        best={
+                            digit:Number(featureSnap.topDigit),
+                            score:featureNorm,
+                            P10:Number(fr?.f20||0.10),
+                            P5:Number(fr?.f5||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-FEATURES',
+                            digitFeatures:featureSnap
+                        };
+                    } else {
+                        best.digitFeatures=featureSnap;
+                    }
+                }
+
                 // Cryptanalysis-style auditor overlay for AI AUTO.
                 // The auditor may supply a candidate even when legacy ranking is weak.
                 if (auditor?.ready && Number.isInteger(Number(auditor.topDigit))) {
@@ -1880,8 +2724,14 @@ survivalTop = survivalTop3[0] || null;
                     const auditorLabel = best.auditor?.ready
                         ? ` | Auditor:${(Number(best.auditor.signalStrength||0)*100).toFixed(0)}%`
                         : '';
+                    const featureLabel = best.digitFeatures?.ready
+                        ? ` | Features:${(Number(best.digitFeatures.signalStrength||0)*100).toFixed(0)}%`
+                        : '';
+                    const dnaLabel = best.digitDNA?.ready
+                        ? ` | DNA:${(Number(best.digitDNA.topSimilarity||0)*100).toFixed(0)}%`
+                        : '';
                     document.getElementById('ai-digit-score').textContent =
-                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${auditorLabel}`;
+                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}`;
 
                     // Color code based on score
                     const scoreElem = document.getElementById('ai-digit-score');
@@ -6706,6 +7556,19 @@ function rotateHybridDigit(reason = '') {
 
                     // Auditor is optional analytics. It must never break market data.
                     try {
+                        if (window.digitFeatureEngine?.analyze) {
+                            try {
+                                window.digitFeatureEngine.analyze(
+                                    historySymbol ||
+                                    document.getElementById('symbol')?.value ||
+                                    window.currentSymbol ||
+                                    null
+                                );
+                            } catch (e) {
+                                console.warn('Digit Feature Engine warm-up refresh skipped:', e);
+                            }
+                        }
+
                         if (window.randomnessAuditor?.analyze) {
                             window.randomnessAuditor.analyze(
                                 historySymbol ||
@@ -6806,6 +7669,26 @@ function rotateHybridDigit(reason = '') {
                 window.cyclePerformance.render();
 
                 // V53: always show the Randomness Auditor panel immediately.
+                if (window.digitDNAEngine) {
+                    window.digitDNAEngine.ensurePanel();
+                    window.digitDNAEngine.render(
+                        window.digitDNAEngine.lastSnapshot ||
+                        window.digitDNAEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        )
+                    );
+                }
+
+                if (window.digitFeatureEngine) {
+                    window.digitFeatureEngine.ensurePanel();
+                    window.digitFeatureEngine.render(
+                        window.digitFeatureEngine.lastSnapshot ||
+                        window.digitFeatureEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        )
+                    );
+                }
+
                 if (window.randomnessAuditor) {
                     window.randomnessAuditor.ensurePanel();
                     if (!window.randomnessAuditor.lastSnapshot) {
@@ -6850,6 +7733,28 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 // V53: auditor UI is independent of the collapsible digit statistics panel.
+                if (window.digitDNAEngine) {
+                    try {
+                        const ds=window.digitDNAEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        );
+                        window.digitDNAEngine.render(ds);
+                    } catch (e) {
+                        console.warn('Digit DNA Engine refresh skipped:', e);
+                    }
+                }
+
+                if (window.digitFeatureEngine) {
+                    try {
+                        const fs=window.digitFeatureEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        );
+                        window.digitFeatureEngine.render(fs);
+                    } catch (e) {
+                        console.warn('Digit Feature Engine refresh skipped:', e);
+                    }
+                }
+
                 if (window.randomnessAuditor) {
                     try {
                         window.randomnessAuditor.ensurePanel();
@@ -7229,6 +8134,14 @@ function rotateHybridDigit(reason = '') {
             }
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
+
+            // V56 forward-only DNA validation:
+            // score prior DNA forecast against this tick, then arm the next forecast.
+            try {
+                window.digitDNAEngine?.onNewTick?.(digit, modelSymbol);
+            } catch (e) {
+                console.warn('Digit DNA tick update skipped:', e);
+            }
 
             // Post-stop depth research uses only future public ticks and never
             // enters the proposal/buy path.
@@ -8344,6 +9257,8 @@ window.isBotRunning = true;
             log('🔐 Trading credential loaded', 'SYSTEM');
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
+            log('🧬 Digit DNA Engine: learns the precursor fingerprint BEFORE each digit 0–9 and forward-tests the closest current DNA', 'ENGINE');
+            log('🧬 Digit Feature Engine: AI AUTO ranking · frequencies + transitions + 2/3/4-grams + entropy trend + market context', 'ENGINE');
             log('🔐 Randomness Auditor: AI AUTO only · entropy + mutual information + transition + 2-gram analysis', 'ENGINE');
             log('⚡ INSTANT mode remains unchanged by the Randomness Auditor', 'SYSTEM');
             
@@ -10536,9 +11451,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V54-PUBLIC-MARKET-HANDLER-FIX"
+data-version="DIGITMATCHSTAR-V56-DIGIT-DNA-ENGINE"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
 </body>
 </html>
