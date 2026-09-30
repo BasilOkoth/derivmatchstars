@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.2 VISIBLE CONTROLS: direct minimize buttons + always-visible full export; trading/recovery logic unchanged -->
+    <!-- V57.3 DNA T+1 PERFORMANCE: forward-only DNA evaluation + persistent performance breakdowns; trading/recovery logic unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1028,13 +1028,16 @@
         };
 
         window.digitDNAEngine = {
-            version: 'DNA-1',
+            version: 'DNA-1-T1-PERFORMANCE',
             lastSnapshot: null,
             forward: {
                 pending: null,
                 n: 0,
                 hits: 0,
-                byDigit: Array.from({length:10},()=>({n:0,hits:0}))
+                byDigit: Array.from({length:10},()=>({n:0,hits:0})),
+                records: [],
+                loadedSymbol: null,
+                maxRecords: 10000
             },
 
             digits() {
@@ -1258,7 +1261,136 @@
                 };
             },
 
+            forwardStorageKey(symbol) {
+                return `matchstar_dna_t1_v1_${symbol || 'UNKNOWN'}`;
+            },
+
+            ensureForwardLoaded(symbol=null) {
+                const sym = symbol || document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
+                if (this.forward.loadedSymbol === sym) return;
+
+                this.forward.loadedSymbol = sym;
+                this.forward.pending = null;
+
+                try {
+                    const raw = localStorage.getItem(this.forwardStorageKey(sym));
+                    const saved = raw ? JSON.parse(raw) : null;
+                    if (saved && Array.isArray(saved.records)) {
+                        this.forward.records = saved.records.slice(-this.forward.maxRecords);
+                        this.rebuildForwardStats();
+                    } else {
+                        this.forward.records = [];
+                        this.forward.n = 0;
+                        this.forward.hits = 0;
+                        this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                    }
+                } catch (_) {
+                    this.forward.records = [];
+                    this.forward.n = 0;
+                    this.forward.hits = 0;
+                    this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                }
+            },
+
+            saveForward(symbol=null) {
+                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
+                try {
+                    localStorage.setItem(
+                        this.forwardStorageKey(sym),
+                        JSON.stringify({
+                            version:'DNA-T1-1',
+                            symbol:sym,
+                            updatedAt:Date.now(),
+                            records:this.forward.records.slice(-this.forward.maxRecords)
+                        })
+                    );
+                } catch (_) {}
+            },
+
+            rebuildForwardStats() {
+                this.forward.n = 0;
+                this.forward.hits = 0;
+                this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                for (const r of this.forward.records || []) {
+                    const d = Number(r.predictedDigit);
+                    if (!Number.isInteger(d) || d < 0 || d > 9) continue;
+                    this.forward.n++;
+                    if (r.hit) this.forward.hits++;
+                    this.forward.byDigit[d].n++;
+                    if (r.hit) this.forward.byDigit[d].hits++;
+                }
+            },
+
+            wilson95(hits, n) {
+                hits = Number(hits || 0);
+                n = Number(n || 0);
+                if (!n) return {low:null, high:null};
+                const z = 1.959963984540054;
+                const p = hits / n;
+                const denom = 1 + (z*z)/n;
+                const center = (p + (z*z)/(2*n)) / denom;
+                const half = z * Math.sqrt((p*(1-p)/n) + (z*z)/(4*n*n)) / denom;
+                return {
+                    low: Math.max(0, center-half),
+                    high: Math.min(1, center+half)
+                };
+            },
+
+            summarizeRecords(records) {
+                const rows = Array.isArray(records) ? records : [];
+                const n = rows.length;
+                const hits = rows.reduce((s,r)=>s+(r.hit?1:0),0);
+                const rate = n ? hits/n : null;
+                const ci = this.wilson95(hits,n);
+                return {n,hits,rate,low95:ci.low,high95:ci.high};
+            },
+
+            t1Performance() {
+                const records = this.forward.records || [];
+                const bucket = (label, filter) => ({
+                    label,
+                    ...this.summarizeRecords(records.filter(filter))
+                });
+
+                const byDigit = Array.from({length:10},(_,digit)=>({
+                    digit,
+                    ...this.summarizeRecords(records.filter(r=>Number(r.predictedDigit)===digit))
+                }));
+
+                const similarityBuckets = [
+                    bucket('<50%', r=>Number(r.similarity)<0.50),
+                    bucket('50–55%', r=>Number(r.similarity)>=0.50 && Number(r.similarity)<0.55),
+                    bucket('55–60%', r=>Number(r.similarity)>=0.55 && Number(r.similarity)<0.60),
+                    bucket('60–65%', r=>Number(r.similarity)>=0.60 && Number(r.similarity)<0.65),
+                    bucket('65–70%', r=>Number(r.similarity)>=0.65 && Number(r.similarity)<0.70),
+                    bucket('≥70%', r=>Number(r.similarity)>=0.70)
+                ];
+
+                const marginBuckets = [
+                    bucket('<2 pp', r=>Number(r.margin)<0.02),
+                    bucket('2–5 pp', r=>Number(r.margin)>=0.02 && Number(r.margin)<0.05),
+                    bucket('5–8 pp', r=>Number(r.margin)>=0.05 && Number(r.margin)<0.08),
+                    bucket('≥8 pp', r=>Number(r.margin)>=0.08)
+                ];
+
+                const consensus = [
+                    bucket('DNA + Feature agree', r=>r.dnaFeatureAgree===true),
+                    bucket('DNA + Auditor agree', r=>r.dnaAuditorAgree===true),
+                    bucket('All 3 agree', r=>r.allThreeAgree===true)
+                ];
+
+                return {
+                    overall:this.summarizeRecords(records),
+                    randomBaseline:0.10,
+                    byDigit,
+                    similarityBuckets,
+                    marginBuckets,
+                    consensus
+                };
+            },
+
             analyze(symbol=null) {
+                this.ensureForwardLoaded(symbol);
                 const arr=this.digits();
                 const profiles=this.buildProfiles(arr);
                 const rows=[];
@@ -1291,40 +1423,83 @@
                     margin,
                     forwardN:this.forward.n,
                     forwardHits:this.forward.hits,
-                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null
+                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null,
+                    t1Performance:this.t1Performance()
                 };
                 this.lastSnapshot=snap;
                 this.render(snap);
                 return snap;
             },
 
-            scorePendingOutcome(actualDigit) {
+            scorePendingOutcome(actualDigit, symbol=null) {
                 const p=this.forward.pending;
                 if(!p) return;
-                this.forward.n++;
-                const hit=Number(p.digit)===Number(actualDigit);
-                if(hit) this.forward.hits++;
-                const row=this.forward.byDigit[p.digit];
-                row.n++;
-                if(hit) row.hits++;
+
+                const actual=Number(actualDigit);
+                const predicted=Number(p.digit);
+                const hit=predicted===actual;
+
+                const record={
+                    version:'DNA-T1-1',
+                    symbol:p.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
+                    forecastAt:Number(p.at || Date.now()),
+                    resolvedAt:Date.now(),
+                    predictedDigit:predicted,
+                    actualDigit:actual,
+                    hit,
+                    similarity:Number(p.similarity||0),
+                    secondSimilarity:Number(p.secondSimilarity||0),
+                    margin:Number(p.margin||0),
+                    featureTop:Number.isInteger(Number(p.featureTop)) ? Number(p.featureTop) : null,
+                    auditorTop:Number.isInteger(Number(p.auditorTop)) ? Number(p.auditorTop) : null,
+                    dnaFeatureAgree:!!p.dnaFeatureAgree,
+                    dnaAuditorAgree:!!p.dnaAuditorAgree,
+                    allThreeAgree:!!p.allThreeAgree
+                };
+
+                this.forward.records.push(record);
+                if(this.forward.records.length>this.forward.maxRecords){
+                    this.forward.records.splice(0,this.forward.records.length-this.forward.maxRecords);
+                }
+
+                this.rebuildForwardStats();
+                this.saveForward(record.symbol);
                 this.forward.pending=null;
             },
 
             armNextForecast(symbol=null) {
                 const s=this.analyze(symbol);
                 if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
+
+                const featureTop=Number(window.digitFeatureEngine?.lastSnapshot?.topDigit);
+                const auditorTop=Number(window.randomnessAuditor?.lastSnapshot?.topDigit);
+                const dnaTop=Number(s.topDigit);
+
                 this.forward.pending={
-                    digit:Number(s.topDigit),
+                    digit:dnaTop,
                     similarity:Number(s.topSimilarity||0),
+                    secondSimilarity:Number(s.secondSimilarity||0),
+                    margin:Number(s.margin||0),
+                    featureTop:Number.isInteger(featureTop)?featureTop:null,
+                    auditorTop:Number.isInteger(auditorTop)?auditorTop:null,
+                    dnaFeatureAgree:Number.isInteger(featureTop) && dnaTop===featureTop,
+                    dnaAuditorAgree:Number.isInteger(auditorTop) && dnaTop===auditorTop,
+                    allThreeAgree:
+                        Number.isInteger(featureTop) &&
+                        Number.isInteger(auditorTop) &&
+                        dnaTop===featureTop &&
+                        dnaTop===auditorTop,
+                    symbol:s.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
                     at:Date.now()
                 };
             },
 
             onNewTick(actualDigit,symbol=null) {
-                // Score the forecast that existed BEFORE this tick.
-                this.scorePendingOutcome(actualDigit);
-                // Then learn through lastDigits (already updated by main engine) and
-                // freeze a DNA forecast for the NEXT unseen tick.
+                // Forward-only T+1 test:
+                // 1) score the frozen DNA forecast created BEFORE this tick;
+                // 2) after the tick has arrived, create a new forecast for the NEXT unseen tick.
+                this.ensureForwardLoaded(symbol);
+                this.scorePendingOutcome(actualDigit,symbol);
                 this.armNextForecast(symbol);
             },
 
@@ -1348,9 +1523,18 @@
                       <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
                       <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
                       <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
-                      <span class="text-gray-400">Forward top-pick:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">T+1 overall:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">95% interval:</span><span id="dna-t1-ci" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">vs 10% baseline:</span><span id="dna-t1-lift" class="font-bold text-white">-</span>
                     </div>
                     <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
+                    <div class="mt-3 border-t border-gray-700 pt-2">
+                      <div class="font-bold text-cyan-300 mb-1">T+1 PERFORMANCE · FORWARD ONLY</div>
+                      <div id="dna-t1-bydigit" class="text-[10px] text-gray-300">Collecting per-digit results…</div>
+                      <div id="dna-t1-sim" class="mt-2 text-[10px] text-gray-300">Collecting similarity buckets…</div>
+                      <div id="dna-t1-margin" class="mt-2 text-[10px] text-gray-300">Collecting separation buckets…</div>
+                      <div id="dna-t1-consensus" class="mt-2 text-[10px] text-gray-300">Collecting consensus states…</div>
+                    </div>
                     <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
                     <div class="mt-2 text-[10px] text-gray-500">
                       DNA = historical precursor fingerprint, not a guaranteed probability.
@@ -1374,6 +1558,47 @@
                 set('dna-forward',s.forwardN
                     ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
                     : 'collecting');
+
+                const perf=s.t1Performance || this.t1Performance();
+                const overall=perf?.overall || {};
+                set('dna-t1-ci',overall.n
+                    ? `${(Number(overall.low95)*100).toFixed(2)}–${(Number(overall.high95)*100).toFixed(2)}%`
+                    : '-');
+                set('dna-t1-lift',overall.n
+                    ? `${((Number(overall.rate)-0.10)*100)>=0?'+':''}${((Number(overall.rate)-0.10)*100).toFixed(2)} pp`
+                    : '-');
+
+                const fmt=(x)=>{
+                    if(!x?.n) return `${x?.label ?? ''}: -`;
+                    return `${x?.label ?? ''}: ${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`;
+                };
+
+                const byDigitEl=document.getElementById('dna-t1-bydigit');
+                if(byDigitEl){
+                    byDigitEl.innerHTML='<b>By predicted digit:</b> '+
+                        (perf?.byDigit||[]).map(x=>
+                            `<span class="${x.n>=30 && x.rate>0.10?'text-cyan-300':'text-gray-300'}">`+
+                            `${x.digit}: ${x.n?`${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`:'-'}</span>`
+                        ).join(' · ');
+                }
+
+                const simEl=document.getElementById('dna-t1-sim');
+                if(simEl){
+                    simEl.innerHTML='<b>Similarity:</b> '+
+                        (perf?.similarityBuckets||[]).map(fmt).join(' · ');
+                }
+
+                const marginEl=document.getElementById('dna-t1-margin');
+                if(marginEl){
+                    marginEl.innerHTML='<b>DNA separation:</b> '+
+                        (perf?.marginBuckets||[]).map(fmt).join(' · ');
+                }
+
+                const consEl=document.getElementById('dna-t1-consensus');
+                if(consEl){
+                    consEl.innerHTML='<b>Consensus:</b> '+
+                        (perf?.consensus||[]).map(fmt).join(' · ');
+                }
 
                 const top3=document.getElementById('dna-top3');
                 if(top3){
@@ -5549,7 +5774,13 @@ window.cyclePerformance = {
                     version: window.digitDNAEngine?.version || null,
                     config: safeClone(window.DIGIT_DNA_CONFIG),
                     snapshot: safeClone(window.digitDNAEngine?.lastSnapshot),
-                    forward: safeClone(window.digitDNAEngine?.forward)
+                    forward: safeClone(window.digitDNAEngine?.forward),
+                    t1Performance: safeClone(window.digitDNAEngine?.t1Performance?.() || null),
+                    interpretation: {
+                        targetHorizon: 'T+1 = first unseen tick after the DNA forecast is frozen',
+                        randomTenDigitBaseline: 0.10,
+                        note: 'DNA similarity is descriptive; only forward T+1 outcomes measure next-tick performance.'
+                    }
                 },
 
                 digitFeatureResearch: {
@@ -11558,7 +11789,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.2-VISIBLE-CONTROLS"
+data-version="DIGITMATCHSTAR-V57.3-DNA-T1-PERFORMANCE"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-auditor-panel="always-visible"></div>
