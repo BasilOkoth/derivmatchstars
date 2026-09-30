@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V53 CRYPTO-AUDITOR FIX: visible auditor UI + robust public-market message handling; INSTANT unchanged -->
+    <!-- V54 PUBLIC-MARKET FIX: branch-isolated market handlers + safe auditor refresh; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -6621,10 +6621,9 @@ function rotateHybridDigit(reason = '') {
                 let raw = event?.data;
                 let data = null;
 
-                // V53: decode the WebSocket frame first. A failure here is a true
-                // parse/decode problem. Handler failures are reported separately.
+                // Step 1: decode the frame only.
                 try {
-                    if (raw instanceof Blob) {
+                    if (typeof Blob !== 'undefined' && raw instanceof Blob) {
                         raw = await raw.text();
                     } else if (raw instanceof ArrayBuffer) {
                         raw = new TextDecoder('utf-8').decode(raw);
@@ -6639,88 +6638,130 @@ function rotateHybridDigit(reason = '') {
                     } else if (raw && typeof raw === 'object') {
                         data = raw;
                     } else {
-                        console.warn('Ignored unsupported public market frame:', typeof raw);
                         return;
                     }
                 } catch (parseError) {
-                    console.warn('Public market frame decode/JSON error:', parseError, raw);
-                    // Do not flood the live log or mislabel downstream errors as JSON failures.
+                    console.warn('Public market frame ignored: unable to decode JSON frame', parseError);
                     return;
                 }
 
-                try {
-                    if (data.error || (Array.isArray(data.errors) && data.errors.length)) {
-                        const message =
-                            data?.error?.message ||
-                            data?.errors?.[0]?.message ||
-                            'Public market API error';
-                        log(`❌ Public market error: ${message}`, 'ERROR');
-                        return;
-                    }
-
-                    if (data.msg_type === 'active_symbols' && Array.isArray(data.active_symbols)) {
-                        handleActiveSymbolsMetadata(data);
-                        return;
-                    }
-
-                    if (data.msg_type === 'history' && data.history?.prices) {
-                        const historySymbol =
-                            data?.passthrough?.symbol ||
-                            data?.echo_req?.passthrough?.symbol ||
-                            data?.echo_req?.ticks_history ||
-                            null;
-
-                        const isScannerHistory =
-                            data?.passthrough?.matchstar_scanner ||
-                            data?.echo_req?.passthrough?.matchstar_scanner;
-
-                        if (isScannerHistory && historySymbol) {
-                            const precision = window.tickFormat?.pipSizeBySymbol?.[historySymbol]?.pipSize || null;
-                            window.digitMatchScanner?.processHistory(historySymbol, data.history.prices, precision);
-                            window.digitMatchScanner?.render();
-                            return;
-                        }
-
-                        window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
-                        log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
-
-                        // Refresh auditor after warm-up history arrives.
-                        if (window.randomnessAuditor) {
-                            window.randomnessAuditor.analyze(
-                                historySymbol || document.getElementById('symbol')?.value || null
-                            );
-                        }
-                        return;
-                    }
-
-                    if (data.msg_type === 'tick' && data.tick) {
-                        const selectedSymbol = document.getElementById('symbol')?.value;
-                        const tickSymbol = data.tick?.symbol || data.tick?.underlying_symbol;
-
-                        if (tickSymbol === selectedSymbol) {
-                            handleTick(data.tick);
-                        }
-                        return;
-                    }
-
-                    // Some Deriv history replies can omit msg_type.
-                    if (data.history?.prices) {
-                        window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
-                        log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
-                        if (window.randomnessAuditor) {
-                            window.randomnessAuditor.analyze(
-                                document.getElementById('symbol')?.value || null
-                            );
-                        }
-                    }
-                } catch (handlerError) {
-                    // V53: this is NOT a JSON parse error. Report the real subsystem error.
-                    console.error('Public market message handler error:', handlerError, data);
-                    const message = handlerError?.message
-                        ? String(handlerError.message).slice(0, 180)
-                        : 'unknown handler error';
-                    log(`❌ Public market handler error: ${message}`, 'ERROR');
+                // Step 2: handle each message family independently.
+                // A failure in one optional subsystem must not break the public feed.
+                if (data.error || (Array.isArray(data.errors) && data.errors.length)) {
+                    const message =
+                        data?.error?.message ||
+                        data?.errors?.[0]?.message ||
+                        'Public market API error';
+                    log(`❌ Public market error: ${message}`, 'ERROR');
+                    return;
                 }
+
+                if (data.msg_type === 'active_symbols' && Array.isArray(data.active_symbols)) {
+                    try {
+                        handleActiveSymbolsMetadata(data);
+                    } catch (e) {
+                        console.warn('active_symbols handler skipped:', e);
+                    }
+                    return;
+                }
+
+                if (data.msg_type === 'history' && data.history?.prices) {
+                    const historySymbol =
+                        data?.passthrough?.symbol ||
+                        data?.echo_req?.passthrough?.symbol ||
+                        data?.echo_req?.ticks_history ||
+                        null;
+
+                    const isScannerHistory = !!(
+                        data?.passthrough?.matchstar_scanner ||
+                        data?.echo_req?.passthrough?.matchstar_scanner
+                    );
+
+                    if (isScannerHistory && historySymbol) {
+                        try {
+                            const precision =
+                                window.tickFormat?.pipSizeBySymbol?.[historySymbol]?.pipSize || null;
+                            if (window.digitMatchScanner?.processHistory) {
+                                window.digitMatchScanner.processHistory(
+                                    historySymbol,
+                                    data.history.prices,
+                                    precision
+                                );
+                            }
+                            window.digitMatchScanner?.render?.();
+                        } catch (e) {
+                            console.warn(`Scanner history skipped for ${historySymbol}:`, e);
+                        }
+                        return;
+                    }
+
+                    try {
+                        if (window.digitIntelligenceEngine?.processWarmupTicks) {
+                            window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                            log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+                        }
+                    } catch (e) {
+                        console.warn('Public warm-up processing skipped:', e);
+                    }
+
+                    // Auditor is optional analytics. It must never break market data.
+                    try {
+                        if (window.randomnessAuditor?.analyze) {
+                            window.randomnessAuditor.analyze(
+                                historySymbol ||
+                                document.getElementById('symbol')?.value ||
+                                window.currentSymbol ||
+                                null
+                            );
+                        }
+                    } catch (e) {
+                        console.warn('Randomness Auditor warm-up refresh skipped:', e);
+                    }
+                    return;
+                }
+
+                if (data.msg_type === 'tick' && data.tick) {
+                    const selectedSymbol = document.getElementById('symbol')?.value;
+                    const tickSymbol =
+                        data.tick?.symbol ||
+                        data.tick?.underlying_symbol ||
+                        data?.echo_req?.ticks ||
+                        null;
+
+                    // Only selected-market ticks enter the normal bot pipeline.
+                    if (!selectedSymbol || !tickSymbol || tickSymbol === selectedSymbol) {
+                        try {
+                            handleTick(data.tick);
+                        } catch (e) {
+                            console.error('Selected tick handler error:', e, data.tick);
+                            const msg = e?.message ? String(e.message).slice(0,160) : 'unknown tick handler error';
+                            log(`❌ Tick processing error: ${msg}`, 'ERROR');
+                        }
+                    }
+                    return;
+                }
+
+                // History fallback for replies without msg_type.
+                if (data.history?.prices) {
+                    try {
+                        window.digitIntelligenceEngine?.processWarmupTicks?.(data.history.prices);
+                    } catch (e) {
+                        console.warn('Fallback history processing skipped:', e);
+                    }
+
+                    try {
+                        window.randomnessAuditor?.analyze?.(
+                            document.getElementById('symbol')?.value ||
+                            window.currentSymbol ||
+                            null
+                        );
+                    } catch (e) {
+                        console.warn('Fallback auditor refresh skipped:', e);
+                    }
+                    return;
+                }
+
+                // Ignore ping/authorize/subscription housekeeping or unknown frames.
             };
             window.marketWs.onerror = (error) => {
                 console.error('Public market WebSocket error:', error);
@@ -6810,13 +6851,17 @@ function rotateHybridDigit(reason = '') {
 
                 // V53: auditor UI is independent of the collapsible digit statistics panel.
                 if (window.randomnessAuditor) {
-                    window.randomnessAuditor.ensurePanel();
-                    window.randomnessAuditor.render(
-                        window.randomnessAuditor.lastSnapshot ||
-                        window.randomnessAuditor.analyze?.(
-                            document.getElementById('symbol')?.value || window.currentSymbol || null
-                        )
-                    );
+                    try {
+                        window.randomnessAuditor.ensurePanel();
+                        const snap =
+                            window.randomnessAuditor.lastSnapshot ||
+                            window.randomnessAuditor.analyze?.(
+                                document.getElementById('symbol')?.value || window.currentSymbol || null
+                            );
+                        window.randomnessAuditor.render(snap);
+                    } catch (e) {
+                        console.warn('Randomness Auditor UI refresh skipped:', e);
+                    }
                 }
             }, 2000);
             
@@ -10491,9 +10536,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V53-CRYPTO-AUDITOR-UI-WS-FIX"
+data-version="DIGITMATCHSTAR-V54-PUBLIC-MARKET-HANDLER-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-public-market-parser="robust-v53" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-public-market-parser="branch-isolated-v54" data-auditor-panel="always-visible"></div>
 </body>
 </html>
