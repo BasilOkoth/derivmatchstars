@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V36: V35 + explicit DEMO/REAL execution, strong WIN/LOSS colors, visible export -->
+    <!-- V37: V36 + exact recovery with configurable recovery caps -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11109,6 +11109,14 @@ if (document.readyState === 'loading') {
         <input id="t2-target-profit" type="number" value="1" min="0" step="0.01">
       </div>
       <div class="t2-field">
+        <label>Max recovery depth</label>
+        <input id="t2-max-recovery" type="number" value="5" min="0" max="20" step="1">
+      </div>
+      <div class="t2-field">
+        <label>Max basket stake ($)</label>
+        <input id="t2-max-stake" type="number" value="50" min="0.70" step="0.02">
+      </div>
+      <div class="t2-field">
         <label>Selection rule</label>
         <select id="t2-rule">
           <option value="last5" selected>LAST-5 EXCLUSION</option>
@@ -11153,9 +11161,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Choose SHADOW, DEMO, or REAL. DEMO and REAL place actual Deriv DIGITMATCH contracts on the currently
-      selected matching account. LAST-5 EXCLUSION tracks the recent 5 digits and trades 2 absent digits.
-      Green = WIN/profit, red = LOSS/negative P/L. Use ⬇ EXPORT anytime for the JSON report.
+      Basket stake is TOTAL exposure and is split equally across the two Match contracts: $10 = $5 + $5.
+      Recovery keeps the base basket while it is sufficient, then calculates only the exact larger total needed
+      for cycle losses + target profit. Recovery stops at the selected max depth or max basket stake.
+      Green = WIN/profit, red = LOSS. Use ⬇ EXPORT anytime.
     </div>
     <div id="t2-log" class="t2-log">Top-2 Match Basket ready.</div>
   </div>
@@ -11191,6 +11200,8 @@ window.top2BasketLab = {
     selectedAccountMode(){ return String(localStorage.getItem('selectedAccountMode') || 'DEMO').toLowerCase(); },
     baseStake(){ return Math.max(0.70, Number(q('t2-base-stake')?.value || 10)); },
     targetProfit(){ return Math.max(0, Number(q('t2-target-profit')?.value || 1)); },
+    maxRecoveryDepth(){ return Math.max(0, Math.floor(Number(q('t2-max-recovery')?.value || 5))); },
+    maxBasketStake(){ return Math.max(this.baseStake(), Number(q('t2-max-stake')?.value || 50)); },
     minEdge(){ return Math.max(0, Number(q('t2-edge')?.value || 0.10)) / 100; },
     maxTrades(){ return Math.max(1, Math.min(10, Number(q('t2-max')?.value || 10))); },
     rule(){ return q('t2-rule')?.value || 'last5'; },
@@ -11345,7 +11356,7 @@ window.top2BasketLab = {
         const outcomeEl=q('t2-outcome');
         if(outcomeEl){outcomeEl.className='t2-outcome neutral';outcomeEl.textContent='LAST RESULT: —';}
         this.status(`Armed in ${this.mode().toUpperCase()} mode.`);
-        this.log(`START ${this.mode().toUpperCase()} | base basket $${this.baseStake().toFixed(2)} | target cycle profit $${this.targetProfit().toFixed(2)} | edge +${(this.minEdge()*100).toFixed(2)} pp`);
+        this.log(`START ${this.mode().toUpperCase()} | base basket $${this.baseStake().toFixed(2)} total = $${(this.baseStake()/2).toFixed(2)} + $${(this.baseStake()/2).toFixed(2)} | target $${this.targetProfit().toFixed(2)} | max recovery depth ${this.maxRecoveryDepth()} | max basket $${this.maxBasketStake().toFixed(2)}`);
         if(this.isLive() && (!window.ws || window.ws.readyState!==WebSocket.OPEN)){
             if(typeof connectWebSocket==='function') connectWebSocket();
         }
@@ -11446,6 +11457,13 @@ window.top2BasketLab = {
 
         if(this.busy || this.awaitingOutcome || this.stats.baskets>=this.maxTrades()) return;
 
+        if(this.cycleLoss>0 && this.cycleIndex>=this.maxRecoveryDepth()){
+            this.stopForRecoveryLimit(
+                `Max recovery depth ${this.maxRecoveryDepth()} reached with cycle losses $${this.cycleLoss.toFixed(2)}.`
+            );
+            return;
+        }
+
         if(this.isLive() && (
             window.isBotRunning ||
             (window.digitDiffersLab?.running && window.digitDiffersLab.mode()==='live') ||
@@ -11488,7 +11506,22 @@ window.top2BasketLab = {
         this.requestPair(picks, provisional, false);
     },
 
+    stopForRecoveryLimit(reason){
+        this.running=false;
+        this.busy=false;
+        this.pendingProposalPair=null;
+        this.status(reason,false);
+        this.log(`RECOVERY STOP | ${reason}`);
+        this.render();
+    },
+
     requestPair(picks,totalStake,isRecoverySizing){
+        if(Number(totalStake) > this.maxBasketStake() + 1e-9){
+            this.stopForRecoveryLimit(
+                `Basket $${Number(totalStake).toFixed(2)} blocked by max basket stake $${this.maxBasketStake().toFixed(2)}.`
+            );
+            return;
+        }
         const legStake = Math.max(0.35, Number((totalStake/2).toFixed(2)));
         totalStake = Number((legStake*2).toFixed(2));
 
@@ -11603,9 +11636,16 @@ window.top2BasketLab = {
             const needed = (this.cycleLoss + this.targetProfit()) / worstProfitFactor;
             const safeNeeded = Math.max(this.baseStake(), Math.ceil(needed*100)/100);
 
+            if(safeNeeded > this.maxBasketStake() + 1e-9){
+                this.stopForRecoveryLimit(
+                    `Required recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
+                );
+                return true;
+            }
+
             // Requote at the exact recovery stake because Deriv payout can vary.
             if(Math.abs(safeNeeded-S) > 0.02){
-                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next basket ≈ $${safeNeeded.toFixed(2)}`);
+                this.log(`RECOVERY SIZE | losses $${this.cycleLoss.toFixed(2)} + target $${this.targetProfit().toFixed(2)} | next basket ≈ $${safeNeeded.toFixed(2)} total = $${(safeNeeded/2).toFixed(2)} + $${(safeNeeded/2).toFixed(2)}`);
                 this.pendingProposalPair=null;
                 this.requestPair(pair.picks,safeNeeded,true);
                 return true;
@@ -11623,6 +11663,12 @@ window.top2BasketLab = {
                 }
                 const needed=(this.cycleLoss+this.targetProfit())/worstProfitFactor;
                 const safeNeeded=Math.ceil((needed+0.02)*100)/100;
+                if(safeNeeded > this.maxBasketStake() + 1e-9){
+                    this.stopForRecoveryLimit(
+                        `Required verified recovery basket $${safeNeeded.toFixed(2)} exceeds max basket stake $${this.maxBasketStake().toFixed(2)}.`
+                    );
+                    return true;
+                }
                 this.pendingProposalPair=null;
                 this.requestPair(pair.picks,safeNeeded,true);
                 return true;
@@ -11735,7 +11781,7 @@ window.top2BasketLab = {
 
         this.stats.baskets++;
         this.render();
-        this.log(`LIVE BASKET #${this.stats.baskets} | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | total $${pair.totalStake.toFixed(2)}`);
+        this.log(`${this.mode().toUpperCase()} BASKET #${this.stats.baskets} | digits ${pair.picks.a.digit}+${pair.picks.b.digit} | total $${pair.totalStake.toFixed(2)} = $${(pair.totalStake/2).toFixed(2)} + $${(pair.totalStake/2).toFixed(2)}`);
         this.status(`Both contracts open · wins if next digit is ${pair.picks.a.digit} or ${pair.picks.b.digit}.`,true);
 
         if(this.stats.baskets>=this.maxTrades()){
@@ -11865,6 +11911,8 @@ window.top2BasketLab = {
             config:{
                 baseBasketStake:this.baseStake(),
                 targetCycleProfit:this.targetProfit(),
+                maxRecoveryDepth:this.maxRecoveryDepth(),
+                maxBasketStake:this.maxBasketStake(),
                 minimumBasketEdge:this.minEdge(),
                 maxBasketTrades:this.maxTrades(),
                 selectionPolicy:this.rule()==='last5'
