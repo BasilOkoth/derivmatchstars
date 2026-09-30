@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V43: V42 + dedicated Multi-Digit Match UI and hard Observe-5 lock for widths 3-7 -->
+    <!-- V45: V43 + 7-digit state-machine fix: invalid 5-tick windows re-observe immediately -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11191,10 +11191,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      This is the Multi-Digit Match experiment. Widths 3–7 use only OBSERVE 5 → freeze the absent pool → trade up
-      to 5 baskets; incompatible legacy rules are hidden. The bot trades only when the frozen pool contains enough
-      absent digits for the selected width and sizes from the live Match payout toward the configured hit-profit target
-      (default $0.90), subject to recovery-depth and max-basket caps. Live multi-leg buys remain sequential/non-atomic.
+      Multi-Digit Match state fix: after every 5 observed ticks, the engine enters TRADE only when the frozen
+      absent pool contains at least the selected basket width. An undersized window is discarded immediately and the
+      next public tick starts a fresh observation window—no cooldown and no stuck TRADE state. Once valid, proposals
+      and multi-leg buys are sent back-to-back. Live buys remain sequential/non-atomic at Deriv.
     </div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
@@ -11208,7 +11208,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V1.6-OBSERVE5-LOCK',
+    version: 'MULTIDIGIT-MATCH-V1.8-7DIGIT-STATE-FIX',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11427,13 +11427,51 @@ window.top2BasketLab = {
 
     freezeObservationBlock(){
         if(this.observationWindow.length!==5) return false;
+
         const seen=new Set(this.observationWindow);
         this.frozenAbsentPool=[];
-        for(let d=0; d<=9; d++) if(!seen.has(d)) this.frozenAbsentPool.push(d);
-        if(this.frozenAbsentPool.length<2) return false;
+        for(let d=0; d<=9; d++){
+            if(!seen.has(d)) this.frozenAbsentPool.push(d);
+        }
+
+        const width=this.basketWidth();
+
+        // CRITICAL STATE FIX:
+        // Never enter TRADE unless the frozen pool can actually supply every
+        // target required by the selected basket width.
+        if(this.frozenAbsentPool.length < width){
+            const observed=[...this.observationWindow];
+            const absentCount=this.frozenAbsentPool.length;
+
+            this.log(
+                `WINDOW SKIPPED | observed [${observed.join(', ')}] | ` +
+                `${absentCount} absent digits < required width ${width} | re-observing immediately`
+            );
+
+            // Return directly to observation. The very next public tick becomes
+            // tick 1 of a new 5-tick window. No cooldown or waiting TRADE state.
+            this.blockPhase='OBSERVE';
+            this.observationWindow=[];
+            this.frozenAbsentPool=[];
+            this.blockTradeIndex=0;
+            this.blockPnl=0;
+
+            const last5El=q('t2-last5');
+            if(last5El) last5El.value='—';
+
+            this.status(
+                `Need ${width} absent digits. Previous window had only ${absentCount}; collecting a fresh 5 ticks now.`
+            );
+            this.render();
+            return false;
+        }
+
         this.blockPhase='TRADE';
         this.blockTradeIndex=0;
-        this.log(`BLOCK ${this.blockNumber} FROZEN | observed [${this.observationWindow.join(', ')}] | absent pool [${this.frozenAbsentPool.join(', ')}]`);
+        this.log(
+            `BLOCK ${this.blockNumber} READY | observed [${this.observationWindow.join(', ')}] | ` +
+            `absent pool [${this.frozenAbsentPool.join(', ')}] | width ${width}`
+        );
         this.render();
         return true;
     },
@@ -11443,9 +11481,22 @@ window.top2BasketLab = {
         const pool=this.frozenAbsentPool;
         const width=this.basketWidth();
 
-        // Clean 7-digit experiment: trade only when the frozen absent pool
-        // contains at least the selected number of targets.
-        if(pool.length<width) return null;
+        // Defensive self-heal: an undersized pool must never leave the engine
+        // permanently stuck in TRADE.
+        if(pool.length<width){
+            this.log(
+                `STATE SELF-HEAL | TRADE had ${pool.length} targets but width ${width} is required | returning to OBSERVE`
+            );
+            this.blockPhase='OBSERVE';
+            this.observationWindow=[];
+            this.frozenAbsentPool=[];
+            this.blockTradeIndex=0;
+            this.blockPnl=0;
+            const last5El=q('t2-last5');
+            if(last5El) last5El.value='—';
+            this.render();
+            return null;
+        }
 
         const start=(width*this.blockTradeIndex)%pool.length;
         const digits=[];
@@ -11739,7 +11790,7 @@ window.top2BasketLab = {
         if(!picks){
             this.status(
                 useObserve5
-                    ? `BLOCK ${this.blockNumber}: waiting for frozen absent-pool trade setup.`
+                    ? `BLOCK ${this.blockNumber}: collecting/validating the next 5-tick window — no cooldown.`
                     : (useLast5
                         ? 'Collecting the first 5 public digits for the rolling Last-5 Exclusion rule.'
                         : 'Waiting for two model-ready digits.')
@@ -12179,6 +12230,8 @@ window.top2BasketLab = {
                 targetHitProfit:this.targetHitProfit(),
                 enforcedRuleWidthCompatibility:true,
                 effectiveRule:this.rule(),
+                invalidObservationWindowsReobserveImmediately:true,
+                tradeStateRequiresPoolAtLeastBasketWidth:true,
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
                     ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
