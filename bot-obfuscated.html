@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V51 CORE CLEAN: DigitMatchStar only — experimental Differs, Rise/Fall and Multi-Digit labs removed -->
+    <!-- V52 CRYPTO-AUDITOR: Randomness Auditor feeds AI AUTO; INSTANT execution unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -959,12 +959,288 @@
 
 
 
+
+        // ============================================================================
+        // DIGITMATCHSTAR V52 — CRYPTANALYSIS-STYLE RANDOMNESS AUDITOR
+        // AI AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
+        //
+        // This does NOT attempt to recover a secret RNG seed. It tests observable
+        // output structure: entropy, lag-1 mutual information, transition bias and
+        // 2-gram conditional bias, then blends those signals with the existing
+        // next-tick model for AI digit selection.
+        // ============================================================================
+        window.RANDOMNESS_AUDITOR_CONFIG = {
+            enabled: true,
+            minHistory: 120,
+            window: 600,
+            minNgramSupport: 5,
+            aiAssistSignal: 0.18,
+            aiAssistEdgeFloor: -0.040,   // -4.0 pp; explicitly experimental
+            weights: {
+                nextTick: 0.40,
+                ngram2: 0.25,
+                transition: 0.20,
+                recent: 0.15
+            }
+        };
+
+        window.randomnessAuditor = {
+            version: 'RA-1',
+            lastSnapshot: null,
+
+            clampP(x) {
+                x = Number(x);
+                return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.10;
+            },
+
+            entropy(probs) {
+                let h = 0;
+                for (const p0 of probs) {
+                    const p = Number(p0);
+                    if (p > 0) h -= p * Math.log2(p);
+                }
+                return h;
+            },
+
+            normalizedEntropy(probs) {
+                return this.entropy(probs) / Math.log2(10);
+            },
+
+            distribution(digits) {
+                const counts = Array(10).fill(0);
+                for (const d of digits) {
+                    if (Number.isInteger(d) && d >= 0 && d <= 9) counts[d]++;
+                }
+                const n = digits.length || 1;
+                return counts.map(c => c / n);
+            },
+
+            transitionDistribution(digits) {
+                if (digits.length < 2) return { probs:Array(10).fill(0.10), support:0 };
+                const last = digits[digits.length - 1];
+                const counts = Array(10).fill(1); // Laplace smoothing
+                let support = 0;
+                for (let i = 0; i < digits.length - 1; i++) {
+                    if (digits[i] === last) {
+                        const next = digits[i + 1];
+                        if (Number.isInteger(next)) {
+                            counts[next]++;
+                            support++;
+                        }
+                    }
+                }
+                const total = counts.reduce((a,b)=>a+b,0);
+                return { probs: counts.map(c=>c/total), support };
+            },
+
+            ngram2Distribution(digits) {
+                if (digits.length < 3) return { probs:Array(10).fill(0.10), support:0 };
+                const a = digits[digits.length - 2];
+                const b = digits[digits.length - 1];
+                const counts = Array(10).fill(1); // Laplace smoothing
+                let support = 0;
+                for (let i = 0; i < digits.length - 2; i++) {
+                    if (digits[i] === a && digits[i + 1] === b) {
+                        const next = digits[i + 2];
+                        if (Number.isInteger(next)) {
+                            counts[next]++;
+                            support++;
+                        }
+                    }
+                }
+                const total = counts.reduce((x,y)=>x+y,0);
+                return { probs: counts.map(c=>c/total), support };
+            },
+
+            lag1MutualInformation(digits) {
+                if (digits.length < 30) return 0;
+                const joint = Array.from({length:10},()=>Array(10).fill(0));
+                const px = Array(10).fill(0);
+                const py = Array(10).fill(0);
+                let n = 0;
+
+                for (let i=0;i<digits.length-1;i++) {
+                    const x=digits[i], y=digits[i+1];
+                    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+                    joint[x][y]++; px[x]++; py[y]++; n++;
+                }
+                if (!n) return 0;
+
+                let mi=0;
+                for (let x=0;x<10;x++) for (let y=0;y<10;y++) {
+                    const c=joint[x][y];
+                    if (!c) continue;
+                    const pxy=c/n, p1=px[x]/n, p2=py[y]/n;
+                    mi += pxy*Math.log2(pxy/(p1*p2));
+                }
+                return Math.max(0, mi);
+            },
+
+            analyze(symbol=null) {
+                const cfg=window.RANDOMNESS_AUDITOR_CONFIG;
+                const source=Array.isArray(window.lastDigits) ? window.lastDigits : [];
+                const digits=source
+                    .filter(d=>Number.isInteger(Number(d)) && Number(d)>=0 && Number(d)<=9)
+                    .map(Number)
+                    .slice(-cfg.window);
+
+                const n=digits.length;
+                if (n < cfg.minHistory) {
+                    const snap={
+                        ready:false, historyN:n, reason:'WARMING',
+                        topDigit:null, signalStrength:0,
+                        normalizedEntropy:null, mutualInformation:null,
+                        predictions:Array(10).fill(0.10)
+                    };
+                    this.lastSnapshot=snap;
+                    this.render(snap);
+                    return snap;
+                }
+
+                const recent=digits.slice(-100);
+                const recentP=this.distribution(recent);
+                const trans=this.transitionDistribution(digits);
+                const ng=this.ngram2Distribution(digits);
+                const globalP=this.distribution(digits);
+
+                const globalEntropy=this.normalizedEntropy(globalP);
+                const conditionalEntropy=this.normalizedEntropy(ng.probs);
+                const mi=this.lag1MutualInformation(digits);
+
+                const w=cfg.weights;
+                const rows=[];
+
+                for(let d=0;d<10;d++){
+                    let ntmP=0.10, ntmReady=false, ntmSupport=0;
+                    try{
+                        const m=window.nextTickModel?.getPrediction?.(
+                            symbol || window.nextTickModel?.getSymbol?.(),
+                            d
+                        );
+                        if(m){
+                            ntmP=this.clampP(m.probability);
+                            ntmReady=!!m.ready;
+                            ntmSupport=Number(m.effectiveSupport||0);
+                        }
+                    }catch(_){}
+
+                    // If a 2-gram is poorly supported, shrink it toward transition.
+                    const ngReliability=Math.min(1, ng.support / Math.max(cfg.minNgramSupport,1));
+                    const ngP=(ngReliability*ng.probs[d]) + ((1-ngReliability)*trans.probs[d]);
+
+                    const score=
+                        w.nextTick*ntmP +
+                        w.ngram2*ngP +
+                        w.transition*trans.probs[d] +
+                        w.recent*recentP[d];
+
+                    rows.push({
+                        digit:d, score, ntmP, ntmReady, ntmSupport,
+                        ngramP:ngP, ngramSupport:ng.support,
+                        transitionP:trans.probs[d], transitionSupport:trans.support,
+                        recentP:recentP[d]
+                    });
+                }
+
+                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
+                const total=rows.reduce((s,r)=>s+r.score,0) || 1;
+                const probabilities=Array(10).fill(0);
+                rows.forEach(r=>{ probabilities[r.digit]=r.score/total; });
+
+                const top=rows[0];
+                const second=rows[1];
+                const topP=probabilities[top.digit];
+                const secondP=probabilities[second.digit];
+                const margin=Math.max(0,topP-secondP);
+
+                // "Signal strength" is a ranking-confidence diagnostic, not a
+                // calibrated win probability.
+                const entropySignal=Math.max(0,1-conditionalEntropy);
+                const marginSignal=Math.min(1, margin/0.03);
+                const miSignal=Math.min(1, mi/0.10);
+                const supportSignal=Math.min(1, (ng.support+trans.support)/40);
+                const signalStrength=
+                    0.35*entropySignal +
+                    0.30*marginSignal +
+                    0.20*miSignal +
+                    0.15*supportSignal;
+
+                const snap={
+                    ready:true,
+                    historyN:n,
+                    symbol:symbol || null,
+                    globalEntropy,
+                    normalizedEntropy:conditionalEntropy,
+                    mutualInformation:mi,
+                    transitionSupport:trans.support,
+                    ngramSupport:ng.support,
+                    topDigit:top.digit,
+                    topScore:top.score,
+                    topShare:topP,
+                    secondShare:secondP,
+                    margin,
+                    signalStrength,
+                    rows,
+                    predictions
+                };
+
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            supportsDigit(digit) {
+                const s=this.lastSnapshot || this.analyze();
+                return !!(
+                    s?.ready &&
+                    Number(s.topDigit)===Number(digit) &&
+                    Number(s.signalStrength||0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG.aiAssistSignal||0)
+                );
+            },
+
+            ensurePanel() {
+                if (document.getElementById('randomness-auditor-panel')) return;
+                const anchor=document.getElementById('digit-analysis-panel');
+                if(!anchor || !anchor.parentElement) return;
+                const panel=document.createElement('div');
+                panel.id='randomness-auditor-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
+                panel.innerHTML=`
+                    <div class="font-bold text-fuchsia-300 mb-2">🔐 RANDOMNESS AUDITOR · AI AUTO</div>
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">History:</span><span id="ra-history" class="font-bold text-white">warming</span>
+                        <span class="text-gray-400">Conditional entropy:</span><span id="ra-entropy" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">Lag-1 mutual info:</span><span id="ra-mi" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">2-gram support:</span><span id="ra-ngram" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">Auditor digit:</span><span id="ra-digit" class="font-bold text-fuchsia-300">-</span>
+                        <span class="text-gray-400">Signal strength:</span><span id="ra-signal" class="font-bold text-cyan-300">-</span>
+                        <span class="text-gray-400">Role:</span><span class="font-bold text-green-300">AI only · INSTANT unchanged</span>
+                    </div>
+                `;
+                anchor.parentElement.appendChild(panel);
+            },
+
+            render(snap=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                const s=snap || this.lastSnapshot;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                if(!s){return;}
+                set('ra-history', `${s.historyN||0} ticks${s.ready?' ✓':' · warming'}`);
+                set('ra-entropy', s.ready ? `${Number(s.normalizedEntropy).toFixed(3)} / 1.000` : '-');
+                set('ra-mi', s.ready ? `${Number(s.mutualInformation).toFixed(4)} bits` : '-');
+                set('ra-ngram', s.ready ? String(s.ngramSupport||0) : '-');
+                set('ra-digit', s.ready ? String(s.topDigit) : '-');
+                set('ra-signal', s.ready ? `${(Number(s.signalStrength||0)*100).toFixed(1)}%` : '-');
+            }
+        };
+
         // Engine State
         window.digitIntelligenceEngine = {
             enabled: true,
             warmupDone: false,
             warmupTicks: 0,
-            targetWarmupTicks: 1000,
+            targetWarmupTicks: 200,
             tickIndex: 0,
             
             // Data structures
@@ -1392,15 +1668,13 @@ expectedAdditionalTicks: function(gaps, g) {
             analyzeAndRecommend: function() {
                 const regimeStatus = this.computeRegimeStatus();
 
-                if (!regimeStatus.ok) {
-                    // Keep UI consistent when regime is unstable
-                    this.currentRecommendation = null;
-                    document.getElementById('ai-recommended-digit').textContent = '-';
-                    document.getElementById('ai-digit-score').textContent = 'Score: 0.0% | P10: 0.0% | NO-TRADE';
-                    return;
-                }
-
+                // V52: regime is now a ranking/context signal, not a blanket AI veto.
+                // This keeps AI AUTO active in more market states.
                 let best = this.selectBestDigit();
+
+                const auditor = window.randomnessAuditor?.analyze?.(
+                    document.getElementById('symbol')?.value || window.currentSymbol || null
+                ) || null;
 
                 // -----------------------------
                 // Survival-curve overlay (always-on hybrid when data exists)
@@ -1535,6 +1809,51 @@ survivalTop = survivalTop3[0] || null;
                     }
                 }
 
+                // Cryptanalysis-style auditor overlay for AI AUTO.
+                // The auditor may supply a candidate even when legacy ranking is weak.
+                if (auditor?.ready && Number.isInteger(Number(auditor.topDigit))) {
+                    const ar = auditor.rows?.find?.(x => Number(x.digit) === Number(auditor.topDigit)) || null;
+                    const auditorNorm = Math.max(0, Math.min(1, 0.50 + Number(auditor.signalStrength||0) * 0.50));
+
+                    if (!best) {
+                        const ds=this.digitStats[auditor.topDigit] || {};
+                        best={
+                            digit:Number(auditor.topDigit),
+                            score:auditorNorm,
+                            P10:Number(ar?.recentP||0.10),
+                            P5:Number(ar?.recentP||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'CRYPTO-AUDITOR',
+                            auditor
+                        };
+                    } else {
+                        // Blend confidence if both engines agree; if they disagree,
+                        // allow the auditor to override only when its signal is material.
+                        if (Number(best.digit) === Number(auditor.topDigit)) {
+                            best.score=Math.max(0,Math.min(1,0.75*Number(best.score||0)+0.25*auditorNorm));
+                            best.source=`${best.source||'AI'}+AUDITOR`;
+                            best.auditor=auditor;
+                        } else if (Number(auditor.signalStrength||0) >= 0.35) {
+                            const ds=this.digitStats[auditor.topDigit] || {};
+                            best={
+                                digit:Number(auditor.topDigit),
+                                score:auditorNorm,
+                                P10:Number(ar?.recentP||0.10),
+                                P5:Number(ar?.recentP||0.10),
+                                gap:Number(ds.currentGap||0),
+                                persistenceScore:Number(ds.persistenceScore||0),
+                                isUnstable:!!ds.isUnstable,
+                                source:'CRYPTO-AUDITOR',
+                                auditor
+                            };
+                        } else {
+                            best.auditor=auditor;
+                        }
+                    }
+                }
+
                 if (best) {
                     this.currentRecommendation = best;
 
@@ -1558,8 +1877,11 @@ survivalTop = survivalTop3[0] || null;
                         survivalLabel = ` | Survival: warming up (${n}/${minDigits})`;
                     }
 
+                    const auditorLabel = best.auditor?.ready
+                        ? ` | Auditor:${(Number(best.auditor.signalStrength||0)*100).toFixed(0)}%`
+                        : '';
                     document.getElementById('ai-digit-score').textContent =
-                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}`;
+                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${auditorLabel}`;
 
                     // Color code based on score
                     const scoreElem = document.getElementById('ai-digit-score');
@@ -1871,46 +2193,48 @@ function canTradeDigit(d, regime, tradeCount) {
 
   if (!d) return { ok: false, reason: "DIGIT_METRICS_NOT_READY" };
 
-  // Market safety.
-  if ((regime?.entropy ?? 0) < 0.93 || (regime?.dominance ?? 1) > 0.21) {
-    return { ok: false, reason: "REGIME_UNSTABLE" };
-  }
+  const auditor = window.randomnessAuditor?.lastSnapshot || window.randomnessAuditor?.analyze?.();
+  const auditorSupports = !!(
+    auditor?.ready &&
+    Number(auditor.topDigit) === Number(d.digit) &&
+    Number(auditor.signalStrength || 0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistSignal || 0.18)
+  );
 
-  // Structural safety.
-  if ((d.support ?? 0) < (window.AI_THRESHOLDS?.minSupport ?? 22)) {
+  // V52: only severe structural/tail conditions remain hard vetoes.
+  // The former entropy/dominance gate is no longer a blanket block.
+  const minSupport = auditorSupports ? 10 : 14;
+  if ((d.support ?? 0) < minSupport) {
     return { ok: false, reason: "INSUFFICIENT_SUPPORT" };
   }
-  if (d.isUnstable) return { ok: false, reason: "DIGIT_UNSTABLE" };
-  if ((d.persistenceScore ?? 100) > 97) {
-    return { ok: false, reason: "PERSISTENCE_TOO_HIGH" };
-  }
-  if ((d.consecutiveExtendingGaps ?? 99) > 3) {
-    return { ok: false, reason: "EXTENDING_GAPS" };
+
+  if ((d.persistenceScore ?? 0) > 99.5) {
+    return { ok: false, reason: "EXTREME_PERSISTENCE" };
   }
 
-  // Tail safety.
-  if ((d.gap ?? 0) >= Math.max((d.p90 ?? 0), 1)) {
-    return { ok: false, reason: "AT_OR_BEYOND_P90" };
-  }
-  if ((d.extendRatio ?? Infinity) > 1.80) {
-    return { ok: false, reason: "EXTEND_RATIO_TOO_HIGH" };
+  if ((d.consecutiveExtendingGaps ?? 0) > 6 && !auditorSupports) {
+    return { ok: false, reason: "SEVERE_EXTENDING_GAPS" };
   }
 
-  // Survival tail risk only if available.
+  if ((d.extendRatio ?? 0) > 3.0 && !auditorSupports) {
+    return { ok: false, reason: "EXTREME_EXTEND_RATIO" };
+  }
+
   const configuredMaxS20 = Number(window.SURVIVAL_CFG?.maxS20 ?? 0.20);
-  const safetyMaxS20 = Math.min(Math.max(configuredMaxS20, 0.05), 0.25);
-  if (Number.isFinite(d.s20) && d.s20 > safetyMaxS20) {
-    return { ok: false, reason: "TAIL_RISK_S20" };
+  const hardMaxS20 = Math.max(0.30, configuredMaxS20);
+  if (Number.isFinite(d.s20) && d.s20 > hardMaxS20 && !auditorSupports) {
+    return { ok: false, reason: "SEVERE_TAIL_RISK_S20" };
   }
 
-  if (!Number.isFinite(d.etm) || d.etm > 12) {
-    return { ok: false, reason: "ETM_TOO_LATE" };
+  if (Number.isFinite(d.etm) && d.etm > 25 && !auditorSupports) {
+    return { ok: false, reason: "ETM_EXTREME" };
   }
 
-  // Pressure/P5/P10/pm2/pm3 are ranking signals, not individual vetoes.
-  return { ok: true, reason: "TRADE_APPROVED" };
+  return {
+    ok: true,
+    reason: auditorSupports ? "TRADE_APPROVED_AUDITOR" : "TRADE_APPROVED_ADAPTIVE",
+    auditorSupports
+  };
 }
-
 
 
 // ============================================================================
@@ -1927,8 +2251,8 @@ window.EV_GATE_CONFIG = {
     // Entry: +0.001 = +0.10 percentage points above live break-even.
     // Recovery: 0.000 = break-even-or-better only.
     // Recovery re-ranks all 10 digits on each attempt and may switch digits without resetting the cycle.
-    minEdge: 0.001,
-    recoveryMinEdge: 0.000,
+    minEdge: 0.000,
+    recoveryMinEdge: -1.000,
 
     // Smart entry override:
     // +0.10 pp remains the preferred entry threshold.
@@ -1936,12 +2260,12 @@ window.EV_GATE_CONFIG = {
     // entry may proceed down to -0.05 pp provided support is ready and digit tail risk
     // is not elevated (s20 > 5% vetoes the override).
     smartOverrideEnabled: true,
-    smartOverrideFloor: -0.0005,
-    smartOverridePersistence: 2,
-    smartOverrideMaxS20: 0.05,
+    smartOverrideFloor: -0.040,
+    smartOverridePersistence: 1,
+    smartOverrideMaxS20: 0.30,
 
     // Exact-next-tick empirical model readiness.
-    minEffectiveSupport: 20,
+    minEffectiveSupport: 12,
 
     // Calibration affects probabilities only after a bucket has enough genuine
     // forward observations. Until then the raw probability is used.
@@ -2391,7 +2715,6 @@ window.nextTickModel = {
             window.EV_GATE_CONFIG.enabled &&
             (
                 mode === 'ai' ||
-                mode === 'recovery' ||
                 (mode === 'instant' && window.EV_GATE_CONFIG.applyToInstant)
             );
 
@@ -2404,16 +2727,33 @@ window.nextTickModel = {
                 : Number(window.EV_GATE_CONFIG.minEdge);
 
         if (gateApplies) {
-            if (!model?.ready) {
+            const auditor = window.randomnessAuditor?.analyze?.(symbol) || window.randomnessAuditor?.lastSnapshot || null;
+            const auditorSupports = !!(
+                mode === 'ai' &&
+                auditor?.ready &&
+                Number(auditor.topDigit) === Number(digit) &&
+                Number(auditor.signalStrength || 0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistSignal || 0.18)
+            );
+            const auditorFloor = Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistEdgeFloor ?? -0.040);
+
+            if (!model?.ready && !auditorSupports) {
                 approved = false;
                 reason = 'NEXT_TICK_MODEL_NOT_READY';
-            } else if (edge < minEdgeRequired) {
-                approved = false;
-                reason = 'EDGE_BELOW_THRESHOLD';
-            } else {
+            } else if (edge >= minEdgeRequired) {
                 approved = true;
                 reason = 'POSITIVE_LIVE_EDGE';
+            } else if (auditorSupports && Number.isFinite(edge) && edge >= auditorFloor) {
+                approved = true;
+                reason = 'AUDITOR_ASSISTED_ENTRY';
+            } else {
+                approved = false;
+                reason = 'EDGE_BELOW_THRESHOLD';
             }
+        } else if (mode === 'recovery') {
+            // Recovery continuity for the user's 1.15 progression.
+            // Tail-risk and max-trade protections still control the cycle.
+            approved = true;
+            reason = 'RECOVERY_CONTINUITY';
         }
 
         const result = {
@@ -2465,10 +2805,10 @@ window.nextTickModel = {
                 <span id="ntm-edge" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Entry threshold:</span>
-                <span id="ntm-threshold" class="font-bold text-orange-300">+0.10 pp</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">0.00 pp preferred · auditor assist to -4.00 pp</span>
 
                 <span class="text-gray-400">Recovery threshold:</span>
-                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">0.00 pp</span>
+                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">Recovery continuity · tail caps remain</span>
 
                 <span class="text-gray-400">Expected value:</span>
                 <span id="ntm-ev" class="font-bold text-white">-</span>
@@ -5546,6 +5886,27 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 return null;
             }
 
+            if (sessionState.mode === 'ai') {
+                const aud=window.randomnessAuditor?.analyze?.(
+                    window.currentSymbol || document.getElementById('symbol')?.value || 'R_10'
+                );
+                if (aud?.ready && Number.isInteger(Number(aud.topDigit))) {
+                    const m=window.nextTickModel.getPrediction(
+                        window.currentSymbol || document.getElementById('symbol')?.value || 'R_10',
+                        Number(aud.topDigit)
+                    );
+                    if (m) {
+                        return {
+                            digit:Number(aud.topDigit),
+                            probability:Number(m.probability||0.10),
+                            support:Number(m.effectiveSupport||0),
+                            model:m,
+                            source:'AUDITOR_RECOVERY'
+                        };
+                    }
+                }
+            }
+
             const symbol =
                 window.currentSymbol ||
                 document.getElementById('symbol')?.value ||
@@ -7877,6 +8238,8 @@ window.isBotRunning = true;
             log('🔐 Trading credential loaded', 'SYSTEM');
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
+            log('🔐 Randomness Auditor: AI AUTO only · entropy + mutual information + transition + 2-gram analysis', 'ENGINE');
+            log('⚡ INSTANT mode remains unchanged by the Randomness Auditor', 'SYSTEM');
             
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
             updateStake('initial');
@@ -10066,5 +10429,10 @@ window.isBotRunning = true;
 
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
+<div id="v52-build-meta" style="display:none"
+data-version="DIGITMATCHSTAR-V52-CRYPTO-AUDITOR"
+data-instant-unchanged="true"
+data-ai-randomness-auditor="true"
+data-ai-adaptive-entry="true"></div>
 </body>
 </html>
