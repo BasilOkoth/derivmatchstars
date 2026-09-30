@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V52 CRYPTO-AUDITOR: Randomness Auditor feeds AI AUTO; INSTANT execution unchanged -->
+    <!-- V53 CRYPTO-AUDITOR FIX: visible auditor UI + robust public-market message handling; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -5008,7 +5008,7 @@ window.cyclePerformance = {
                         ${regimeStatus.label} | Entropy: ${regimeStatus.entropy} | Dominance: ${regimeStatus.dominance}
                     </div>
                     <div class="text-[11px] text-gray-500 mt-1">
-                        Safety gates — Support≥${thresholds.minSupport}, Gap&lt;P90, Extend≤${thresholds.maxExtend}, Persistence≤${baseMaxPersistence}. Ranking signals — H5, P10, pressure, short-window return and survival. Pressure is not a hard veto.
+                        V53 AI AUTO uses adaptive entry rules: ordinary AI candidates need support≥14; an auditor-supported candidate may proceed from support≥10. Regime, Gap/P90, Extend, Persistence, H5/P10 and survival remain diagnostics/ranking inputs; only severe tail/structure conditions are hard vetoes.
                     </div>
                 </div>
                 ${survivalTop3.length ? `
@@ -5115,8 +5115,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                         </div>
 
                         <div class="text-[11px] text-gray-500 mt-1">
-                            Safety: Support${flag(passSupport)} · P90${flag(passP90)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)}
-                            <br>Rank: Pressure${flag(passPressure)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
+                            Legacy diagnostics: Support${flag(passSupport)} · P90${flag(passP90)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)}
+                            <br>Ranking signals: Pressure${flag(passPressure)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
+                            <br><span class="text-fuchsia-300">Actual V53 execution gate is adaptive and may be assisted by the Randomness Auditor.</span>
                         </div>
 
                         <div class="mt-1 bg-gray-700/40 rounded h-2">
@@ -6616,10 +6617,38 @@ function rotateHybridDigit(reason = '') {
                 );
             };
 
-            window.marketWs.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
+            window.marketWs.onmessage = async (event) => {
+                let raw = event?.data;
+                let data = null;
 
+                // V53: decode the WebSocket frame first. A failure here is a true
+                // parse/decode problem. Handler failures are reported separately.
+                try {
+                    if (raw instanceof Blob) {
+                        raw = await raw.text();
+                    } else if (raw instanceof ArrayBuffer) {
+                        raw = new TextDecoder('utf-8').decode(raw);
+                    } else if (ArrayBuffer.isView(raw)) {
+                        raw = new TextDecoder('utf-8').decode(raw.buffer);
+                    }
+
+                    if (typeof raw === 'string') {
+                        const trimmed = raw.trim();
+                        if (!trimmed) return;
+                        data = JSON.parse(trimmed);
+                    } else if (raw && typeof raw === 'object') {
+                        data = raw;
+                    } else {
+                        console.warn('Ignored unsupported public market frame:', typeof raw);
+                        return;
+                    }
+                } catch (parseError) {
+                    console.warn('Public market frame decode/JSON error:', parseError, raw);
+                    // Do not flood the live log or mislabel downstream errors as JSON failures.
+                    return;
+                }
+
+                try {
                     if (data.error || (Array.isArray(data.errors) && data.errors.length)) {
                         const message =
                             data?.error?.message ||
@@ -6654,6 +6683,13 @@ function rotateHybridDigit(reason = '') {
 
                         window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
                         log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+
+                        // Refresh auditor after warm-up history arrives.
+                        if (window.randomnessAuditor) {
+                            window.randomnessAuditor.analyze(
+                                historySymbol || document.getElementById('symbol')?.value || null
+                            );
+                        }
                         return;
                     }
 
@@ -6661,36 +6697,31 @@ function rotateHybridDigit(reason = '') {
                         const selectedSymbol = document.getElementById('symbol')?.value;
                         const tickSymbol = data.tick?.symbol || data.tick?.underlying_symbol;
 
-                        window.digitMatchScanner?.processTick(data.tick);
-
-                        if (!tickSymbol || tickSymbol === selectedSymbol) {
+                        if (tickSymbol === selectedSymbol) {
                             handleTick(data.tick);
                         }
                         return;
                     }
 
-                    if (data.tick?.quote !== undefined) {
-                        const selectedSymbol = document.getElementById('symbol')?.value;
-                        const tickSymbol = data.tick?.symbol || data.tick?.underlying_symbol;
-
-                        window.digitMatchScanner?.processTick(data.tick);
-
-                        if (!tickSymbol || tickSymbol === selectedSymbol) {
-                            handleTick(data.tick);
-                        }
-                        return;
-                    }
-
+                    // Some Deriv history replies can omit msg_type.
                     if (data.history?.prices) {
                         window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
                         log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+                        if (window.randomnessAuditor) {
+                            window.randomnessAuditor.analyze(
+                                document.getElementById('symbol')?.value || null
+                            );
+                        }
                     }
-                } catch (error) {
-                    console.error('Public market WebSocket message error:', error);
-                    log('❌ Could not parse public market message', 'ERROR');
+                } catch (handlerError) {
+                    // V53: this is NOT a JSON parse error. Report the real subsystem error.
+                    console.error('Public market message handler error:', handlerError, data);
+                    const message = handlerError?.message
+                        ? String(handlerError.message).slice(0, 180)
+                        : 'unknown handler error';
+                    log(`❌ Public market handler error: ${message}`, 'ERROR');
                 }
             };
-
             window.marketWs.onerror = (error) => {
                 console.error('Public market WebSocket error:', error);
                 log('❌ Public market connection error', 'ERROR');
@@ -6732,6 +6763,24 @@ function rotateHybridDigit(reason = '') {
                 window.nextTickModel.render();
                 window.cyclePerformance.ensurePanel();
                 window.cyclePerformance.render();
+
+                // V53: always show the Randomness Auditor panel immediately.
+                if (window.randomnessAuditor) {
+                    window.randomnessAuditor.ensurePanel();
+                    if (!window.randomnessAuditor.lastSnapshot) {
+                        window.randomnessAuditor.lastSnapshot = {
+                            ready:false,
+                            historyN:Array.isArray(window.lastDigits) ? window.lastDigits.length : 0,
+                            reason:'WARMING',
+                            topDigit:null,
+                            signalStrength:0,
+                            normalizedEntropy:null,
+                            mutualInformation:null,
+                            ngramSupport:0
+                        };
+                    }
+                    window.randomnessAuditor.render();
+                }
             }, 50);
             initializeToggleState();
             updateS20Label();
@@ -6754,8 +6803,20 @@ function rotateHybridDigit(reason = '') {
             
             // Update digit analysis display periodically
             setInterval(() => {
-                if (!document.getElementById('digit-analysis-panel').classList.contains('hidden')) {
+                const digitPanel = document.getElementById('digit-analysis-panel');
+                if (digitPanel && !digitPanel.classList.contains('hidden')) {
                     updateDigitAnalysisDisplay();
+                }
+
+                // V53: auditor UI is independent of the collapsible digit statistics panel.
+                if (window.randomnessAuditor) {
+                    window.randomnessAuditor.ensurePanel();
+                    window.randomnessAuditor.render(
+                        window.randomnessAuditor.lastSnapshot ||
+                        window.randomnessAuditor.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        )
+                    );
                 }
             }, 2000);
             
@@ -10430,9 +10491,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V52-CRYPTO-AUDITOR"
+data-version="DIGITMATCHSTAR-V53-CRYPTO-AUDITOR-UI-WS-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true"></div>
+data-ai-adaptive-entry="true" data-public-market-parser="robust-v53" data-auditor-panel="always-visible"></div>
 </body>
 </html>
