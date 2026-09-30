@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V30: V29 + Digit Differs/Top-2 now use the same /api/capture-access admin authorization flow as TailGuard -->
+    <!-- V31: V30 + reliable pointer-based dragging for Digit Differs and Top-2 Basket -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -373,7 +373,7 @@
   border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.55);backdrop-filter:blur(14px);
   color:#e5e7eb;overflow:hidden;
 }
-#differs-lab .ddl-head{touch-action:none;
+#differs-lab .ddl-head{touch-action:none;cursor:grab;
   display:flex;align-items:center;justify-content:space-between;gap:10px;
   padding:11px 12px;background:linear-gradient(135deg,rgba(8,145,178,.26),rgba(79,70,229,.18));
   border-bottom:1px solid rgba(148,163,184,.18);cursor:move;user-select:none;
@@ -422,7 +422,7 @@
   color:#e5e7eb;overflow:hidden;
 }
 #top2-basket-lab .t2-head{
-  touch-action:none;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  touch-action:none;cursor:grab;display:flex;align-items:center;justify-content:space-between;gap:10px;
   padding:11px 12px;background:linear-gradient(135deg,rgba(126,34,206,.28),rgba(59,130,246,.18));
   border-bottom:1px solid rgba(148,163,184,.18);cursor:move;user-select:none
 }
@@ -10708,57 +10708,70 @@ window.digitDiffersLab = {
 
         let drag=null;
 
-        const beginDrag = (clientX, clientY) => {
-            if (!panel || window.innerWidth <= 640) return;
+        const beginDrag = (e) => {
+            if (!panel || !handle) return;
+            if (e.target?.closest?.('button, input, select, a')) return;
+
             const r = panel.getBoundingClientRect();
+
+            // Freeze current visual position into explicit coordinates.
+            panel.style.position = 'fixed';
             panel.style.left = `${r.left}px`;
             panel.style.top = `${r.top}px`;
             panel.style.right = 'auto';
             panel.style.bottom = 'auto';
-            drag = { dx: clientX - r.left, dy: clientY - r.top };
+
+            drag = {
+                pointerId: e.pointerId,
+                dx: e.clientX - r.left,
+                dy: e.clientY - r.top
+            };
+
+            handle.style.cursor = 'grabbing';
             document.body.style.userSelect = 'none';
+            try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
         };
 
-        const moveDrag = (clientX, clientY) => {
-            if (!drag || !panel) return;
+        const moveDrag = (e) => {
+            if (!drag || !panel || e.pointerId !== drag.pointerId) return;
+
             const maxL = Math.max(0, window.innerWidth - panel.offsetWidth);
-            const maxT = Math.max(0, window.innerHeight - 44);
-            const left = Math.min(maxL, Math.max(0, clientX - drag.dx));
-            const top = Math.min(maxT, Math.max(0, clientY - drag.dy));
+            const maxT = Math.max(0, window.innerHeight - 40);
+
+            const left = Math.min(maxL, Math.max(0, e.clientX - drag.dx));
+            const top = Math.min(maxT, Math.max(0, e.clientY - drag.dy));
+
             panel.style.left = `${left}px`;
             panel.style.top = `${top}px`;
             panel.style.right = 'auto';
             panel.style.bottom = 'auto';
+            e.preventDefault();
         };
 
-        const endDrag = () => {
+        const endDrag = (e) => {
             if (!drag || !panel) return;
+            if (e && e.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
+
             const r = panel.getBoundingClientRect();
-            localStorage.setItem('ddl_position', JSON.stringify({left:r.left,top:r.top}));
+            localStorage.setItem(
+                'ddl_position',
+                JSON.stringify({ left: r.left, top: r.top })
+            );
+
+            try {
+                if (e?.pointerId !== undefined) handle.releasePointerCapture(e.pointerId);
+            } catch (_) {}
+
             drag = null;
+            handle.style.cursor = 'grab';
             document.body.style.userSelect = '';
         };
 
-        handle?.addEventListener('mousedown', (e) => {
-            if (e.target.closest('button')) return;
-            e.preventDefault();
-            beginDrag(e.clientX, e.clientY);
-        });
-        document.addEventListener('mousemove', (e) => { if (drag) moveDrag(e.clientX, e.clientY); });
-        document.addEventListener('mouseup', endDrag);
-
-        handle?.addEventListener('touchstart', (e) => {
-            if (e.target.closest('button')) return;
-            const t=e.touches?.[0]; if(!t) return;
-            e.preventDefault();
-            beginDrag(t.clientX,t.clientY);
-        }, {passive:false});
-        document.addEventListener('touchmove', (e) => {
-            if(!drag) return; const t=e.touches?.[0]; if(!t) return;
-            e.preventDefault(); moveDrag(t.clientX,t.clientY);
-        }, {passive:false});
-        document.addEventListener('touchend', endDrag);
-        document.addEventListener('touchcancel', endDrag);
+        handle.addEventListener('pointerdown', beginDrag);
+        document.addEventListener('pointermove', moveDrag, { passive:false });
+        document.addEventListener('pointerup', endDrag);
+        document.addEventListener('pointercancel', endDrag);
     }
 };
 
@@ -11436,39 +11449,69 @@ window.top2BasketLab = {
         }catch(_){}
 
         let drag=null;
-        const begin=(x,y)=>{
-            if(!panel || window.innerWidth<=640) return;
+
+        const begin=(e)=>{
+            if(!panel || !handle) return;
+            if(e.target?.closest?.('button, input, select, a')) return;
+
             const r=panel.getBoundingClientRect();
-            panel.style.left=`${r.left}px`;panel.style.top=`${r.top}px`;panel.style.right='auto';panel.style.bottom='auto';
-            drag={dx:x-r.left,dy:y-r.top};document.body.style.userSelect='none';
+            panel.style.position='fixed';
+            panel.style.left=`${r.left}px`;
+            panel.style.top=`${r.top}px`;
+            panel.style.right='auto';
+            panel.style.bottom='auto';
+
+            drag={
+                pointerId:e.pointerId,
+                dx:e.clientX-r.left,
+                dy:e.clientY-r.top
+            };
+
+            handle.style.cursor='grabbing';
+            document.body.style.userSelect='none';
+            try{handle.setPointerCapture(e.pointerId);}catch(_){}
+            e.preventDefault();
         };
-        const move=(x,y)=>{
-            if(!drag||!panel)return;
+
+        const move=(e)=>{
+            if(!drag || !panel || e.pointerId!==drag.pointerId) return;
+
             const maxL=Math.max(0,window.innerWidth-panel.offsetWidth);
-            const maxT=Math.max(0,window.innerHeight-44);
-            panel.style.left=`${Math.min(maxL,Math.max(0,x-drag.dx))}px`;
-            panel.style.top=`${Math.min(maxT,Math.max(0,y-drag.dy))}px`;
+            const maxT=Math.max(0,window.innerHeight-40);
+
+            const left=Math.min(maxL,Math.max(0,e.clientX-drag.dx));
+            const top=Math.min(maxT,Math.max(0,e.clientY-drag.dy));
+
+            panel.style.left=`${left}px`;
+            panel.style.top=`${top}px`;
+            panel.style.right='auto';
+            panel.style.bottom='auto';
+            e.preventDefault();
         };
-        const end=()=>{
-            if(!drag||!panel)return;
+
+        const end=(e)=>{
+            if(!drag || !panel) return;
+            if(e && e.pointerId!==undefined && e.pointerId!==drag.pointerId) return;
+
             const r=panel.getBoundingClientRect();
-            localStorage.setItem('t2_position',JSON.stringify({left:r.left,top:r.top}));
-            drag=null;document.body.style.userSelect='';
+            localStorage.setItem(
+                't2_position',
+                JSON.stringify({left:r.left,top:r.top})
+            );
+
+            try{
+                if(e?.pointerId!==undefined) handle.releasePointerCapture(e.pointerId);
+            }catch(_){}
+
+            drag=null;
+            handle.style.cursor='grab';
+            document.body.style.userSelect='';
         };
 
-        handle?.addEventListener('mousedown',(e)=>{if(e.target.closest('button'))return;e.preventDefault();begin(e.clientX,e.clientY);});
-        document.addEventListener('mousemove',(e)=>{if(drag)move(e.clientX,e.clientY);});
-        document.addEventListener('mouseup',end);
-
-        handle?.addEventListener('touchstart',(e)=>{
-            if(e.target.closest('button'))return;
-            const t=e.touches?.[0];if(!t)return;e.preventDefault();begin(t.clientX,t.clientY);
-        },{passive:false});
-        document.addEventListener('touchmove',(e)=>{
-            if(!drag)return;const t=e.touches?.[0];if(!t)return;e.preventDefault();move(t.clientX,t.clientY);
-        },{passive:false});
-        document.addEventListener('touchend',end);
-        document.addEventListener('touchcancel',end);
+        handle.addEventListener('pointerdown',begin);
+        document.addEventListener('pointermove',move,{passive:false});
+        document.addEventListener('pointerup',end);
+        document.addEventListener('pointercancel',end);
     }
 };
 
