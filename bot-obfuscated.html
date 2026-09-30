@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V23 AI edge thresholds: entry requires +0.20 pp; recovery requires +0.10 pp; cycle-positive recovery quote still required; INSTANT remains manual/ungated -->
+    <!-- V24 AI recovery redesign: entry +0.10 pp; recovery 0.00 pp; dynamic best-digit recovery; no redundant cycle-profit veto; hard 10-contract cycle cap; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -1920,13 +1920,12 @@ window.EV_GATE_CONFIG = {
     // AI AUTO only. INSTANT remains a manual execution mode.
     applyToInstant: false,
 
-    // AI AUTO uses separate positive live-edge thresholds.
-    // Entry: +0.002 = +0.20 percentage points above live break-even.
-    // Recovery: +0.001 = +0.10 percentage points above live break-even.
-    // Recovery remains selective, but slightly less strict so cycles do not stall unnecessarily.
-    // P90 and other entry-safety gates remain active.
-    minEdge: 0.002,
-    recoveryMinEdge: 0.001,
+    // AI AUTO thresholds.
+    // Entry: +0.001 = +0.10 percentage points above live break-even.
+    // Recovery: 0.000 = break-even-or-better only.
+    // Recovery re-ranks all 10 digits on each attempt and may switch digits without resetting the cycle.
+    minEdge: 0.001,
+    recoveryMinEdge: 0.000,
 
     // Exact-next-tick empirical model readiness.
     minEffectiveSupport: 20,
@@ -2453,10 +2452,10 @@ window.nextTickModel = {
                 <span id="ntm-edge" class="font-bold text-white">-</span>
 
                 <span class="text-gray-400">Entry threshold:</span>
-                <span id="ntm-threshold" class="font-bold text-orange-300">+0.20 pp</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">+0.10 pp</span>
 
                 <span class="text-gray-400">Recovery threshold:</span>
-                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">+0.10 pp</span>
+                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">0.00 pp</span>
 
                 <span class="text-gray-400">Expected value:</span>
                 <span id="ntm-ev" class="font-bold text-white">-</span>
@@ -4243,6 +4242,8 @@ window.cyclePerformance = {
                         window.EV_GATE_CONFIG?.minEdge ??
                         NaN
                     ),
+                    recoveryDigitPolicy: 'LATEST_BEST_DIGIT_EACH_ATTEMPT',
+                    hardCycleTradeCap: 10,
                     minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
                 },
 
@@ -4848,7 +4849,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.currentStake = 1.0;
         window.multiplier = 1.15;
         window.maxTrades = 10;
-        window.maxCycleTrades = window.maxTrades;
+        window.maxCycleTrades = Math.min(window.maxTrades, 10);
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
@@ -5441,7 +5442,40 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             return best;
         }
 
-        function rotateHybridDigit(reason = '') {
+        
+        function chooseBestRecoveryDigit() {
+            if (!window.nextTickModel || typeof window.nextTickModel.getDigitModel !== 'function') {
+                return null;
+            }
+
+            const symbol =
+                window.currentSymbol ||
+                document.getElementById('symbol')?.value ||
+                'R_10';
+
+            let best = null;
+
+            for (let digit = 0; digit <= 9; digit++) {
+                try {
+                    const model = window.nextTickModel.getDigitModel(symbol, digit);
+                    if (!model || !model.ready) continue;
+
+                    const probability = Number(model.probability);
+                    const support = Number(model.effectiveSupport || 0);
+
+                    if (!Number.isFinite(probability)) continue;
+                    if (support < Number(window.EV_GATE_CONFIG?.minEffectiveSupport || 0)) continue;
+
+                    if (!best || probability > best.probability) {
+                        best = { digit, probability, support, model };
+                    }
+                } catch (_) {}
+            }
+
+            return best;
+        }
+
+function rotateHybridDigit(reason = '') {
             clearSessionDigitLock(reason || 'Rotate');
             window.cycleRotations = (window.cycleRotations || 0) + 1;
 
@@ -6273,7 +6307,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             document.getElementById('maxTrades').addEventListener('change', () => {
                 syncCalculatorWithMain();
                 window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-                window.maxCycleTrades = window.maxTrades;
+                window.maxCycleTrades = Math.min(window.maxTrades, 10);
                 window.TAIL_RISK_CONFIG.maxCycleLoss = null;
                 if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
                 if (typeof log === 'function') log(`🧯 Max Trades updated to ${window.maxTrades}; exposure cap recalculated automatically`, 'CONFIG');
@@ -7519,7 +7553,23 @@ window.executionLock = true;
 
             try {
                 const nextTradeNumber = window.tradeCount + 1;
-                const selectedDigit = parseInt(document.getElementById('predictedDigit').value);
+                let selectedDigit = parseInt(document.getElementById('predictedDigit').value);
+
+                if (window.cycleHasPurchasedContract) {
+                    const recoveryPick = chooseBestRecoveryDigit();
+                    if (recoveryPick && Number.isInteger(recoveryPick.digit)) {
+                        selectedDigit = recoveryPick.digit;
+                        const predictedDigitEl = document.getElementById('predictedDigit');
+                        if (predictedDigitEl) predictedDigitEl.value = String(selectedDigit);
+
+                        log(
+                            `🔄 RECOVERY RE-RANK | latest best digit ${selectedDigit} | ` +
+                            `model P ${(recoveryPick.probability * 100).toFixed(2)}% | ` +
+                            `support ${recoveryPick.support}`,
+                            'ENGINE'
+                        );
+                    }
+                }
 
                 updateTradeStatus(
                     window.cycleHasPurchasedContract ? 'RECOVERY CHECK' : 'ENTRY CHECK',
@@ -7604,7 +7654,7 @@ window.executionLock = true;
             window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
             window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = window.maxTrades;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
 
             if (winOrLoss === 'win') {
                 window.lastTradeWon = true;
@@ -7642,7 +7692,7 @@ window.executionLock = true;
             }
             
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = window.maxTrades;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             
             const token = getStoredDerivToken();
             if (!token) {
@@ -7681,7 +7731,7 @@ window.isBotRunning = true;
             log(`🧯 User-selected cycle cap: ${window.maxTrades} trades`, 'SYSTEM');
 
             // Recalculate from the user's CURRENT Max Trades every time START is pressed.
-            window.maxCycleTrades = window.maxTrades;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
             log(
@@ -8725,7 +8775,7 @@ window.isBotRunning = true;
         // Reset all state
         function resetAllState() {
             window.maxTrades = parseInt(document.getElementById('maxTrades').value) || 10;
-            window.maxCycleTrades = window.maxTrades;
+            window.maxCycleTrades = Math.min(window.maxTrades, 10);
             window.cycleRotations = 0;
             
             updateStake('initial');
