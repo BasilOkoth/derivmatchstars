@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V58 DNA TIMING: T+0..T+5 precursor timing + hard 10-trade cap + minimizable AI panels; INSTANT unchanged -->
+    <!-- V59 FULL REPORT: comprehensive downloadable diagnostic report including DNA/features/auditor/logs/timing; INSTANT unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -4589,7 +4589,7 @@ window.tailPrecursorLab = {
                 <button id="downloadResearchReportBtn"
                         onclick="downloadMatchStarResearchReport()"
                         class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded">
-                    ⬇ DOWNLOAD RESEARCH REPORT
+                    ⬇ DOWNLOAD FULL DIAGNOSTIC REPORT
                 </button>
             </div>
 
@@ -5483,7 +5483,7 @@ window.cyclePerformance = {
             }
 
             const report = {
-                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V1',
+                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V2_FULL_DIAGNOSTIC',
                 generatedAt: new Date().toISOString(),
                 runtime: 'MATCHSTAR V16',
                 symbol,
@@ -5497,7 +5497,13 @@ window.cyclePerformance = {
                     tradeCount: Number(window.tradeCount || 0),
                     currentStake: Number(window.currentStake || 0),
                     currentBalance: Number(window.currentBalance || 0),
-                    sessionPnL: Number(window.netProfit || 0)
+                    sessionPnL: Number(window.netProfit || 0),
+                    executionLock: !!window.executionLock,
+                    nextTradeAllowed: !!window.nextTradeAllowed,
+                    stopAfterWin: !!window.stopAfterWin,
+                    activeContract: safeClone(window.activeContract),
+                    pendingProposalCount: Number(window.pendingProposals?.size || 0),
+                    reconciliationMismatch: !!window.reconciliationMismatch
                 },
 
                 configuration: {
@@ -5543,6 +5549,56 @@ window.cyclePerformance = {
                             : null,
                     regime: safeClone(regime),
                     recommendation: safeClone(rec)
+                },
+
+                digitDNAResearch: {
+                    version: window.digitDNAEngine?.version || null,
+                    config: safeClone(window.DIGIT_DNA_CONFIG),
+                    snapshot: safeClone(window.digitDNAEngine?.lastSnapshot),
+                    forward: safeClone(window.digitDNAEngine?.forward),
+                    timingMeaning: {
+                        T0: 'Digit recognized only after/current tick arrived; not tradable as the new one-tick contract outcome.',
+                        T1: 'First unseen tick after forecast; primary one-tick DIGITMATCH target.',
+                        T2: 'Second unseen tick after forecast.',
+                        T3: 'Third unseen tick after forecast.',
+                        T4: 'Fourth unseen tick after forecast.',
+                        T5: 'Fifth unseen tick after forecast.'
+                    }
+                },
+
+                digitFeatureResearch: {
+                    version: window.digitFeatureEngine?.version || null,
+                    config: safeClone(window.DIGIT_FEATURE_CONFIG),
+                    snapshot: safeClone(window.digitFeatureEngine?.lastSnapshot)
+                },
+
+                randomnessAuditorResearch: {
+                    version: window.randomnessAuditor?.version || null,
+                    config: safeClone(window.RANDOMNESS_AUDITOR_CONFIG),
+                    snapshot: safeClone(window.randomnessAuditor?.lastSnapshot)
+                },
+
+                digitIntelligenceResearch: {
+                    warmupTicks: Number(window.digitIntelligenceEngine?.warmupTicks || 0),
+                    targetWarmupTicks: Number(window.digitIntelligenceEngine?.targetWarmupTicks || 0),
+                    warmupDone: !!window.digitIntelligenceEngine?.warmupDone,
+                    tickIndex: Number(window.digitIntelligenceEngine?.tickIndex || 0),
+                    digitStats: safeClone(window.digitIntelligenceEngine?.digitStats || []),
+                    regime: safeClone(regime),
+                    recommendation: safeClone(rec)
+                },
+
+                marketEvidence: {
+                    lastDigits: safeClone((window.lastDigits || []).slice(-1500)),
+                    recentMarketTicks: safeClone((window.recentMarketTicks || []).slice(-200)),
+                    tickFormat: safeClone(window.tickFormat),
+                    totalTicksReceived: Number(window.totalTicksReceived || 0),
+                    tickRateWindowCount: Array.isArray(window.tickTimestamps) ? window.tickTimestamps.length : 0
+                },
+
+                liveLog: {
+                    text: document.getElementById('log-area')?.innerText || '',
+                    html: document.getElementById('log-area')?.innerHTML || ''
                 },
 
                 cyclePerformance: {
@@ -5621,6 +5677,19 @@ window.cyclePerformance = {
                 tailRiskModel:
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
+                uiSnapshot: {
+                    digitDNAVisible: !document.getElementById('digit-dna-panel')?.classList?.contains('hidden'),
+                    digitFeatureVisible: !document.getElementById('digit-feature-panel')?.classList?.contains('hidden'),
+                    randomnessAuditorVisible: !document.getElementById('randomness-auditor-panel')?.classList?.contains('hidden'),
+                    digitAnalysisVisible: !document.getElementById('digit-analysis-panel')?.classList?.contains('hidden')
+                },
+
+                buildInfo: {
+                    version: document.body?.dataset?.version || 'DIGITMATCHSTAR-V59-FULL-DIAGNOSTIC-REPORT',
+                    hardMaxTrades: Number(window.HARD_MAX_TRADES || 10),
+                    reportIncludesSecrets: false
+                },
+
                 storageKeys: {
                     cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
                     forwardShadow: `matchstar_shadow_v1_${symbol}`,
@@ -5631,7 +5700,10 @@ window.cyclePerformance = {
                     'Post-stop depth observations use future public ticks only and do not represent real trades after the safety stop.',
                     'Capped cycles without an observed post-stop target are classified as censored rather than known tails.',
                     'Technical stops are excluded from market-tail recovery statistics.',
-                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.'
+                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.',
+                    'DNA similarity is a precursor-state similarity score, not a calibrated next-tick probability.',
+                    'T+0 recognition is too late for a new one-tick DIGITMATCH purchase; T+1 is the primary tradable forecast horizon.',
+                    'The report intentionally excludes authentication tokens and private credentials.'
                 ]
             };
 
@@ -5647,6 +5719,11 @@ window.cyclePerformance = {
                 `Depth classes: 11–15 ${tc.postStop11to15 ?? 0} · 16–20 ${tc.postStop16to20 ?? 0} · 21–30 ${tc.postStop21to30 ?? 0} · 31+ ${tc.postStop31plus ?? 0}`,
                 `Post-stop resolved: ${ps.resolved ?? 0} · average depth ${Number.isFinite(ps.average) ? ps.average.toFixed(1) : '-'} · deepest ${ps.deepest ?? '-'}`,
                 `Forward shadow: ${ntmState?.shadowTicks ?? 0} ticks · top-pick hit ${report.nextTickResearch.topPickHitRate !== null ? (report.nextTickResearch.topPickHitRate * 100).toFixed(2) + '%' : '-'} · Brier ${report.nextTickResearch.brierScore !== null ? report.nextTickResearch.brierScore.toFixed(4) : '-'}`,
+                `DNA T+1: ${report.digitDNAResearch?.snapshot?.forwardN ?? 0} forecasts · hits ${report.digitDNAResearch?.snapshot?.forwardHits ?? 0} · rate ${report.digitDNAResearch?.snapshot?.forwardHitRate !== null && report.digitDNAResearch?.snapshot?.forwardHitRate !== undefined ? (report.digitDNAResearch.snapshot.forwardHitRate*100).toFixed(2)+'%' : '-'}`,
+                `DNA T+0: ${report.digitDNAResearch?.snapshot?.t0N ?? 0} observations · hits ${report.digitDNAResearch?.snapshot?.t0Hits ?? 0} · rate ${report.digitDNAResearch?.snapshot?.t0Rate !== null && report.digitDNAResearch?.snapshot?.t0Rate !== undefined ? (report.digitDNAResearch.snapshot.t0Rate*100).toFixed(2)+'%' : '-'}`,
+                `Current DNA top: ${report.digitDNAResearch?.snapshot?.topDigit ?? '-'} · similarity ${report.digitDNAResearch?.snapshot?.topSimilarity !== undefined ? (Number(report.digitDNAResearch.snapshot.topSimilarity)*100).toFixed(1)+'%' : '-'} · separation ${report.digitDNAResearch?.snapshot?.margin !== undefined ? (Number(report.digitDNAResearch.snapshot.margin)*100).toFixed(1)+' pp' : '-'}`,
+                `Feature top: ${report.digitFeatureResearch?.snapshot?.topDigit ?? '-'} · signal ${report.digitFeatureResearch?.snapshot?.signalStrength !== undefined ? (Number(report.digitFeatureResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
+                `Auditor top: ${report.randomnessAuditorResearch?.snapshot?.topDigit ?? '-'} · signal ${report.randomnessAuditorResearch?.snapshot?.signalStrength !== undefined ? (Number(report.randomnessAuditorResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
                 '',
                 'Upload this JSON file directly into ChatGPT for analysis.'
             ].join('\n');
@@ -5667,7 +5744,7 @@ window.cyclePerformance = {
 
             const a = document.createElement('a');
             a.href = url;
-            a.download = `matchstar-research-${symbol}-${stamp}.json`;
+            a.download = `digitmatchstar-full-diagnostic-${symbol}-${stamp}.json`;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -5675,7 +5752,7 @@ window.cyclePerformance = {
             setTimeout(() => URL.revokeObjectURL(url), 1000);
 
             log(
-                `📥 Research report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
+                `📥 FULL diagnostic report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
                 `${report.postStopDepthResearch?.stats?.resolved || 0} resolved post-stop continuations`,
                 'SYSTEM'
             );
@@ -11523,9 +11600,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V58-DNA-TIMING-CAP-MINIMIZE"
+data-version="DIGITMATCHSTAR-V59-FULL-DIAGNOSTIC-REPORT"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-2-TIMING" data-hard-max-trades="10" data-ai-panels-minimizable="true" data-public-market-parser="single-feed-v57" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-2-TIMING" data-hard-max-trades="10" data-ai-panels-minimizable="true" data-full-diagnostic-report="v2" data-public-market-parser="single-feed-v57" data-auditor-panel="always-visible"></div>
 </body>
 </html>
