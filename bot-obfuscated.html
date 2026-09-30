@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V47: score all 10 digits after each 5-tick observation and trade exactly top 7 -->
+    <!-- V48: history-aware all-10 ranking with transition probability, smoothed frequencies, and explicit excluded 3 -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -11119,7 +11119,7 @@ if (document.readyState === 'loading') {
       <div class="t2-field">
         <label>Selection rule</label>
         <select id="t2-rule">
-          <option value="observe5trade5" selected>OBSERVE 5 → TRADE NEXT 5</option>
+          <option value="observe5trade5" selected>OBSERVE 5 → SCORE ALL 10 → TRADE TOP 7</option>
           <option value="last5">ROLLING LAST-5 (2 DIGITS ONLY)</option>
           <option value="model">LEGACY MODEL (2 DIGITS ONLY)</option>
         </select>
@@ -11136,7 +11136,7 @@ if (document.readyState === 'loading') {
           <input id="t2-hit-target" type="number" min="0.01" step="0.01" value="0.90">
         </label>
         <div id="t2-rule-lock-note" class="t2-note" style="margin-top:6px">
-          7-digit mode is locked to OBSERVE 5 → freeze absent pool → trade selected targets.
+          7-digit mode observes 5 ticks as context, then ranks all 10 digits using rolling history and trades the top 7.
         </div>
       </div>
       <div class="t2-field">
@@ -11164,7 +11164,7 @@ if (document.readyState === 'loading') {
       <div class="t2-card"><div class="t2-k">Basket trades</div><div id="t2-trades" class="t2-v">0</div></div>
       <div class="t2-card"><div class="t2-k">Session P/L</div><div id="t2-pnl" class="t2-v">$0.00</div></div>
       <div class="t2-card"><div class="t2-k">Block phase</div><div id="t2-block-phase" class="t2-v">OBSERVE 0/5</div></div>
-      <div class="t2-card"><div class="t2-k">Frozen absent pool</div><div id="t2-absent-pool" class="t2-v">—</div></div>
+      <div class="t2-card"><div class="t2-k">Excluded 3</div><div id="t2-absent-pool" class="t2-v">—</div></div>
       <div class="t2-card"><div class="t2-k">Trade in block</div><div id="t2-block-trade" class="t2-v">0/5</div></div>
       <div class="t2-card"><div class="t2-k">Block P/L</div><div id="t2-block-pnl" class="t2-v">$0.00</div></div>
       <div class="t2-card"><div class="t2-k">Basket width</div><div id="t2-width-show" class="t2-v">7 digits</div></div>
@@ -11191,10 +11191,10 @@ if (document.readyState === 'loading') {
     </div>
 
     <div class="t2-note">
-      Multi-Digit Match V47: every 5-tick observation window is used. The five digits are context only; no digit is
-      excluded because it appeared recently. All 10 digits are scored, ranked, and the top selected width (default 7)
-      are traded. The composite score uses next-tick model probability, recent frequency over 5/20/50 ticks, and a
-      small recency component. A +$0.90 target ends the block immediately using cent-safe arithmetic.
+      Multi-Digit Match V48: the 5 observed ticks are context only. Ranking uses the app's rolling history instead
+      of pretending those same 5 ticks are 20- and 50-tick samples. Frequencies are shrunk toward the neutral 10% prior,
+      transition probability is included, all 10 digits are ranked, the top 7 are traded, and the bottom 3 are shown as
+      the excluded set. A +$0.90 target still ends the block immediately using cent-safe arithmetic.
     </div>
     <div id="t2-log" class="t2-log">Multi-Digit Match Basket ready.</div>
   </div>
@@ -11208,7 +11208,7 @@ if (document.readyState === 'loading') {
 const q = (id) => document.getElementById(id);
 
 window.top2BasketLab = {
-    version: 'MULTIDIGIT-MATCH-V2.0-SCORED-TOP7',
+    version: 'MULTIDIGIT-MATCH-V2.1-HISTORY-AWARE-TOP7',
     running: false,
     busy: false,
     awaitingOutcome: null,
@@ -11230,11 +11230,12 @@ window.top2BasketLab = {
     blockTradeIndex: 0,
     blockNumber: 1,
     blockPnl: 0,
+    lastRanking: [],
     empirical: { n:0, wins:0, losses:0, sumBreakEven:0, firstAt:null, updatedAt:null },
 
     empiricalKey(){
         const r=this.rule();
-        if(r==='observe5trade5') return `t2_empirical_observe5trade5_w${this.basketWidth()}_${this.symbol()}`;
+        if(r==='observe5trade5') return `t2_empirical_historyaware_v48_w${this.basketWidth()}_${this.symbol()}`;
         if(r==='last5') return `t2_empirical_last5_${this.symbol()}`;
         return `t2_empirical_model_${this.symbol()}`;
     },
@@ -11383,7 +11384,10 @@ window.top2BasketLab = {
             set('t2-block-phase',this.blockPhase==='OBSERVE'
                 ? `OBSERVE ${this.observationWindow.length}/5`
                 : `TRADE ${Math.min(this.blockTradeIndex+1,5)}/5`);
-            set('t2-absent-pool',this.blockPhase==='TRADE' ? 'Scored top targets' : '—');
+            const excluded=this.lastRanking.length
+                ? this.lastRanking.slice(this.basketWidth()).map(x=>x.digit)
+                : [];
+            set('t2-absent-pool',excluded.length ? excluded.join(' · ') : '—');
             set('t2-block-trade',`${Math.min(this.blockTradeIndex,5)}/5 completed`);
             set('t2-block-pnl',this.money(this.blockPnl));
             setSignClass('t2-block-pnl',this.blockPnl);
@@ -11425,6 +11429,7 @@ window.top2BasketLab = {
         this.frozenAbsentPool=[];
         this.blockTradeIndex=0;
         this.blockPnl=0;
+        this.lastRanking=[];
         const el=q('t2-last5'); if(el) el.value='—';
         this.render();
     },
@@ -11440,71 +11445,107 @@ window.top2BasketLab = {
 
         const ranked=this.rankAllDigits();
         const chosen=ranked.slice(0,this.basketWidth()).map(x=>x.digit);
+        const excluded=ranked.slice(this.basketWidth()).map(x=>x.digit);
 
         this.log(
             `BLOCK ${this.blockNumber} READY | observed [${this.observationWindow.join(', ')}] | ` +
-            `ranked top ${this.basketWidth()} [${chosen.join(', ')}]`
+            `selected [${chosen.join(', ')}] | excluded [${excluded.join(', ')}] | history ${ranked[0]?.historyN||0} ticks`
         );
         this.render();
         return true;
     },
     rankAllDigits(){
         const symbol=this.symbol();
-        const last5=this.recentDigits.slice(-5);
-        const last20=this.recentDigits.slice(-20);
-        const last50=this.recentDigits.slice(-50);
+
+        // Use the application's long-running rolling digit history instead of
+        // the engine-local five ticks. This avoids treating the same five ticks
+        // as if they were independent 5/20/50-tick evidence.
+        const globalHistory = Array.isArray(window.lastDigits)
+            ? window.lastDigits.filter(Number.isInteger).slice(-200)
+            : [];
+
+        // Fallback only if the global buffer is unavailable.
+        const history = globalHistory.length
+            ? globalHistory
+            : this.recentDigits.filter(Number.isInteger).slice(-200);
+
+        const last5=history.slice(-5);
+        const last20=history.slice(-20);
+        const last50=history.slice(-50);
 
         const count=(arr,d)=>arr.reduce((n,x)=>n+(x===d?1:0),0);
+
+        // Bayesian shrinkage toward the neutral 10% prior prevents tiny
+        // windows from producing artificial 0% / 20% extremes.
+        const smoothFreq=(arr,d,priorStrength=10)=>{
+            const n=arr.length;
+            return (count(arr,d) + priorStrength*0.10) / (n + priorStrength);
+        };
+
+        const gapFromHistory=(arr,d)=>{
+            for(let i=arr.length-1;i>=0;i--){
+                if(arr[i]===d) return arr.length-1-i;
+            }
+            return Math.min(50,arr.length || 50);
+        };
+
         const rows=[];
 
         for(let d=0; d<=9; d++){
             let modelP=0.10;
+            let transitionP=0.10;
             let support=0;
             let model=null;
 
             try{
                 const m=window.nextTickModel?.getPrediction?.(symbol,d);
-                if(m?.ready && Number.isFinite(Number(m.probability))){
-                    modelP=Number(m.probability);
+                if(m?.ready){
+                    if(Number.isFinite(Number(m.probability))) modelP=Number(m.probability);
+                    if(Number.isFinite(Number(m.transitionProbability))) transitionP=Number(m.transitionProbability);
                     support=Number(m.effectiveSupport||0);
                     model={...m};
                 }
             }catch(_){}
 
-            const f5=last5.length ? count(last5,d)/last5.length : 0.10;
-            const f20=last20.length ? count(last20,d)/last20.length : 0.10;
-            const f50=last50.length ? count(last50,d)/last50.length : 0.10;
+            const f5=smoothFreq(last5,d,10);
+            const f20=smoothFreq(last20,d,10);
+            const f50=smoothFreq(last50,d,10);
 
-            const lastSeen=this.digitLastSeenTick[d];
-            const rawGap=lastSeen<0 ? 20 : Math.max(0,this.observedTickIndex-lastSeen);
-            const gap=Math.min(rawGap,20);
-
-            // Transparent experimental composite:
-            // 60% next-tick model, 15% last-20 frequency,
-            // 10% last-50 frequency, 10% last-5 frequency,
-            // 5% recency (smaller gap receives slightly higher score).
+            const gap=Math.min(gapFromHistory(history,d),20);
             const recencyScore=1-(gap/20);
+
+            // V48 composite:
+            // 45% calibrated next-tick model probability
+            // 20% transition probability from current state
+            // 15% true rolling 20-tick frequency
+            // 10% true rolling 50-tick frequency
+            //  5% smoothed 5-tick context
+            //  5% recency
             const score=
-                0.60*modelP +
+                0.45*modelP +
+                0.20*transitionP +
                 0.15*f20 +
                 0.10*f50 +
-                0.10*f5 +
+                0.05*f5 +
                 0.05*recencyScore;
 
             rows.push({
-                digit:d,score,modelP,support,model,
-                f5,f20,f50,gap,recencyScore
+                digit:d,score,modelP,transitionP,support,model,
+                f5,f20,f50,gap,recencyScore,
+                historyN:history.length
             });
         }
 
         rows.sort((a,b)=>
             (b.score-a.score) ||
             (b.modelP-a.modelP) ||
+            (b.transitionP-a.transitionP) ||
             (a.digit-b.digit)
         );
+
+        this.lastRanking=rows.map(x=>({...x}));
         return rows;
     },
-
     observe5Trade5Pair(){
         if(this.blockPhase!=='TRADE' || this.blockTradeIndex>=5) return null;
 
@@ -11525,10 +11566,12 @@ window.top2BasketLab = {
                 digit:x.digit,
                 score:x.score,
                 modelP:x.modelP,
+                transitionP:x.transitionP,
                 f5:x.f5,
                 f20:x.f20,
                 f50:x.f50,
-                gap:x.gap
+                gap:x.gap,
+                historyN:x.historyN
             })),
             blockNumber:this.blockNumber,
             blockTradeNumber:this.blockTradeIndex+1,
@@ -11542,6 +11585,7 @@ window.top2BasketLab = {
                 support:x.support,
                 model:x.model,
                 score:x.score,
+                transitionP:x.transitionP,
                 f5:x.f5,
                 f20:x.f20,
                 f50:x.f50,
@@ -11678,6 +11722,7 @@ window.top2BasketLab = {
         this.blockTradeIndex=0;
         this.blockNumber=1;
         this.blockPnl=0;
+        this.lastRanking=[];
         this.loadEmpirical();
         this.render();
         const outcomeEl=q('t2-outcome');
@@ -12265,16 +12310,18 @@ window.top2BasketLab = {
                 targetHitProfit:this.targetHitProfit(),
                 enforcedRuleWidthCompatibility:true,
                 effectiveRule:this.rule(),
-                invalidObservationWindowsReobserveImmediately:true,
-                tradeStateRequiresPoolAtLeastBasketWidth:true,
+                everyFiveTickWindowIsValid:true,
+                rankingUsesGlobalRollingHistory:true,
+                minimumHistoryUsesNeutralPrior:true,
+                frequencyPriorStrength:10,
                 profitStopUsesIntegerCents:true,
                 oneTargetProfitWinEndsBlock:true,
                 selectionUsesAllTenDigits:true,
                 observedDigitsAreNotExcluded:true,
-                rankingMethod:'0.60_modelP + 0.15_freq20 + 0.10_freq50 + 0.10_freq5 + 0.05_recency',
+                rankingMethod:'0.45_modelP + 0.20_transitionP + 0.15_smoothedFreq20 + 0.10_smoothedFreq50 + 0.05_smoothedFreq5 + 0.05_recency',
                 stopBlockWhenPnlAtLeastTarget:true,
                 selectionPolicy:this.rule()==='observe5trade5'
-                    ? `OBSERVE_5_FREEZE_ABSENT_POOL_TRADE_UP_TO_5_WIDTH_${this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
+                    ? `OBSERVE_5_CONTEXT_SCORE_ALL_10_TRADE_TOP_${this.basketWidth()}_EXCLUDE_BOTTOM_${10-this.basketWidth()}_STOP_ON_BLOCK_PROFIT`
                     : (this.rule()==='last5'
                         ? 'LAST_5_EXCLUSION_OLDEST_2_ABSENT_DIGITS'
                         : 'TOP_2_HIGHEST_NEXT_TICK_MATCH_PROBABILITIES'),
@@ -12301,7 +12348,9 @@ window.top2BasketLab = {
                 frozenAbsentPool:[...this.frozenAbsentPool],
                 completedTradesInBlock:this.blockTradeIndex,
                 blockPnl:this.blockPnl,
-                basketWidth:this.basketWidth()
+                basketWidth:this.basketWidth(),
+                excludedDigits:this.lastRanking.length ? this.lastRanking.slice(this.basketWidth()).map(x=>x.digit) : [],
+                rankingHistoryN:this.lastRanking[0]?.historyN || 0
             },
             summary:{
                 completedBaskets:completed,
