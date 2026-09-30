@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.4.1 OVERNIGHT TOGGLE FIX: synchronous ON/OFF + non-blocking wake lock; DEMO-only overnight research -->
+    <!-- V57.4.2 OVERNIGHT DEBUG: visible diagnostics + no account-mode blocker on toggle; autonomous trading remains DEMO-gated -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -724,6 +724,14 @@
                                     class="bg-cyan-700 text-white font-bold hover:bg-cyan-600 transition duration-150">
                                 ⬇ EXPORT DATA
                             </button>
+                            <button id="overnightTopBtn" type="button" onclick="setOvernightResearch(true)"
+                                    class="bg-violet-700 text-white font-bold hover:bg-violet-600 transition duration-150">
+                                🌙 OVERNIGHT ON
+                            </button>
+                            <button id="overnightOffTopBtn" type="button" onclick="setOvernightResearch(false)"
+                                    class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150">
+                                ☀️ OVERNIGHT OFF
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -739,6 +747,9 @@
                         class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded">
                     ⬇ EXPORT FULL DATA
                 </button>
+            </div>
+            <div id="overnightDebugBanner" class="mb-2 px-3 py-2 rounded bg-violet-950 border border-violet-700 text-violet-200 text-xs">
+                Overnight diagnostic: use <b>🌙 OVERNIGHT ON</b> above. The UI flag should switch ON immediately. Autonomous execution remains blocked unless the detected account is DEMO.
             </div>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
 [00:00:00] 🤖 Deriv Bot Initialized
@@ -5893,7 +5904,7 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.4.1-OVERNIGHT-TOGGLE-FIX',
+                    version: 'DIGITMATCHSTAR-V57.4.2-OVERNIGHT-DEBUG',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: false,
                     maxTradesBehaviorChanged: false,
@@ -11596,16 +11607,7 @@ window.isBotRunning = true;
             const s = refreshDailyCounter();
             const wantOn = enabled === undefined ? !s.overnightEnabled : !!enabled;
 
-            if (wantOn && accountMode() !== 'DEMO') {
-                s.overnightEnabled = false;
-                saveState(s);
-                if (statusEl) {
-                    statusEl.textContent = 'Select DEMO account first, then turn Overnight research ON';
-                    statusEl.style.color = '#fbbf24';
-                }
-                render(s, accountMode(), currentExecutionMode(), isRunning());
-                return false;
-            }
+            const detectedAccount = accountMode();
 
             s.overnightEnabled = wantOn;
             s.enabled = true;
@@ -11618,9 +11620,15 @@ window.isBotRunning = true;
 
             // Save and render immediately. Wake lock must never block the UI toggle.
             saveState(s);
-            render(s, accountMode(), currentExecutionMode(), isRunning(),
+            try {
+                log(
+                    `🌙 OVERNIGHT TOGGLE | requested=${wantOn ? 'ON' : 'OFF'} | saved=${loadState().overnightEnabled ? 'ON' : 'OFF'} | account=${detectedAccount || 'UNKNOWN'} | mode=${currentExecutionMode() || 'UNKNOWN'}`,
+                    'SYSTEM'
+                );
+            } catch (_) {}
+            render(s, detectedAccount, currentExecutionMode(), isRunning(),
                 wantOn
-                    ? '🌙 Overnight research ON — continuous DEMO sessions'
+                    ? `🌙 Overnight research ON · detected account: ${detectedAccount || 'UNKNOWN'}`
                     : 'Overnight research OFF'
             );
 
@@ -11643,6 +11651,31 @@ window.isBotRunning = true;
         }
 
         window.setOvernightResearch = setOvernightResearch;
+        window.testOvernightResearchToggle = function() {
+            const before = loadState();
+            const okOn = setOvernightResearch(true);
+            const afterOn = loadState();
+            const okOff = setOvernightResearch(false);
+            const afterOff = loadState();
+            setOvernightResearch(true);
+            const finalState = loadState();
+
+            const result = {
+                before: !!before.overnightEnabled,
+                okOn,
+                afterOn: !!afterOn.overnightEnabled,
+                okOff,
+                afterOff: !!afterOff.overnightEnabled,
+                final: !!finalState.overnightEnabled,
+                account: accountMode(),
+                mode: currentExecutionMode()
+            };
+            console.log('Overnight toggle self-test', result);
+            try {
+                log(`🧪 OVERNIGHT SELF-TEST | ${JSON.stringify(result)}`, 'SYSTEM');
+            } catch (_) {}
+            return result;
+        };
 
         function ensurePanel() {
             if (adminAuthorized !== true) {
@@ -11801,6 +11834,8 @@ window.isBotRunning = true;
                 Extra allowance: <b>+${Number(state.extraCyclesToday || 0)}</b><br>
                 Active cycle trades: <b>${activeCycleTradeCount()}</b><br>
                 User Max Trades: <b>${selectedMaxTrades() ?? '-'}</b> · preserved, not overridden<br>
+                Detected account: <b>${account || 'UNKNOWN'}</b> · Execution mode: <b>${mode || 'UNKNOWN'}</b><br>
+                Overnight flag: <b>${state.overnightEnabled ? 'TRUE' : 'FALSE'}</b><br>
                 Screen wake lock: <b>${screenWakeLock ? 'ACTIVE' : (state.overnightEnabled ? 'REQUESTED / browser dependent' : 'OFF')}</b><br>
                 TailGuard: <b>SHADOW RESEARCH</b><br>
                 Autopilot: <b>${state.enabled ? 'ENABLED' : 'PAUSED'}</b>
@@ -11987,7 +12022,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.4.1-OVERNIGHT-TOGGLE-FIX"
+data-version="DIGITMATCHSTAR-V57.4.2-OVERNIGHT-DEBUG"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="demo-only-continuous" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
