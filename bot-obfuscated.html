@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.7.1 ADAPTIVE SYNC + FLEXIBLE MAX: exact adaptive boundaries; user-defined Max Trades; compact controls -->
+    <!-- V57.7.4 SINGLE-BUTTON OVERNIGHT: explicit toggle controls both overnight research and DEMO trading -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -735,9 +735,23 @@
                         class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded">
                     ⬇ EXPORT FULL DATA
                 </button>
+                <button id="resetPerformanceBtn" type="button"
+                        onclick="resetAllPerformanceData()"
+                        class="px-3 py-2 bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold rounded"
+                        title="Clear saved P/L and cycle performance while preserving research histories">
+                    ♻ RESET PERFORMANCE
+                </button>
+                <button id="overnightResearchToggleBtn" type="button"
+                        onclick="setOvernightResearch()"
+                        class="px-3 py-2 bg-violet-700 hover:bg-violet-600 text-white text-xs font-bold rounded"
+                        title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
+                    🌙 OVERNIGHT: OFF
+                </button>
             </div>
             <div id="overnightDebugBanner" class="mb-2 px-3 py-2 rounded bg-violet-950 border border-violet-700 text-violet-200 text-xs">
-                Overnight controller: use <b>🌙 OVERNIGHT ON</b>. This controller is independent of TailGuard admin authorization. It will only auto-run on a confirmed DEMO account.
+                <b>Manual trading:</b> START/STOP controls normal trading.
+                <b>Overnight:</b> one 🌙 button controls both overnight research and DEMO trading.
+                Nothing starts overnight unless you explicitly switch Overnight ON.
             </div>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
 [00:00:00] 🤖 Deriv Bot Initialized
@@ -6066,10 +6080,14 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.7.1-ADAPTIVE-SYNC-FLEXIBLE-MAX',
+                    version: 'DIGITMATCHSTAR-V57.7.4-SINGLE-BUTTON-OVERNIGHT-TRADE-RESEARCH',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: true,
                     maxTradesBehaviorChanged: true,
+                    performanceResetAvailable: true,
+                    performanceResetPreservesResearch: true,
+                    manualStopPreventsAutoRestart: true,
+                    overnightMode: 'SINGLE_BUTTON_EXPLICIT_RESEARCH_PLUS_DEMO_TRADING',
                     reportIncludesSecrets: false
                 },
 
@@ -7061,6 +7079,109 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             
             updatePnL();
             log('💰 PnL reset', 'PNL');
+        }
+
+
+        function resetAllPerformanceData() {
+            if (window.isBotRunning || hasOpenContract() || window.executionLock) {
+                alert('Stop the bot and wait for any open contract to settle before resetting performance data.');
+                log('⚠️ PERFORMANCE RESET BLOCKED: stop bot and settle any open contract first', 'WARNING');
+                return false;
+            }
+
+            const ok = window.confirm(
+                'Clear ALL saved profit/cycle performance data and start fresh?\n\n' +
+                'This will clear cycle P/L histories, session P/L, win/loss/trade counters, ' +
+                'published-cycle IDs, and overnight performance archive.\n\n' +
+                'DNA, Digit Feature, Randomness Auditor, forward-shadow, post-stop-depth, ' +
+                'and DNA realization research will be preserved.'
+            );
+            if (!ok) return false;
+
+            let removedKeys = 0;
+
+            try {
+                const keys = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key) keys.push(key);
+                }
+
+                const exactKeys = new Set([
+                    'matchstar_published_cycle_ids_v1',
+                    'digitmatchstar_overnight_research_archive_v1'
+                ]);
+
+                for (const key of keys) {
+                    if (key.startsWith('matchstar_cycle_history_v3_') || exactKeys.has(key)) {
+                        localStorage.removeItem(key);
+                        removedKeys++;
+                    }
+                }
+            } catch (err) {
+                console.warn('Performance localStorage reset warning:', err);
+            }
+
+            if (window.cyclePerformance) {
+                window.cyclePerformance.current = null;
+                window.cyclePerformance.historyBySymbol = {};
+            }
+
+            window.pnlTracker = {
+                totalInvestment: 0.0,
+                totalPayout: 0.0,
+                netProfit: 0.0,
+                trades: []
+            };
+            window.netProfit = 0.0;
+            window.startingBalance = Number(window.currentBalance) || 0.0;
+            window.cycleLosses = 0;
+
+            window.stats = {
+                totalTicks: Number(window.stats?.totalTicks || 0),
+                tradesExecuted: 0,
+                wins: 0,
+                losses: 0
+            };
+
+            window.tradeCount = 0;
+            window.currentStake = Number(
+                parseFloat(document.getElementById('baseStake')?.value) || window.baseStake || 1
+            );
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('PERFORMANCE_RESET');
+
+            if (window.adaptiveRecoveryHoldState) {
+                window.adaptiveRecoveryHoldState.extensions = 0;
+                window.adaptiveRecoveryHoldState.reranks = 0;
+                window.adaptiveRecoveryHoldState.keeps = 0;
+                window.adaptiveRecoveryHoldState.switches = 0;
+                window.adaptiveRecoveryHoldState.lastDecision = null;
+                window.adaptiveRecoveryHoldState.history = [];
+                window.adaptiveRecoveryHoldState.lastResetReason = 'PERFORMANCE_RESET';
+                window.adaptiveRecoveryHoldState.lastResetAt = Date.now();
+            }
+
+            try { updatePnL(); } catch (_) {}
+            try {
+                const tradeEl = document.getElementById('metricTradeCount');
+                if (tradeEl) tradeEl.textContent = '0';
+                const stakeEl = document.getElementById('metricCurrentStake');
+                if (stakeEl) stakeEl.textContent = `$${Number(window.currentStake || 0).toFixed(2)}`;
+            } catch (_) {}
+            try { window.cyclePerformance?.render?.(); } catch (_) {}
+
+            log(
+                `♻ PERFORMANCE DATA CLEARED | removed ${removedKeys} saved performance key(s) | research histories preserved`,
+                'SYSTEM'
+            );
+
+            alert(
+                'Performance data cleared. Profit and cycle tracking will now start fresh.\n\n' +
+                'Research data was preserved.'
+            );
+            return true;
         }
         
         // ============================================================================
@@ -10102,6 +10223,9 @@ window.executionLock = true;
                 stopBot();
                 return;
             }
+
+            // Explicit START is the only action that re-enables live trade execution.
+            window.manualTradingStopped = false;
             
             window.maxTrades = getUserMaxTrades();
             window.maxCycleTrades = window.maxTrades;
@@ -10200,6 +10324,21 @@ window.isBotRunning = true;
         // STOP BOT - CRITICAL FUNCTION
         function stopBot(reason) {
             if (!window.isBotRunning) return;
+
+            // V57.7.3: STOP means STOP. No background/overnight controller is
+            // allowed to restart trading. Public research may continue separately.
+            window.manualTradingStopped = true;
+
+            // Manual STOP overrides overnight mode and prevents auto-restart.
+            try {
+                if (typeof loadState === 'function' && typeof saveState === 'function') {
+                    const overnightState = loadState();
+                    if (overnightState?.overnightEnabled) {
+                        overnightState.overnightEnabled = false;
+                        saveState(overnightState);
+                    }
+                }
+            } catch (_) {}
 
             // Start the no-money post-stop watch BEFORE archiving the live cycle.
             // This catches the normal "Maximum trades reached" path too.
@@ -12150,11 +12289,23 @@ window.isBotRunning = true;
         function setOvernightResearch(enabled) {
             const s = refreshDailyCounter();
             const wantOn = enabled === undefined ? !s.overnightEnabled : !!enabled;
-
             const detectedAccount = accountMode();
 
+            if (wantOn && detectedAccount !== 'DEMO') {
+                s.overnightEnabled = false;
+                saveState(s);
+                render(s, detectedAccount, currentExecutionMode(), isRunning(),
+                    'Overnight trading is DEMO-only. Switch to DEMO before turning Overnight ON.'
+                );
+                try {
+                    const btn = document.getElementById('overnightResearchToggleBtn');
+                    if (btn) btn.textContent = '🌙 OVERNIGHT: OFF';
+                } catch (_) {}
+                return false;
+            }
+
             s.overnightEnabled = wantOn;
-            s.enabled = true;
+            s.enabled = wantOn;
             s.lastStopReason = null;
 
             if (wantOn) {
@@ -12162,35 +12313,41 @@ window.isBotRunning = true;
                 if (!Number.isFinite(Number(s.overnightCycles))) s.overnightCycles = 0;
             }
 
-            // Save and render immediately. Wake lock must never block the UI toggle.
             saveState(s);
+
             try {
                 log(
-                    `🌙 OVERNIGHT TOGGLE | requested=${wantOn ? 'ON' : 'OFF'} | saved=${loadState().overnightEnabled ? 'ON' : 'OFF'} | account=${detectedAccount || 'UNKNOWN'} | mode=${currentExecutionMode() || 'UNKNOWN'}`,
+                    `🌙 OVERNIGHT ${wantOn ? 'ON' : 'OFF'} | research + ${wantOn ? 'DEMO trading enabled by user' : 'trading stopped'} | account=${detectedAccount}`,
                     'SYSTEM'
                 );
             } catch (_) {}
-            render(s, detectedAccount, currentExecutionMode(), isRunning(),
-                wantOn
-                    ? `🌙 Overnight research ON · detected account: ${detectedAccount || 'UNKNOWN'}`
-                    : 'Overnight research OFF'
-            );
 
             if (wantOn) {
-                acquireScreenWakeLock().then(ok => {
-                    const now = loadState();
-                    if (now.overnightEnabled) {
-                        render(now, accountMode(), currentExecutionMode(), isRunning(),
-                            ok
-                                ? '🌙 Overnight research ON · screen wake lock ACTIVE'
-                                : '🌙 Overnight research ON · wake lock unavailable; keep device sleep disabled'
-                        );
-                    }
-                }).catch(() => {});
-                setTimeout(() => { tick().catch(() => {}); }, 50);
+                window.manualTradingStopped = false;
+                acquireScreenWakeLock().catch(() => {});
+                selectAiAuto();
+
+                if (isRunning() !== true) {
+                    startExistingBot();
+                }
+
+                startOvernightLoop();
+                render(s, detectedAccount, currentExecutionMode(), isRunning(),
+                    '🌙 Overnight ON · research + DEMO trading active'
+                );
             } else {
+                stopOvernightLoop();
                 releaseScreenWakeLock().catch(() => {});
+                if (isRunning() === true) {
+                    stopExistingBot('Overnight switched OFF');
+                }
+                window.manualTradingStopped = true;
+                render(s, detectedAccount, currentExecutionMode(), isRunning(),
+                    '🌙 Overnight OFF · overnight trading stopped'
+                );
             }
+
+            updateSingleOvernightButton();
             return true;
         }
 
@@ -12269,11 +12426,6 @@ window.isBotRunning = true;
                             style="width:100%;border:1px solid #15803d;background:#166534;color:#dcfce7;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
                             ▶ Run 5 more
                         </button>
-                        <button id="tg-ap-overnight" type="button"
-                            onclick="OvernightResearchController.toggle()"
-                            style="grid-column:1 / -1;width:100%;border:1px solid #7c3aed;background:#4c1d95;color:#ede9fe;padding:8px;border-radius:8px;cursor:pointer;font-weight:900">
-                            🌙 Overnight research: OFF
-                        </button>
                         <button id="tg-ap-pause" type="button"
                             style="grid-column:1 / -1;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
                             Pause autopilot
@@ -12290,7 +12442,6 @@ window.isBotRunning = true;
             pauseBtn = panel.querySelector('#tg-ap-pause');
             exportBtn = panel.querySelector('#tg-ap-export');
             moreBtn = panel.querySelector('#tg-ap-more');
-            overnightBtn = panel.querySelector('#tg-ap-overnight');
 
             minimizeBtn.addEventListener('click', () => {
                 setMinimized(body.style.display !== 'none');
@@ -12356,7 +12507,7 @@ window.isBotRunning = true;
             const blocked = account !== 'DEMO';
 
             statusEl.textContent = message ||
-                (state.overnightEnabled ? '🌙 Overnight continuous research active' :
+                (state.overnightEnabled ? '🌙 Overnight research + trading active' :
                 complete ? 'Daily research complete' :
                 blocked ? 'Waiting for confirmed DEMO account' :
                 running === true ? 'Autonomous research running' :
@@ -12372,469 +12523,124 @@ window.isBotRunning = true;
                 Account: <b>${account}</b><br>
                 Mode: <b>${mode}</b><br>
                 Bot: <b>${running === true ? 'RUNNING' : running === false ? 'STOPPED' : 'UNKNOWN'}</b><br>
-                Today: <b>${state.cyclesToday}${state.overnightEnabled ? ' · continuous overnight' : `/${targetToday}`}</b><br>
+                Today: <b>${state.cyclesToday}${state.overnightEnabled ? ' · overnight' : `/${targetToday}`}</b><br>
                 Overnight cycles: <b>${Number(state.overnightCycles || 0)}</b><br>
                 Archive records: <b>${loadOvernightArchive().length}</b><br>
                 Extra allowance: <b>+${Number(state.extraCyclesToday || 0)}</b><br>
                 Active cycle trades: <b>${activeCycleTradeCount()}</b><br>
                 User Max Trades: <b>${selectedMaxTrades() ?? '-'}</b> · preserved, not overridden<br>
                 Detected account: <b>${account || 'UNKNOWN'}</b> · Execution mode: <b>${mode || 'UNKNOWN'}</b><br>
-                Overnight flag: <b>${state.overnightEnabled ? 'TRUE' : 'FALSE'}</b><br>
+                Overnight trade/research flag: <b>${state.overnightEnabled ? 'TRUE' : 'FALSE'}</b><br>
                 Screen wake lock: <b>${screenWakeLock ? 'ACTIVE' : (state.overnightEnabled ? 'REQUESTED / browser dependent' : 'OFF')}</b><br>
                 TailGuard: <b>SHADOW RESEARCH</b><br>
                 Autopilot: <b>${state.enabled ? 'ENABLED' : 'PAUSED'}</b>
                 ${state.lastStopReason ? `<br>Last stop: <b>${String(state.lastStopReason).replace(/[&<>]/g, '')}</b>` : ''}
             `;
 
-            if (overnightBtn) {
-                overnightBtn.textContent = state.overnightEnabled
-                    ? '🌙 Overnight research: ON — stop in morning'
-                    : '🌙 Overnight research: OFF';
-                overnightBtn.style.background = state.overnightEnabled ? '#6d28d9' : '#4c1d95';
-            }
-
             if (pauseBtn) {
                 pauseBtn.textContent = state.enabled ? 'Pause autopilot' : 'Resume autopilot';
             }
         }
 
-        async function tick() {
-            if (!document.body) return;
+        let overnightLoopTimer = null;
 
-            const authorized = await checkTailGuardAdminAccess(false);
-            if (!authorized) {
-                // TailGuard must be invisible and inactive for all non-admin users.
-                hideTailGuardCompletely();
-                if (isRunning() === true && loadState().enabled) {
-                    // Do not interfere with ordinary user bot sessions; only TailGuard automation
-                    // remains disabled. No start/stop action is taken here.
-                }
+        function updateSingleOvernightButton() {
+            const btn = document.getElementById('overnightResearchToggleBtn');
+            if (!btn) return;
+            const enabled = !!loadState().overnightEnabled;
+            btn.textContent = enabled ? '🌙 OVERNIGHT: ON' : '🌙 OVERNIGHT: OFF';
+            btn.classList.toggle('bg-emerald-700', enabled);
+            btn.classList.toggle('hover:bg-emerald-600', enabled);
+            btn.classList.toggle('bg-violet-700', !enabled);
+            btn.classList.toggle('hover:bg-violet-600', !enabled);
+        }
+
+        async function overnightTick() {
+            const s = loadState();
+            if (!s.overnightEnabled) return;
+
+            if (accountMode() !== 'DEMO') {
+                setOvernightResearch(false);
                 return;
             }
 
-            ensurePanel();
+            acquireScreenWakeLock().catch(() => {});
+            selectAiAuto();
 
-            const state = refreshDailyCounter();
-            initialized = true;
-
-            const account = accountMode();
-            let mode = currentExecutionMode();
-            let running = isRunning();
-
-            if (!state.enabled) {
-                render(state, account, mode, running, 'Autopilot paused');
-                return;
+            // Research and trading are both active only because the user explicitly
+            // turned the single Overnight button ON.
+            if (isRunning() !== true) {
+                startExistingBot();
             }
 
-            // HARD BOUNDARY: never autonomously run a REAL account.
-            if (account !== 'DEMO') {
-                if (running === true) {
-                    stopExistingBot(
-                        account === 'REAL'
-                            ? 'REAL account detected — autonomous research blocked'
-                            : 'Account type could not be confirmed as DEMO'
-                    );
-                }
-                render(
-                    state, account, mode, isRunning(),
-                    account === 'REAL'
-                        ? 'BLOCKED: REAL account'
-                        : 'Waiting for confirmed DEMO account'
-                );
-                return;
-            }
-
-
-            if (state.overnightEnabled) {
-                acquireScreenWakeLock().catch(() => {});
-            }
-
-            const targetToday = todayCycleTarget(state);
-            if (!state.overnightEnabled && state.cyclesToday >= targetToday) {
-                if (running !== false) {
-                    stopExistingBot(`Daily research limit reached: ${targetToday} cycles`);
-                }
-                render(state, account, mode, isRunning(), 'Daily research complete');
-                return;
-            }
-
-            if (mode !== 'AI_AUTO' && Date.now() - lastActionAt > 1200) {
-                selectAiAuto();
-                mode = currentExecutionMode();
-            }
-
-            // Never start until AI AUTO is confirmed.
-            if (mode !== 'AI_AUTO') {
-                if (running === true) {
-                    stopExistingBot('AI AUTO not confirmed');
-                }
-                render(state, account, mode, isRunning(), 'Switching to AI AUTO…');
-                return;
-            }
-
-            running = isRunning();
-
-            if (running !== true && Date.now() - lastActionAt > 1500) {
-                const started = startExistingBot();
-                render(
-                    state, account, mode, isRunning(),
-                    started ? 'Starting autonomous AI research…' : 'Waiting to start bot…'
-                );
-                return;
-            }
+            archiveCompletedCycles(completedIds());
 
             render(
-                state, account, mode, running,
-                running === true ? 'Autonomous AI research running' : 'Preparing research'
+                loadState(),
+                accountMode(),
+                currentExecutionMode(),
+                isRunning(),
+                isRunning() === true
+                    ? '🌙 Overnight ON · research + DEMO trading active'
+                    : '🌙 Overnight ON · preparing DEMO trading'
             );
+            updateSingleOvernightButton();
         }
 
-        window.DMSTailGuardAutopilot = {
-            version: TG_AP.version,
-            pause() {
-                const s = loadState();
-                s.enabled = false;
-                saveState(s);
-                stopExistingBot('Autopilot API pause');
-                return s;
-            },
-            resume() {
-                const s = loadState();
-                s.enabled = true;
-                saveState(s);
-                return s;
-            },
-            resetToday() {
-                const s = loadState();
-                s.dayKey = localDayKey();
-                s.cyclesToday = 0;
-                s.knownCompletedIds = completedIds().slice(-500);
-                s.startedAt = new Date().toISOString();
-                s.lastCompletedAt = null;
-                s.lastStopReason = null;
-                s.extraCyclesToday = 0;
-                if (!s.overnightEnabled) s.overnightCycles = 0;
-                saveState(s);
-                return s;
-            },
-            runFiveMore() {
-                const s = refreshDailyCounter();
-                s.extraCyclesToday = Number(s.extraCyclesToday || 0) + 5;
-                s.enabled = true;
-                s.lastStopReason = null;
-                saveState(s);
-                return s;
-            },
-            overnightOn() {
-                setOvernightResearch(true);
-                return loadState();
-            },
-            overnightOff() {
-                setOvernightResearch(false);
-                return loadState();
-            },
-            getOvernightArchive() {
-                return loadOvernightArchive();
-            },
-            getState() {
-                return loadState();
+        function startOvernightLoop() {
+            if (overnightLoopTimer) clearInterval(overnightLoopTimer);
+            overnightLoopTimer = setInterval(() => {
+                overnightTick().catch(() => {});
+            }, 1500);
+            setTimeout(() => {
+                overnightTick().catch(() => {});
+            }, 100);
+        }
+
+        function stopOvernightLoop() {
+            if (overnightLoopTimer) {
+                clearInterval(overnightLoopTimer);
+                overnightLoopTimer = null;
             }
-        };
-
-        (async () => {
-            const authorized = await checkTailGuardAdminAccess(true);
-            if (!authorized) {
-                hideTailGuardCompletely();
-                return;
-            }
-
-            ensurePanel();
-            setInterval(() => { tick().catch(() => {}); }, TG_AP.pollMs);
-            setTimeout(() => { tick().catch(() => {}); }, 500);
-        })();
-    })();
-    </script>
-
-    <script>
-    // ============================================================================
-    // V57.5 — STANDALONE OVERNIGHT RESEARCH CONTROLLER
-    // Independent from TailGuard's /api/capture-access admin gate.
-    // DEMO-only autonomous restart loop. Does not change trading strategy,
-    // recovery policy, multiplier, or user's Max Trades selection.
-    // ============================================================================
-    (() => {
-        'use strict';
-
-        const KEY = 'digitmatchstar_standalone_overnight_v1';
-        const POLL_MS = 1500;
-        let timer = null;
-        let wakeLock = null;
-        let lastActionAt = 0;
-
-        function state() {
-            try {
-                const x = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
-                return {
-                    enabled: x.enabled === true,
-                    startedAt: x.startedAt || null,
-                    restarts: Number(x.restarts || 0),
-                    lastStartAt: x.lastStartAt || null,
-                    lastStatus: x.lastStatus || null
-                };
-            } catch (_) {
-                return { enabled:false, startedAt:null, restarts:0, lastStartAt:null, lastStatus:null };
-            }
-        }
-
-        function save(s) {
-            try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (_) {}
-        }
-
-        function accountMode() {
-            const stored = String(localStorage.getItem('selectedAccountMode') || '').toUpperCase();
-            if (stored === 'DEMO' || stored === 'REAL') return stored;
-
-            const toggle = document.getElementById('accTypeToggle');
-            if (toggle) return toggle.checked ? 'REAL' : 'DEMO';
-
-            const acct =
-                localStorage.getItem('active_account') ||
-                localStorage.getItem('derivAccount') ||
-                localStorage.getItem('derivDemoAccount') ||
-                '';
-            if (/^VRTC/i.test(String(acct))) return 'DEMO';
-
-            return 'UNKNOWN';
-        }
-
-        function executionMode() {
-            try {
-                if (window.sessionState && typeof window.sessionState.mode === 'string') {
-                    const m = window.sessionState.mode.toLowerCase();
-                    if (m === 'ai') return 'AI_AUTO';
-                    if (m === 'instant') return 'INSTANT';
-                }
-            } catch (_) {}
-
-            const desc = String(document.getElementById('mode_description')?.textContent || '').toUpperCase();
-            if (desc.includes('AI AUTO')) return 'AI_AUTO';
-            if (desc.includes('INSTANT')) return 'INSTANT';
-            return 'UNKNOWN';
-        }
-
-        function running() {
-            if (typeof window.isBotRunning === 'boolean') return window.isBotRunning;
-            const btn = document.getElementById('toggleButton');
-            const t = String(btn?.textContent || '').toUpperCase();
-            if (t.includes('STOP')) return true;
-            if (t.includes('START')) return false;
-            return null;
-        }
-
-        function setStatus(message) {
-            const s = state();
-            s.lastStatus = message;
-            save(s);
-
-            const banner = document.getElementById('overnightDebugBanner');
-            if (banner) {
-                const a = accountMode();
-                const m = executionMode();
-                const maxT = document.getElementById('maxTrades')?.value ?? '-';
-                banner.innerHTML =
-                    `<b>🌙 Overnight:</b> ${s.enabled ? 'ON' : 'OFF'} · ` +
-                    `account <b>${a}</b> · mode <b>${m}</b> · Max Trades <b>${maxT}</b> · ` +
-                    `restarts <b>${s.restarts}</b><br>${message}`;
-            }
-
-            try {
-                if (typeof window.log === 'function') window.log(`🌙 ${message}`, 'SYSTEM');
-            } catch (_) {}
-        }
-
-        async function requestWakeLock() {
-            if (!state().enabled) return false;
-            if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return false;
-            try {
-                if (!wakeLock) {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                    wakeLock.addEventListener('release', () => { wakeLock = null; });
-                }
-                return true;
-            } catch (_) {
-                wakeLock = null;
-                return false;
-            }
-        }
-
-        async function releaseWakeLock() {
-            try { if (wakeLock) await wakeLock.release(); } catch (_) {}
-            wakeLock = null;
-        }
-
-        function selectAI() {
-            if (executionMode() === 'AI_AUTO') return true;
-
-            try {
-                if (typeof window.switchMode === 'function') {
-                    window.switchMode('ai');
-                    lastActionAt = Date.now();
-                    return true;
-                }
-            } catch (_) {}
-
-            const btn = document.getElementById('mode_ai');
-            if (btn) {
-                btn.click();
-                lastActionAt = Date.now();
-                return true;
-            }
-            return false;
-        }
-
-        function startBot() {
-            if (running() === true) return true;
-
-            try {
-                if (typeof window.startBot === 'function') {
-                    window.startBot();
-                    lastActionAt = Date.now();
-                    return true;
-                }
-            } catch (_) {}
-
-            const btn = document.getElementById('toggleButton');
-            if (btn && String(btn.textContent || '').toUpperCase().includes('START')) {
-                btn.click();
-                lastActionAt = Date.now();
-                return true;
-            }
-            return false;
-        }
-
-        function stopBot() {
-            if (running() !== true) return true;
-
-            try {
-                if (typeof window.stopBot === 'function') {
-                    window.stopBot();
-                    lastActionAt = Date.now();
-                    return true;
-                }
-            } catch (_) {}
-
-            const btn = document.getElementById('toggleButton');
-            if (btn && String(btn.textContent || '').toUpperCase().includes('STOP')) {
-                btn.click();
-                lastActionAt = Date.now();
-                return true;
-            }
-            return false;
-        }
-
-        async function tick() {
-            const s = state();
-            if (!s.enabled) return;
-
-            const acct = accountMode();
-
-            // Hard safety boundary: unattended restart is DEMO only.
-            if (acct !== 'DEMO') {
-                if (running() === true) stopBot();
-                setStatus(
-                    acct === 'REAL'
-                        ? 'BLOCKED: REAL account detected. Overnight autonomous research is DEMO-only.'
-                        : 'Waiting until account is confirmed as DEMO.'
-                );
-                return;
-            }
-
-            requestWakeLock().catch(() => {});
-
-            if (executionMode() !== 'AI_AUTO') {
-                if (Date.now() - lastActionAt > 1200) selectAI();
-                setStatus('Switching/confirming AI AUTO…');
-                return;
-            }
-
-            if (running() === true) {
-                setStatus('Autonomous research session running.');
-                return;
-            }
-
-            // Once a cycle stops, restart a new session. No daily-cycle limit.
-            if (Date.now() - lastActionAt > 1800) {
-                const ok = startBot();
-                if (ok) {
-                    const now = state();
-                    now.restarts += 1;
-                    now.lastStartAt = new Date().toISOString();
-                    save(now);
-                    setStatus('Starting next overnight research session…');
-                } else {
-                    setStatus('Overnight ON, but START BOT could not be triggered yet.');
-                }
-            }
-        }
-
-        function startLoop() {
-            if (timer) clearInterval(timer);
-            timer = setInterval(() => { tick().catch(() => {}); }, POLL_MS);
-            setTimeout(() => { tick().catch(() => {}); }, 100);
-        }
-
-        function turnOn() {
-            const s = state();
-            s.enabled = true;
-            s.startedAt = s.startedAt || new Date().toISOString();
-            save(s);
-
-            requestWakeLock().catch(() => {});
-            startLoop();
-            setStatus('Overnight controller enabled. It will run session after session on DEMO.');
-            return state();
-        }
-
-        function turnOff() {
-            const s = state();
-            s.enabled = false;
-            save(s);
-            if (timer) {
-                clearInterval(timer);
-                timer = null;
-            }
-            releaseWakeLock().catch(() => {});
-            setStatus('Overnight controller disabled. Current bot session is left unchanged.');
-            return state();
-        }
-
-        function toggle() {
-            return state().enabled ? turnOff() : turnOn();
         }
 
         window.OvernightResearchController = {
-            on: turnOn,
-            off: turnOff,
-            toggle,
-            tick,
-            getState: state,
+            on: () => setOvernightResearch(true),
+            off: () => setOvernightResearch(false),
+            toggle: () => setOvernightResearch(),
+            tick: overnightTick,
+            getState: loadState,
             accountMode,
-            executionMode,
-            isRunning: running
+            executionMode: currentExecutionMode,
+            isRunning
         };
 
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && state().enabled) {
-                requestWakeLock().catch(() => {});
+            if (document.visibilityState === 'visible' && loadState().overnightEnabled) {
+                acquireScreenWakeLock().catch(() => {});
             }
         });
 
-        // Restore overnight loop after refresh/reload.
-        if (state().enabled) {
-            startLoop();
-            setTimeout(() => setStatus('Overnight controller restored after page load.'), 150);
-        } else {
-            setTimeout(() => setStatus('Overnight controller ready.'), 150);
+        // IMPORTANT: overnight never resumes automatically after refresh.
+        // A fresh explicit click is required before unattended trading can start.
+        {
+            const s = loadState();
+            if (s.overnightEnabled) {
+                s.overnightEnabled = false;
+                s.enabled = false;
+                saveState(s);
+            }
+            stopOvernightLoop();
+            setTimeout(() => {
+                updateSingleOvernightButton();
+                render(
+                    loadState(),
+                    accountMode(),
+                    currentExecutionMode(),
+                    isRunning(),
+                    'Overnight ready · click the single 🌙 button to start research + DEMO trading'
+                );
+            }, 150);
         }
     })();
     </script>
@@ -12850,9 +12656,9 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.1-ADAPTIVE-SYNC-FLEXIBLE-MAX"
+data-version="DIGITMATCHSTAR-V57.7.4-SINGLE-BUTTON-OVERNIGHT-TRADE-RESEARCH"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="demo-only-continuous" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 </body>
 </html>
