@@ -1,17 +1,17 @@
 /*
  * DigitMatchStar Research Add-on Loader
  *
- * The main bot already contains TailGuard Autopilot Research v2.6.
- * DO NOT load tailguard-research-v2-autopilot.js here or a duplicate
- * TailGuard research panel will appear.
- *
- * This loader adds only the private Tail Risk Model.
+ * The main bot already contains TailGuard Autopilot Research.
+ * This loader adds:
+ *   1) the private Tail Risk Model
+ *   2) the forward-only Tick DNA -> Tail Risk Lab
  */
 (() => {
   'use strict';
 
   const scripts = [
-    '/tail-risk-model-v1.2-combined.js'
+    '/tail-risk-model-v1.2-combined.js',
+    '/tick-dna-tail-lab-v1.js'
   ];
 
   function alreadyLoaded(src) {
@@ -40,7 +40,7 @@
 
   async function start() {
     for (const src of scripts) await loadScript(src);
-    console.info('[DMS Research Add-on] Tail Risk Model loaded. Embedded TailGuard Autopilot retained.');
+    console.info('[DMS Research Add-on] Tail Risk + Tick DNA Lab loaded.');
   }
 
   if (document.readyState === 'loading') {

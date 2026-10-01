@@ -1,16 +1,10 @@
 /*
  * DigitMatchStars - Deriv Options live connection bridge
+ * v3: emits a full-fidelity research tick event for Tick DNA experiments.
  *
- * IMPORTANT:
- * Load this file AFTER the bot's existing inline JavaScript:
- *
+ * Load AFTER the bot's existing inline JavaScript:
  *   <script src="/deriv-live-bridge.js"></script>
- *
- * It replaces the old post-OTP "authorize" step.
- * The OTP WebSocket URL is already authenticated, so the bot can subscribe
- * to balance/ticks immediately after ws.onopen.
  */
-
 (function () {
   'use strict';
 
@@ -18,7 +12,21 @@
     return localStorage.getItem('auth_method') || 'oauth2_pkce';
   }
 
-  // Replace the existing helper so OAuth does not send an app_id unnecessarily.
+  function emitResearchTick(tick) {
+    try {
+      if (!tick || tick.quote == null) return;
+      const detail = {
+        symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
+        quote: Number(tick.quote),
+        epoch: Number(tick.epoch) || Math.floor(Date.now() / 1000),
+        pip_size: Number.isFinite(Number(tick.pip_size)) ? Number(tick.pip_size) : null,
+        id: tick.id || null,
+        receivedAt: Date.now()
+      };
+      window.dispatchEvent(new CustomEvent('digitmatchstar:tick', { detail }));
+    } catch (_) {}
+  }
+
   window.getAuthenticatedDerivWebSocketUrl = async function () {
     const token = window.getStoredDerivToken
       ? window.getStoredDerivToken()
@@ -31,11 +39,7 @@
     if (!token) throw new Error('No Deriv access token found. Please login again.');
     if (!accountId) throw new Error('No Deriv Options account ID found. Please login again.');
 
-    const payload = {
-      token,
-      account_id: accountId,
-      auth_method: authMethod()
-    };
+    const payload = { token, account_id: accountId, auth_method: authMethod() };
 
     if (authMethod().toLowerCase() === 'pat') {
       payload.app_id =
@@ -59,7 +63,6 @@
     return data.websocket_url;
   };
 
-  // Replace the bot's legacy/partial connection logic.
   window.connectWebSocket = async function () {
     if (window.ws) {
       try { window.ws.close(); } catch (_) {}
@@ -67,9 +70,7 @@
     }
 
     window.isConnecting = true;
-    if (typeof window.updateConnectionStatus === 'function') {
-      window.updateConnectionStatus();
-    }
+    if (typeof window.updateConnectionStatus === 'function') window.updateConnectionStatus();
 
     if (typeof window.log === 'function') {
       window.log('🔗 Requesting Deriv Options OTP WebSocket...', 'SYSTEM');
@@ -80,19 +81,10 @@
       wsUrl = await window.getAuthenticatedDerivWebSocketUrl();
     } catch (error) {
       window.isConnecting = false;
-      if (typeof window.updateConnectionStatus === 'function') {
-        window.updateConnectionStatus();
-      }
-      if (typeof window.log === 'function') {
-        window.log(`❌ ${error.message}`, 'ERROR');
-      }
+      if (typeof window.updateConnectionStatus === 'function') window.updateConnectionStatus();
+      if (typeof window.log === 'function') window.log(`❌ ${error.message}`, 'ERROR');
       if (typeof window.updateTradeStatus === 'function') {
-        window.updateTradeStatus(
-          'ERROR',
-          error.message,
-          'Reconnect from the homepage',
-          'loss'
-        );
+        window.updateTradeStatus('ERROR', error.message, 'Reconnect from the homepage', 'loss');
       }
       return;
     }
@@ -105,17 +97,13 @@
       if (typeof window.resetReconnectionAttempts === 'function') {
         window.resetReconnectionAttempts();
       }
-
       if (typeof window.log === 'function') {
         window.log('✅ Authenticated Deriv Options WebSocket connected', 'SYSTEM');
       }
-
       if (typeof window.updateConnectionStatus === 'function') {
         window.updateConnectionStatus();
       }
 
-      // IMPORTANT:
-      // Do NOT send {authorize: token}. The OTP URL is already authenticated.
       const symbolEl = document.getElementById('symbol');
       const symbol = symbolEl ? symbolEl.value : 'R_100';
 
@@ -149,9 +137,13 @@
       try {
         const data = JSON.parse(event.data);
 
-        // Existing bot handler understands tick/history/proposal/buy/balance.
-        if (data.msg_type === 'tick' && typeof window.handleTick === 'function') {
-          window.handleTick(data.tick);
+        if (data.msg_type === 'tick') {
+          // NEW: expose the complete tick to shadow research BEFORE bot processing.
+          emitResearchTick(data.tick);
+
+          if (typeof window.handleTick === 'function') {
+            window.handleTick(data.tick);
+          }
           return;
         }
 
@@ -168,10 +160,7 @@
 
     window.ws.onclose = function () {
       window.isConnecting = false;
-
-      if (typeof window.updateConnectionStatus === 'function') {
-        window.updateConnectionStatus();
-      }
+      if (typeof window.updateConnectionStatus === 'function') window.updateConnectionStatus();
 
       if (typeof window.log === 'function') {
         window.log('🔌 Deriv WebSocket disconnected', 'SYSTEM');
@@ -200,20 +189,6 @@
     };
   };
 
-
-  // ------------------------------------------------------------
-  // IMPORTANT: connect independently of the START BOT button.
-  //
-  // The original bot blocks START while AI confidence is 0%.
-  // But confidence cannot increase until the engine receives its
-  // warm-up history. That created a deadlock:
-  //
-  //   START blocked -> no WebSocket -> no history -> 0% forever.
-  //
-  // Connect as soon as the authenticated bot page is ready. This
-  // only opens the market data/account connection; it does NOT
-  // start automated trading.
-  // ------------------------------------------------------------
   async function autoConnectForWarmup() {
     const authenticated =
       localStorage.getItem('bot_authenticated') === 'true' &&
@@ -225,7 +200,6 @@
       return;
     }
 
-    // Do not create a second socket if one is already connected/connecting.
     if (window.ws &&
         (window.ws.readyState === WebSocket.OPEN ||
          window.ws.readyState === WebSocket.CONNECTING)) {
@@ -246,7 +220,6 @@
     }
   }
 
-  // Wait until the original bot script has finished initializing.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       setTimeout(autoConnectForWarmup, 400);
@@ -255,5 +228,5 @@
     setTimeout(autoConnectForWarmup, 400);
   }
 
-  console.log('✅ Deriv live connection bridge v2 loaded (auto-connect warm-up enabled)');
+  console.log('✅ Deriv live connection bridge v3 loaded (Tick DNA event enabled)');
 })();
