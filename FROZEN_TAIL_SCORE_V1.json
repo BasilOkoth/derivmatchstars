@@ -1,0 +1,101 @@
+{
+  "name": "Tick DNA Tail Score V1",
+  "status": "FROZEN BEFORE VALIDATION",
+  "discovery_cohort": {
+    "symbol": "R_10",
+    "cycles": 20,
+    "extreme_tail_cycles": 5,
+    "target": "maximumTradeDepth >= 15"
+  },
+  "validation_cohort": {
+    "symbol": "R_10",
+    "target_cycles": 100,
+    "shadow_only": true
+  },
+  "bands": [
+    {
+      "min": 80,
+      "label": "VERY HIGH"
+    },
+    {
+      "min": 60,
+      "label": "HIGH"
+    },
+    {
+      "min": 40,
+      "label": "WATCH"
+    },
+    {
+      "min": 0,
+      "label": "LOW"
+    }
+  ],
+  "rules": [
+    {
+      "stage": 0,
+      "feature": "w5 same-last-digit transition rate",
+      "condition": ">= 0.20",
+      "weight": 20
+    },
+    {
+      "stage": 0,
+      "feature": "w10 same-last-digit transition rate",
+      "condition": ">= 0.11",
+      "weight": 15
+    },
+    {
+      "stage": 0,
+      "feature": "bot entropy",
+      "condition": ">= 0.99",
+      "weight": 10
+    },
+    {
+      "stage": 0,
+      "feature": "bot chi2",
+      "condition": "<= 8.00",
+      "weight": 10
+    },
+    {
+      "stage": 3,
+      "feature": "w5 up-rate",
+      "condition": ">= 0.50",
+      "weight": 20
+    },
+    {
+      "stage": 3,
+      "feature": "w5 mean quote delta",
+      "condition": "> 0",
+      "weight": 10
+    },
+    {
+      "stage": 3,
+      "feature": "full-tick adjacent repeats",
+      "condition": ">= 1",
+      "weight": 10
+    },
+    {
+      "stage": 5,
+      "feature": "p5",
+      "condition": "<= 0.50",
+      "weight": 10
+    },
+    {
+      "stage": 5,
+      "feature": "next-tick probability",
+      "condition": "<= 0.105",
+      "weight": 10
+    },
+    {
+      "stage": 7,
+      "feature": "w5 quote-delta std",
+      "condition": ">= 0.08",
+      "weight": 15
+    },
+    {
+      "stage": 7,
+      "feature": "w25 same-last-digit transition rate",
+      "condition": ">= 0.08",
+      "weight": 10
+    }
+  ]
+}

@@ -1,13 +1,13 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Tick DNA V1.1 actual-bot wiring.
+ * Tick DNA Validation V2 · Frozen Tail Score V1.
  */
 (() => {
   'use strict';
 
   const scripts = [
     '/tail-risk-model-v1.2-combined.js',
-    '/tick-dna-tail-lab-v1.js?v=1.1'
+    '/tick-dna-tail-validation-v2.js?v=2.0'
   ];
 
   function alreadyLoaded(src) {
@@ -33,7 +33,7 @@
 
   async function start() {
     for (const src of scripts) await loadScript(src);
-    console.info('[DMS Research Add-on] Tick DNA V1.1 loaded.');
+    console.info('[DMS Research Add-on] Tick DNA Validation V2 loaded.');
   }
 
   if (document.readyState === 'loading') {
