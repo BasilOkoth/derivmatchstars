@@ -12,8 +12,17 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TICK-DNA-TAIL-VALIDATION-V2.0-FROZEN-SCORE-V1';
+  const VERSION = 'TICK-DNA-TAIL-VALIDATION-V2.1-IDB-FROZEN-SCORE-V1';
   const STORE_KEY = 'digitmatchstar_tick_dna_tail_validation_v2';
+  const DB_NAME = 'DigitMatchStarTickDNA';
+  const DB_VERSION = 1;
+  const DB_STORE = 'validation';
+  const DB_RECORD_KEY = 'tick-dna-tail-validation-v2';
+  let storeCache = null;
+  let persistenceReady = false;
+  let persistenceState = 'starting';
+  let persistenceError = null;
+  let writeChain = Promise.resolve();
   const MIN_KEY = 'matchstar_panel_min_tick_dna_validation_v2';
   const TARGET_CYCLES = 100;
   const MAX_CONTEXT_TICKS = 100;
@@ -126,20 +135,132 @@
     };
   }
 
-  function loadStore() {
+  function normalizeStore(parsed) {
+    if (!parsed || typeof parsed !== 'object') return emptyStore();
+    return Object.assign(emptyStore(), parsed, {
+      version: VERSION,
+      cycles: Array.isArray(parsed.cycles) ? parsed.cycles : []
+    });
+  }
+
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) {
+        reject(new Error('IndexedDB is not supported by this browser.'));
+        return;
+      }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          db.createObjectStore(DB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB open failed.'));
+    });
+  }
+
+  async function idbGet() {
+    const db = await openDB();
     try {
-      const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (!parsed || typeof parsed !== 'object') return emptyStore();
-      return Object.assign(emptyStore(), parsed, {
-        cycles: Array.isArray(parsed.cycles) ? parsed.cycles : []
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get(DB_RECORD_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error || new Error('IndexedDB read failed.'));
       });
-    } catch (_) {
-      return emptyStore();
+    } finally {
+      db.close();
     }
   }
 
+  async function idbPut(value) {
+    const db = await openDB();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(value, DB_RECORD_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed.'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted.'));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function idbDelete() {
+    const db = await openDB();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).delete(DB_RECORD_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB delete failed.'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB delete aborted.'));
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function initializePersistence() {
+    persistenceState = 'loading';
+    persistenceError = null;
+    try {
+      let persisted = await idbGet();
+
+      // One-time migration from the old localStorage build, if present.
+      if (!persisted) {
+        try {
+          const legacyRaw = localStorage.getItem(STORE_KEY);
+          if (legacyRaw) {
+            const legacy = JSON.parse(legacyRaw);
+            if (legacy && typeof legacy === 'object') {
+              persisted = normalizeStore(legacy);
+              await idbPut(persisted);
+              try { localStorage.removeItem(STORE_KEY); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+
+      storeCache = normalizeStore(persisted);
+      persistenceReady = true;
+      persistenceState = persisted ? 'ready' : 'ready-empty';
+      return storeCache;
+    } catch (err) {
+      storeCache = emptyStore();
+      persistenceReady = true;
+      persistenceState = 'error';
+      persistenceError = String(err?.message || err || 'Unknown IndexedDB error');
+      console.error('[Tick DNA V2.1] IndexedDB initialization failed:', err);
+      return storeCache;
+    }
+  }
+
+  function loadStore() {
+    if (!storeCache) storeCache = emptyStore();
+    return clone(storeCache) || emptyStore();
+  }
+
   function saveStore(store) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (_) {}
+    storeCache = normalizeStore(clone(store) || store);
+    if (!persistenceReady) return;
+
+    const snapshot = clone(storeCache);
+    writeChain = writeChain
+      .then(() => idbPut(snapshot))
+      .then(() => {
+        persistenceState = 'ready';
+        persistenceError = null;
+      })
+      .catch(err => {
+        persistenceState = 'error';
+        persistenceError = String(err?.message || err || 'IndexedDB write failed');
+        console.error('[Tick DNA V2.1] IndexedDB write failed:', err);
+      });
   }
 
   function formatQuote(t) {
@@ -636,11 +757,21 @@
     render();
   }
 
-  function reset() {
-    const ok = confirm('Reset the Tick DNA 100-cycle validation cohort? This deletes the locally stored cohort.');
+  async function reset() {
+    const ok = confirm('Reset the Tick DNA 100-cycle validation cohort? This deletes the persistent IndexedDB cohort.');
     if (!ok) return;
-    localStorage.removeItem(STORE_KEY);
+    storeCache = emptyStore();
     activeCycleId = null;
+    persistenceState = 'clearing';
+    render();
+    try {
+      await idbDelete();
+      persistenceState = 'ready-empty';
+      persistenceError = null;
+    } catch (err) {
+      persistenceState = 'error';
+      persistenceError = String(err?.message || err || 'IndexedDB delete failed');
+    }
     render();
   }
 
@@ -745,16 +876,29 @@
     armBtn = mk('ARM 100-CYCLE VALIDATION', '#2563eb');
     exportBtn = mk('EXPORT JSON', '#047857');
     resetBtn = mk('RESET', '#7f1d1d');
+    const overnightBtn = mk('🌙 OVERNIGHT DEMO', '#6d28d9');
 
     armBtn.onclick = arm;
     exportBtn.onclick = exportData;
     resetBtn.onclick = reset;
+    overnightBtn.onclick = () => {
+      if (!isDemoAccount()) {
+        alert('Overnight trading is DEMO-only. Switch to the Demo/Virtual account first.');
+        return;
+      }
+      if (typeof window.setOvernightResearch === 'function') {
+        window.setOvernightResearch();
+        setTimeout(render, 250);
+      } else {
+        alert('The bot overnight controller is not available on this page.');
+      }
+    };
     min.onclick = () => {
       const isMin = body.style.display === 'none';
       setMinimized(!isMin);
     };
 
-    controls.append(armBtn, exportBtn, resetBtn);
+    controls.append(armBtn, exportBtn, resetBtn, overnightBtn);
     body.append(statusEl, detailEl, controls);
     header.append(title, min);
     panel.append(header, body);
@@ -783,6 +927,9 @@
       <div><b>Symbol:</b> ${store.symbolAtArm || currentSymbol()}</div>
       <div><b>Active cycle:</b> ${active}</div>
       <div><b>Live tick buffer:</b> ${liveTicks.length} ${liveTicks.length ? '✅' : '⚠️ waiting for bot ticks'}</div>
+      <div><b>Persistent storage:</b> ${persistenceState === 'ready' || persistenceState === 'ready-empty' ? '✅ IndexedDB' : persistenceState === 'error' ? '❌ IndexedDB error' : '⏳ ' + persistenceState}</div>
+      ${persistenceError ? `<div style="color:#fca5a5"><b>Storage error:</b> ${persistenceError}</div>` : ''}
+      <div><b>Overnight:</b> ${window.OvernightResearchController?.getState?.()?.overnightEnabled ? '🌙 ON · DEMO autopilot active' : 'OFF'}</div>
       <hr style="border:0;border-top:1px solid #1e293b;margin:8px 0">
       <div><b>Reached >5:</b> ${(s.beyond5*100).toFixed(1)}%</div>
       <div><b>Reached >10:</b> ${(s.beyond10*100).toFixed(1)}%</div>
@@ -810,6 +957,10 @@
   }
 
   function pollCycles() {
+    if (!persistenceReady) {
+      render();
+      return;
+    }
     const cp = getCyclePerformance();
     if (!cp) {
       render();
@@ -860,19 +1011,29 @@
     version: VERSION,
     export: exportData,
     store: () => clone(loadStore()),
-    liveTicks: () => clone(liveTicks)
+    liveTicks: () => clone(liveTicks),
+    persistence: () => ({
+      ready: persistenceReady,
+      state: persistenceState,
+      error: persistenceError
+    })
   });
+
+  async function boot() {
+    ensurePanel();
+    render();
+    await initializePersistence();
+    render();
+    setInterval(pollCycles, POLL_MS);
+    console.info(`[${VERSION}] IndexedDB persistence ready`);
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-      ensurePanel();
-      setInterval(pollCycles, POLL_MS);
-      render();
+      boot().catch(err => console.error(`[${VERSION}] boot failed`, err));
     }, { once: true });
   } else {
-    ensurePanel();
-    setInterval(pollCycles, POLL_MS);
-    render();
+    boot().catch(err => console.error(`[${VERSION}] boot failed`, err));
   }
 
   console.info(`[${VERSION}] loaded`);
