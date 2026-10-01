@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.7.4 SINGLE-BUTTON OVERNIGHT: explicit toggle controls both overnight research and DEMO trading -->
+    <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -368,6 +368,142 @@
     
 
 /* Experimental lab CSS removed in V51 CORE CLEAN. */
+
+        /* === V57.7.5 Premium research control bar === */
+        .research-action-bar{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:14px;
+            flex-wrap:wrap;
+            padding:14px 16px;
+            margin-bottom:12px;
+            border:1px solid rgba(148,163,184,.18);
+            border-radius:16px;
+            background:
+                radial-gradient(circle at top right, rgba(34,197,94,.08), transparent 34%),
+                linear-gradient(145deg, rgba(17,24,39,.96), rgba(15,23,42,.92));
+            box-shadow:
+                0 12px 30px rgba(0,0,0,.24),
+                inset 0 1px 0 rgba(255,255,255,.03);
+            backdrop-filter: blur(12px);
+        }
+
+        .research-action-title-wrap{
+            display:flex;
+            flex-direction:column;
+            gap:2px;
+            min-width:180px;
+        }
+
+        .research-action-title{
+            font-size:1rem;
+            font-weight:900;
+            color:#e5e7eb;
+            letter-spacing:.01em;
+        }
+
+        .research-action-subtitle{
+            font-size:.72rem;
+            color:#94a3b8;
+            line-height:1.25;
+        }
+
+        .research-action-buttons{
+            display:flex;
+            align-items:center;
+            justify-content:flex-end;
+            gap:10px;
+            flex-wrap:wrap;
+            margin-left:auto;
+        }
+
+        .premium-research-btn{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:8px;
+            min-height:44px;
+            padding:0 16px;
+            border-radius:12px;
+            border:1px solid rgba(255,255,255,.12);
+            color:white;
+            font-size:.82rem;
+            font-weight:850;
+            letter-spacing:.01em;
+            box-shadow:
+                0 8px 18px rgba(0,0,0,.24),
+                inset 0 1px 0 rgba(255,255,255,.06);
+            transition:
+                transform .12s ease,
+                filter .16s ease,
+                box-shadow .16s ease,
+                border-color .16s ease;
+            white-space:nowrap;
+            cursor:pointer;
+        }
+
+        .premium-research-btn:hover{
+            transform:translateY(-1px);
+            filter:brightness(1.06);
+            box-shadow:
+                0 12px 24px rgba(0,0,0,.28),
+                inset 0 1px 0 rgba(255,255,255,.08);
+            border-color:rgba(255,255,255,.18);
+        }
+
+        .premium-research-btn:active{
+            transform:translateY(0) scale(.99);
+        }
+
+        .premium-research-btn:focus-visible{
+            outline:none;
+            box-shadow:
+                0 0 0 3px rgba(148,163,184,.18),
+                0 10px 22px rgba(0,0,0,.24);
+        }
+
+        .premium-export-btn{
+            background:linear-gradient(135deg,#0f766e,#0891b2);
+        }
+
+        .premium-reset-btn{
+            background:linear-gradient(135deg,#9f1239,#be123c);
+        }
+
+        .premium-overnight-btn{
+            background:linear-gradient(135deg,#5b21b6,#7c3aed);
+        }
+
+        .premium-overnight-btn.is-on{
+            background:linear-gradient(135deg,#047857,#059669);
+            box-shadow:
+                0 10px 24px rgba(5,150,105,.22),
+                inset 0 1px 0 rgba(255,255,255,.08);
+        }
+
+        @media (max-width: 767px){
+            .research-action-bar{
+                align-items:stretch;
+                padding:12px;
+                gap:12px;
+            }
+            .research-action-title-wrap{
+                width:100%;
+            }
+            .research-action-buttons{
+                width:100%;
+                margin-left:0;
+                display:grid;
+                grid-template-columns:1fr;
+                gap:9px;
+            }
+            .premium-research-btn{
+                width:100%;
+                min-height:46px;
+            }
+        }
+
 </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -728,25 +864,33 @@
         
         <!-- LOG AREA -->
         <div id="log-column" class="w-full flex flex-col">
-            <div class="flex items-center justify-between gap-2 mb-2 border-b border-gray-700 pb-1">
-                <h2 class="text-lg font-bold text-gray-300">Live Log</h2>
-                <button id="fullObservabilityExportBtn" type="button"
-                        onclick="downloadMatchStarResearchReport()"
-                        class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold rounded">
-                    ⬇ EXPORT FULL DATA
-                </button>
-                <button id="resetPerformanceBtn" type="button"
-                        onclick="resetAllPerformanceData()"
-                        class="px-3 py-2 bg-rose-700 hover:bg-rose-600 text-white text-xs font-bold rounded"
-                        title="Clear saved P/L and cycle performance while preserving research histories">
-                    ♻ RESET PERFORMANCE
-                </button>
-                <button id="overnightResearchToggleBtn" type="button"
-                        onclick="setOvernightResearch()"
-                        class="px-3 py-2 bg-violet-700 hover:bg-violet-600 text-white text-xs font-bold rounded"
-                        title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
-                    🌙 OVERNIGHT: OFF
-                </button>
+            <div class="research-action-bar">
+                <div class="research-action-title-wrap">
+                    <div class="research-action-title">Live Log</div>
+                    <div class="research-action-subtitle">Research controls and session tools</div>
+                </div>
+
+                <div class="research-action-buttons">
+                    <button id="fullObservabilityExportBtn" type="button"
+                            onclick="downloadMatchStarResearchReport()"
+                            class="premium-research-btn premium-export-btn">
+                        <span>⬇</span><span>EXPORT FULL DATA</span>
+                    </button>
+
+                    <button id="resetPerformanceBtn" type="button"
+                            onclick="resetAllPerformanceData()"
+                            class="premium-research-btn premium-reset-btn"
+                            title="Clear saved P/L and cycle performance while preserving research histories">
+                        <span>♻</span><span>RESET PERFORMANCE</span>
+                    </button>
+
+                    <button id="overnightResearchToggleBtn" type="button"
+                            onclick="setOvernightResearch()"
+                            class="premium-research-btn premium-overnight-btn"
+                            title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
+                        <span>🌙</span><span id="overnightResearchToggleLabel">OVERNIGHT: OFF</span>
+                    </button>
+                </div>
             </div>
             <div id="overnightDebugBanner" class="mb-2 px-3 py-2 rounded bg-violet-950 border border-violet-700 text-violet-200 text-xs">
                 <b>Manual trading:</b> START/STOP controls normal trading.
@@ -5933,6 +6077,7 @@ window.cyclePerformance = {
                     adaptiveRecoveryHoldState: safeClone(window.adaptiveRecoveryHoldState),
                     hardCycleTradeCap: null,
                     cycleTradeCapSource: 'USER_DEFINED_MAX_TRADES',
+                    recoverySubmissionState: safeClone(window.recoverySubmissionState),
                     minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
                 },
 
@@ -6080,7 +6225,7 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.7.4-SINGLE-BUTTON-OVERNIGHT-TRADE-RESEARCH',
+                    version: 'DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: true,
                     maxTradesBehaviorChanged: true,
@@ -6088,6 +6233,7 @@ window.cyclePerformance = {
                     performanceResetPreservesResearch: true,
                     manualStopPreventsAutoRestart: true,
                     overnightMode: 'SINGLE_BUTTON_EXPLICIT_RESEARCH_PLUS_DEMO_TRADING',
+                    executionIntegrityFix: 'DUPLICATE_RECOVERY_GUARD_T0_SEPARATION_DERIV_ONLY_CONFIRMED_WIN',
                     reportIncludesSecrets: false
                 },
 
@@ -6690,6 +6836,16 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.fastRecoveryEnabled = true;
         window.cycleHasPurchasedContract = false;
 
+        // V57.7.6 execution-integrity guards.
+        // A pending proposal/buy is considered part of the execution lane and
+        // blocks any second order until Deriv accepts/rejects the first one.
+        window.recoverySubmissionState = {
+            sourceContractId: null,
+            inFlight: false,
+            startedAt: null,
+            origin: null
+        };
+
         function hasOpenContract() {
             return !!(
                 window.activeContract &&
@@ -6700,7 +6856,21 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         }
 
         function mayPlaceNextTrade() {
-            return !!(window.isBotRunning && !window.stopAfterWin && !window.executionLock && !hasOpenContract() && window.nextTradeAllowed);
+            const hasPendingOrder = !!(
+                window.pendingProposals &&
+                window.pendingProposals.size > 0
+            );
+            const recoveryInFlight = !!window.recoverySubmissionState?.inFlight;
+
+            return !!(
+                window.isBotRunning &&
+                !window.stopAfterWin &&
+                !window.executionLock &&
+                !hasOpenContract() &&
+                !hasPendingOrder &&
+                !recoveryInFlight &&
+                window.nextTradeAllowed
+            );
         }
         
         // Statistics
@@ -9128,7 +9298,11 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 log('⚡ STREAM-SYNC RECOVERY: arming next contract now for the NEXT streaming tick', 'TRADE');
-                processTickImmediately(tickData);
+                submitRecoveryOnce(
+                    fastResult.contractId,
+                    tickData,
+                    'PUBLIC_STREAM_FAST_LOSS'
+                );
             } else if (
                 window.isBotRunning &&
                 !fastResult?.handled &&
@@ -9889,8 +10063,77 @@ function rotateHybridDigit(reason = '') {
         try { localStorage.removeItem('matchstar_tail_max_loss'); } catch (_) {}
         window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
+        function submitRecoveryOnce(sourceContractId, tick, origin = 'STREAM') {
+            const id = Number(sourceContractId || 0);
+            if (!id || !tick) return false;
+
+            const sourceContract = window.settlementLedger?.get(id) || null;
+            if (sourceContract?.recoverySubmitted) {
+                log(
+                    `🛡️ DUPLICATE RECOVERY BLOCKED | source contract ${id} | ${origin}`,
+                    'WARNING'
+                );
+                return false;
+            }
+
+            if (
+                window.recoverySubmissionState?.inFlight ||
+                (window.pendingProposals && window.pendingProposals.size > 0)
+            ) {
+                log(
+                    `🛡️ RECOVERY SUBMISSION BUSY | source contract ${id} | existing order still in flight`,
+                    'WARNING'
+                );
+                return false;
+            }
+
+            const beforePending = Number(window.pendingProposals?.size || 0);
+
+            window.recoverySubmissionState = {
+                sourceContractId: id,
+                inFlight: true,
+                startedAt: Date.now(),
+                origin
+            };
+
+            processTickImmediately(tick);
+
+            const afterPending = Number(window.pendingProposals?.size || 0);
+            const submitted =
+                afterPending > beforePending ||
+                window.executionLock === true;
+
+            if (submitted) {
+                if (sourceContract) {
+                    sourceContract.recoverySubmitted = true;
+                    sourceContract.recoverySubmittedAt = Date.now();
+                    sourceContract.recoverySubmissionOrigin = origin;
+                }
+
+                log(
+                    `🛡️ RECOVERY SUBMISSION LOCKED | source contract ${id} | ${origin}`,
+                    'TRADE'
+                );
+                return true;
+            }
+
+            // No proposal/buy was actually armed; allow a later legitimate retry.
+            window.recoverySubmissionState = {
+                sourceContractId: null,
+                inFlight: false,
+                startedAt: null,
+                origin: null
+            };
+            return false;
+        }
+
         function processTickImmediately(tick) {
             if (window.stopAfterWin) return;
+
+            // Never allow a second order while a proposal/buy is still awaiting
+            // an API response. This closes the FAST LOSS vs reconciliation race.
+            if (window.pendingProposals && window.pendingProposals.size > 0) return;
+
             if (!mayPlaceNextTrade()) return;
 
             // V21: INSTANT may attempt at most ONE order from any market epoch.
@@ -10088,18 +10331,35 @@ window.executionLock = true;
                     }
                 }
 
+                const isT0Coincidence = Number(tick.digit) === Number(selectedDigit);
+
                 updateTradeStatus(
                     window.cycleHasPurchasedContract ? 'RECOVERY CHECK' : 'ENTRY CHECK',
-                    `Evaluating trade #${nextTradeNumber}: $${window.currentStake.toFixed(2)} on digit ${selectedDigit}`,
-                    window.cycleHasPurchasedContract
-                        ? 'Checking live recovery quote'
-                        : 'Checking live probability and break-even edge',
+                    isT0Coincidence
+                        ? `T+0 observed digit ${tick.digit} = target ${selectedDigit} · NOT a contract win`
+                        : `Evaluating trade #${nextTradeNumber}: $${window.currentStake.toFixed(2)} on digit ${selectedDigit}`,
+                    isT0Coincidence
+                        ? 'Current tick arrived before purchase · waiting for purchased T+1 settlement'
+                        : (
+                            window.cycleHasPurchasedContract
+                                ? 'Checking live recovery quote'
+                                : 'Checking live probability and break-even edge'
+                        ),
                     'normal'
                 );
 
+                if (isT0Coincidence) {
+                    log(
+                        `🟡 T+0 MATCH OBSERVED | digit ${tick.digit} = target ${selectedDigit} | ` +
+                        `pre-purchase coincidence only · NOT eligible for settlement`,
+                        'WARNING'
+                    );
+                }
+
                 log(
                     `${window.cycleHasPurchasedContract ? '🔄 RECOVERY' : '🔎 ENTRY'} attempt #${nextTradeNumber}: ` +
-                    `${tick.formattedPrice || tick.price} (Digit ${tick.digit}) → target ${selectedDigit}`,
+                    `${tick.formattedPrice || tick.price} (Digit ${tick.digit}) → target ${selectedDigit}` +
+                    `${isT0Coincidence ? ' [T+0 ONLY — NOT A WIN]' : ''}`,
                     'TRADE'
                 );
 
@@ -10150,7 +10410,11 @@ window.executionLock = true;
                 martingaleStep: window.martingaleStep,
                 symbol,
                 executionMode: sessionState.mode,
-                modelSnapshot
+                modelSnapshot,
+                recoverySourceContractId:
+                    window.cycleHasPurchasedContract
+                        ? Number(window.recoverySubmissionState?.sourceContractId || 0) || null
+                        : null
             });
             
             const sentReqId = sendRequest(proposalRequest);
@@ -10759,7 +11023,7 @@ window.isBotRunning = true;
                         'SMART OVERRIDE 🧠',
                         `Digit ${pending.predictedDigit} persisted ${persistence} evaluations`,
                         `Edge ${(evaluation.edge * 100).toFixed(2)} pp · executing without waiting for +0.10 pp`,
-                        'win'
+                        'trade'
                     );
                 }
             }
@@ -10835,6 +11099,22 @@ window.isBotRunning = true;
             // Proposal attempts are not real trades in V10.
             window.executionLock = false;
             window.nextTradeAllowed = true;
+
+            if (window.recoverySubmissionState?.inFlight) {
+                const sourceId = Number(window.recoverySubmissionState.sourceContractId || 0);
+                const source = window.settlementLedger?.get(sourceId) || null;
+                if (source && !source.settled) {
+                    source.recoverySubmitted = false;
+                    source.recoverySubmittedAt = null;
+                    source.recoverySubmissionOrigin = null;
+                }
+                window.recoverySubmissionState = {
+                    sourceContractId: null,
+                    inFlight: false,
+                    startedAt: null,
+                    origin: null
+                };
+            }
             updateSessionDisplay();
             updatePnL();
         }
@@ -10897,6 +11177,19 @@ window.isBotRunning = true;
                 buyData.buy_price ?? pending?.askPrice ?? pending?.stake ?? 0
             );
 
+            if (
+                pending?.recoverySourceContractId &&
+                Number(window.recoverySubmissionState?.sourceContractId || 0) ===
+                    Number(pending.recoverySourceContractId)
+            ) {
+                window.recoverySubmissionState = {
+                    sourceContractId: null,
+                    inFlight: false,
+                    startedAt: null,
+                    origin: null
+                };
+            }
+
             // A trade becomes real only after Deriv confirms the purchase.
             window.tradeCount++;
             window.stats.tradesExecuted++;
@@ -10956,6 +11249,9 @@ window.isBotRunning = true;
                 fastOutcome: null,
                 fastOutcomeAt: null,
                 progressionApplied: false,
+                recoverySubmitted: false,
+                recoverySubmittedAt: null,
+                recoverySubmissionOrigin: null,
                 armedAfterEpoch: Number(window.lastTick?.raw?.epoch || 0),
                 serverStartEpoch: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0),
                 alignmentReady: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0) > 0,
@@ -11039,8 +11335,17 @@ window.isBotRunning = true;
                 );
             }
 
-            log(`🎯 FAST MATCH: ${observedDigit} = ${contract.predictedDigit} on contract ${contract.contractId}. ALL NEW TRADES FROZEN pending Deriv settlement.`, 'WIN');
-            updateTradeStatus('MATCH DETECTED 🎯', `Digit ${observedDigit} matched`, 'Trades frozen — confirming Deriv settlement', 'win');
+            log(
+                `🟠 PROVISIONAL PUBLIC-TICK MATCH | ${observedDigit} = ${contract.predictedDigit} | ` +
+                `contract ${contract.contractId} | NOT YET A WIN · waiting for Deriv settlement`,
+                'WARNING'
+            );
+            updateTradeStatus(
+                'MATCH PENDING CONFIRMATION',
+                `Public tick digit ${observedDigit} matched target ${contract.predictedDigit}`,
+                'No win shown until Deriv confirms the paid settlement tick',
+                'trade'
+            );
         }
 
         // V14: epoch-aligned public tick buffer for one-tick contracts.
@@ -11115,7 +11420,11 @@ window.isBotRunning = true;
                 const currentTick = window.lastTick;
                 if (currentTick) {
                     log('⚡ BUFFERED OUTCOME RESOLVED · submitting recovery immediately', 'TRADE');
-                    processTickImmediately(currentTick);
+                    submitRecoveryOnce(
+                        result.contractId,
+                        currentTick,
+                        'BUFFERED_FAST_LOSS'
+                    );
                 }
             }
         }
@@ -11123,7 +11432,7 @@ window.isBotRunning = true;
         function observeActiveContractTick(tickData) {
             const ac = window.activeContract;
             if (!ac || ac.settled || !ac.contractId || ac.tickResolved) {
-                return { handled: false, fastLoss: false, fastWin: false };
+                return { handled: false, fastLoss: false, fastWin: false, contractId: null };
             }
 
             const epoch = Number(tickData?.raw?.epoch || 0);
@@ -11132,12 +11441,12 @@ window.isBotRunning = true;
             // Wait for Deriv server timing, then consume the first public tick
             // strictly after the aligned start barrier.
             if (!ac.alignmentReady) {
-                return { handled: false, fastLoss: false, fastWin: false };
+                return { handled: false, fastLoss: false, fastWin: false, contractId: null };
             }
 
             const barrierEpoch = contractTickBarrierEpoch(ac);
             if (!epoch || epoch <= barrierEpoch) {
-                return { handled: false, fastLoss: false, fastWin: false };
+                return { handled: false, fastLoss: false, fastWin: false, contractId: null };
             }
 
             ac.tickResolved = true;
@@ -11148,7 +11457,7 @@ window.isBotRunning = true;
 
             if (ac.observedDigit === ac.predictedDigit) {
                 freezeForPossibleWin(ac, ac.observedDigit);
-                return { handled: true, fastLoss: false, fastWin: true };
+                return { handled: true, fastLoss: false, fastWin: true, contractId: ac.contractId };
             }
 
             // V21 TICK-PIPELINED INSTANT:
@@ -11179,7 +11488,7 @@ window.isBotRunning = true;
                 'loss'
             );
 
-            return { handled: true, fastLoss: true, fastWin: false };
+            return { handled: true, fastLoss: true, fastWin: false, contractId: ac.contractId };
         }
 
         function getContractFinalDigit(contract) {
@@ -11380,7 +11689,18 @@ window.isBotRunning = true;
             // contract settles in the background.
             if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
                 window.activeContract = null;
-                if (window.isBotRunning && !window.stopAfterWin) {
+                const pendingOrderExists =
+                    window.pendingProposals &&
+                    window.pendingProposals.size > 0;
+                const recoveryOrderInFlight =
+                    !!window.recoverySubmissionState?.inFlight;
+
+                if (
+                    window.isBotRunning &&
+                    !window.stopAfterWin &&
+                    !pendingOrderExists &&
+                    !recoveryOrderInFlight
+                ) {
                     window.executionLock = false;
                     window.nextTradeAllowed = true;
                 }
@@ -12299,7 +12619,11 @@ window.isBotRunning = true;
                 );
                 try {
                     const btn = document.getElementById('overnightResearchToggleBtn');
-                    if (btn) btn.textContent = '🌙 OVERNIGHT: OFF';
+                    if (btn) {
+                    const label = document.getElementById('overnightResearchToggleLabel');
+                    if (label) label.textContent = 'OVERNIGHT: OFF';
+                    btn.classList.remove('is-on');
+                }
                 } catch (_) {}
                 return false;
             }
@@ -12548,11 +12872,12 @@ window.isBotRunning = true;
             const btn = document.getElementById('overnightResearchToggleBtn');
             if (!btn) return;
             const enabled = !!loadState().overnightEnabled;
-            btn.textContent = enabled ? '🌙 OVERNIGHT: ON' : '🌙 OVERNIGHT: OFF';
-            btn.classList.toggle('bg-emerald-700', enabled);
-            btn.classList.toggle('hover:bg-emerald-600', enabled);
-            btn.classList.toggle('bg-violet-700', !enabled);
-            btn.classList.toggle('hover:bg-violet-600', !enabled);
+            const label = document.getElementById('overnightResearchToggleLabel');
+            if (label) {
+                label.textContent = enabled ? 'OVERNIGHT: ON' : 'OVERNIGHT: OFF';
+            }
+            btn.classList.toggle('is-on', enabled);
+            btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
         }
 
         async function overnightTick() {
@@ -12656,7 +12981,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.4-SINGLE-BUTTON-OVERNIGHT-TRADE-RESEARCH"
+data-version="DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
