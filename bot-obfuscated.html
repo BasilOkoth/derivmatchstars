@@ -7,7 +7,7 @@
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
-    <!-- V57.4.2 OVERNIGHT DEBUG: visible diagnostics + no account-mode blocker on toggle; autonomous trading remains DEMO-gated -->
+    <!-- V57.6 DNA REALIZATION DEPTH: forward-only T+1 plus first-realization depth tracking; trading logic unchanged -->
     <!-- Contract Lifecycle v3 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -724,11 +724,11 @@
                                     class="bg-cyan-700 text-white font-bold hover:bg-cyan-600 transition duration-150">
                                 ⬇ EXPORT DATA
                             </button>
-                            <button id="overnightTopBtn" type="button" onclick="setOvernightResearch(true)"
+                            <button id="overnightTopBtn" type="button" onclick="OvernightResearchController.on()"
                                     class="bg-violet-700 text-white font-bold hover:bg-violet-600 transition duration-150">
                                 🌙 OVERNIGHT ON
                             </button>
-                            <button id="overnightOffTopBtn" type="button" onclick="setOvernightResearch(false)"
+                            <button id="overnightOffTopBtn" type="button" onclick="OvernightResearchController.off()"
                                     class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150">
                                 ☀️ OVERNIGHT OFF
                             </button>
@@ -749,7 +749,7 @@
                 </button>
             </div>
             <div id="overnightDebugBanner" class="mb-2 px-3 py-2 rounded bg-violet-950 border border-violet-700 text-violet-200 text-xs">
-                Overnight diagnostic: use <b>🌙 OVERNIGHT ON</b> above. The UI flag should switch ON immediately. Autonomous execution remains blocked unless the detected account is DEMO.
+                Overnight controller: use <b>🌙 OVERNIGHT ON</b>. This controller is independent of TailGuard admin authorization. It will only auto-run on a confirmed DEMO account.
             </div>
             <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
 [00:00:00] 🤖 Deriv Bot Initialized
@@ -1048,7 +1048,11 @@
                 byDigit: Array.from({length:10},()=>({n:0,hits:0})),
                 records: [],
                 loadedSymbol: null,
-                maxRecords: 10000
+                maxRecords: 10000,
+                realizationActive: [],
+                realizationResolved: [],
+                maxResolvedRealizations: 10000,
+                maxRealizationDepth: 100
             },
 
             digits() {
@@ -1276,6 +1280,10 @@
                 return `matchstar_dna_t1_v1_${symbol || 'UNKNOWN'}`;
             },
 
+            realizationStorageKey(symbol) {
+                return `matchstar_dna_realization_v1_${symbol || 'UNKNOWN'}`;
+            },
+
             ensureForwardLoaded(symbol=null) {
                 const sym = symbol || document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
                 if (this.forward.loadedSymbol === sym) return;
@@ -1301,6 +1309,17 @@
                     this.forward.hits = 0;
                     this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
                 }
+
+                try {
+                    const rzRaw = localStorage.getItem(this.realizationStorageKey(sym));
+                    const rz = rzRaw ? JSON.parse(rzRaw) : null;
+                    this.forward.realizationActive = Array.isArray(rz?.active) ? rz.active : [];
+                    this.forward.realizationResolved = Array.isArray(rz?.resolved)
+                        ? rz.resolved.slice(-this.forward.maxResolvedRealizations) : [];
+                } catch (_) {
+                    this.forward.realizationActive = [];
+                    this.forward.realizationResolved = [];
+                }
             },
 
             saveForward(symbol=null) {
@@ -1313,6 +1332,22 @@
                             symbol:sym,
                             updatedAt:Date.now(),
                             records:this.forward.records.slice(-this.forward.maxRecords)
+                        })
+                    );
+                } catch (_) {}
+            },
+
+            saveRealizations(symbol=null) {
+                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
+                try {
+                    localStorage.setItem(
+                        this.realizationStorageKey(sym),
+                        JSON.stringify({
+                            version:'DNA-REALIZATION-1',
+                            symbol:sym,
+                            updatedAt:Date.now(),
+                            active:this.forward.realizationActive || [],
+                            resolved:(this.forward.realizationResolved || []).slice(-this.forward.maxResolvedRealizations)
                         })
                     );
                 } catch (_) {}
@@ -1442,6 +1477,115 @@
                 return snap;
             },
 
+            updateRealizationTrackers(actualDigit, symbol=null) {
+                const actual = Number(actualDigit);
+                if (!Number.isInteger(actual) || actual < 0 || actual > 9) return;
+
+                const nextActive = [];
+                for (const tr of (this.forward.realizationActive || [])) {
+                    const depth = Number(tr.depth || 0) + 1;
+
+                    if (actual === Number(tr.predictedDigit)) {
+                        this.forward.realizationResolved.push({
+                            ...tr,
+                            depth,
+                            resolvedAt:Date.now(),
+                            firstRealizationDepth:depth,
+                            within2:depth<=2,
+                            within3:depth<=3,
+                            within5:depth<=5,
+                            within10:depth<=10,
+                            within20:depth<=20,
+                            within50:depth<=50,
+                            censored:false
+                        });
+                    } else if (depth >= this.forward.maxRealizationDepth) {
+                        this.forward.realizationResolved.push({
+                            ...tr,
+                            depth,
+                            resolvedAt:Date.now(),
+                            firstRealizationDepth:null,
+                            within2:false,
+                            within3:false,
+                            within5:false,
+                            within10:false,
+                            within20:false,
+                            within50:false,
+                            censored:true
+                        });
+                    } else {
+                        nextActive.push({...tr, depth});
+                    }
+                }
+
+                this.forward.realizationActive = nextActive;
+                this.forward.realizationResolved = (this.forward.realizationResolved || [])
+                    .slice(-this.forward.maxResolvedRealizations);
+                this.saveRealizations(symbol);
+            },
+
+            startRealizationTracker(forecast) {
+                if (!forecast || !Number.isInteger(Number(forecast.digit))) return;
+                this.forward.realizationActive.push({
+                    version:'DNA-REALIZATION-1',
+                    symbol:forecast.symbol || this.forward.loadedSymbol || 'UNKNOWN',
+                    forecastAt:Number(forecast.at || Date.now()),
+                    predictedDigit:Number(forecast.digit),
+                    similarity:Number(forecast.similarity || 0),
+                    secondSimilarity:Number(forecast.secondSimilarity || 0),
+                    margin:Number(forecast.margin || 0),
+                    featureTop:Number.isInteger(Number(forecast.featureTop)) ? Number(forecast.featureTop) : null,
+                    auditorTop:Number.isInteger(Number(forecast.auditorTop)) ? Number(forecast.auditorTop) : null,
+                    dnaFeatureAgree:!!forecast.dnaFeatureAgree,
+                    dnaAuditorAgree:!!forecast.dnaAuditorAgree,
+                    allThreeAgree:!!forecast.allThreeAgree,
+                    depth:0
+                });
+            },
+
+            realizationPerformance() {
+                const rows = Array.isArray(this.forward.realizationResolved) ? this.forward.realizationResolved : [];
+                const realized = rows.filter(r => !r.censored && Number.isFinite(Number(r.firstRealizationDepth)));
+                const depths = realized.map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
+                const n = rows.length;
+                const within = (k) => n ? rows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=k).length/n : null;
+
+                const byDigit = Array.from({length:10},(_,digit)=>{
+                    const drows = rows.filter(r=>Number(r.predictedDigit)===digit);
+                    const dd = drows.filter(r=>!r.censored && Number.isFinite(Number(r.firstRealizationDepth)))
+                                    .map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
+                    const dn = drows.length;
+                    return {
+                        digit,
+                        n:dn,
+                        realized:dd.length,
+                        t1:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)===1).length/dn : null,
+                        within5:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=5).length/dn : null,
+                        within10:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=10).length/dn : null,
+                        within20:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=20).length/dn : null,
+                        meanDepth:dd.length ? dd.reduce((a,b)=>a+b,0)/dd.length : null,
+                        medianDepth:dd.length ? dd[Math.floor((dd.length-1)/2)] : null
+                    };
+                });
+
+                return {
+                    n,
+                    resolved:realized.length,
+                    censored:rows.filter(r=>r.censored).length,
+                    active:(this.forward.realizationActive || []).length,
+                    meanDepth:depths.length ? depths.reduce((a,b)=>a+b,0)/depths.length : null,
+                    medianDepth:depths.length ? depths[Math.floor((depths.length-1)/2)] : null,
+                    within2:within(2),
+                    within3:within(3),
+                    within5:within(5),
+                    within10:within(10),
+                    within20:within(20),
+                    within50:within(50),
+                    byDigit,
+                    note:'First future occurrence depth after the DNA forecast was frozen. This complements, but does not replace, T+1 accuracy.'
+                };
+            },
+
             scorePendingOutcome(actualDigit, symbol=null) {
                 const p=this.forward.pending;
                 if(!p) return;
@@ -1503,13 +1647,17 @@
                     symbol:s.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
                     at:Date.now()
                 };
+                this.startRealizationTracker(this.forward.pending);
+                this.saveRealizations(symbol);
             },
 
             onNewTick(actualDigit,symbol=null) {
-                // Forward-only T+1 test:
-                // 1) score the frozen DNA forecast created BEFORE this tick;
-                // 2) after the tick has arrived, create a new forecast for the NEXT unseen tick.
+                // Forward-only DNA evaluation:
+                // 1) advance prior forecasts toward first-realization depth;
+                // 2) score the frozen T+1 forecast on this unseen tick;
+                // 3) arm a new forecast for the next unseen tick.
                 this.ensureForwardLoaded(symbol);
+                this.updateRealizationTrackers(actualDigit,symbol);
                 this.scorePendingOutcome(actualDigit,symbol);
                 this.armNextForecast(symbol);
             },
@@ -1545,6 +1693,11 @@
                       <div id="dna-t1-sim" class="mt-2 text-[10px] text-gray-300">Collecting similarity buckets…</div>
                       <div id="dna-t1-margin" class="mt-2 text-[10px] text-gray-300">Collecting separation buckets…</div>
                       <div id="dna-t1-consensus" class="mt-2 text-[10px] text-gray-300">Collecting consensus states…</div>
+                    </div>
+                    <div class="mt-3 border-t border-violet-700 pt-2">
+                      <div class="font-bold text-violet-300 mb-1">DNA FIRST-REALIZATION DEPTH · SHADOW ONLY</div>
+                      <div id="dna-realization-summary" class="text-[10px] text-gray-300">Collecting first-realization depths…</div>
+                      <div id="dna-realization-bydigit" class="mt-2 text-[10px] text-gray-300">Collecting per-digit realization depths…</div>
                     </div>
                     <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
                     <div class="mt-2 text-[10px] text-gray-500">
@@ -1603,6 +1756,22 @@
                 if(marginEl){
                     marginEl.innerHTML='<b>DNA separation:</b> '+
                         (perf?.marginBuckets||[]).map(fmt).join(' · ');
+                }
+
+                const rz=this.realizationPerformance();
+                const rzEl=document.getElementById('dna-realization-summary');
+                if(rzEl){
+                    const pct=(v)=>v==null?'-':`${(Number(v)*100).toFixed(1)}%`;
+                    rzEl.innerHTML=
+                        `<b>Resolved:</b> ${rz.resolved}/${rz.n} · active ${rz.active} · censored ${rz.censored}<br>`+
+                        `<b>Within:</b> T+2 ${pct(rz.within2)} · T+5 ${pct(rz.within5)} · T+10 ${pct(rz.within10)} · T+20 ${pct(rz.within20)}<br>`+
+                        `<b>Depth:</b> mean ${rz.meanDepth==null?'-':Number(rz.meanDepth).toFixed(2)} · median ${rz.medianDepth==null?'-':rz.medianDepth}`;
+                }
+
+                const rzDigitEl=document.getElementById('dna-realization-bydigit');
+                if(rzDigitEl){
+                    rzDigitEl.innerHTML='<b>By predicted digit (within 10):</b> '+
+                        (rz.byDigit||[]).map(x=>`${x.digit}: ${x.n?`${(Number(x.within10||0)*100).toFixed(1)}% n=${x.n}`:'-'}`).join(' · ');
                 }
 
                 const consEl=document.getElementById('dna-t1-consensus');
@@ -5787,10 +5956,12 @@ window.cyclePerformance = {
                     snapshot: safeClone(window.digitDNAEngine?.lastSnapshot),
                     forward: safeClone(window.digitDNAEngine?.forward),
                     t1Performance: safeClone(window.digitDNAEngine?.t1Performance?.() || null),
+                    realizationPerformance: safeClone(window.digitDNAEngine?.realizationPerformance?.() || null),
                     interpretation: {
                         targetHorizon: 'T+1 = first unseen tick after the DNA forecast is frozen',
+                        realizationDepth: 'First future occurrence of the predicted digit after forecast freeze, tracked up to 100 unseen ticks.',
                         randomTenDigitBaseline: 0.10,
-                        note: 'DNA similarity is descriptive; only forward T+1 outcomes measure next-tick performance.'
+                        note: 'DNA similarity is descriptive. T+1 measures next-tick prediction; realization depth measures how many unseen ticks until a missed predicted digit first appears.'
                     }
                 },
 
@@ -5904,7 +6075,7 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.4.2-OVERNIGHT-DEBUG',
+                    version: 'DIGITMATCHSTAR-V57.6-DNA-REALIZATION-DEPTH',
                     strategyLogicChanged: false,
                     recoveryLogicChanged: false,
                     maxTradesBehaviorChanged: false,
@@ -5914,8 +6085,11 @@ window.cyclePerformance = {
                 tailGuardOvernightResearch: {
                     state: safeClone(window.DMSTailGuardAutopilot?.getState?.() || null),
                     archive: safeClone(window.DMSTailGuardAutopilot?.getOvernightArchive?.() || []),
+                    standaloneController: safeClone(window.OvernightResearchController?.getState?.() || null),
+                    standaloneDetectedAccount: window.OvernightResearchController?.accountMode?.() || null,
+                    standaloneExecutionMode: window.OvernightResearchController?.executionMode?.() || null,
                     wakeLockSupported: !!navigator.wakeLock,
-                    note: 'Overnight automation is DEMO-only. Wake Lock keeps the display awake only when supported and while the page remains eligible.'
+                    note: 'Standalone overnight controller is independent of TailGuard admin authorization and auto-runs only on a confirmed DEMO account.'
                 },
 
                 storageKeys: {
@@ -11726,7 +11900,7 @@ window.isBotRunning = true;
                             ▶ Run 5 more
                         </button>
                         <button id="tg-ap-overnight" type="button"
-                            onclick="setOvernightResearch()"
+                            onclick="OvernightResearchController.toggle()"
                             style="grid-column:1 / -1;width:100%;border:1px solid #7c3aed;background:#4c1d95;color:#ede9fe;padding:8px;border-radius:8px;cursor:pointer;font-weight:900">
                             🌙 Overnight research: OFF
                         </button>
@@ -12011,6 +12185,295 @@ window.isBotRunning = true;
     })();
     </script>
 
+    <script>
+    // ============================================================================
+    // V57.5 — STANDALONE OVERNIGHT RESEARCH CONTROLLER
+    // Independent from TailGuard's /api/capture-access admin gate.
+    // DEMO-only autonomous restart loop. Does not change trading strategy,
+    // recovery policy, multiplier, or user's Max Trades selection.
+    // ============================================================================
+    (() => {
+        'use strict';
+
+        const KEY = 'digitmatchstar_standalone_overnight_v1';
+        const POLL_MS = 1500;
+        let timer = null;
+        let wakeLock = null;
+        let lastActionAt = 0;
+
+        function state() {
+            try {
+                const x = JSON.parse(localStorage.getItem(KEY) || '{}') || {};
+                return {
+                    enabled: x.enabled === true,
+                    startedAt: x.startedAt || null,
+                    restarts: Number(x.restarts || 0),
+                    lastStartAt: x.lastStartAt || null,
+                    lastStatus: x.lastStatus || null
+                };
+            } catch (_) {
+                return { enabled:false, startedAt:null, restarts:0, lastStartAt:null, lastStatus:null };
+            }
+        }
+
+        function save(s) {
+            try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (_) {}
+        }
+
+        function accountMode() {
+            const stored = String(localStorage.getItem('selectedAccountMode') || '').toUpperCase();
+            if (stored === 'DEMO' || stored === 'REAL') return stored;
+
+            const toggle = document.getElementById('accTypeToggle');
+            if (toggle) return toggle.checked ? 'REAL' : 'DEMO';
+
+            const acct =
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('derivAccount') ||
+                localStorage.getItem('derivDemoAccount') ||
+                '';
+            if (/^VRTC/i.test(String(acct))) return 'DEMO';
+
+            return 'UNKNOWN';
+        }
+
+        function executionMode() {
+            try {
+                if (window.sessionState && typeof window.sessionState.mode === 'string') {
+                    const m = window.sessionState.mode.toLowerCase();
+                    if (m === 'ai') return 'AI_AUTO';
+                    if (m === 'instant') return 'INSTANT';
+                }
+            } catch (_) {}
+
+            const desc = String(document.getElementById('mode_description')?.textContent || '').toUpperCase();
+            if (desc.includes('AI AUTO')) return 'AI_AUTO';
+            if (desc.includes('INSTANT')) return 'INSTANT';
+            return 'UNKNOWN';
+        }
+
+        function running() {
+            if (typeof window.isBotRunning === 'boolean') return window.isBotRunning;
+            const btn = document.getElementById('toggleButton');
+            const t = String(btn?.textContent || '').toUpperCase();
+            if (t.includes('STOP')) return true;
+            if (t.includes('START')) return false;
+            return null;
+        }
+
+        function setStatus(message) {
+            const s = state();
+            s.lastStatus = message;
+            save(s);
+
+            const banner = document.getElementById('overnightDebugBanner');
+            if (banner) {
+                const a = accountMode();
+                const m = executionMode();
+                const maxT = document.getElementById('maxTrades')?.value ?? '-';
+                banner.innerHTML =
+                    `<b>🌙 Overnight:</b> ${s.enabled ? 'ON' : 'OFF'} · ` +
+                    `account <b>${a}</b> · mode <b>${m}</b> · Max Trades <b>${maxT}</b> · ` +
+                    `restarts <b>${s.restarts}</b><br>${message}`;
+            }
+
+            const onBtn = document.getElementById('overnightTopBtn');
+            const offBtn = document.getElementById('overnightOffTopBtn');
+            if (onBtn) onBtn.textContent = s.enabled ? '🌙 OVERNIGHT ON ✓' : '🌙 OVERNIGHT ON';
+            if (offBtn) offBtn.textContent = s.enabled ? '☀️ OVERNIGHT OFF' : '☀️ OVERNIGHT OFF ✓';
+
+            try {
+                if (typeof window.log === 'function') window.log(`🌙 ${message}`, 'SYSTEM');
+            } catch (_) {}
+        }
+
+        async function requestWakeLock() {
+            if (!state().enabled) return false;
+            if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return false;
+            try {
+                if (!wakeLock) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => { wakeLock = null; });
+                }
+                return true;
+            } catch (_) {
+                wakeLock = null;
+                return false;
+            }
+        }
+
+        async function releaseWakeLock() {
+            try { if (wakeLock) await wakeLock.release(); } catch (_) {}
+            wakeLock = null;
+        }
+
+        function selectAI() {
+            if (executionMode() === 'AI_AUTO') return true;
+
+            try {
+                if (typeof window.switchMode === 'function') {
+                    window.switchMode('ai');
+                    lastActionAt = Date.now();
+                    return true;
+                }
+            } catch (_) {}
+
+            const btn = document.getElementById('mode_ai');
+            if (btn) {
+                btn.click();
+                lastActionAt = Date.now();
+                return true;
+            }
+            return false;
+        }
+
+        function startBot() {
+            if (running() === true) return true;
+
+            try {
+                if (typeof window.startBot === 'function') {
+                    window.startBot();
+                    lastActionAt = Date.now();
+                    return true;
+                }
+            } catch (_) {}
+
+            const btn = document.getElementById('toggleButton');
+            if (btn && String(btn.textContent || '').toUpperCase().includes('START')) {
+                btn.click();
+                lastActionAt = Date.now();
+                return true;
+            }
+            return false;
+        }
+
+        function stopBot() {
+            if (running() !== true) return true;
+
+            try {
+                if (typeof window.stopBot === 'function') {
+                    window.stopBot();
+                    lastActionAt = Date.now();
+                    return true;
+                }
+            } catch (_) {}
+
+            const btn = document.getElementById('toggleButton');
+            if (btn && String(btn.textContent || '').toUpperCase().includes('STOP')) {
+                btn.click();
+                lastActionAt = Date.now();
+                return true;
+            }
+            return false;
+        }
+
+        async function tick() {
+            const s = state();
+            if (!s.enabled) return;
+
+            const acct = accountMode();
+
+            // Hard safety boundary: unattended restart is DEMO only.
+            if (acct !== 'DEMO') {
+                if (running() === true) stopBot();
+                setStatus(
+                    acct === 'REAL'
+                        ? 'BLOCKED: REAL account detected. Overnight autonomous research is DEMO-only.'
+                        : 'Waiting until account is confirmed as DEMO.'
+                );
+                return;
+            }
+
+            requestWakeLock().catch(() => {});
+
+            if (executionMode() !== 'AI_AUTO') {
+                if (Date.now() - lastActionAt > 1200) selectAI();
+                setStatus('Switching/confirming AI AUTO…');
+                return;
+            }
+
+            if (running() === true) {
+                setStatus('Autonomous research session running.');
+                return;
+            }
+
+            // Once a cycle stops, restart a new session. No daily-cycle limit.
+            if (Date.now() - lastActionAt > 1800) {
+                const ok = startBot();
+                if (ok) {
+                    const now = state();
+                    now.restarts += 1;
+                    now.lastStartAt = new Date().toISOString();
+                    save(now);
+                    setStatus('Starting next overnight research session…');
+                } else {
+                    setStatus('Overnight ON, but START BOT could not be triggered yet.');
+                }
+            }
+        }
+
+        function startLoop() {
+            if (timer) clearInterval(timer);
+            timer = setInterval(() => { tick().catch(() => {}); }, POLL_MS);
+            setTimeout(() => { tick().catch(() => {}); }, 100);
+        }
+
+        function turnOn() {
+            const s = state();
+            s.enabled = true;
+            s.startedAt = s.startedAt || new Date().toISOString();
+            save(s);
+
+            requestWakeLock().catch(() => {});
+            startLoop();
+            setStatus('Overnight controller enabled. It will run session after session on DEMO.');
+            return state();
+        }
+
+        function turnOff() {
+            const s = state();
+            s.enabled = false;
+            save(s);
+            if (timer) {
+                clearInterval(timer);
+                timer = null;
+            }
+            releaseWakeLock().catch(() => {});
+            setStatus('Overnight controller disabled. Current bot session is left unchanged.');
+            return state();
+        }
+
+        function toggle() {
+            return state().enabled ? turnOff() : turnOn();
+        }
+
+        window.OvernightResearchController = {
+            on: turnOn,
+            off: turnOff,
+            toggle,
+            tick,
+            getState: state,
+            accountMode,
+            executionMode,
+            isRunning: running
+        };
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && state().enabled) {
+                requestWakeLock().catch(() => {});
+            }
+        });
+
+        // Restore overnight loop after refresh/reload.
+        if (state().enabled) {
+            startLoop();
+            setTimeout(() => setStatus('Overnight controller restored after page load.'), 150);
+        } else {
+            setTimeout(() => setStatus('Overnight controller ready.'), 150);
+        }
+    })();
+    </script>
+
     <script src="/screen-recorder-safe-v5-2.js"></script>
 
 
@@ -12022,7 +12485,7 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.4.2-OVERNIGHT-DEBUG"
+data-version="DIGITMATCHSTAR-V57.6-DNA-REALIZATION-DEPTH"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="demo-only-continuous" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
