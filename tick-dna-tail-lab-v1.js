@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TICK-DNA-TAIL-LAB-V1.0';
+  const VERSION = 'TICK-DNA-TAIL-LAB-V1.1-ACTUAL-BOT-WIRING';
   const STORE_KEY = 'digitmatchstar_tick_dna_tail_lab_v1';
   const MIN_KEY = 'matchstar_panel_min_tick_dna_lab';
   const TARGET_CYCLES = 20;
@@ -106,6 +106,9 @@
   }
 
   function formatQuote(t) {
+    if (typeof t?.formattedQuote === 'string' && t.formattedQuote.length) {
+      return t.formattedQuote;
+    }
     const q = Number(t?.quote);
     if (!Number.isFinite(q)) return null;
     const pip = Number(t?.pip_size);
@@ -237,6 +240,7 @@
       epoch: Number(raw.epoch) || null,
       receivedAt: Number(raw.receivedAt) || Date.now(),
       pip_size: Number.isFinite(Number(raw.pip_size)) ? Number(raw.pip_size) : null,
+      formattedQuote: typeof raw.formattedQuote === 'string' ? raw.formattedQuote : null,
       dna: null
     };
     row.dna = tickDNA(row, previous);
@@ -337,11 +341,13 @@
       symbol,
       startedAt: new Date().toISOString(),
       startEpoch: entryTick?.epoch || null,
-      targetDigit: Number.isFinite(Number(cycle?.targetDigit))
-        ? Number(cycle.targetDigit)
-        : Number.isFinite(Number(cycle?.predictedDigit))
-          ? Number(cycle.predictedDigit)
-          : Number(document.getElementById('predictedDigit')?.value),
+      targetDigit: Number.isFinite(Number(cycle?.digit))
+        ? Number(cycle.digit)
+        : Number.isFinite(Number(cycle?.targetDigit))
+          ? Number(cycle.targetDigit)
+          : Number.isFinite(Number(cycle?.predictedDigit))
+            ? Number(cycle.predictedDigit)
+            : Number(document.getElementById('predictedDigit')?.value),
       contextTicks: context,
       ticks: [],
       checkpoints: {},
@@ -649,7 +655,7 @@
     detailEl.innerHTML = `
       <div><b>Symbol:</b> ${store.symbolAtArm || currentSymbol()}</div>
       <div><b>Active cycle:</b> ${active}</div>
-      <div><b>Live tick buffer:</b> ${liveTicks.length}</div>
+      <div><b>Live tick buffer:</b> ${liveTicks.length} ${liveTicks.length ? '✅' : '⚠️ waiting for bot ticks'}</div>
       <hr style="border:0;border-top:1px solid #1e293b;margin:8px 0">
       <div><b>Reached >5:</b> ${(s.beyond5*100).toFixed(1)}%</div>
       <div><b>Reached >10:</b> ${(s.beyond10*100).toFixed(1)}%</div>
@@ -682,7 +688,7 @@
 
     const cur = currentCycle(cp);
 
-    if (cur?.id && !cur.status) {
+    if (cur?.id && String(cur.status || 'ACTIVE').toUpperCase() === 'ACTIVE') {
       if (String(activeCycleId || '') !== String(cur.id)) {
         startCycle(cur);
         activeCycleId = String(cur.id);
@@ -701,7 +707,11 @@
     }
 
     // Some implementations mark the current object complete before moving it to history.
-    if (cur?.id && cur.status && cohortRecord(loadStore(), cur.id)) {
+    if (
+      cur?.id &&
+      String(cur.status || '').toUpperCase() !== 'ACTIVE' &&
+      cohortRecord(loadStore(), cur.id)
+    ) {
       finalizeCycle(cur);
     }
 

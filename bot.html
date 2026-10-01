@@ -9237,6 +9237,25 @@ function rotateHybridDigit(reason = '') {
             };
             
             window.lastTick = tickData;
+
+            // Tick DNA Lab: expose the exact canonical live tick used by this bot.
+            // Research-only event; does not modify trading behavior.
+            try {
+                window.dispatchEvent(new CustomEvent('digitmatchstar:tick', {
+                    detail: {
+                        symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
+                        quote: Number(tick.quote),
+                        formattedQuote: formattedTick,
+                        epoch: Number(tick.epoch) || Math.floor(Date.now() / 1000),
+                        pip_size: Number.isFinite(Number(tick.pip_size))
+                            ? Number(tick.pip_size)
+                            : getSymbolDecimals(tick.symbol || window.tickFormat?.symbol, tick),
+                        digit,
+                        receivedAt: Date.now()
+                    }
+                }));
+            } catch (_) {}
+
             rememberMarketTick(tickData);
             
             // Update UI - show the digit clearly
@@ -12986,9 +13005,8 @@ data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
-    <!-- Tick DNA → Tail Risk Lab V1 integration -->
-    <script src="/deriv-live-bridge.js?v=tickdna-v1"></script>
-    <script src="/research-suite-loader.js?v=tickdna-v1"></script>
+    <!-- Tick DNA → Tail Risk Lab V1.1 integration -->
+    <script src="/research-suite-loader.js?v=tickdna-v1.1"></script>
 
 </body>
 </html>
