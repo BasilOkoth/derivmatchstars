@@ -885,7 +885,7 @@
                     </button>
 
                     <button id="overnightResearchToggleBtn" type="button"
-                            onclick="setOvernightResearch()"
+                            
                             class="premium-research-btn premium-overnight-btn"
                             title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
                         <span>🌙</span><span id="overnightResearchToggleLabel">OVERNIGHT: OFF</span>
@@ -10503,6 +10503,7 @@ window.executionLock = true;
 
         // START BOT - CRITICAL FUNCTION
         function startBot() {
+            window.__dmsManualStopRequested = false;
             if (window.isBotRunning) {
                 stopBot();
                 return;
@@ -10618,6 +10619,12 @@ window.isBotRunning = true;
             const explicitManual =
                 window.__dmsManualStopRequested === true ||
                 /manual stop|overnight switched off|autopilot manually paused/i.test(reasonText);
+
+            // A genuine manual stop is a MASTER STOP: cancel both the live
+            // trading session and the persisted Overnight watchdog state.
+            if (explicitManual && typeof window.__dmsDisableOvernightState === 'function') {
+                try { window.__dmsDisableOvernightState(reasonText || 'Manual STOP'); } catch (_) {}
+            }
 
             const overnightAutoContinue =
                 window.__dmsOvernightEnabled === true &&
@@ -10746,13 +10753,27 @@ window.isBotRunning = true;
         
         function toggleBot() {
             if (window.isBotRunning) {
+                // Master STOP: disable Overnight/autopilot first so no timer or
+                // delayed restart can bring the bot back.
                 window.__dmsManualStopRequested = true;
+                if (typeof window.__dmsDisableOvernightState === 'function') {
+                    try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
+                }
                 stopBot('Manual STOP');
-                window.__dmsManualStopRequested = false;
+                // Intentionally keep __dmsManualStopRequested=true while stopped.
+                // It is cleared only by an explicit START or Overnight ON.
             } else {
+                window.__dmsManualStopRequested = false;
                 startBot();
             }
         }
+
+        // V2.5: explicitly expose the core controls. The overnight controller
+        // must not depend on indirect eval/globalBinding lookup.
+        window.startBot = startBot;
+        window.stopBot = stopBot;
+        window.toggleBot = toggleBot;
+
 
         function updateS20Label() {
             const v = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
@@ -12606,26 +12627,17 @@ window.isBotRunning = true;
         function stopExistingBot(reason) {
             if (isRunning() === false) return true;
 
-            const stop = globalBinding('stopBot');
-            if (typeof stop === 'function') {
+            if (typeof window.stopBot === 'function') {
                 try {
-                    stop(reason || 'Overnight controller stop');
+                    window.stopBot(reason || 'Overnight controller stop');
                     const s = loadState();
                     s.lastStopReason = reason;
                     saveState(s);
                     lastActionAt = Date.now();
                     return true;
-                } catch (_) {}
-            }
-
-            const btn = document.getElementById('toggleButton');
-            if (btn && String(btn.textContent || '').toUpperCase().includes('STOP')) {
-                btn.click();
-                const s = loadState();
-                s.lastStopReason = reason;
-                saveState(s);
-                lastActionAt = Date.now();
-                return true;
+                } catch (err) {
+                    try { console.error('Direct overnight stopBot failed:', err); } catch (_) {}
+                }
             }
 
             return false;
@@ -12634,13 +12646,14 @@ window.isBotRunning = true;
         function startExistingBot() {
             if (isRunning() === true) return true;
 
-            const start = globalBinding('startBot');
-            if (typeof start === 'function') {
+            if (typeof window.startBot === 'function') {
                 try {
-                    start();
+                    window.startBot();
                     lastActionAt = Date.now();
                     return true;
-                } catch (_) {}
+                } catch (err) {
+                    try { console.error('Direct overnight startBot failed:', err); } catch (_) {}
+                }
             }
 
             const btn = document.getElementById('toggleButton');
@@ -12741,6 +12754,30 @@ window.isBotRunning = true;
         }
 
         window.setOvernightResearch = setOvernightResearch;
+        window.diagnoseOvernight = function() {
+            const result = {
+                accountMode: accountMode(),
+                overnightState: loadState(),
+                globals: {
+                    startBot: typeof window.startBot,
+                    stopBot: typeof window.stopBot,
+                    isBotRunning: window.isBotRunning,
+                    overnightEnabled: window.__dmsOvernightEnabled,
+                    overnightAccount: window.__dmsOvernightAccount
+                },
+                button: (() => {
+                    const b = document.getElementById('overnightResearchToggleBtn');
+                    return b ? {
+                        exists: true,
+                        bound: b.dataset.dmsDirectBound || null,
+                        label: document.getElementById('overnightResearchToggleLabel')?.textContent || null
+                    } : { exists: false };
+                })()
+            };
+            console.log('Overnight diagnostics', result);
+            return result;
+        };
+
         window.testOvernightResearchToggle = function() {
             const before = loadState();
             const okOn = setOvernightResearch(true);
@@ -12962,13 +12999,13 @@ window.isBotRunning = true;
             // restart it directly. This does not require pressing START BOT.
             if (isRunning() !== true && window.__dmsManualStopRequested !== true) {
                 try {
-                    const start = globalBinding('startBot');
-                    if (typeof start === 'function') {
-                        start();
+                    if (typeof window.startBot === 'function') {
+                        window.startBot();
                     } else {
                         startExistingBot();
                     }
-                } catch (_) {
+                } catch (err) {
+                    try { console.error('Overnight watchdog start failed:', err); } catch (_) {}
                     startExistingBot();
                 }
             }
@@ -13004,6 +13041,30 @@ window.isBotRunning = true;
             }
         }
 
+        // V2.6: non-recursive master shutdown used by the core STOP BOT button.
+        // This disables persisted Overnight/autopilot state and cancels the
+        // watchdog without calling stopBot() again.
+        window.__dmsDisableOvernightState = function(reason = 'Manual STOP') {
+            try {
+                const s = loadState();
+                s.overnightEnabled = false;
+                s.enabled = false;
+                s.lastStopReason = reason;
+                saveState(s);
+            } catch (_) {}
+
+            window.__dmsOvernightEnabled = false;
+            window.__dmsOvernightRestartPending = false;
+            window.__dmsManualStopRequested = true;
+
+            try { stopOvernightLoop(); } catch (_) {}
+            try { releaseScreenWakeLock().catch(() => {}); } catch (_) {}
+            try { updateSingleOvernightButton(); } catch (_) {}
+
+            return true;
+        };
+
+
         window.OvernightResearchController = {
             on: () => setOvernightResearch(true),
             off: () => setOvernightResearch(false),
@@ -13014,6 +13075,37 @@ window.isBotRunning = true;
             executionMode: currentExecutionMode,
             isRunning
         };
+
+        // V2.5 direct top-button binding. No inline handler and no eval lookup.
+        function bindDirectOvernightButton() {
+            const btn = document.getElementById('overnightResearchToggleBtn');
+            if (!btn || btn.dataset.dmsDirectBound === '1') return;
+            btn.dataset.dmsDirectBound = '1';
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                try {
+                    const before = !!loadState().overnightEnabled;
+                    const ok = setOvernightResearch(!before);
+                    if (!ok && !before) {
+                        console.warn('Overnight start rejected. Account mode:', accountMode());
+                    }
+                } catch (err) {
+                    console.error('Direct Overnight button failed:', err);
+                    try {
+                        alert('Overnight button error: ' + (err?.message || err));
+                    } catch (_) {}
+                }
+            });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bindDirectOvernightButton, { once: true });
+        } else {
+            bindDirectOvernightButton();
+        }
+        setTimeout(bindDirectOvernightButton, 500);
+
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible' && loadState().overnightEnabled) {
@@ -13059,13 +13151,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.4-AUTORESTART-FIX"
+data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.6-HARD-STOP-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v2.4-autorestart"></script>
+    <script src="/research-suite-loader.js?v=tickdna-v2.6-hardstop"></script>
 
 </body>
 </html>
