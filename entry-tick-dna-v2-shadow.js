@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02';
+  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-ARMFIX';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
@@ -63,12 +63,23 @@
   function cyclePerformance() { return globalBinding('cyclePerformance') || window.cyclePerformance || null; }
   function currentSymbol() { return document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN'; }
   function accountId() { return String(localStorage.getItem('active_account') || localStorage.getItem('derivDemoAccount') || localStorage.getItem('derivAccount') || '').trim(); }
-  function isDemoAccount() {
+  function accountMode() {
+    const stored = String(localStorage.getItem('selectedAccountMode') || '').toUpperCase();
+    if (stored === 'DEMO' || stored === 'REAL') return stored;
+    const toggle = document.getElementById('accTypeToggle');
+    if (toggle) return toggle.checked ? 'REAL' : 'DEMO';
     const id = accountId().toUpperCase();
-    if (id.startsWith('VRTC')) return true;
-    const hints = [localStorage.getItem('account_type'), localStorage.getItem('trading_account_type'), document.body?.innerText?.match(/\b(Demo|Virtual)\b/i)?.[0]].filter(Boolean).join(' ').toLowerCase();
-    return hints.includes('demo') || hints.includes('virtual');
+    if (id.startsWith('VRTC')) return 'DEMO';
+    const hints = [
+      localStorage.getItem('account_type'),
+      localStorage.getItem('trading_account_type'),
+      document.body?.innerText?.match(/\b(Demo|Virtual)\b/i)?.[0]
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (hints.includes('demo') || hints.includes('virtual')) return 'DEMO';
+    if (hints.includes('real')) return 'REAL';
+    return 'UNKNOWN';
   }
+  function isDemoAccount() { return accountMode() === 'DEMO'; }
 
   function emptyStore() {
     return {
@@ -287,11 +298,42 @@
   }
 
   function arm() {
-    if (!isDemoAccount()) return alert('Entry Tick DNA V2 shadow cohort can only be armed on Demo/Virtual.');
-    const s=loadStore(); if (s.armed) return;
-    if (s.cycles.length && !s.completedAt) return alert('This shadow cohort already contains data. Reset first to start a completely fresh cohort.');
-    if (s.completedAt) return alert('This cohort is complete. Export it, then reset before starting another cohort.');
-    s.armed=true; s.armedAt=new Date().toISOString(); s.symbolAtArm=currentSymbol(); s.frozenModel=clone(FROZEN_MODEL); saveStore(s); render();
+    try {
+      const mode = accountMode();
+      if (mode !== 'DEMO') {
+        statusEl.textContent = `ARM BLOCKED · account mode=${mode}`;
+        statusEl.style.color = '#f87171';
+        alert(`Entry Tick DNA V2 shadow cohort can only be armed on Demo/Virtual. Current detected mode: ${mode}.`);
+        return false;
+      }
+      const s=loadStore();
+      if (s.armed) { render(); return true; }
+      if (s.cycles.length && !s.completedAt) {
+        alert('This shadow cohort already contains data. Reset first to start a completely fresh cohort.');
+        return false;
+      }
+      if (s.completedAt) {
+        alert('This cohort is complete. Export it, then reset before starting another cohort.');
+        return false;
+      }
+      s.armed=true;
+      s.armedAt=new Date().toISOString();
+      s.symbolAtArm=currentSymbol();
+      s.frozenModel=clone(FROZEN_MODEL);
+      saveStore(s);
+      persistenceState = 'armed-saving';
+      render();
+      writeChain.then(() => { persistenceState = 'ready'; render(); }).catch(() => render());
+      console.info(`[${VERSION}] ARMED`, { symbol: s.symbolAtArm, mode });
+      return true;
+    } catch (err) {
+      persistenceState = 'arm-error';
+      persistenceError = String(err?.message || err);
+      console.error(`[${VERSION}] ARM failed`, err);
+      try { alert('Entry Tick DNA ARM error: ' + (err?.message || err)); } catch (_) {}
+      render();
+      return false;
+    }
   }
   async function reset() {
     if (!confirm('Reset Entry Tick DNA V2 shadow cohort? Export first if you need the data.')) return;
@@ -316,7 +358,7 @@
     const controls=document.createElement('div'); controls.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:10px';
     const mk=(label,bg)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.style.cssText=`padding:7px 9px;border:0;border-radius:7px;background:${bg};color:white;font-size:10px;font-weight:900;cursor:pointer`;return b;};
     armBtn=mk('ARM FRESH 100-CYCLE SHADOW','#7c3aed'); exportBtn=mk('EXPORT JSON','#047857'); resetBtn=mk('RESET','#7f1d1d');
-    armBtn.onclick=arm; exportBtn.onclick=exportData; resetBtn.onclick=reset; min.onclick=()=>setMinimized(body.style.display!=='none');
+    armBtn.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); arm(); }); exportBtn.addEventListener('click',(e)=>{e.preventDefault();exportData();}); resetBtn.addEventListener('click',(e)=>{e.preventDefault();reset();}); min.addEventListener('click',(e)=>{e.preventDefault();setMinimized(body.style.display!=='none');});
     controls.append(armBtn,exportBtn,resetBtn); body.append(statusEl,detailEl,controls); head.append(title,min); panel.append(head,body); document.body.appendChild(panel);
     setMinimized(localStorage.getItem(MIN_KEY)==='1');
   }
@@ -344,7 +386,7 @@
   }
 
   window.addEventListener('digitmatchstar:tick',onTick);
-  window.EntryTickDNAV2=Object.freeze({version:VERSION,model:()=>clone(FROZEN_MODEL),store:()=>clone(loadStore()),summary:()=>clone(summary(loadStore())),export:exportData});
+  window.EntryTickDNAV2=Object.freeze({version:VERSION,model:()=>clone(FROZEN_MODEL),store:()=>clone(loadStore()),summary:()=>clone(summary(loadStore())),export:exportData,arm,reset,accountMode});
 
   async function boot() { ensurePanel(); render(); await initPersistence(); render(); setInterval(poll,POLL_MS); console.info(`[${VERSION}] loaded · shadow-only`); }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>boot().catch(console.error),{once:true}); else boot().catch(console.error);

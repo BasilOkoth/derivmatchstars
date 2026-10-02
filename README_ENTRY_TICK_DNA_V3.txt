@@ -42,3 +42,10 @@ FILES
 
 SAFETY / SCIENTIFIC NOTE
 Demo-only research. The model does not establish predictability of Deriv synthetic ticks and does not guarantee profitability. Do not use the discovery rule as live trading control until a separate forward cohort confirms it.
+
+
+V3.1 ARM FIX
+- Demo detection now uses the bot's selectedAccountMode / accTypeToggle first.
+- Fixes DOT-prefixed Demo accounts being incorrectly treated as non-demo.
+- ARM button now uses a direct addEventListener and reports any failure visibly.
+- window.EntryTickDNAV2.arm() is exposed for diagnostics.

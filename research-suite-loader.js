@@ -1,6 +1,6 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Tick DNA Validation V2.6 + Entry Tick DNA V2 frozen shadow cohort.
+ * Tick DNA Validation V2.6 + Entry Tick DNA V2 frozen shadow cohort · V3.1 ARM FIX.
  */
 (() => {
   'use strict';
@@ -8,7 +8,7 @@
   const scripts = [
     '/tail-risk-model-v1.2-combined.js',
     '/tick-dna-tail-validation-v2.js?v=2.6-hardstop',
-    '/entry-tick-dna-v2-shadow.js?v=3.0-entry-shadow'
+    '/entry-tick-dna-v2-shadow.js?v=3.1-arm-fix'
   ];
 
   function alreadyLoaded(src) {
