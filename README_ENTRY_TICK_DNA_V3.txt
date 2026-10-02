@@ -49,3 +49,13 @@ V3.1 ARM FIX
 - Fixes DOT-prefixed Demo accounts being incorrectly treated as non-demo.
 - ARM button now uses a direct addEventListener and reports any failure visibly.
 - window.EntryTickDNAV2.arm() is exposed for diagnostics.
+
+
+V3.2 CYCLE CAPTURE FIX
+- Directly hooks cyclePerformance.startCycle(), completeCycle(), and abortActiveCycle().
+- Captures the first cycle immediately when CPR-3 creates it.
+- Finalizes directly from the authoritative completed-cycle object.
+- Keeps polling only as a fallback.
+- Uses window.lastTick as a fallback if the public tick listener misses the entry tick.
+- Adds visible Cycle hook and Last captured cycle diagnostics.
+- Fixes maximumTradeDepth to use trades.length authoritatively.

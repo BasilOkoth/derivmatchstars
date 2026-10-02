@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-ARMFIX';
+  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-CYCLECAPTURE-FIX';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
@@ -57,6 +57,8 @@
   let persistenceError = null;
   let writeChain = Promise.resolve();
   let panel, body, statusEl, detailEl, armBtn, exportBtn, resetBtn;
+  let lifecycleHookInstalled = false;
+  let lastCapturedCycleText = null;
 
   function clone(v) { try { return JSON.parse(JSON.stringify(v)); } catch (_) { return null; } }
   function globalBinding(name) { try { return (0, eval)(`typeof ${name} !== 'undefined' ? ${name} : null`); } catch (_) { return null; } }
@@ -226,7 +228,8 @@
   function tradeDepth(c) {
     const traj = Array.isArray(c?.tailTrajectory) ? c.tailTrajectory : [];
     const nums = traj.map(s=>Number(s?.tradeNumber)).filter(Number.isFinite);
-    const vals=[Number(c?.winningTradeNumber),Number(c?.tradeNumber),Number(c?.trades),nums.length?Math.max(...nums):0].filter(Number.isFinite);
+    const tradeLen = Array.isArray(c?.trades) ? c.trades.length : 0;
+    const vals=[Number(c?.winningTradeNumber),Number(c?.tradeNumber),tradeLen,nums.length?Math.max(...nums):0].filter(Number.isFinite);
     return vals.length ? Math.max(...vals) : 0;
   }
   function cycleTarget(c) {
@@ -241,7 +244,14 @@
     const s=loadStore(); if (!s.armed || s.completedAt || s.cycles.length>=TARGET_CYCLES) return;
     const id=String(c?.id||''); if (!id || recById(s,id)) return;
     const symbol=c?.symbol||currentSymbol(); if (s.symbolAtArm && symbol!==s.symbolAtArm) return;
-    const context=liveTicks.filter(t=>t.symbol===symbol).slice(-CONTEXT_TICKS).map(clone);
+    let context=liveTicks.filter(t=>t.symbol===symbol).slice(-CONTEXT_TICKS).map(clone);
+    // Robust fallback: if the shadow listener missed the latest public tick,
+    // use the bot's authoritative lastTick rather than losing the cycle.
+    const authoritative = window.lastTick;
+    if ((!context.length || (authoritative?.epoch && Number(context[context.length-1]?.epoch)!==Number(authoritative.epoch))) && authoritative && Number.isFinite(Number(authoritative.quote))) {
+      const row=enrich(authoritative); row.lastDigit=lastDigit(row); row.adjacentRepeats=adjacentRepeats(row);
+      context=[...context, row].slice(-CONTEXT_TICKS);
+    }
     const entry=context.length?context[context.length-1]:null;
     const target=cycleTarget(c);
     const risk=scoreEntry(entry,context,target);
@@ -258,11 +268,49 @@
     r.finalized=true; r.endedAt=new Date().toISOString();
     r.outcome={ status:c?.status || (Number.isFinite(win)?'WIN':'COMPLETE'), winningTradeNumber:Number.isFinite(win)?win:null, maximumTradeDepth:depth, reached15:+(depth>=15) };
     if (s.cycles.filter(x=>x.finalized).length>=TARGET_CYCLES) { s.completedAt=new Date().toISOString(); s.armed=false; }
-    saveStore(s); if (String(activeCycleId)===String(r.id)) activeCycleId=null;
+    saveStore(s);
+    lastCapturedCycleText = `#${r.cohortIndex} · digit ${r.targetDigit ?? '?'} · depth ${depth} · ${r.frozenEntryRisk?.band || '?'} / ${r.frozenEntryRisk?.shadowAction || '?'}`;
+    if (String(activeCycleId)===String(r.id)) activeCycleId=null;
   }
+  function installLifecycleHook() {
+    if (lifecycleHookInstalled) return true;
+    const cp = cyclePerformance();
+    if (!cp || typeof cp.startCycle !== 'function' || typeof cp.completeCycle !== 'function') return false;
+    if (cp.__entryTickDNAV2Hooked) { lifecycleHookInstalled = true; return true; }
+
+    const originalStartCycle = cp.startCycle.bind(cp);
+    cp.startCycle = function(contract, pending = null) {
+      const out = originalStartCycle(contract, pending);
+      try { if (this.current?.id) startCycle(this.current); } catch (err) { console.error(`[${VERSION}] start capture failed`, err); }
+      return out;
+    };
+
+    const originalCompleteCycle = cp.completeCycle.bind(cp);
+    cp.completeCycle = function(status = 'WIN', reason = null) {
+      const completed = originalCompleteCycle(status, reason);
+      try { if (completed?.id) finalizeCycle(completed); } catch (err) { console.error(`[${VERSION}] completion capture failed`, err); }
+      return completed;
+    };
+
+    if (typeof cp.abortActiveCycle === 'function') {
+      const originalAbort = cp.abortActiveCycle.bind(cp);
+      cp.abortActiveCycle = function(reason = 'Stopped before confirmed win') {
+        const completed = originalAbort(reason);
+        try { if (completed?.id) finalizeCycle(completed); } catch (err) { console.error(`[${VERSION}] abort capture failed`, err); }
+        return completed;
+      };
+    }
+
+    cp.__entryTickDNAV2Hooked = true;
+    lifecycleHookInstalled = true;
+    console.info(`[${VERSION}] direct cycle lifecycle hook installed`);
+    return true;
+  }
+
   function poll() {
     if (!ready) return render();
     const cp=cyclePerformance(); if (!cp) return render();
+    installLifecycleHook();
     const s=loadStore(); if (!s.armed && !s.completedAt) return render();
     const cur=currentCycle(cp);
     if (cur?.id && String(cur.status||'ACTIVE').toUpperCase()==='ACTIVE') {
@@ -371,6 +419,8 @@
       <div><b>Frozen rule:</b> adjacent repeats ≥1 <b>AND</b> 25-tick drift &gt;0 → HIGH / shadow SKIP</div>
       <div><b>Discovery:</b> 7/11 HIGH entries reached ≥15 (63.6%); baseline 22/96 (22.9%)</div>
       <div><b>Storage:</b> ${persistenceState}${persistenceError?` · <span style="color:#fca5a5">${persistenceError}</span>`:''}</div>
+      <div><b>Cycle hook:</b> ${lifecycleHookInstalled?'CONNECTED':'waiting for bot lifecycle'}</div>
+      <div><b>Last captured cycle:</b> ${lastCapturedCycleText || '—'}</div>
       <hr style="border:0;border-top:1px solid #2e2445;margin:8px 0">
       <div><b>Overall ≥15:</b> ${x.done?`${x.tails}/${x.done} · ${(100*x.baseline).toFixed(1)}%`:'—'}</div>
       <div><b>HIGH shadow risk:</b> ${x.highN?`${x.highTails}/${x.highN} · ${(100*x.highTailRate).toFixed(1)}%`:'—'}</div>
@@ -388,6 +438,6 @@
   window.addEventListener('digitmatchstar:tick',onTick);
   window.EntryTickDNAV2=Object.freeze({version:VERSION,model:()=>clone(FROZEN_MODEL),store:()=>clone(loadStore()),summary:()=>clone(summary(loadStore())),export:exportData,arm,reset,accountMode});
 
-  async function boot() { ensurePanel(); render(); await initPersistence(); render(); setInterval(poll,POLL_MS); console.info(`[${VERSION}] loaded · shadow-only`); }
+  async function boot() { ensurePanel(); render(); await initPersistence(); installLifecycleHook(); render(); setInterval(poll,POLL_MS); console.info(`[${VERSION}] loaded · shadow-only`); }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>boot().catch(console.error),{once:true}); else boot().catch(console.error);
 })();
