@@ -5534,8 +5534,8 @@ window.cyclePerformance = {
             finalReason: null
         };
 
-        // Entry Tick DNA V3.3: authoritative lifecycle event from the bot itself.
-        // This avoids fragile external monkey-patching and carries the exact bot tick at cycle start.
+        // Entry Tick DNA V3.4: authoritative lifecycle event emitted by THIS actual bot.
+        // Carries the exact active cycle and canonical last tick at cycle start.
         try {
             window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-started', {
                 detail: {
@@ -5733,7 +5733,7 @@ window.cyclePerformance = {
             );
         }
 
-        // Entry Tick DNA V3.3: authoritative finalization event.
+        // Entry Tick DNA V3.4: authoritative cycle-finalized event emitted before current is cleared.
         try {
             window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-finalized', {
                 detail: {
@@ -13177,13 +13177,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V3.3-DIRECT-EVENT-FIX"
+data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V3.4-ACTUAL-BOT-EVENT-WIRE"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v3-3-direct-event-fix"></script>
+    <script src="/research-suite-loader.js?v=tickdna-v3-4-actual-bot-event-wire"></script>
 
 </body>
 </html>
