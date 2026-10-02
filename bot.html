@@ -10434,6 +10434,19 @@ window.executionLock = true;
                 );
 
                 playAudioFeedback('EXECUTION');
+
+                // Candidate Tick DNA V3.7 — EXACT T0 ALIGNMENT.
+                // Research-only: on the FIRST purchase opportunity in a cycle,
+                // freeze this exact tick and define the research target as THIS
+                // tick's own last digit. Trading selection/execution is unchanged.
+                if (!window.cycleHasPurchasedContract) {
+                    try {
+                        window.CandidateTickDNAV3?.captureCandidate?.(tick);
+                    } catch (err) {
+                        console.warn('Candidate Tick DNA V3.7 capture failed:', err);
+                    }
+                }
+
                 executeTrade(tick);
 
             } catch (error) {
