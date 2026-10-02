@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-DIRECT-EVENT-FIX';
+  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-AUTHORITATIVE-STATE-POLL-V3.5';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
@@ -59,10 +59,13 @@
   let panel, body, statusEl, detailEl, armBtn, exportBtn, resetBtn;
   let lifecycleHookInstalled = false;
   let lastCapturedCycleText = null;
+  let lastBotCycleIdSeen = null;
+  let lastBotHistoryCount = 0;
+  let cycleSource = 'AUTHORITATIVE STATE POLL';
 
   function clone(v) { try { return JSON.parse(JSON.stringify(v)); } catch (_) { return null; } }
   function globalBinding(name) { try { return (0, eval)(`typeof ${name} !== 'undefined' ? ${name} : null`); } catch (_) { return null; } }
-  function cyclePerformance() { return globalBinding('cyclePerformance') || window.cyclePerformance || null; }
+  function cyclePerformance() { return window.cyclePerformance || globalBinding('cyclePerformance') || null; }
   function currentSymbol() { return document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN'; }
   function accountId() { return String(localStorage.getItem('active_account') || localStorage.getItem('derivDemoAccount') || localStorage.getItem('derivAccount') || '').trim(); }
   function accountMode() {
@@ -240,10 +243,35 @@
   }
   function recById(store,id) { return store.cycles.find(r=>String(r.id)===String(id)) || null; }
 
+  function hydrateContextFromBot(symbol) {
+    try {
+      const rows = Array.isArray(window.recentMarketTicks) ? window.recentMarketTicks : [];
+      for (const t of rows.slice(-CONTEXT_TICKS)) {
+        const raw = {
+          symbol: t?.raw?.symbol || symbol || currentSymbol(),
+          quote: Number(t?.raw?.quote ?? t?.price),
+          epoch: Number(t?.raw?.epoch || 0) || null,
+          pip_size: Number.isFinite(Number(t?.raw?.pip_size)) ? Number(t.raw.pip_size) : Number(t?.decimals),
+          formattedQuote: typeof t?.formattedPrice === 'string' ? t.formattedPrice : null,
+          receivedAt: Number(t?.time) || Date.now()
+        };
+        if (!Number.isFinite(raw.quote)) continue;
+        const last = liveTicks[liveTicks.length - 1];
+        if (last && raw.epoch && Number(last.epoch) === Number(raw.epoch)) continue;
+        const row = enrich(raw);
+        row.lastDigit = Number.isInteger(Number(t?.digit)) ? Number(t.digit) : lastDigit(row);
+        row.adjacentRepeats = adjacentRepeats(row);
+        liveTicks.push(row);
+      }
+      if (liveTicks.length > MAX_BUFFER) liveTicks = liveTicks.slice(-MAX_BUFFER);
+    } catch (_) {}
+  }
+
   function startCycle(c) {
     const s=loadStore(); if (!s.armed || s.completedAt || s.cycles.length>=TARGET_CYCLES) return;
     const id=String(c?.id||''); if (!id || recById(s,id)) return;
     const symbol=c?.symbol||currentSymbol(); if (s.symbolAtArm && symbol!==s.symbolAtArm) return;
+    hydrateContextFromBot(symbol);
     let context=liveTicks.filter(t=>t.symbol===symbol).slice(-CONTEXT_TICKS).map(clone);
     // Robust fallback: if the shadow listener missed the latest public tick,
     // use the bot's authoritative lastTick rather than losing the cycle.
@@ -309,15 +337,47 @@
 
   function poll() {
     if (!ready) return render();
-    const cp=cyclePerformance(); if (!cp) return render();
-    installLifecycleHook();
-    const s=loadStore(); if (!s.armed && !s.completedAt) return render();
-    const cur=currentCycle(cp);
-    if (cur?.id && String(cur.status||'ACTIVE').toUpperCase()==='ACTIVE') {
-      if (String(activeCycleId||'')!==String(cur.id)) { startCycle(cur); activeCycleId=String(cur.id); }
+
+    // V3.5 source of truth: read the bot's state directly every 200 ms.
+    // No custom event or monkey-patch is required for capture.
+    const cp = window.cyclePerformance || cyclePerformance();
+    if (!cp) {
+      lifecycleHookInstalled = false;
+      return render();
     }
-    const hist=cycleHistory(cp); if (hist.length!==lastHistorySize) { lastHistorySize=hist.length; for (const row of hist) if (row?.id && recById(loadStore(),row.id) && !recById(loadStore(),row.id).finalized) finalizeCycle(row); }
-    if (cur?.id && String(cur.status||'').toUpperCase()!=='ACTIVE' && recById(loadStore(),cur.id)) finalizeCycle(cur);
+
+    lifecycleHookInstalled = true;
+    const s = loadStore();
+    const cur = cp.current || null;
+    const symbol = s.symbolAtArm || currentSymbol();
+    const hist = cycleHistory(cp);
+    lastBotHistoryCount = hist.length;
+
+    if (cur?.id) {
+      lastBotCycleIdSeen = String(cur.id);
+      if (s.armed && !s.completedAt && !recById(s, cur.id)) {
+        startCycle(cur);
+      }
+      if (recById(loadStore(), cur.id) && !recById(loadStore(), cur.id)?.finalized) {
+        activeCycleId = String(cur.id);
+      }
+    }
+
+    // Finalization is authoritative from persisted cyclePerformance history.
+    // This works even if completeCycle cleared cp.current before this poll runs.
+    if (s.armed || s.completedAt || s.cycles.length) {
+      for (const row of hist) {
+        const rec = row?.id ? recById(loadStore(), row.id) : null;
+        if (rec && !rec.finalized) finalizeCycle(row);
+      }
+    }
+
+    // If an active cycle vanishes, look it up by id in history immediately.
+    if (!cur?.id && activeCycleId) {
+      const completed = hist.find(r => String(r?.id) === String(activeCycleId));
+      if (completed) finalizeCycle(completed);
+    }
+
     render();
   }
   function onTick(ev) {
@@ -419,7 +479,11 @@
       <div><b>Frozen rule:</b> adjacent repeats ≥1 <b>AND</b> 25-tick drift &gt;0 → HIGH / shadow SKIP</div>
       <div><b>Discovery:</b> 7/11 HIGH entries reached ≥15 (63.6%); baseline 22/96 (22.9%)</div>
       <div><b>Storage:</b> ${persistenceState}${persistenceError?` · <span style="color:#fca5a5">${persistenceError}</span>`:''}</div>
-      <div><b>Cycle hook:</b> ${lifecycleHookInstalled?'CONNECTED':'waiting for bot lifecycle'}</div>
+      <div><b>Cycle source:</b> ${cycleSource}</div>
+      <div><b>Authoritative state:</b> ${lifecycleHookInstalled?'CONNECTED':'waiting for window.cyclePerformance'}</div>
+      <div><b>Active bot cycle:</b> ${String((window.cyclePerformance?.current?.id) || 'NONE')}</div>
+      <div><b>Shadow active cycle:</b> ${activeCycleId || 'NONE'}</div>
+      <div><b>Bot history cycles:</b> ${lastBotHistoryCount}</div>
       <div><b>Last captured cycle:</b> ${lastCapturedCycleText || '—'}</div>
       <hr style="border:0;border-top:1px solid #2e2445;margin:8px 0">
       <div><b>Overall ≥15:</b> ${x.done?`${x.tails}/${x.done} · ${(100*x.baseline).toFixed(1)}%`:'—'}</div>
@@ -469,14 +533,16 @@
 
   async function boot() {
     ensurePanel();
+    // Events remain optional diagnostics only. Capture now comes from direct state polling.
     window.addEventListener('digitmatchstar:cycle-started', onAuthoritativeCycleStarted);
     window.addEventListener('digitmatchstar:cycle-finalized', onAuthoritativeCycleFinalized);
     render();
     await initPersistence();
-    installLifecycleHook(); // fallback only; direct bot events are authoritative.
+    hydrateContextFromBot(currentSymbol());
+    poll();
     render();
-    setInterval(poll,POLL_MS);
-    console.info(`[${VERSION}] loaded · direct lifecycle events + fallback polling`);
+    setInterval(poll, 200);
+    console.info(`[${VERSION}] loaded · authoritative window.cyclePerformance polling`);
   }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>boot().catch(console.error),{once:true}); else boot().catch(console.error);
 })();
