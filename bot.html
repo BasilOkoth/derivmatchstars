@@ -5534,8 +5534,20 @@ window.cyclePerformance = {
             finalReason: null
         };
 
-        // Entry Tick DNA V3.4: authoritative lifecycle event emitted by THIS actual bot.
-        // Carries the exact active cycle and canonical last tick at cycle start.
+        // Entry Tick DNA V3.6: synchronous direct capture into the loaded shadow lab.
+        // This avoids event timing/polling races on one-tick contracts.
+        try {
+            if (window.EntryTickDNAV2?.captureStart) {
+                const ok = window.EntryTickDNAV2.captureStart(this.current, window.lastTick || null);
+                if (!ok) console.warn('Entry Tick DNA direct start capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle start');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct start capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
         try {
             window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-started', {
                 detail: {
@@ -5733,7 +5745,20 @@ window.cyclePerformance = {
             );
         }
 
-        // Entry Tick DNA V3.4: authoritative cycle-finalized event emitted before current is cleared.
+        // Entry Tick DNA V3.6: synchronously finalize the exact authoritative cycle
+        // BEFORE this.current is cleared.
+        try {
+            if (window.EntryTickDNAV2?.captureFinalize) {
+                const ok = window.EntryTickDNAV2.captureFinalize(c);
+                if (!ok) console.warn('Entry Tick DNA direct final capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle finalization');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct final capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
         try {
             window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-finalized', {
                 detail: {

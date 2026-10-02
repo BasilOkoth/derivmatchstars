@@ -1,6 +1,6 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Tick DNA Validation V2.6 + Entry Tick DNA V2 frozen shadow cohort · V3.5 AUTHORITATIVE STATE POLL.
+ * Tick DNA Validation V2.6 + Entry Tick DNA V2 frozen shadow cohort · V3.6 DIRECT BOT CALL.
  */
 (() => {
   'use strict';
@@ -8,7 +8,7 @@
   const scripts = [
     '/tail-risk-model-v1.2-combined.js?v=tail-risk-v1-8',
     '/tick-dna-tail-validation-v2.js?v=2.6-hardstop',
-    '/entry-tick-dna-v2-shadow.js?v=3.5-authoritative-state-poll'
+    '/entry-tick-dna-v2-shadow.js?v=3.6-direct-bot-call'
   ];
 
   function alreadyLoaded(src) {
@@ -34,7 +34,7 @@
 
   async function start() {
     for (const src of scripts) await loadScript(src);
-    console.info('[DMS Research Add-on] Tick DNA V2.6 + Entry Tick DNA V2 V3.5 authoritative-state polling loaded.');
+    console.info('[DMS Research Add-on] Tick DNA V2.6 + Entry Tick DNA V2 V3.6 direct-bot-call shadow loaded.');
   }
 
   if (document.readyState === 'loading') {

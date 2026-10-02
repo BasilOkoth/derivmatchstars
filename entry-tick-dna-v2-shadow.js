@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-AUTHORITATIVE-STATE-POLL-V3.5';
+  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-DIRECT-CALL-V3.6';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
@@ -61,7 +61,7 @@
   let lastCapturedCycleText = null;
   let lastBotCycleIdSeen = null;
   let lastBotHistoryCount = 0;
-  let cycleSource = 'AUTHORITATIVE STATE POLL';
+  let cycleSource = 'DIRECT BOT CALL + STATE FALLBACK';
 
   function clone(v) { try { return JSON.parse(JSON.stringify(v)); } catch (_) { return null; } }
   function globalBinding(name) { try { return (0, eval)(`typeof ${name} !== 'undefined' ? ${name} : null`); } catch (_) { return null; } }
@@ -500,7 +500,38 @@
   }
 
   window.addEventListener('digitmatchstar:tick',onTick);
-  window.EntryTickDNAV2=Object.freeze({version:VERSION,model:()=>clone(FROZEN_MODEL),store:()=>clone(loadStore()),summary:()=>clone(summary(loadStore())),export:exportData,arm,reset,accountMode});
+  window.EntryTickDNAV2=Object.freeze({
+    version:VERSION,
+    model:()=>clone(FROZEN_MODEL),
+    store:()=>clone(loadStore()),
+    summary:()=>clone(summary(loadStore())),
+    export:exportData, arm, reset, accountMode,
+    // V3.6 authoritative direct-call API. Called synchronously by bot.html
+    // from cyclePerformance.startCycle()/completeCycle().
+    captureStart:(cycle, entryTick=null)=>{
+      try {
+        if (entryTick && Number.isFinite(Number(entryTick.quote))) {
+          const row=enrich(entryTick); row.lastDigit=lastDigit(row); row.adjacentRepeats=adjacentRepeats(row);
+          liveTicks.push(row); if (liveTicks.length>MAX_BUFFER) liveTicks=liveTicks.slice(-MAX_BUFFER);
+        }
+        startCycle(cycle);
+        if (cycle?.id && recById(loadStore(), cycle.id)) activeCycleId=String(cycle.id);
+        lifecycleHookInstalled=true;
+        render();
+        return !!(cycle?.id && recById(loadStore(), cycle.id));
+      } catch(err) { console.error(`[${VERSION}] direct captureStart failed`, err); return false; }
+    },
+    captureFinalize:(cycle)=>{
+      try {
+        // If start capture somehow failed, create a minimal record now so failure is visible.
+        if (cycle?.id && !recById(loadStore(), cycle.id)) startCycle(cycle);
+        finalizeCycle(cycle);
+        lifecycleHookInstalled=true;
+        render();
+        return !!(cycle?.id && recById(loadStore(), cycle.id)?.finalized);
+      } catch(err) { console.error(`[${VERSION}] direct captureFinalize failed`, err); return false; }
+    }
+  });
 
   function onAuthoritativeCycleStarted(ev) {
     try {
@@ -542,7 +573,7 @@
     poll();
     render();
     setInterval(poll, 200);
-    console.info(`[${VERSION}] loaded · authoritative window.cyclePerformance polling`);
+    console.info(`[${VERSION}] loaded · direct bot calls + authoritative state fallback`);
   }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>boot().catch(console.error),{once:true}); else boot().catch(console.error);
 })();
