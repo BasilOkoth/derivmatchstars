@@ -1,0 +1,33 @@
+{
+  "name": "Entry Tick DNA V2",
+  "version": "ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02",
+  "frozenAt": "2026-10-02T11:47:06.124Z",
+  "market": "R_10",
+  "mode": "SHADOW_ONLY",
+  "target": "maximumTradeDepth >= 15",
+  "discoveryCohort": {
+    "finalizedCycles": 96,
+    "tails15": 22,
+    "baselineTailRate": 0.2291666667
+  },
+  "rules": [
+    {"feature":"adjacentRepeats","operator":">=","threshold":1,"points":50},
+    {"feature":"w25MeanQuoteDelta","operator":">","threshold":0,"points":50}
+  ],
+  "bands": [
+    {"score":100,"label":"HIGH","shadowAction":"SKIP_CANDIDATE"},
+    {"score":50,"label":"WATCH","shadowAction":"ACCEPT"},
+    {"score":0,"label":"LOW","shadowAction":"ACCEPT"}
+  ],
+  "discoveryPerformance": {
+    "highRiskEntries": 11,
+    "highRiskTails15": 7,
+    "highRiskTailRate": 0.6363636364,
+    "tailCaptureRate": 0.3181818182,
+    "falseRejects": 4,
+    "acceptedEntries": 85,
+    "acceptedTails15": 15,
+    "residualAcceptedTailRate": 0.1764705882
+  },
+  "important": "Frozen post-hoc candidate model. Must be validated on a fresh forward cohort before any trading-control use."
+}
