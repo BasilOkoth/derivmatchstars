@@ -12,12 +12,12 @@
 (() => {
   'use strict';
 
-  const VERSION = 'TICK-DNA-TAIL-VALIDATION-V2.1-IDB-FROZEN-SCORE-V1';
-  const STORE_KEY = 'digitmatchstar_tick_dna_tail_validation_v2';
+  const VERSION = 'TICK-DNA-TAIL-VALIDATION-V2.2-UNCENSORED-20CAP-FROZEN-SCORE-V1';
+  const STORE_KEY = 'digitmatchstar_tick_dna_tail_validation_v22_uncensored';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
-  const DB_RECORD_KEY = 'tick-dna-tail-validation-v2';
+  const DB_RECORD_KEY = 'tick-dna-tail-validation-v22-uncensored';
   let storeCache = null;
   let persistenceReady = false;
   let persistenceState = 'starting';
@@ -25,6 +25,7 @@
   let writeChain = Promise.resolve();
   const MIN_KEY = 'matchstar_panel_min_tick_dna_validation_v2';
   const TARGET_CYCLES = 100;
+  const VALIDATION_CYCLE_CAP = 20;
   const MAX_CONTEXT_TICKS = 100;
   const MAX_LIVE_BUFFER = 500;
   const POLL_MS = 300;
@@ -111,6 +112,18 @@
     return hints.includes('demo') || hints.includes('virtual');
   }
 
+  function enforceValidationCycleCap() {
+    const input = document.getElementById('maxTrades');
+    if (input) {
+      input.value = String(VALIDATION_CYCLE_CAP);
+      input.min = String(VALIDATION_CYCLE_CAP);
+      input.setAttribute('data-tickdna-validation-lock', '20');
+    }
+    window.maxTrades = VALIDATION_CYCLE_CAP;
+    window.maxCycleTrades = VALIDATION_CYCLE_CAP;
+    return VALIDATION_CYCLE_CAP;
+  }
+
   function emptyStore() {
     return {
       schema: 'DIGITMATCHSTAR_TICK_DNA_TAIL_VALIDATION_V2',
@@ -128,6 +141,9 @@
         checkpoints: CHECKPOINTS.slice(),
         labels: ['beyond5', 'beyond10', 'beyond12', 'reached15'],
         validationTarget: 'maximumTradeDepth >= 15',
+        validationCycleCap: VALIDATION_CYCLE_CAP,
+        censoringPolicy: 'UNCENSORED THROUGH TRADE 20',
+        priorCensoredCohort: '56 cycles from V2.1 were capped at 10 and must remain analytically separate',
         scoreFrozen: true,
         tailScoreV1: clone(TAIL_SCORE_V1)
       },
@@ -740,6 +756,8 @@
       return;
     }
 
+    enforceValidationCycleCap();
+
     const old = loadStore();
     const finalized = old.cycles.filter(c => c.finalized).length;
     if (old.armed && finalized < TARGET_CYCLES) {
@@ -758,7 +776,7 @@
   }
 
   async function reset() {
-    const ok = confirm('Reset the Tick DNA 100-cycle validation cohort? This deletes the persistent IndexedDB cohort.');
+    const ok = confirm('Reset the NEW uncensored 100-cycle validation cohort? This only deletes the V2.2 IndexedDB cohort; the prior V2.1 censored cohort remains untouched.');
     if (!ok) return;
     storeCache = emptyStore();
     activeCycleId = null;
@@ -780,12 +798,12 @@
     const payload = clone(store);
     payload.exportedAt = new Date().toISOString();
     payload.researchNote =
-      'Forward-only shadow validation of frozen Tick DNA Tail Score V1. The score was frozen before this 100-cycle cohort and must not be retuned from these validation outcomes.';
+      'Forward-only uncensored validation of frozen Tick DNA Tail Score V1 with a fixed 20-trade observation cap. Prior V2.1 56-cycle dataset was censored at trade 10 and must remain analytically separate.';
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `tick-dna-tail-validation-v2-${store.symbolAtArm || currentSymbol()}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.download = `tick-dna-tail-validation-v22-uncensored-${store.symbolAtArm || currentSymbol()}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
@@ -844,7 +862,7 @@
     title.style.cssText = 'flex:1;min-width:0';
     title.innerHTML = `
       <div style="font-size:12px;font-weight:900">Tick DNA → Tail Risk Lab</div>
-      <div style="font-size:9px;color:#93c5fd">100 CYCLES · FROZEN SCORE V1 · DEMO · SHADOW</div>`;
+      <div style="font-size:9px;color:#93c5fd">100 CYCLES · FROZEN SCORE V1 · 20-TRADE UNCENSORED · DEMO</div>`;
 
     const min = document.createElement('button');
     min.dataset.min = '1';
@@ -873,7 +891,7 @@
       return b;
     };
 
-    armBtn = mk('ARM 100-CYCLE VALIDATION', '#2563eb');
+    armBtn = mk('ARM NEW 100-CYCLE ≥15 VALIDATION', '#2563eb');
     exportBtn = mk('EXPORT JSON', '#047857');
     resetBtn = mk('RESET', '#7f1d1d');
     const overnightBtn = mk('🌙 OVERNIGHT DEMO', '#6d28d9');
@@ -930,6 +948,8 @@
       <div><b>Persistent storage:</b> ${persistenceState === 'ready' || persistenceState === 'ready-empty' ? '✅ IndexedDB' : persistenceState === 'error' ? '❌ IndexedDB error' : '⏳ ' + persistenceState}</div>
       ${persistenceError ? `<div style="color:#fca5a5"><b>Storage error:</b> ${persistenceError}</div>` : ''}
       <div><b>Overnight:</b> ${window.OvernightResearchController?.getState?.()?.overnightEnabled ? '🌙 ON · DEMO autopilot active' : 'OFF'}</div>
+      <div><b>Validation cycle cap:</b> ${VALIDATION_CYCLE_CAP} trades 🔒</div>
+      <div style="color:#facc15"><b>Target:</b> observe whether cycles naturally reach depth ≥15. Prior 56-cycle cap-10 cohort stays separate.</div>
       <hr style="border:0;border-top:1px solid #1e293b;margin:8px 0">
       <div><b>Reached >5:</b> ${(s.beyond5*100).toFixed(1)}%</div>
       <div><b>Reached >10:</b> ${(s.beyond10*100).toFixed(1)}%</div>
@@ -1016,10 +1036,12 @@
       ready: persistenceReady,
       state: persistenceState,
       error: persistenceError
-    })
+    }),
+    validationCycleCap: () => VALIDATION_CYCLE_CAP
   });
 
   async function boot() {
+    enforceValidationCycleCap();
     ensurePanel();
     render();
     await initializePersistence();
