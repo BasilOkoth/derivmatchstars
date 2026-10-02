@@ -5534,6 +5534,20 @@ window.cyclePerformance = {
             finalReason: null
         };
 
+        // Entry Tick DNA V3.3: authoritative lifecycle event from the bot itself.
+        // This avoids fragile external monkey-patching and carries the exact bot tick at cycle start.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-started', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(this.current)),
+                    entryTick: window.lastTick ? JSON.parse(JSON.stringify(window.lastTick)) : null,
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-start event failed:', err);
+        }
+
         log(
             `🔁 CYCLE START | ${symbol} | digit ${digit} | entry edge ` +
             `${Number.isFinite(this.current.entry.liveEdge) ? (this.current.entry.liveEdge * 100).toFixed(2) + ' pp' : 'n/a'}`,
@@ -5717,6 +5731,18 @@ window.cyclePerformance = {
                 `⚠️ CYCLE/SESSION P&L MISMATCH | cycle ${c.netPnL.toFixed(2)} vs session ledger ${sessionLedgerPnL.toFixed(2)}`,
                 'WARNING'
             );
+        }
+
+        // Entry Tick DNA V3.3: authoritative finalization event.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-finalized', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(c)),
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-finalized event failed:', err);
         }
 
         this.current = null;
@@ -13151,13 +13177,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V3.1-ENTRY-ARM-FIX"
+data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V3.3-DIRECT-EVENT-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v3-1-arm-fix"></script>
+    <script src="/research-suite-loader.js?v=tickdna-v3-3-direct-event-fix"></script>
 
 </body>
 </html>

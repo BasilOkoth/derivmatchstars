@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-CYCLECAPTURE-FIX';
+  const VERSION = 'ENTRY-TICK-DNA-V2-FROZEN-SHADOW-2026-10-02-DIRECT-EVENT-FIX';
   const DB_NAME = 'DigitMatchStarTickDNA';
   const DB_VERSION = 1;
   const DB_STORE = 'validation';
@@ -438,6 +438,45 @@
   window.addEventListener('digitmatchstar:tick',onTick);
   window.EntryTickDNAV2=Object.freeze({version:VERSION,model:()=>clone(FROZEN_MODEL),store:()=>clone(loadStore()),summary:()=>clone(summary(loadStore())),export:exportData,arm,reset,accountMode});
 
-  async function boot() { ensurePanel(); render(); await initPersistence(); installLifecycleHook(); render(); setInterval(poll,POLL_MS); console.info(`[${VERSION}] loaded · shadow-only`); }
+  function onAuthoritativeCycleStarted(ev) {
+    try {
+      const detail = ev?.detail || {};
+      const c = detail.cycle || detail;
+      if (!c?.id) return;
+      // If the bot supplied the authoritative entry tick, seed the buffer with it before scoring.
+      const raw = detail.entryTick;
+      if (raw && Number.isFinite(Number(raw.quote))) {
+        const row = enrich(raw); row.lastDigit = lastDigit(row); row.adjacentRepeats = adjacentRepeats(row);
+        liveTicks.push(row); if (liveTicks.length > MAX_BUFFER) liveTicks = liveTicks.slice(-MAX_BUFFER);
+      }
+      startCycle(c);
+      activeCycleId = String(c.id);
+      lifecycleHookInstalled = true;
+      render();
+    } catch (err) { console.error(`[${VERSION}] authoritative start event failed`, err); }
+  }
+
+  function onAuthoritativeCycleFinalized(ev) {
+    try {
+      const detail = ev?.detail || {};
+      const c = detail.cycle || detail;
+      if (!c?.id) return;
+      finalizeCycle(c);
+      lifecycleHookInstalled = true;
+      render();
+    } catch (err) { console.error(`[${VERSION}] authoritative finalized event failed`, err); }
+  }
+
+  async function boot() {
+    ensurePanel();
+    window.addEventListener('digitmatchstar:cycle-started', onAuthoritativeCycleStarted);
+    window.addEventListener('digitmatchstar:cycle-finalized', onAuthoritativeCycleFinalized);
+    render();
+    await initPersistence();
+    installLifecycleHook(); // fallback only; direct bot events are authoritative.
+    render();
+    setInterval(poll,POLL_MS);
+    console.info(`[${VERSION}] loaded · direct lifecycle events + fallback polling`);
+  }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>boot().catch(console.error),{once:true}); else boot().catch(console.error);
 })();
