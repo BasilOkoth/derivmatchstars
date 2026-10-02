@@ -1,13 +1,13 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Tick DNA Validation V2.3 Continuous Overnight · Frozen Tail Score V1.
+ * Tick DNA Validation V2.4 Auto-Restart Fix · Frozen Tail Score V1.
  */
 (() => {
   'use strict';
 
   const scripts = [
     '/tail-risk-model-v1.2-combined.js',
-    '/tick-dna-tail-validation-v2.js?v=2.3-continuous'
+    '/tick-dna-tail-validation-v2.js?v=2.4-autorestart'
   ];
 
   function alreadyLoaded(src) {
@@ -33,7 +33,7 @@
 
   async function start() {
     for (const src of scripts) await loadScript(src);
-    console.info('[DMS Research Add-on] Tick DNA Validation V2.3 Continuous Overnight loaded.');
+    console.info('[DMS Research Add-on] Tick DNA Validation V2.4 Auto-Restart Fix loaded.');
   }
 
   if (document.readyState === 'loading') {

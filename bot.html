@@ -10609,45 +10609,33 @@ window.isBotRunning = true;
         function stopBot(reason) {
             if (!window.isBotRunning) return;
 
-            // V2.3 CONTINUOUS OVERNIGHT:
-            // - A manual STOP (no automatic reason supplied) is authoritative and
-            //   switches Overnight OFF.
-            // - A normal automatic cycle completion/limit stop keeps Overnight ON,
-            //   allowing the DEMO overnight loop to start the next research cycle.
-            // - A settlement reconciliation mismatch remains a hard stop.
-            let overnightAutoContinue = false;
-            try {
-                if (typeof loadState === 'function') {
-                    const overnightState = loadState();
-                    const overnightWasOn = !!overnightState?.overnightEnabled;
-                    const automaticStop = typeof reason === 'string' && reason.trim().length > 0;
-                    const hardFault = /settlement reconciliation mismatch/i.test(String(reason || ''));
-                    overnightAutoContinue = overnightWasOn && automaticStop && !hardFault;
-                }
-            } catch (_) {}
+            // V2.4 CONTINUOUS OVERNIGHT:
+            // The overnight controller now exposes its state on window so this
+            // core trading function can reliably distinguish manual stops from
+            // normal cycle completion.
+            const reasonText = String(reason || '');
+            const hardFault = /settlement reconciliation mismatch|invalid token|authorization/i.test(reasonText);
+            const explicitManual =
+                window.__dmsManualStopRequested === true ||
+                /manual stop|overnight switched off|autopilot manually paused/i.test(reasonText);
+
+            const overnightAutoContinue =
+                window.__dmsOvernightEnabled === true &&
+                window.__dmsOvernightAccount === 'DEMO' &&
+                !hardFault &&
+                !explicitManual;
 
             window.manualTradingStopped = !overnightAutoContinue;
 
-            // Only a MANUAL stop or hard fault disables Overnight.
-            // Ordinary completed cycles remain in continuous DEMO research mode.
             if (!overnightAutoContinue) {
-                try {
-                    if (typeof loadState === 'function' && typeof saveState === 'function') {
-                        const overnightState = loadState();
-                        if (overnightState?.overnightEnabled) {
-                            overnightState.overnightEnabled = false;
-                            overnightState.enabled = false;
-                            overnightState.lastStopReason = reason || 'Manual STOP';
-                            saveState(overnightState);
-                        }
-                    }
-                } catch (_) {}
+                window.__dmsOvernightRestartPending = false;
+                if (explicitManual || hardFault) {
+                    window.__dmsOvernightEnabled = false;
+                }
             } else {
+                window.__dmsOvernightRestartPending = true;
                 try {
-                    log(
-                        `🌙 Overnight continues after automatic cycle stop: ${reason}`,
-                        'SYSTEM'
-                    );
+                    log(`🌙 Overnight cycle finished (${reasonText || 'automatic stop'}) · next DEMO cycle will auto-start`, 'SYSTEM');
                 } catch (_) {}
             }
 
@@ -10671,20 +10659,23 @@ window.isBotRunning = true;
             window.stopAfterWin = false;
             updateButtonState();
 
-            // If this was an automatic overnight cycle stop, the existing
-            // Overnight loop will see isBotRunning=false and start the next DEMO
-            // cycle automatically on its next tick (about 1.5 seconds).
+            // Restart only after stopBot cleanup has completed. The watchdog
+            // below also retries every 2 seconds while Overnight remains ON.
             if (overnightAutoContinue) {
                 setTimeout(() => {
                     try {
                         if (
-                            window.OvernightResearchController?.getState?.()?.overnightEnabled &&
-                            window.OvernightResearchController?.accountMode?.() === 'DEMO'
+                            window.__dmsOvernightEnabled === true &&
+                            window.__dmsOvernightAccount === 'DEMO' &&
+                            window.isBotRunning !== true
                         ) {
-                            window.OvernightResearchController.tick?.();
+                            window.__dmsOvernightRestartPending = false;
+                            startBot();
                         }
-                    } catch (_) {}
-                }, 500);
+                    } catch (err) {
+                        try { console.error('Overnight restart failed:', err); } catch (_) {}
+                    }
+                }, 2200);
             }
             
             log('⏹️ Bot stopped', 'SYSTEM');
@@ -10755,7 +10746,9 @@ window.isBotRunning = true;
         
         function toggleBot() {
             if (window.isBotRunning) {
-                stopBot();
+                window.__dmsManualStopRequested = true;
+                stopBot('Manual STOP');
+                window.__dmsManualStopRequested = false;
             } else {
                 startBot();
             }
@@ -12616,7 +12609,7 @@ window.isBotRunning = true;
             const stop = globalBinding('stopBot');
             if (typeof stop === 'function') {
                 try {
-                    stop();
+                    stop(reason || 'Overnight controller stop');
                     const s = loadState();
                     s.lastStopReason = reason;
                     saveState(s);
@@ -12695,6 +12688,11 @@ window.isBotRunning = true;
             s.enabled = wantOn;
             s.lastStopReason = null;
 
+            // V2.4: expose overnight state to the core trading scope.
+            window.__dmsOvernightEnabled = wantOn;
+            window.__dmsOvernightAccount = detectedAccount;
+            if (!wantOn) window.__dmsOvernightRestartPending = false;
+
             if (wantOn) {
                 s.overnightStartedAt = new Date().toISOString();
                 if (!Number.isFinite(Number(s.overnightCycles))) s.overnightCycles = 0;
@@ -12711,18 +12709,22 @@ window.isBotRunning = true;
 
             if (wantOn) {
                 window.manualTradingStopped = false;
+                window.__dmsManualStopRequested = false;
+                window.__dmsOvernightEnabled = true;
+                window.__dmsOvernightAccount = 'DEMO';
                 acquireScreenWakeLock().catch(() => {});
                 selectAiAuto();
 
-                if (isRunning() !== true) {
-                    startExistingBot();
-                }
-
                 startOvernightLoop();
+                if (isRunning() !== true) {
+                    setTimeout(() => overnightTick().catch(() => {}), 150);
+                }
                 render(s, detectedAccount, currentExecutionMode(), isRunning(),
                     '🌙 Overnight ON · research + DEMO trading active'
                 );
             } else {
+                window.__dmsOvernightEnabled = false;
+                window.__dmsOvernightRestartPending = false;
                 stopOvernightLoop();
                 releaseScreenWakeLock().catch(() => {});
                 if (isRunning() === true) {
@@ -12945,20 +12947,30 @@ window.isBotRunning = true;
 
         async function overnightTick() {
             const s = loadState();
-            if (!s.overnightEnabled) return;
+            if (!s.overnightEnabled || window.__dmsOvernightEnabled !== true) return;
 
             if (accountMode() !== 'DEMO') {
                 setOvernightResearch(false);
                 return;
             }
 
+            window.__dmsOvernightAccount = 'DEMO';
             acquireScreenWakeLock().catch(() => {});
             selectAiAuto();
 
-            // Research and trading are both active only because the user explicitly
-            // turned the single Overnight button ON.
-            if (isRunning() !== true) {
-                startExistingBot();
+            // V2.4 watchdog: if an automatic cycle stop leaves the bot idle,
+            // restart it directly. This does not require pressing START BOT.
+            if (isRunning() !== true && window.__dmsManualStopRequested !== true) {
+                try {
+                    const start = globalBinding('startBot');
+                    if (typeof start === 'function') {
+                        start();
+                    } else {
+                        startExistingBot();
+                    }
+                } catch (_) {
+                    startExistingBot();
+                }
             }
 
             archiveCompletedCycles(completedIds());
@@ -12979,7 +12991,7 @@ window.isBotRunning = true;
             if (overnightLoopTimer) clearInterval(overnightLoopTimer);
             overnightLoopTimer = setInterval(() => {
                 overnightTick().catch(() => {});
-            }, 1500);
+            }, 2000);
             setTimeout(() => {
                 overnightTick().catch(() => {});
             }, 100);
@@ -13012,6 +13024,9 @@ window.isBotRunning = true;
         // IMPORTANT: overnight never resumes automatically after refresh.
         // A fresh explicit click is required before unattended trading can start.
         {
+            window.__dmsOvernightEnabled = false;
+            window.__dmsOvernightRestartPending = false;
+            window.__dmsManualStopRequested = false;
             const s = loadState();
             if (s.overnightEnabled) {
                 s.overnightEnabled = false;
@@ -13044,13 +13059,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.3-CONTINUOUS-OVERNIGHT"
+data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.4-AUTORESTART-FIX"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v2.3-continuous"></script>
+    <script src="/research-suite-loader.js?v=tickdna-v2.4-autorestart"></script>
 
 </body>
 </html>
