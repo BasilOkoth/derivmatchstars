@@ -10609,20 +10609,47 @@ window.isBotRunning = true;
         function stopBot(reason) {
             if (!window.isBotRunning) return;
 
-            // V57.7.3: STOP means STOP. No background/overnight controller is
-            // allowed to restart trading. Public research may continue separately.
-            window.manualTradingStopped = true;
-
-            // Manual STOP overrides overnight mode and prevents auto-restart.
+            // V2.3 CONTINUOUS OVERNIGHT:
+            // - A manual STOP (no automatic reason supplied) is authoritative and
+            //   switches Overnight OFF.
+            // - A normal automatic cycle completion/limit stop keeps Overnight ON,
+            //   allowing the DEMO overnight loop to start the next research cycle.
+            // - A settlement reconciliation mismatch remains a hard stop.
+            let overnightAutoContinue = false;
             try {
-                if (typeof loadState === 'function' && typeof saveState === 'function') {
+                if (typeof loadState === 'function') {
                     const overnightState = loadState();
-                    if (overnightState?.overnightEnabled) {
-                        overnightState.overnightEnabled = false;
-                        saveState(overnightState);
-                    }
+                    const overnightWasOn = !!overnightState?.overnightEnabled;
+                    const automaticStop = typeof reason === 'string' && reason.trim().length > 0;
+                    const hardFault = /settlement reconciliation mismatch/i.test(String(reason || ''));
+                    overnightAutoContinue = overnightWasOn && automaticStop && !hardFault;
                 }
             } catch (_) {}
+
+            window.manualTradingStopped = !overnightAutoContinue;
+
+            // Only a MANUAL stop or hard fault disables Overnight.
+            // Ordinary completed cycles remain in continuous DEMO research mode.
+            if (!overnightAutoContinue) {
+                try {
+                    if (typeof loadState === 'function' && typeof saveState === 'function') {
+                        const overnightState = loadState();
+                        if (overnightState?.overnightEnabled) {
+                            overnightState.overnightEnabled = false;
+                            overnightState.enabled = false;
+                            overnightState.lastStopReason = reason || 'Manual STOP';
+                            saveState(overnightState);
+                        }
+                    }
+                } catch (_) {}
+            } else {
+                try {
+                    log(
+                        `🌙 Overnight continues after automatic cycle stop: ${reason}`,
+                        'SYSTEM'
+                    );
+                } catch (_) {}
+            }
 
             // Start the no-money post-stop watch BEFORE archiving the live cycle.
             // This catches the normal "Maximum trades reached" path too.
@@ -10643,6 +10670,22 @@ window.isBotRunning = true;
             window.nextTradeAllowed = false;
             window.stopAfterWin = false;
             updateButtonState();
+
+            // If this was an automatic overnight cycle stop, the existing
+            // Overnight loop will see isBotRunning=false and start the next DEMO
+            // cycle automatically on its next tick (about 1.5 seconds).
+            if (overnightAutoContinue) {
+                setTimeout(() => {
+                    try {
+                        if (
+                            window.OvernightResearchController?.getState?.()?.overnightEnabled &&
+                            window.OvernightResearchController?.accountMode?.() === 'DEMO'
+                        ) {
+                            window.OvernightResearchController.tick?.();
+                        }
+                    } catch (_) {}
+                }, 500);
+            }
             
             log('⏹️ Bot stopped', 'SYSTEM');
             if (reason) log(`🛑 Stop reason: ${reason}`, 'SYSTEM');
@@ -13001,13 +13044,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.2-UNCENSORED-20CAP"
+data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V2.3-CONTINUOUS-OVERNIGHT"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
 data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v2.2-uncensored"></script>
+    <script src="/research-suite-loader.js?v=tickdna-v2.3-continuous"></script>
 
 </body>
 </html>
