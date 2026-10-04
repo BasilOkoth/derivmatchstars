@@ -645,6 +645,88 @@
                     </div>
                 </div>
 
+
+                <!-- SAFE-TICK V1 SHADOW VALIDATION -->
+                <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
+                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
+                        <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">SHADOW VALIDATION</span>
+                        <button type="button" onclick="downloadSafeTickV1Data()"
+                                class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
+                            ⬇ Export
+                        </button>
+                        <span id="safeTickLiveDecision" class="ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200">
+                            WAITING FOR CANDIDATE
+                        </span>
+                    </div>
+
+                    <div class="text-[11px] text-gray-400 mb-3">
+                        Frozen rule:
+                        <b class="text-gray-200">candidateFreq25 ≤ 0.08</b>
+                        AND
+                        <b class="text-gray-200">entropy10 ≤ 2.521928</b>.
+                        Research-only: this panel does not block or place trades.
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Candidate Digit</div>
+                            <div id="safeTickCandidateDigit" class="text-xl font-black text-white">—</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Freq25</div>
+                            <div id="safeTickFreq25" class="text-xl font-black text-white">—</div>
+                            <div class="text-[10px] text-gray-500">must be ≤ 0.08</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Entropy10</div>
+                            <div id="safeTickEntropy10" class="text-xl font-black text-white">—</div>
+                            <div class="text-[10px] text-gray-500">must be ≤ 2.521928</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Forward Gap</div>
+                            <div id="safeTickForwardGap" class="text-xl font-black text-yellow-300">—</div>
+                            <div id="safeTickOutcomeText" class="text-[10px] text-gray-500">awaiting outcome</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        <div class="p-2 bg-gray-800 rounded border border-gray-700">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Finalized</div>
+                            <div id="safeTickFinalized" class="text-lg font-black text-white">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-emerald-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted</div>
+                            <div id="safeTickAccepted" class="text-lg font-black text-emerald-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-rose-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Rejected</div>
+                            <div id="safeTickRejected" class="text-lg font-black text-rose-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-yellow-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted STOP10</div>
+                            <div id="safeTickAcceptedStop10" class="text-lg font-black text-yellow-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-purple-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted Tail15</div>
+                            <div id="safeTickAcceptedTail15" class="text-lg font-black text-purple-300">0</div>
+                        </div>
+                    </div>
+
+                    <div class="mt-3 p-2.5 bg-slate-950 rounded-lg border border-slate-700">
+                        <div class="flex justify-between text-[11px] mb-1">
+                            <span class="text-gray-400">Fresh validation progress</span>
+                            <span id="safeTickProgressText" class="font-bold text-cyan-300">0 / 500</span>
+                        </div>
+                        <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+                            <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
+                        </div>
+                        <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
+                            Waiting for the first exact candidate tick.
+                        </div>
+                    </div>
+                </div>
+
                 <!-- MARTINGALE CALCULATOR -->
                 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
                     <h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
@@ -1031,7 +1113,8 @@
                 ['post-stop-depth-panel', 'post-stop-depth'],
                 ['digit-dna-panel', 'digit-dna'],
                 ['digit-feature-panel', 'digit-feature'],
-                ['randomness-auditor-panel', 'randomness-auditor']
+                ['randomness-auditor-panel', 'randomness-auditor'],
+                ['safe-tick-v1-panel', 'safe-tick-v1']
             ];
 
             for (const [id, key] of configs) {
@@ -10441,6 +10524,14 @@ window.executionLock = true;
                 // tick's own last digit. Trading selection/execution is unchanged.
                 if (!window.cycleHasPurchasedContract) {
                     try {
+                        // SAFE-TICK V1 uses the exact same aligned candidate tick.
+                        // SHADOW ONLY: it records ACCEPT/REJECT but never blocks execution.
+                        window.SafeTickV1?.captureCandidate?.(tick);
+                    } catch (err) {
+                        console.warn('SAFE-TICK V1 capture failed:', err);
+                    }
+
+                    try {
                         window.CandidateTickDNAV3?.captureCandidate?.(tick);
                     } catch (err) {
                         console.warn('Candidate Tick DNA V3.7 capture failed:', err);
@@ -10457,6 +10548,396 @@ window.executionLock = true;
             }
         }
         
+
+        function downloadSafeTickV1Data() {
+            try {
+                const payload = window.SafeTickV1?.exportState?.();
+                if (!payload) throw new Error('SAFE-TICK V1 is not loaded');
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `safe-tick-v1-shadow-R_10-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                log('🛡️ SAFE-TICK V1 shadow data exported', 'SYSTEM');
+            } catch (err) {
+                console.error(err);
+                log(`SAFE-TICK V1 export failed: ${err?.message || err}`, 'ERROR');
+            }
+        }
+
+
+        // ============================================================================
+        // DIGITMATCHSTAR SAFE-TICK V1 — FROZEN SHADOW SELECTOR
+        // Discovery rule frozen 2026-10-04:
+        //   candidateFreq25 <= 0.08 AND entropy10 <= 2.5219280948873625
+        //
+        // IMPORTANT:
+        // - Entry-time information only.
+        // - SHADOW ONLY. It does not block or place a trade.
+        // - Outcome is measured on FUTURE ticks only.
+        // - STOP10 = forwardGap > 10 (or no recurrence by tick 20).
+        // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
+        // ============================================================================
+        window.SafeTickV1 = (() => {
+            const VERSION = 'SAFE-TICK-V1-FROZEN-2026-10-04';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_shadow_r10';
+            const TARGET = 500;
+            const FREQ25_MAX = 0.08;
+            const ENTROPY10_MAX = 2.5219280948873625;
+
+            let active = null;
+            let records = [];
+            let lastSeenEpoch = null;
+
+            function entropy10(arr) {
+                if (!Array.isArray(arr) || !arr.length) return NaN;
+                const counts = Array(10).fill(0);
+                for (const d of arr) {
+                    const n = Number(d);
+                    if (Number.isInteger(n) && n >= 0 && n <= 9) counts[n]++;
+                }
+                let h = 0;
+                const N = arr.length;
+                for (const n of counts) {
+                    if (!n) continue;
+                    const p = n / N;
+                    h -= p * Math.log2(p);
+                }
+                return h;
+            }
+
+            function load() {
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+                    if (parsed && Array.isArray(parsed.records)) {
+                        records = parsed.records;
+                    }
+                } catch (_) {}
+                render();
+            }
+
+            function save() {
+                try {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                        version: VERSION,
+                        target: TARGET,
+                        records: records.slice(-5000),
+                        savedAt: Date.now()
+                    }));
+                } catch (_) {}
+            }
+
+            function featureSnapshot(candidateDigit) {
+                const all = Array.isArray(window.lastDigits)
+                    ? window.lastDigits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    : [];
+
+                const w25 = all.slice(-25);
+                const w10 = all.slice(-10);
+                const candidateFreq25 = w25.length
+                    ? w25.filter(d => d === candidateDigit).length / w25.length
+                    : NaN;
+                const entropy10Value = entropy10(w10);
+
+                return {
+                    contextN: all.length,
+                    candidateFreq25,
+                    entropy10: entropy10Value
+                };
+            }
+
+            function captureCandidate(tick) {
+                if (!tick) return null;
+
+                const symbol =
+                    tick.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+
+                if (symbol !== 'R_10') {
+                    render();
+                    return null;
+                }
+
+                // Avoid overlapping candidate outcomes. The exact candidate lab also
+                // resolves one candidate before accepting the next.
+                if (active && !active.finalized) return active;
+
+                const digit = Number(
+                    tick.digit ??
+                    getLastDigitFromQuote?.(tick.quote ?? tick.price, null, symbol)
+                );
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
+
+                const f = featureSnapshot(digit);
+                const eligible =
+                    Number.isFinite(f.candidateFreq25) &&
+                    Number.isFinite(f.entropy10) &&
+                    f.candidateFreq25 <= FREQ25_MAX &&
+                    f.entropy10 <= ENTROPY10_MAX;
+
+                active = {
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+                    symbol,
+                    capturedAt: Date.now(),
+                    entryEpoch: Number(tick.epoch ?? NaN),
+                    candidateDigit: digit,
+                    entryFeatures: f,
+                    eligible,
+                    decision: eligible ? 'ACCEPT_SHADOW' : 'REJECT_SHADOW',
+                    forwardTicksObserved: 0,
+                    forwardGap: null,
+                    stop10: null,
+                    tail15: null,
+                    noRecurrenceBy20: false,
+                    finalized: false
+                };
+
+                log(
+                    `🛡️ SAFE-TICK V1 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision}`,
+                    eligible ? 'SYSTEM' : 'WARNING'
+                );
+
+                render();
+                return active;
+            }
+
+            function onFutureTick(tick) {
+                if (!active || active.finalized || !tick) return;
+
+                const epoch = Number(tick.epoch ?? NaN);
+
+                // The candidate tick itself is T0 and must NOT count as a future tick.
+                if (Number.isFinite(active.entryEpoch) && Number.isFinite(epoch) && epoch <= active.entryEpoch) {
+                    return;
+                }
+
+                // Guard duplicate processing of the same future tick.
+                if (Number.isFinite(epoch) && epoch === lastSeenEpoch) return;
+                if (Number.isFinite(epoch)) lastSeenEpoch = epoch;
+
+                const symbol =
+                    tick.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+                if (symbol !== active.symbol) return;
+
+                const digit = Number(
+                    tick.digit ??
+                    getLastDigitFromQuote?.(tick.quote ?? tick.price, null, symbol)
+                );
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+
+                active.forwardTicksObserved += 1;
+
+                if (digit === active.candidateDigit) {
+                    active.forwardGap = active.forwardTicksObserved;
+                    finalize(false);
+                    return;
+                }
+
+                if (active.forwardTicksObserved >= 20) {
+                    active.forwardGap = null;
+                    active.noRecurrenceBy20 = true;
+                    finalize(true);
+                } else {
+                    render();
+                }
+            }
+
+            function finalize(noRecurrenceBy20) {
+                if (!active || active.finalized) return;
+
+                active.noRecurrenceBy20 = !!noRecurrenceBy20;
+                active.stop10 =
+                    active.forwardGap === null
+                        ? 1
+                        : (active.forwardGap > 10 ? 1 : 0);
+                active.tail15 =
+                    active.forwardGap === null
+                        ? 1
+                        : (active.forwardGap >= 15 ? 1 : 0);
+                active.finalized = true;
+                active.finalizedAt = Date.now();
+
+                records.push(JSON.parse(JSON.stringify(active)));
+                save();
+
+                log(
+                    `🛡️ SAFE-TICK V1 OUTCOME | ${active.decision} | digit ${active.candidateDigit} | ` +
+                    `gap ${active.forwardGap === null ? '>20' : active.forwardGap} | ` +
+                    `STOP10 ${active.stop10 ? 'YES' : 'NO'} | Tail15 ${active.tail15 ? 'YES' : 'NO'}`,
+                    active.stop10 ? 'WARNING' : 'SYSTEM'
+                );
+
+                render();
+                active = null;
+            }
+
+            function stats() {
+                const finalized = records.filter(r => r?.finalized);
+                const accepted = finalized.filter(r => r.eligible);
+                const rejected = finalized.filter(r => !r.eligible);
+                const acceptedStop10 = accepted.filter(r => r.stop10 === 1);
+                const acceptedTail15 = accepted.filter(r => r.tail15 === 1);
+
+                return {
+                    finalized: finalized.length,
+                    accepted: accepted.length,
+                    rejected: rejected.length,
+                    acceptedStop10: acceptedStop10.length,
+                    acceptedTail15: acceptedTail15.length,
+                    acceptedStop10Rate: accepted.length ? acceptedStop10.length / accepted.length : 0,
+                    acceptedTail15Rate: accepted.length ? acceptedTail15.length / accepted.length : 0
+                };
+            }
+
+            function setText(id, value, className = null) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = value;
+                if (className) el.className = className;
+            }
+
+            function render() {
+                const s = stats();
+                const cur = active;
+
+                setText('safeTickCandidateDigit', cur ? String(cur.candidateDigit) : '—');
+                setText(
+                    'safeTickFreq25',
+                    cur && Number.isFinite(cur.entryFeatures?.candidateFreq25)
+                        ? cur.entryFeatures.candidateFreq25.toFixed(3)
+                        : '—'
+                );
+                setText(
+                    'safeTickEntropy10',
+                    cur && Number.isFinite(cur.entryFeatures?.entropy10)
+                        ? cur.entryFeatures.entropy10.toFixed(3)
+                        : '—'
+                );
+                setText(
+                    'safeTickForwardGap',
+                    cur
+                        ? (
+                            cur.finalized
+                                ? (cur.forwardGap === null ? '>20' : String(cur.forwardGap))
+                                : String(cur.forwardTicksObserved)
+                          )
+                        : '—'
+                );
+                setText(
+                    'safeTickOutcomeText',
+                    cur
+                        ? (
+                            cur.finalized
+                                ? `STOP10 ${cur.stop10 ? 'YES' : 'NO'} · Tail15 ${cur.tail15 ? 'YES' : 'NO'}`
+                                : `observing future ticks ${cur.forwardTicksObserved}/20`
+                          )
+                        : 'awaiting outcome'
+                );
+
+                const decisionEl = document.getElementById('safeTickLiveDecision');
+                if (decisionEl) {
+                    if (!cur) {
+                        decisionEl.textContent = 'WAITING FOR CANDIDATE';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200';
+                    } else if (cur.eligible) {
+                        decisionEl.textContent = '✅ ACCEPT_SHADOW';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-700 text-emerald-50';
+                    } else {
+                        decisionEl.textContent = '⛔ REJECT_SHADOW';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-rose-800 text-rose-50';
+                    }
+                }
+
+                setText('safeTickFinalized', String(s.finalized));
+                setText('safeTickAccepted', String(s.accepted));
+                setText('safeTickRejected', String(s.rejected));
+                setText('safeTickAcceptedStop10', String(s.acceptedStop10));
+                setText('safeTickAcceptedTail15', String(s.acceptedTail15));
+
+                const progress = Math.min(100, (s.finalized / TARGET) * 100);
+                setText('safeTickProgressText', `${s.finalized} / ${TARGET}`);
+                const bar = document.getElementById('safeTickProgressBar');
+                if (bar) bar.style.width = `${progress.toFixed(1)}%`;
+
+                const summary = document.getElementById('safeTickSummary');
+                if (summary) {
+                    const stop10Rate = s.accepted
+                        ? `${(s.acceptedStop10Rate * 100).toFixed(1)}%`
+                        : '—';
+                    const tail15Rate = s.accepted
+                        ? `${(s.acceptedTail15Rate * 100).toFixed(1)}%`
+                        : '—';
+                    summary.textContent =
+                        `Accepted ${s.accepted}/${s.finalized || 0} finalized · ` +
+                        `Accepted STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
+                        `Accepted Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
+                }
+            }
+
+            function exportState() {
+                return {
+                    schema: 'DIGITMATCHSTAR_SAFE_TICK_V1_SHADOW',
+                    version: VERSION,
+                    rule: {
+                        candidateFreq25Max: FREQ25_MAX,
+                        entropy10Max: ENTROPY10_MAX
+                    },
+                    targetCandidates: TARGET,
+                    active: active ? JSON.parse(JSON.stringify(active)) : null,
+                    stats: stats(),
+                    records: JSON.parse(JSON.stringify(records))
+                };
+            }
+
+            load();
+
+            // Consume the canonical tick event if available.
+            window.addEventListener('digitmatchstar:tick', (event) => {
+                try {
+                    onFutureTick(event?.detail?.tick || event?.detail || null);
+                } catch (err) {
+                    console.warn('SAFE-TICK V1 future tick error:', err);
+                }
+            });
+
+            // Fallback: lightweight poll of canonical window.lastTick for builds
+            // where the tick event is not emitted.
+            let fallbackEpoch = null;
+            setInterval(() => {
+                try {
+                    const t = window.lastTick;
+                    if (!t) return;
+                    const epoch = Number(t.epoch ?? NaN);
+                    if (Number.isFinite(epoch) && epoch === fallbackEpoch) return;
+                    fallbackEpoch = epoch;
+                    onFutureTick(t);
+                } catch (_) {}
+            }, 250);
+
+            window.addEventListener('load', render);
+            setTimeout(render, 500);
+
+            return Object.freeze({
+                VERSION,
+                captureCandidate,
+                onFutureTick,
+                stats,
+                render,
+                exportState
+            });
+        })();
+
+
         // EXECUTE TRADE - CRITICAL FUNCTION
         function executeTrade(tick) {
             const contractType = document.getElementById('contractType').value;
@@ -13215,10 +13696,10 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-TICKDNA-V3.5-AUTHORITATIVE-STATE-POLL"
+data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="frozen-shadow-validation"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
     <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
