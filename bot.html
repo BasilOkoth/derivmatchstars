@@ -650,7 +650,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">SHADOW VALIDATION</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.1 ALIGNED · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -722,7 +722,7 @@
                             <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
                         </div>
                         <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
-                            Waiting for the first exact candidate tick.
+                            Fresh V1.1 aligned cohort: waiting for the first exact candidate tick.
                         </div>
                     </div>
                 </div>
@@ -10583,8 +10583,8 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1-FROZEN-2026-10-04';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_shadow_r10';
+            const VERSION = 'SAFE-TICK-V1.1-ALIGNED-FIX-2026-10-04';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_1_aligned_shadow_r10';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
@@ -10650,28 +10650,90 @@ window.executionLock = true;
                 };
             }
 
-            function captureCandidate(tick) {
-                if (!tick) return null;
+            function normalizeTick(tick) {
+                const fallback = window.lastTick || null;
+                const source = tick || fallback;
+                if (!source) return null;
 
                 const symbol =
-                    tick.symbol ||
+                    source.symbol ||
+                    fallback?.symbol ||
                     document.getElementById('symbol')?.value ||
                     window.tickFormat?.symbol ||
                     'UNKNOWN';
 
-                if (symbol !== 'R_10') {
+                const rawQuote =
+                    source.quote ??
+                    source.price ??
+                    fallback?.quote ??
+                    fallback?.price ??
+                    null;
+
+                const explicitDigit = Number(source.digit);
+                const fallbackDigit = Number(fallback?.digit);
+
+                let digit = Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
+                    ? explicitDigit
+                    : (
+                        Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
+                            ? fallbackDigit
+                            : Number(getLastDigitFromQuote?.(rawQuote, null, symbol))
+                      );
+
+                const sourceEpoch = Number(source.epoch);
+                const fallbackEpoch = Number(fallback?.epoch);
+
+                // executeTrade() can receive a lightweight tick without epoch.
+                // window.lastTick is the canonical market tick at that instant.
+                const epoch = Number.isFinite(sourceEpoch)
+                    ? sourceEpoch
+                    : (Number.isFinite(fallbackEpoch) ? fallbackEpoch : null);
+
+                const sourceReceivedAt = Number(source.receivedAt);
+                const fallbackReceivedAt = Number(fallback?.receivedAt);
+                const receivedAt = Number.isFinite(sourceReceivedAt)
+                    ? sourceReceivedAt
+                    : (Number.isFinite(fallbackReceivedAt) ? fallbackReceivedAt : null);
+
+                const quoteText = rawQuote === null || rawQuote === undefined
+                    ? ''
+                    : String(rawQuote);
+
+                return {
+                    symbol,
+                    quote: rawQuote,
+                    quoteText,
+                    digit,
+                    epoch,
+                    receivedAt
+                };
+            }
+
+            function tickKey(t) {
+                if (!t) return null;
+                if (Number.isFinite(Number(t.epoch))) {
+                    return `e:${Number(t.epoch)}`;
+                }
+                if (Number.isFinite(Number(t.receivedAt))) {
+                    return `r:${Number(t.receivedAt)}|q:${t.quoteText}|d:${t.digit}`;
+                }
+                return `q:${t.quoteText}|d:${t.digit}`;
+            }
+
+            function captureCandidate(tick) {
+                const t = normalizeTick(tick);
+                if (!t) return null;
+
+                if (t.symbol !== 'R_10') {
                     render();
                     return null;
                 }
 
-                // Avoid overlapping candidate outcomes. The exact candidate lab also
-                // resolves one candidate before accepting the next.
+                // Keep outcomes non-overlapping: one candidate is followed until
+                // recurrence or T+20 before another candidate is admitted.
                 if (active && !active.finalized) return active;
 
-                const digit = Number(
-                    tick.digit ??
-                    getLastDigitFromQuote?.(tick.quote ?? tick.price, null, symbol)
-                );
+                const digit = Number(t.digit);
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
 
                 const f = featureSnapshot(digit);
@@ -10683,9 +10745,12 @@ window.executionLock = true;
 
                 active = {
                     id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
-                    symbol,
+                    symbol: t.symbol,
                     capturedAt: Date.now(),
-                    entryEpoch: Number(tick.epoch ?? NaN),
+                    entryEpoch: Number.isFinite(Number(t.epoch)) ? Number(t.epoch) : null,
+                    entryReceivedAt: Number.isFinite(Number(t.receivedAt)) ? Number(t.receivedAt) : null,
+                    entryTickKey: tickKey(t),
+                    entryQuote: t.quote,
                     candidateDigit: digit,
                     entryFeatures: f,
                     eligible,
@@ -10695,12 +10760,15 @@ window.executionLock = true;
                     stop10: null,
                     tail15: null,
                     noRecurrenceBy20: false,
-                    finalized: false
+                    finalized: false,
+                    sameTickSkipped: false,
+                    lastFutureTickKey: null
                 };
 
                 log(
-                    `🛡️ SAFE-TICK V1 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
-                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision}`,
+                    `🛡️ SAFE-TICK V1.1 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
+                    `T0 ${active.entryEpoch ?? active.entryTickKey}`,
                     eligible ? 'SYSTEM' : 'WARNING'
                 );
 
@@ -10711,28 +10779,40 @@ window.executionLock = true;
             function onFutureTick(tick) {
                 if (!active || active.finalized || !tick) return;
 
-                const epoch = Number(tick.epoch ?? NaN);
+                const t = normalizeTick(tick);
+                if (!t || t.symbol !== active.symbol) return;
 
-                // The candidate tick itself is T0 and must NOT count as a future tick.
-                if (Number.isFinite(active.entryEpoch) && Number.isFinite(epoch) && epoch <= active.entryEpoch) {
+                const key = tickKey(t);
+
+                // Strong T0 exclusion. The exact candidate tick can be emitted again
+                // by the canonical tick event or by the fallback poll. It is NEVER T+1.
+                if (active.entryTickKey && key === active.entryTickKey) {
+                    active.sameTickSkipped = true;
                     return;
                 }
 
-                // Guard duplicate processing of the same future tick.
-                if (Number.isFinite(epoch) && epoch === lastSeenEpoch) return;
-                if (Number.isFinite(epoch)) lastSeenEpoch = epoch;
+                if (
+                    active.entryEpoch !== null &&
+                    Number.isFinite(Number(t.epoch)) &&
+                    Number(t.epoch) <= Number(active.entryEpoch)
+                ) {
+                    return;
+                }
 
-                const symbol =
-                    tick.symbol ||
-                    document.getElementById('symbol')?.value ||
-                    window.tickFormat?.symbol ||
-                    'UNKNOWN';
-                if (symbol !== active.symbol) return;
+                if (
+                    active.entryEpoch === null &&
+                    active.entryReceivedAt !== null &&
+                    Number.isFinite(Number(t.receivedAt)) &&
+                    Number(t.receivedAt) <= Number(active.entryReceivedAt)
+                ) {
+                    return;
+                }
 
-                const digit = Number(
-                    tick.digit ??
-                    getLastDigitFromQuote?.(tick.quote ?? tick.price, null, symbol)
-                );
+                // Event + polling fallback can both surface the same future tick.
+                if (key && key === active.lastFutureTickKey) return;
+                active.lastFutureTickKey = key;
+
+                const digit = Number(t.digit);
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
 
                 active.forwardTicksObserved += 1;
@@ -13699,7 +13779,7 @@ window.isBotRunning = true;
 data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="frozen-shadow-validation"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.1-aligned-shadow-validation"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
     <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
