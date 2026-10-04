@@ -650,7 +650,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.2 TRUE-EPOCH · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.3 PERSISTENT · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -722,7 +722,7 @@
                             <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
                         </div>
                         <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
-                            Fresh V1.2 true-epoch cohort: waiting for the first exact candidate tick.
+                            Persistent V1.3 cohort: refresh-safe local recovery enabled.
                         </div>
                     </div>
                 </div>
@@ -10583,8 +10583,8 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.2-TRUE-EPOCH-2026-10-04';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10';
+            const VERSION = 'SAFE-TICK-V1.3-PERSISTENT-2026-10-04';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_3_persistent_shadow_r10';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
@@ -10612,23 +10612,60 @@ window.executionLock = true;
 
             function load() {
                 try {
-                    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-                    if (parsed && Array.isArray(parsed.records)) {
-                        records = parsed.records;
+                    // 1) Load the current V1.3 store.
+                    let parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+
+                    // 2) Migration fallback: recover any valid finalized data from V1.2
+                    // so a code upgrade does not silently make the user's research vanish.
+                    if (!parsed) {
+                        const legacy = JSON.parse(
+                            localStorage.getItem('digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10') || 'null'
+                        );
+                        if (legacy && Array.isArray(legacy.records)) {
+                            parsed = legacy;
+                        }
                     }
-                } catch (_) {}
+
+                    if (parsed) {
+                        if (Array.isArray(parsed.records)) {
+                            records = parsed.records;
+                        }
+                        if (parsed.active && !parsed.active.finalized) {
+                            active = parsed.active;
+                        }
+                        if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
+                            lastSeenEpoch = parsed.lastSeenEpoch;
+                        }
+                    }
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.3 restore failed:', err);
+                }
+
                 render();
             }
 
             function save() {
                 try {
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    const payload = {
                         version: VERSION,
                         target: TARGET,
+                        active: active ? JSON.parse(JSON.stringify(active)) : null,
                         records: records.slice(-5000),
+                        lastSeenEpoch,
                         savedAt: Date.now()
-                    }));
-                } catch (_) {}
+                    };
+
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
+                    // Secondary emergency mirror. If the main key is corrupted or
+                    // accidentally overwritten, the last good state can still recover.
+                    localStorage.setItem(
+                        `${STORAGE_KEY}:backup`,
+                        JSON.stringify(payload)
+                    );
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.3 save failed:', err);
+                }
             }
 
             function featureSnapshot(candidateDigit) {
@@ -10790,6 +10827,7 @@ window.executionLock = true;
                     eligible ? 'SYSTEM' : 'WARNING'
                 );
 
+                save();
                 render();
                 return active;
             }
@@ -10806,6 +10844,7 @@ window.executionLock = true;
                 // by the canonical tick event or by the fallback poll. It is NEVER T+1.
                 if (active.entryTickKey && key === active.entryTickKey) {
                     active.sameTickSkipped = true;
+                    save();
                     return;
                 }
 
@@ -10834,6 +10873,7 @@ window.executionLock = true;
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
 
                 active.forwardTicksObserved += 1;
+                save();
 
                 if (digit === active.candidateDigit) {
                     active.forwardGap = active.forwardTicksObserved;
@@ -10877,6 +10917,7 @@ window.executionLock = true;
 
                 render();
                 active = null;
+                save();
             }
 
             function stats() {
@@ -11023,6 +11064,11 @@ window.executionLock = true;
             }, 250);
 
             window.addEventListener('load', render);
+            window.addEventListener('beforeunload', save);
+            window.addEventListener('pagehide', save);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') save();
+            });
             setTimeout(render, 500);
 
             return Object.freeze({
@@ -13797,7 +13843,7 @@ window.isBotRunning = true;
 data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.2-true-epoch-shadow-validation"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.3-persistent-shadow-validation"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
     <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
