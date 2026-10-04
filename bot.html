@@ -650,7 +650,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.1 ALIGNED · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.2 TRUE-EPOCH · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -722,7 +722,7 @@
                             <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
                         </div>
                         <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
-                            Fresh V1.1 aligned cohort: waiting for the first exact candidate tick.
+                            Fresh V1.2 true-epoch cohort: waiting for the first exact candidate tick.
                         </div>
                     </div>
                 </div>
@@ -10583,8 +10583,8 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.1-ALIGNED-FIX-2026-10-04';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_1_aligned_shadow_r10';
+            const VERSION = 'SAFE-TICK-V1.2-TRUE-EPOCH-2026-10-04';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
@@ -10680,20 +10680,24 @@ window.executionLock = true;
                             : Number(getLastDigitFromQuote?.(rawQuote, null, symbol))
                       );
 
-                const sourceEpoch = Number(source.epoch);
-                const fallbackEpoch = Number(fallback?.epoch);
+                // IMPORTANT: Number(null) === 0 in JavaScript. Treat null/undefined/
+                // empty values as MISSING before numeric conversion so T0 never becomes e:0.
+                const toPositiveFinite = (value) => {
+                    if (value === null || value === undefined || value === '') return null;
+                    const n = Number(value);
+                    return Number.isFinite(n) && n > 0 ? n : null;
+                };
+
+                const sourceEpoch = toPositiveFinite(source.epoch);
+                const fallbackEpoch = toPositiveFinite(fallback?.epoch);
 
                 // executeTrade() can receive a lightweight tick without epoch.
                 // window.lastTick is the canonical market tick at that instant.
-                const epoch = Number.isFinite(sourceEpoch)
-                    ? sourceEpoch
-                    : (Number.isFinite(fallbackEpoch) ? fallbackEpoch : null);
+                const epoch = sourceEpoch ?? fallbackEpoch ?? null;
 
-                const sourceReceivedAt = Number(source.receivedAt);
-                const fallbackReceivedAt = Number(fallback?.receivedAt);
-                const receivedAt = Number.isFinite(sourceReceivedAt)
-                    ? sourceReceivedAt
-                    : (Number.isFinite(fallbackReceivedAt) ? fallbackReceivedAt : null);
+                const sourceReceivedAt = toPositiveFinite(source.receivedAt);
+                const fallbackReceivedAt = toPositiveFinite(fallback?.receivedAt);
+                const receivedAt = sourceReceivedAt ?? fallbackReceivedAt ?? null;
 
                 const quoteText = rawQuote === null || rawQuote === undefined
                     ? ''
@@ -10711,12 +10715,26 @@ window.executionLock = true;
 
             function tickKey(t) {
                 if (!t) return null;
-                if (Number.isFinite(Number(t.epoch))) {
-                    return `e:${Number(t.epoch)}`;
+
+                const epoch =
+                    t.epoch !== null && t.epoch !== undefined && t.epoch !== ''
+                        ? Number(t.epoch)
+                        : null;
+
+                if (Number.isFinite(epoch) && epoch > 0) {
+                    return `e:${epoch}`;
                 }
-                if (Number.isFinite(Number(t.receivedAt))) {
-                    return `r:${Number(t.receivedAt)}|q:${t.quoteText}|d:${t.digit}`;
+
+                const receivedAt =
+                    t.receivedAt !== null && t.receivedAt !== undefined && t.receivedAt !== ''
+                        ? Number(t.receivedAt)
+                        : null;
+
+                if (Number.isFinite(receivedAt) && receivedAt > 0) {
+                    return `r:${receivedAt}|q:${t.quoteText}|d:${t.digit}`;
                 }
+
+                // Last-resort identity only; canonical builds should normally have epoch.
                 return `q:${t.quoteText}|d:${t.digit}`;
             }
 
@@ -10747,8 +10765,8 @@ window.executionLock = true;
                     id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
                     symbol: t.symbol,
                     capturedAt: Date.now(),
-                    entryEpoch: Number.isFinite(Number(t.epoch)) ? Number(t.epoch) : null,
-                    entryReceivedAt: Number.isFinite(Number(t.receivedAt)) ? Number(t.receivedAt) : null,
+                    entryEpoch: (t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0) ? Number(t.epoch) : null,
+                    entryReceivedAt: (t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0) ? Number(t.receivedAt) : null,
                     entryTickKey: tickKey(t),
                     entryQuote: t.quote,
                     candidateDigit: digit,
@@ -10766,7 +10784,7 @@ window.executionLock = true;
                 };
 
                 log(
-                    `🛡️ SAFE-TICK V1.1 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `🛡️ SAFE-TICK V1.2 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
                     `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
                     `T0 ${active.entryEpoch ?? active.entryTickKey}`,
                     eligible ? 'SYSTEM' : 'WARNING'
@@ -10793,7 +10811,7 @@ window.executionLock = true;
 
                 if (
                     active.entryEpoch !== null &&
-                    Number.isFinite(Number(t.epoch)) &&
+                    t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0 &&
                     Number(t.epoch) <= Number(active.entryEpoch)
                 ) {
                     return;
@@ -10802,7 +10820,7 @@ window.executionLock = true;
                 if (
                     active.entryEpoch === null &&
                     active.entryReceivedAt !== null &&
-                    Number.isFinite(Number(t.receivedAt)) &&
+                    t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0 &&
                     Number(t.receivedAt) <= Number(active.entryReceivedAt)
                 ) {
                     return;
@@ -13779,7 +13797,7 @@ window.isBotRunning = true;
 data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.1-aligned-shadow-validation"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.2-true-epoch-shadow-validation"></div>
 
     <!-- Tick DNA → Tail Risk Validation V2 integration -->
     <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
