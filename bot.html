@@ -5538,7 +5538,7 @@ window.tailPrecursorLab = {
 
 /* === DigitMatchStar official result publisher === */
 window.matchstarPublisher = {
-    storageKey: 'matchstar_published_cycle_ids_v1',
+    storageKey: 'matchstar_telegram_preview_cycle_ids_v2',
     publishedIds() {
         try {
             const rows = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
@@ -5554,12 +5554,14 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        const token = (typeof getStoredDerivToken === 'function')
-            ? getStoredDerivToken()
-            : (localStorage.getItem('active_token') ||
-               localStorage.getItem('derivToken') ||
-               localStorage.getItem('derivTokenDemo') ||
-               localStorage.getItem('derivTokenReal'));
+        // Secure OAuth mode: the browser intentionally has NO raw Deriv token.
+        // Use the DigitMatchStar platform JWT. /api/publish-cycle verifies it
+        // against the Render backend before accepting a Telegram publication.
+        const token = (typeof getPlatformJwt === 'function')
+            ? getPlatformJwt()
+            : (sessionStorage.getItem('dms_platform_jwt') ||
+               localStorage.getItem('dms_platform_jwt') ||
+               '');
 
         const accountId = (typeof getStoredDerivAccount === 'function')
             ? getStoredDerivAccount()
@@ -5569,7 +5571,7 @@ window.matchstarPublisher = {
                localStorage.getItem('derivRealAccount'));
 
         if (!token || !accountId) {
-            const msg = `📣 Telegram publish skipped: missing ${!token ? 'token' : 'account ID'}`;
+            const msg = `📣 Telegram publish skipped: missing ${!token ? 'platform session token' : 'account ID'}`;
             console.warn('[MatchStar Publisher]', msg);
             if (typeof log === 'function') log(msg, 'WARNING');
             return;

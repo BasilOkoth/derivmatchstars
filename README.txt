@@ -1,31 +1,31 @@
-DigitMatchStar V1.6 — Fast Recovery Reaction + Deterministic Sound
+DigitMatchStar V1.7 — Telegram WIN Preview Restore
 
-What changed in both bot.html and bot-obfuscated.html
-1. SAFE-TICK V1.5 exact-epoch alignment is preserved.
-2. Recovery digit is re-ranked after EVERY confirmed loss:
-   - hold length = 1
-   - stale recovery lock is cleared on loss
-   - next eligible trade re-scores all 10 digits.
-3. Server dashboard polling reduced from 1200 ms to 250 ms.
-4. Sound now keys off durable lifecycle changes:
-   - new contract/trade -> execution tone
-   - RECOVERING -> loss tone
-   - WON -> win chord
-   - MAX_TRADES_REACHED -> loss/end tone
-   - ERROR -> error tone
-5. Tone initializes on the first user trading gesture and queues a cue if an
-   event arrives before audio is unlocked.
-6. While a server contract is open, each canonical tick updates the trade-status
-   UI to show that live recovery analysis is still running.
+Files to upload:
+1. bot.html
+2. bot-obfuscated.html
+3. api/publish-cycle.js
 
-IMPORTANT EXECUTION NOTE
-Secure OAuth SERVER mode still leaves the actual Deriv purchase/settlement
-sequence under the backend worker. These two HTML files can make the browser
-react immediately to ticks and re-rank the next digit, but they cannot make the
-backend submit a new purchase before the backend decides the previous contract
-has settled. Changing that actual server buy timing requires updating the
-server worker/API code as well.
+Why Telegram stopped:
+The secure OAuth build intentionally stopped storing the raw Deriv token in the
+browser, but the old /api/publish-cycle endpoint still required that raw token.
+Therefore completed cycles reached the publisher but were skipped with a missing
+token condition.
 
-Validation
-- bot.html and bot-obfuscated.html are byte-for-byte synchronized.
-- inline JavaScript passes Node syntax checking.
+V1.7 fix:
+- bot publisher now sends the DigitMatchStar platform JWT.
+- /api/publish-cycle verifies that JWT against:
+  https://digitmatchstar-api.onrender.com/sessions
+- It confirms that account_id belongs to the authenticated DigitMatchStar user.
+- TELEGRAM_PUBLISH_ACCOUNT_IDS allow-list remains enforced.
+- Telegram remains APPROVAL-FIRST: private preview -> Approve / Reject -> public channel.
+- Failed sends are NOT marked as sent, so they can be retried.
+- Successful previews are deduplicated by cycle id.
+- SAFE-TICK V1.5, fast recovery re-ranking, and deterministic sound are unchanged.
+
+Optional Vercel environment variable:
+DMS_API_URL=https://digitmatchstar-api.onrender.com
+
+The code already has this URL as its fallback, so the env variable is optional.
+
+Security:
+No raw Deriv access token is reintroduced into the browser.
