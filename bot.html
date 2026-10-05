@@ -7580,7 +7580,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Initialize account toggle
         function initializeToggleState() {
-            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             const toggle = document.getElementById('accTypeToggle');
             if (toggle) toggle.checked = mode === 'REAL';
 
@@ -11257,7 +11257,7 @@ window.executionLock = true;
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
             if (serverExecEl('serverExecMode')) {
                 serverExecEl('serverExecMode').textContent = s.enabled
-                    ? `SERVER · ${(st.account_mode || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
+                    ? `SERVER · ${(st.account_mode || sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
                     : 'BROWSER';
             }
             if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
@@ -11376,7 +11376,8 @@ window.executionLock = true;
             if (raw === null) return;
             const value = String(raw).trim().replace(/\/+$/,'');
             window.SERVER_EXECUTION.apiUrl = value;
-            localStorage.setItem('dms_server_execution_url', value);
+            sessionStorage.setItem('dms_server_execution_url', value);
+            try { localStorage.setItem('dms_server_execution_url', value); } catch (_) {}
             renderServerExecutionState();
             if (window.SERVER_EXECUTION.enabled) ensureServerExecutionPolling();
         }
@@ -11855,7 +11856,7 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
-        async async function toggleBot() {
+        async function toggleBot() {
             const serverMode = window.SERVER_EXECUTION?.enabled === true;
 
             if (window.isBotRunning) {
