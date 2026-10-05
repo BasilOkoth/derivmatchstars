@@ -650,7 +650,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.3 PERSISTENT · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.4 RICH-DNA · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -10583,7 +10583,7 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.3-PERSISTENT-2026-10-04';
+            const VERSION = 'SAFE-TICK-V1.4-RICH-DNA-2026-10-05';
             const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_3_persistent_shadow_r10';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
@@ -10638,7 +10638,7 @@ window.executionLock = true;
                         }
                     }
                 } catch (err) {
-                    console.warn('SAFE-TICK V1.3 restore failed:', err);
+                    console.warn('SAFE-TICK V1.4 restore failed:', err);
                 }
 
                 render();
@@ -10664,7 +10664,7 @@ window.executionLock = true;
                         JSON.stringify(payload)
                     );
                 } catch (err) {
-                    console.warn('SAFE-TICK V1.3 save failed:', err);
+                    console.warn('SAFE-TICK V1.4 save failed:', err);
                 }
             }
 
@@ -10673,17 +10673,77 @@ window.executionLock = true;
                     ? window.lastDigits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
                     : [];
 
-                const w25 = all.slice(-25);
+                const entropy = (arr) => entropy10(arr);
+
+                const freq = (n) => {
+                    const w = all.slice(-n);
+                    return w.length
+                        ? w.filter(d => d === candidateDigit).length / w.length
+                        : NaN;
+                };
+
+                const w5 = all.slice(-5);
                 const w10 = all.slice(-10);
-                const candidateFreq25 = w25.length
-                    ? w25.filter(d => d === candidateDigit).length / w25.length
+                const w25 = all.slice(-25);
+                const w50 = all.slice(-50);
+                const w100 = all.slice(-100);
+
+                // Count adjacent equal-digit pairs over the most recent 25 digits.
+                // This is descriptive DNA only; it does NOT change the frozen V1 rule.
+                let adjacentRepeats = 0;
+                for (let i = 1; i < w25.length; i++) {
+                    if (w25[i] === w25[i - 1]) adjacentRepeats++;
+                }
+
+                // Quote-DNA comes from the canonical recent market-tick buffer.
+                const market = Array.isArray(window.recentMarketTicks)
+                    ? window.recentMarketTicks
+                        .map(t => ({
+                            quote: Number(t?.price ?? t?.raw?.quote ?? t?.quote),
+                            digit: Number(t?.digit),
+                            epoch: Number(t?.raw?.epoch ?? t?.epoch ?? 0)
+                        }))
+                        .filter(t => Number.isFinite(t.quote))
+                    : [];
+
+                const q = market.slice(-26).map(t => t.quote);
+                const deltas = [];
+                for (let i = 1; i < q.length; i++) {
+                    deltas.push(q[i] - q[i - 1]);
+                }
+
+                const last25Deltas = deltas.slice(-25);
+                const w25MeanQuoteDelta = last25Deltas.length
+                    ? last25Deltas.reduce((a, b) => a + b, 0) / last25Deltas.length
                     : NaN;
-                const entropy10Value = entropy10(w10);
+
+                const immediateQuoteDelta = deltas.length
+                    ? deltas[deltas.length - 1]
+                    : NaN;
 
                 return {
                     contextN: all.length,
-                    candidateFreq25,
-                    entropy10: entropy10Value
+
+                    // Frozen V1 decision fields
+                    candidateFreq25: freq(25),
+                    entropy10: entropy(w10),
+
+                    // Rich pre-entry DNA for future failure-vs-success analysis
+                    adjacentRepeats,
+                    w25MeanQuoteDelta,
+                    candidateFreq5: freq(5),
+                    candidateFreq10: freq(10),
+                    candidateFreq50: freq(50),
+                    candidateFreq100: freq(100),
+                    entropy5: entropy(w5),
+                    entropy25: entropy(w25),
+                    immediateQuoteDelta,
+                    immediateDirection: Number.isFinite(immediateQuoteDelta)
+                        ? (immediateQuoteDelta > 0 ? 1 : (immediateQuoteDelta < 0 ? -1 : 0))
+                        : null,
+                    candidateLastDigit: candidateDigit,
+                    alignmentGuaranteed: true,
+                    featureSchema: 'SAFE-TICK-RICH-DNA-V1'
                 };
             }
 
@@ -10821,7 +10881,7 @@ window.executionLock = true;
                 };
 
                 log(
-                    `🛡️ SAFE-TICK V1.2 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `🛡️ SAFE-TICK V1.4 RICH-DNA | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
                     `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
                     `T0 ${active.entryEpoch ?? active.entryTickKey}`,
                     eligible ? 'SYSTEM' : 'WARNING'
