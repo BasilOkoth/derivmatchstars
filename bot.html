@@ -9,7 +9,7 @@
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
-    <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
+    <!-- SERVER EXECUTION V1: backend-owned proposal/buy/settlement; DEMO survives dashboard closure; REAL per-buy confirmation -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -664,7 +664,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.5 EXACT-EPOCH · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.4 RICH-DNA · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -751,8 +751,6 @@
                                 class="server-exec-btn bg-sky-700 hover:bg-sky-600">Use Server</button>
                         <button type="button" onclick="configureServerExecutionUrl()"
                                 class="server-exec-btn bg-slate-700 hover:bg-slate-600">Backend URL</button>
-                        <button type="button" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()"
-                                class="server-exec-btn bg-emerald-700 hover:bg-emerald-600">Continuous Research: ON</button>
                         <button type="button" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()"
                                 class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden">
                             Confirm REAL Trade
@@ -760,19 +758,13 @@
                     </div>
                     <div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
-                        A started DEMO cycle can continue after this dashboard closes. Continuous Research can
-                        automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
-                        so the browser can select and freeze the next AI candidate and record research.
-                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
+                        DEMO can continue after this dashboard closes. REAL state also stays on the server,
+                        but every new real-money purchase requires explicit confirmation.
                     </div>
                     <div class="server-exec-grid">
                         <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Mode</div><div id="serverExecMode" class="server-exec-value">BROWSER</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div id="serverExecPhase" class="server-exec-value">—</div></div>
-                        <div id="serverExecErrorCard" class="server-exec-card hidden" style="grid-column: 1 / -1;">
-                            <div class="server-exec-label">Worker error</div>
-                            <div id="serverExecError" class="server-exec-value" style="white-space: normal; word-break: break-word;">—</div>
-                        </div>
                         <div class="server-exec-card"><div class="server-exec-label">Contract</div><div id="serverExecContract" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Trade</div><div id="serverExecTrade" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div id="serverExecPnl" class="server-exec-value">$0.00</div></div>
@@ -1055,9 +1047,6 @@
             body.classList.toggle('hidden', willHide);
             if (btn) btn.textContent = willHide ? '+' : '−';
             try {
-                sessionStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
-            } catch (_) {}
-            try {
                 localStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
             } catch (_) {}
         }
@@ -1065,10 +1054,7 @@
         function restoreResearchPanelState(bodyId, buttonId, storageKey) {
             let minimized = false;
             try {
-                const sessionSaved = sessionStorage.getItem(`matchstar_panel_min_${storageKey}`);
-                minimized = sessionSaved !== null
-                    ? sessionSaved === '1'
-                    : localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
+                minimized = localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
             } catch (_) {}
             const body = document.getElementById(bodyId);
             const btn = document.getElementById(buttonId);
@@ -1077,38 +1063,22 @@
         }
 
         function getPanelMinimizedState(key, fallback = false) {
-            const storageKey = `matchstar_panel_min_${key}`;
             try {
-                const sessionSaved = sessionStorage.getItem(storageKey);
-                if (sessionSaved !== null) return sessionSaved === '1';
-            } catch (_) {}
-            try {
-                const localSaved = localStorage.getItem(storageKey);
-                return localSaved === null ? !!fallback : localSaved === '1';
+                const saved = localStorage.getItem(`matchstar_panel_min_${key}`);
+                return saved === null ? !!fallback : saved === '1';
             } catch (_) {
                 return !!fallback;
             }
         }
 
         function savePanelMinimizedState(key, minimized) {
-            const storageKey = `matchstar_panel_min_${key}`;
-            const value = minimized ? '1' : '0';
-            try { sessionStorage.setItem(storageKey, value); } catch (_) {}
-            try { localStorage.setItem(storageKey, value); } catch (_) {}
+            try {
+                localStorage.setItem(`matchstar_panel_min_${key}`, minimized ? '1' : '0');
+            } catch (_) {}
         }
 
         function makePanelMinimizable(panel, options = {}) {
             if (!panel || panel.dataset.matchstarMinReady === '1') return;
-
-            // Panels with their own built-in minimize controls should not be wrapped again.
-            if (
-                panel.querySelector(':scope > .matchstar-min-body') ||
-                panel.querySelector('[id$="-min-btn"]') ||
-                panel.querySelector('[id$="-minimize"]')
-            ) {
-                panel.dataset.matchstarMinReady = 'native';
-                return;
-            }
 
             const key = options.key || panel.id || 'panel';
             const defaultMinimized = !!options.defaultMinimized;
@@ -1197,67 +1167,24 @@
             }
         }
 
-        let matchstarMinObserver = null;
-
         function startMinimizablePanelUI() {
-            try {
-                initializeStaticMinimizablePanels();
+            initializeStaticMinimizablePanels();
+            decorateDynamicMinimizablePanels();
+
+            const observer = new MutationObserver(() => {
                 decorateDynamicMinimizablePanels();
+            });
 
-                if (!matchstarMinObserver && document.body) {
-                    matchstarMinObserver = new MutationObserver(() => {
-                        try { decorateDynamicMinimizablePanels(); } catch (_) {}
-                    });
-
-                    matchstarMinObserver.observe(document.body, {
-                        childList: true,
-                        subtree: true
-                    });
-                }
-            } catch (err) {
-                console.warn('[DigitMatchStar] minimizable panel initialization warning:', err);
-            }
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
         }
-
-        // Initialize minimizable UI independently of the trading/bootstrap listener.
-        // This keeps panel controls working even if another startup component throws.
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', startMinimizablePanelUI, { once: true });
-        } else {
-            setTimeout(startMinimizablePanelUI, 0);
-        }
-
-        // Universal fallback for minimize buttons using aria-controls.
-        document.addEventListener('click', (event) => {
-            const btn = event.target.closest('button[aria-controls]');
-            if (!btn) return;
-            const bodyId = btn.getAttribute('aria-controls');
-            if (!bodyId) return;
-            const body = document.getElementById(bodyId);
-            if (!body) return;
-
-            // Buttons initialized by makePanelMinimizable already have their own listener.
-            if (btn.closest('[data-matchstar-min-ready="1"]')) return;
-
-            event.preventDefault();
-            const minimized = !body.classList.contains('hidden');
-            body.classList.toggle('hidden', minimized);
-            btn.textContent = minimized ? '+' : '−';
-            btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-        });
 
         // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
-        function getPlatformJwt() {
-            return sessionStorage.getItem('dms_platform_jwt') ||
-                   localStorage.getItem('dms_platform_jwt') ||
-                   '';
-        }
-
         function getStoredDerivToken() {
-            // V2.1: raw Deriv OAuth tokens are intentionally not stored in the browser.
-            // Legacy token lookup remains only for old browser-mode installations.
             return localStorage.getItem('active_token') ||
                    localStorage.getItem('derivToken') ||
                    localStorage.getItem('derivTokenDemo') ||
@@ -1265,30 +1192,24 @@
         }
 
         function getStoredDerivAccount() {
-            const mode =
-                sessionStorage.getItem('selectedAccountMode') ||
-                localStorage.getItem('selectedAccountMode');
-
-            const get = (key) =>
-                sessionStorage.getItem(key) ||
-                localStorage.getItem(key);
+            const mode = localStorage.getItem('selectedAccountMode');
 
             if (mode === 'DEMO') {
-                return get('active_account') ||
-                       get('derivAccount') ||
-                       get('derivDemoAccount');
+                return localStorage.getItem('active_account') ||
+                       localStorage.getItem('derivAccount') ||
+                       localStorage.getItem('derivDemoAccount');
             }
 
             if (mode === 'REAL') {
-                return get('active_account') ||
-                       get('derivAccount') ||
-                       get('derivRealAccount');
+                return localStorage.getItem('active_account') ||
+                       localStorage.getItem('derivAccount') ||
+                       localStorage.getItem('derivRealAccount');
             }
 
-            return get('active_account') ||
-                   get('derivAccount') ||
-                   get('derivDemoAccount') ||
-                   get('derivRealAccount');
+            return localStorage.getItem('active_account') ||
+                   localStorage.getItem('derivAccount') ||
+                   localStorage.getItem('derivDemoAccount') ||
+                   localStorage.getItem('derivRealAccount');
         }
 
         function getDerivAppIdForRest() {
@@ -1298,11 +1219,7 @@
         }
 
         function isBotAuthenticated() {
-            const authenticated =
-                sessionStorage.getItem('bot_authenticated') === 'true' ||
-                localStorage.getItem('bot_authenticated') === 'true';
-
-            return authenticated && !!getPlatformJwt();
+            return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
         }
 
         if (!isBotAuthenticated()) {
@@ -5538,7 +5455,7 @@ window.tailPrecursorLab = {
 
 /* === DigitMatchStar official result publisher === */
 window.matchstarPublisher = {
-    storageKey: 'matchstar_telegram_preview_cycle_ids_v2',
+    storageKey: 'matchstar_published_cycle_ids_v1',
     publishedIds() {
         try {
             const rows = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
@@ -5554,14 +5471,12 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        // Secure OAuth mode: the browser intentionally has NO raw Deriv token.
-        // Use the DigitMatchStar platform JWT. /api/publish-cycle verifies it
-        // against the Render backend before accepting a Telegram publication.
-        const token = (typeof getPlatformJwt === 'function')
-            ? getPlatformJwt()
-            : (sessionStorage.getItem('dms_platform_jwt') ||
-               localStorage.getItem('dms_platform_jwt') ||
-               '');
+        const token = (typeof getStoredDerivToken === 'function')
+            ? getStoredDerivToken()
+            : (localStorage.getItem('active_token') ||
+               localStorage.getItem('derivToken') ||
+               localStorage.getItem('derivTokenDemo') ||
+               localStorage.getItem('derivTokenReal'));
 
         const accountId = (typeof getStoredDerivAccount === 'function')
             ? getStoredDerivAccount()
@@ -5571,7 +5486,7 @@ window.matchstarPublisher = {
                localStorage.getItem('derivRealAccount'));
 
         if (!token || !accountId) {
-            const msg = `📣 Telegram publish skipped: missing ${!token ? 'platform session token' : 'account ID'}`;
+            const msg = `📣 Telegram publish skipped: missing ${!token ? 'token' : 'account ID'}`;
             console.warn('[MatchStar Publisher]', msg);
             if (typeof log === 'function') log(msg, 'WARNING');
             return;
@@ -7007,14 +6922,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.req_id = 0;
         window.isBotRunning = false;
         window.isConnecting = false;
-        window.soundEnabled = (() => {
-            try {
-                const saved = localStorage.getItem('soundEnabled');
-                return saved === null ? true : saved === 'true';
-            } catch (_) {
-                return true;
-            }
-        })();
+        window.soundEnabled = true;
         window.ToneInitialized = false;
         window.synth = null;
         
@@ -7037,7 +6945,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.martingaleStep = 0;
         window.recoveryDigitLock = null;
         window.recoveryDigitTrades = 0;
-        window.recoveryDigitTradeLimit = 1;
+        window.recoveryDigitTradeLimit = 3;
 
         // V57.7 — Adaptive recovery hold.
         // Starts with the existing 3-purchase hold, then renews one trade at a time
@@ -7046,7 +6954,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             enabled: true,
             initialHold: 3,
             minHold: 2,
-            maxHold: 1,
+            maxHold: 6,
             extensionStep: 1,
             minAgreementForExtension: 1,
             strongAgreementForExtension: 2,
@@ -7630,22 +7538,12 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Check for authentication token
         function checkAuthToken() {
-            const authenticated = isBotAuthenticated();
+            const token = getStoredDerivToken();
+            const authenticated = localStorage.getItem('bot_authenticated') === 'true';
 
-            if (!authenticated) {
+            if (!authenticated || !token) {
                 log('⚠️ Please authenticate first before using the bot.', 'WARNING');
                 window.location.replace('/');
-                return false;
-            }
-
-            // Secure server mode does not require a raw Deriv token in the browser.
-            if (window.SERVER_EXECUTION?.enabled) {
-                return !!getPlatformJwt();
-            }
-
-            // Legacy browser execution still requires the raw Deriv token.
-            if (!getStoredDerivToken()) {
-                log('⚠️ Browser execution requires legacy Deriv credentials. Use SERVER mode.', 'WARNING');
                 return false;
             }
 
@@ -7654,7 +7552,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Initialize account toggle
         function initializeToggleState() {
-            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             const toggle = document.getElementById('accTypeToggle');
             if (toggle) toggle.checked = mode === 'REAL';
 
@@ -9248,10 +9146,7 @@ function rotateHybridDigit(reason = '') {
             if (edgeScannerMinBtn && edgeScannerBody) {
                 let minimized = false;
                 try {
-                    const sessionSaved = sessionStorage.getItem('matchstar_edge_scanner_minimized');
-                    minimized = sessionSaved !== null
-                        ? sessionSaved === '1'
-                        : localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
+                    minimized = localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
                 } catch (_) {}
 
                 const applyEdgeScannerState = () => {
@@ -9259,9 +9154,6 @@ function rotateHybridDigit(reason = '') {
                     edgeScannerMinBtn.textContent = minimized ? '+' : '−';
                     edgeScannerMinBtn.title = minimized ? 'Expand edge monitor' : 'Minimize edge monitor';
                     edgeScannerMinBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                    try {
-                        sessionStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
-                    } catch (_) {}
                     try {
                         localStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
                     } catch (_) {}
@@ -10740,15 +10632,19 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.5-EXACT-EPOCH-2026-10-05';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_5_exact_epoch_shadow_r10';
-            const TARGET = 500;
+            const VERSION = 'SAFE-TICK-V1.6-STRICT-CONTIGUOUS-EPOCH-2026-10-05';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_6_contiguous_epoch_shadow_r10';
+            const TARGET = 500; // VALID finalized candidates only
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
+            const EXPECTED_INTERVAL_SECONDS = 2; // R_10 canonical stream in this build
+            const MAX_CAPTURE_LAG_MS = 5000;
 
             let active = null;
             let records = [];
-            let lastSeenEpoch = null;
+            let invalidRecords = [];
+            let lastCanonicalEpoch = null;
+            let lastCanonicalReceivedAt = null;
 
             function entropy10(arr) {
                 if (!Array.isArray(arr) || !arr.length) return NaN;
@@ -10767,91 +10663,52 @@ window.executionLock = true;
                 return h;
             }
 
-            const SAFE_IDB_DB = 'digitmatchstar-research';
-            const SAFE_IDB_STORE = 'safe_tick_shadow';
-            const SAFE_IDB_KEY = 'R_10_V1_5_EXACT_EPOCH';
-
-            function openSafeTickDB() {
-                return new Promise((resolve, reject) => {
-                    const req = indexedDB.open(SAFE_IDB_DB, 1);
-                    req.onupgradeneeded = () => {
-                        const db = req.result;
-                        if (!db.objectStoreNames.contains(SAFE_IDB_STORE)) {
-                            db.createObjectStore(SAFE_IDB_STORE);
-                        }
-                    };
-                    req.onsuccess = () => resolve(req.result);
-                    req.onerror = () => reject(req.error);
-                });
-            }
-
-            async function idbReadSafeTick() {
-                const db = await openSafeTickDB();
-                try {
-                    return await new Promise((resolve, reject) => {
-                        const tx = db.transaction(SAFE_IDB_STORE, 'readonly');
-                        const req = tx.objectStore(SAFE_IDB_STORE).get(SAFE_IDB_KEY);
-                        req.onsuccess = () => resolve(req.result || null);
-                        req.onerror = () => reject(req.error);
-                    });
-                } finally {
-                    db.close();
-                }
-            }
-
-            async function idbWriteSafeTick(payload) {
-                const db = await openSafeTickDB();
-                try {
-                    await new Promise((resolve, reject) => {
-                        const tx = db.transaction(SAFE_IDB_STORE, 'readwrite');
-                        tx.objectStore(SAFE_IDB_STORE).put(payload, SAFE_IDB_KEY);
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => reject(tx.error);
-                        tx.onabort = () => reject(tx.error);
-                    });
-                } finally {
-                    db.close();
-                }
-            }
-
-            function applySavedState(parsed) {
-                if (!parsed) return;
-                if (Array.isArray(parsed.records)) records = parsed.records;
-                if (parsed.active && !parsed.active.finalized) active = parsed.active;
-                if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
-                    lastSeenEpoch = parsed.lastSeenEpoch;
-                }
+            function clone(value) {
+                return JSON.parse(JSON.stringify(value));
             }
 
             function load() {
-                render();
-
-                idbReadSafeTick()
-                    .then((saved) => {
-                        if (saved && saved.version === VERSION) {
-                            applySavedState(saved);
-                            render();
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+                    if (parsed) {
+                        if (Array.isArray(parsed.records)) records = parsed.records;
+                        if (Array.isArray(parsed.invalidRecords)) invalidRecords = parsed.invalidRecords;
+                        // Never resume a pre-refresh forward window. A browser suspension,
+                        // page reload or event gap destroys proof of strict continuity.
+                        if (parsed.active && !parsed.active.finalized) {
+                            const orphan = clone(parsed.active);
+                            orphan.outcomeValid = false;
+                            orphan.invalidReason = 'SESSION_RESUME_BREAKS_CONTINUITY';
+                            orphan.invalidatedAt = Date.now();
+                            orphan.finalized = false;
+                            invalidRecords.push(orphan);
                         }
-                    })
-                    .catch((err) => {
-                        console.warn('SAFE-TICK V1.5 IndexedDB restore failed:', err);
-                    });
+                    }
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.6 restore failed:', err);
+                }
+                active = null;
+                save();
+                render();
             }
 
             function save() {
-                const payload = {
-                    version: VERSION,
-                    target: TARGET,
-                    active: active ? JSON.parse(JSON.stringify(active)) : null,
-                    records: records.slice(-5000),
-                    lastSeenEpoch,
-                    savedAt: Date.now()
-                };
-
-                // IndexedDB is the primary SAFE-TICK store from V1.4.1 onward.
-                idbWriteSafeTick(payload).catch((err) => {
-                    console.warn('SAFE-TICK IndexedDB save failed:', err);
-                });
+                try {
+                    const payload = {
+                        version: VERSION,
+                        target: TARGET,
+                        active: active ? clone(active) : null,
+                        records: records.slice(-5000),
+                        invalidRecords: invalidRecords.slice(-5000),
+                        lastCanonicalEpoch,
+                        lastCanonicalReceivedAt,
+                        savedAt: Date.now()
+                    };
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+                    localStorage.setItem(`${STORAGE_KEY}:backup`, JSON.stringify(payload));
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.6 save failed:', err);
+                }
             }
 
             function featureSnapshot(candidateDigit) {
@@ -10859,29 +10716,20 @@ window.executionLock = true;
                     ? window.lastDigits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
                     : [];
 
-                const entropy = (arr) => entropy10(arr);
-
                 const freq = (n) => {
                     const w = all.slice(-n);
-                    return w.length
-                        ? w.filter(d => d === candidateDigit).length / w.length
-                        : NaN;
+                    return w.length ? w.filter(d => d === candidateDigit).length / w.length : NaN;
                 };
 
                 const w5 = all.slice(-5);
                 const w10 = all.slice(-10);
                 const w25 = all.slice(-25);
-                const w50 = all.slice(-50);
-                const w100 = all.slice(-100);
 
-                // Count adjacent equal-digit pairs over the most recent 25 digits.
-                // This is descriptive DNA only; it does NOT change the frozen V1 rule.
                 let adjacentRepeats = 0;
                 for (let i = 1; i < w25.length; i++) {
                     if (w25[i] === w25[i - 1]) adjacentRepeats++;
                 }
 
-                // Quote-DNA comes from the canonical recent market-tick buffer.
                 const market = Array.isArray(window.recentMarketTicks)
                     ? window.recentMarketTicks
                         .map(t => ({
@@ -10894,35 +10742,25 @@ window.executionLock = true;
 
                 const q = market.slice(-26).map(t => t.quote);
                 const deltas = [];
-                for (let i = 1; i < q.length; i++) {
-                    deltas.push(q[i] - q[i - 1]);
-                }
-
+                for (let i = 1; i < q.length; i++) deltas.push(q[i] - q[i - 1]);
                 const last25Deltas = deltas.slice(-25);
                 const w25MeanQuoteDelta = last25Deltas.length
                     ? last25Deltas.reduce((a, b) => a + b, 0) / last25Deltas.length
                     : NaN;
-
-                const immediateQuoteDelta = deltas.length
-                    ? deltas[deltas.length - 1]
-                    : NaN;
+                const immediateQuoteDelta = deltas.length ? deltas[deltas.length - 1] : NaN;
 
                 return {
                     contextN: all.length,
-
-                    // Frozen V1 decision fields
                     candidateFreq25: freq(25),
-                    entropy10: entropy(w10),
-
-                    // Rich pre-entry DNA for future failure-vs-success analysis
+                    entropy10: entropy10(w10),
                     adjacentRepeats,
                     w25MeanQuoteDelta,
                     candidateFreq5: freq(5),
                     candidateFreq10: freq(10),
                     candidateFreq50: freq(50),
                     candidateFreq100: freq(100),
-                    entropy5: entropy(w5),
-                    entropy25: entropy(w25),
+                    entropy5: entropy10(w5),
+                    entropy25: entropy10(w25),
                     immediateQuoteDelta,
                     immediateDirection: Number.isFinite(immediateQuoteDelta)
                         ? (immediateQuoteDelta > 0 ? 1 : (immediateQuoteDelta < 0 ? -1 : 0))
@@ -10933,150 +10771,68 @@ window.executionLock = true;
                 };
             }
 
-            function normalizeTick(tick) {
-                const fallback = window.lastTick || null;
-                const source = tick || fallback;
-                if (!source) return null;
+            function positiveNumber(value) {
+                if (value === null || value === undefined || value === '') return null;
+                const n = Number(value);
+                return Number.isFinite(n) && n > 0 ? n : null;
+            }
 
-                const raw = source.raw || null;
-                const fallbackRaw = fallback?.raw || null;
+            // Strict normalization: no epoch fallback is allowed for research identity.
+            function normalizeCanonicalTick(tick) {
+                if (!tick) return null;
+                const epoch = positiveNumber(tick.epoch ?? tick.raw?.epoch);
+                const receivedAt = positiveNumber(tick.receivedAt) ?? Date.now();
+                const digit = Number(tick.digit);
+                if (!epoch || !Number.isInteger(digit) || digit < 0 || digit > 9) return null;
 
-                const symbol =
-                    source.symbol ||
-                    raw?.symbol ||
-                    fallback?.symbol ||
-                    fallbackRaw?.symbol ||
-                    document.getElementById('symbol')?.value ||
-                    window.tickFormat?.symbol ||
-                    'UNKNOWN';
-
-                const rawQuote =
-                    source.quote ??
-                    raw?.quote ??
-                    source.price ??
-                    fallback?.quote ??
-                    fallbackRaw?.quote ??
-                    fallback?.price ??
-                    null;
-
-                const explicitDigit = Number(source.digit);
-                const fallbackDigit = Number(fallback?.digit);
-
-                const digit =
-                    Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
-                        ? explicitDigit
-                        : (
-                            Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
-                                ? fallbackDigit
-                                : Number(getLastDigitFromQuote?.(rawQuote, raw, symbol))
-                          );
-
-                const positiveFinite = (value) => {
-                    if (value === null || value === undefined || value === '') return null;
-                    const n = Number(value);
-                    return Number.isFinite(n) && n > 0 ? n : null;
-                };
-
-                // IMPORTANT: window.lastTick stores the original Deriv payload in
-                // `.raw`, so raw.epoch must be checked. This was the source of the
-                // old entryEpoch=null alignment bug.
-                const epoch =
-                    positiveFinite(source.epoch) ??
-                    positiveFinite(raw?.epoch) ??
-                    positiveFinite(fallback?.epoch) ??
-                    positiveFinite(fallbackRaw?.epoch) ??
-                    null;
-
-                const receivedAt =
-                    positiveFinite(source.receivedAt) ??
-                    positiveFinite(source.time) ??
-                    positiveFinite(fallback?.receivedAt) ??
-                    positiveFinite(fallback?.time) ??
-                    null;
-
-                const formatted =
-                    source.formattedQuote ??
-                    source.formattedPrice ??
-                    fallback?.formattedQuote ??
-                    fallback?.formattedPrice ??
-                    null;
-
-                const quoteText =
-                    formatted !== null && formatted !== undefined && formatted !== ''
-                        ? String(formatted)
-                        : (
-                            rawQuote === null || rawQuote === undefined
-                                ? ''
-                                : String(rawQuote)
-                          );
-
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
-                    return null;
-                }
-
-                return {
-                    symbol,
-                    quote: rawQuote === null || rawQuote === undefined
-                        ? null
-                        : Number(rawQuote),
-                    quoteText,
-                    digit,
-                    epoch,
-                    receivedAt
-                };
+                const symbol = tick.symbol || tick.raw?.symbol || document.getElementById('symbol')?.value || 'UNKNOWN';
+                const quote = tick.quote ?? tick.price ?? tick.raw?.quote ?? null;
+                return { symbol, quote, digit, epoch, receivedAt };
             }
 
             function tickKey(t) {
-                if (!t) return null;
+                return t && Number.isFinite(Number(t.epoch)) ? `e:${Number(t.epoch)}` : null;
+            }
 
-                const epoch =
-                    t.epoch !== null && t.epoch !== undefined && t.epoch !== ''
-                        ? Number(t.epoch)
-                        : null;
+            function invalidateActive(reason, details = {}) {
+                if (!active || active.finalized) return;
+                active.outcomeValid = false;
+                active.invalidReason = reason;
+                active.invalidatedAt = Date.now();
+                active.continuity.continuousFromEntry = false;
+                Object.assign(active.continuity, details);
+                invalidRecords.push(clone(active));
 
-                if (Number.isFinite(epoch) && epoch > 0) {
-                    return `e:${epoch}`;
-                }
+                log(
+                    `⚠️ SAFE-TICK V1.6 INVALIDATED | ${reason} | digit ${active.candidateDigit} | ` +
+                    `entry ${active.entryEpoch} | observed ${active.forwardTicksObserved}`,
+                    'WARNING'
+                );
 
-                const receivedAt =
-                    t.receivedAt !== null && t.receivedAt !== undefined && t.receivedAt !== ''
-                        ? Number(t.receivedAt)
-                        : null;
-
-                if (Number.isFinite(receivedAt) && receivedAt > 0) {
-                    return `r:${receivedAt}|q:${t.quoteText}|d:${t.digit}`;
-                }
-
-                // Last-resort identity only; canonical builds should normally have epoch.
-                return `q:${t.quoteText}|d:${t.digit}`;
+                active = null;
+                save();
+                render();
             }
 
             function captureCandidate(tick) {
-                const t = normalizeTick(tick);
-                if (!t) return null;
-
-                if (t.symbol !== 'R_10') {
+                const t = normalizeCanonicalTick(tick);
+                if (!t || t.symbol !== 'R_10') {
                     render();
                     return null;
                 }
 
-                // Keep outcomes non-overlapping: one candidate is followed until
-                // recurrence or T+20 before another candidate is admitted.
                 if (active && !active.finalized) return active;
 
-                const digit = Number(t.digit);
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
-
-                // Exact alignment is mandatory. If T0 has no real Deriv epoch,
-                // skip it rather than creating an unauditable research record.
-                if (!Number.isFinite(Number(t.epoch)) || Number(t.epoch) <= 0) {
-                    console.warn(
-                        'SAFE-TICK V1.5 candidate skipped: exact Deriv epoch unavailable',
-                        tick
-                    );
+                // Candidate must be the LIVE canonical tick, not a historical object
+                // recovered after a pause or reconstructed from stale window.lastTick.
+                if (lastCanonicalEpoch !== null && Number(t.epoch) !== Number(lastCanonicalEpoch)) {
+                    return null;
+                }
+                if (Date.now() - Number(t.receivedAt || Date.now()) > MAX_CAPTURE_LAG_MS) {
                     return null;
                 }
 
+                const digit = Number(t.digit);
                 const f = featureSnapshot(digit);
                 const eligible =
                     Number.isFinite(f.candidateFreq25) &&
@@ -11089,15 +10845,17 @@ window.executionLock = true;
                     symbol: t.symbol,
                     capturedAt: Date.now(),
                     entryEpoch: Number(t.epoch),
-                    entryReceivedAt: (t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0) ? Number(t.receivedAt) : null,
-                    entryTickKey: `e:${Number(t.epoch)}`,
-                    alignmentMode: 'STRICT_DERIV_EPOCH',
+                    entryReceivedAt: Number(t.receivedAt),
+                    alignmentMode: 'STRICT_DERIV_EPOCH_CONTIGUOUS',
                     entryDigitSource: 'canonical_tick_digit',
+                    entryTickKey: tickKey(t),
                     entryQuote: t.quote,
                     candidateDigit: digit,
                     entryFeatures: f,
                     eligible,
                     decision: eligible ? 'ACCEPT_SHADOW' : 'REJECT_SHADOW',
+                    outcomeValid: true,
+                    invalidReason: null,
                     forwardTicksObserved: 0,
                     forwardGap: null,
                     stop10: null,
@@ -11106,15 +10864,22 @@ window.executionLock = true;
                     finalized: false,
                     sameTickSkipped: false,
                     lastFutureTickKey: null,
-                    lastFutureEpoch: null,
+                    lastFutureEpoch: Number(t.epoch),
+                    forwardDigits: [],
                     forwardEpochs: [],
-                    forwardDigits: []
+                    continuity: {
+                        required: true,
+                        expectedIntervalSeconds: EXPECTED_INTERVAL_SECONDS,
+                        continuousFromEntry: true,
+                        missingTickCount: 0,
+                        firstMissingExpectedEpoch: null,
+                        largestEpochJump: 0
+                    }
                 };
 
                 log(
-                    `🛡️ SAFE-TICK V1.5 EXACT-EPOCH | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
-                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
-                    `T0 ${active.entryEpoch ?? active.entryTickKey}`,
+                    `🛡️ SAFE-TICK V1.6 | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | T0 e:${active.entryEpoch}`,
                     eligible ? 'SYSTEM' : 'WARNING'
                 );
 
@@ -11123,116 +10888,123 @@ window.executionLock = true;
                 return active;
             }
 
-            function onFutureTick(tick) {
-                if (!active || active.finalized || !tick) return;
+            function onCanonicalTick(tick) {
+                const t = normalizeCanonicalTick(tick);
+                if (!t || t.symbol !== 'R_10') return;
 
-                const t = normalizeTick(tick);
-                if (!t || t.symbol !== active.symbol) return;
+                // Canonical stream itself must be monotonic. Duplicate epochs are harmless;
+                // backwards epochs are ignored as stale events.
+                if (lastCanonicalEpoch !== null) {
+                    if (Number(t.epoch) === Number(lastCanonicalEpoch)) return;
+                    if (Number(t.epoch) < Number(lastCanonicalEpoch)) return;
+                }
+                lastCanonicalEpoch = Number(t.epoch);
+                lastCanonicalReceivedAt = Number(t.receivedAt);
 
-                const epoch = Number(t.epoch);
-                const entryEpoch = Number(active.entryEpoch);
-
-                // Every outcome tick must be a real Deriv tick occurring strictly
-                // AFTER T0. This is the core no-leakage / no-same-tick guarantee.
-                if (!Number.isFinite(epoch) || epoch <= 0) return;
-                if (!Number.isFinite(entryEpoch) || entryEpoch <= 0) return;
-
-                if (epoch <= entryEpoch) {
-                    if (epoch === entryEpoch) {
-                        active.sameTickSkipped = true;
-                    }
+                if (!active || active.finalized) {
+                    save();
                     return;
                 }
 
-                // Canonical event + fallback polling may surface the same tick.
-                // Count one Deriv epoch once and only once.
-                if (
-                    active.lastFutureEpoch !== null &&
-                    Number(active.lastFutureEpoch) === epoch
-                ) {
+                // T0 event can be seen again through the same event path; never count it.
+                if (Number(t.epoch) === Number(active.entryEpoch)) {
+                    active.sameTickSkipped = true;
+                    save();
+                    return;
+                }
+                if (Number(t.epoch) < Number(active.entryEpoch)) return;
+
+                const expectedEpoch = Number(active.lastFutureEpoch) + EXPECTED_INTERVAL_SECONDS;
+                const jump = Number(t.epoch) - Number(active.lastFutureEpoch);
+                active.continuity.largestEpochJump = Math.max(
+                    Number(active.continuity.largestEpochJump || 0),
+                    jump
+                );
+
+                if (Number(t.epoch) !== expectedEpoch) {
+                    const missing = Number(t.epoch) > expectedEpoch
+                        ? Math.max(1, Math.round((Number(t.epoch) - expectedEpoch) / EXPECTED_INTERVAL_SECONDS))
+                        : 0;
+                    invalidateActive('FORWARD_EPOCH_GAP', {
+                        continuousFromEntry: false,
+                        missingTickCount: missing,
+                        firstMissingExpectedEpoch: expectedEpoch,
+                        observedEpochAfterGap: Number(t.epoch),
+                        largestEpochJump: jump
+                    });
                     return;
                 }
 
-                // Ignore an older/out-of-order event rather than corrupting the
-                // 1-based forward-gap sequence.
-                if (
-                    active.lastFutureEpoch !== null &&
-                    epoch < Number(active.lastFutureEpoch)
-                ) {
-                    return;
-                }
+                const key = tickKey(t);
+                if (key && key === active.lastFutureTickKey) return;
 
-                const digit = Number(t.digit);
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
-
-                active.lastFutureEpoch = epoch;
-                active.lastFutureTickKey = `e:${epoch}`;
+                active.lastFutureTickKey = key;
+                active.lastFutureEpoch = Number(t.epoch);
                 active.forwardTicksObserved += 1;
-                active.forwardEpochs.push(epoch);
-                active.forwardDigits.push(digit);
+                active.forwardDigits.push(Number(t.digit));
+                active.forwardEpochs.push(Number(t.epoch));
 
-                save();
-
-                if (digit === active.candidateDigit) {
+                if (Number(t.digit) === Number(active.candidateDigit)) {
                     active.forwardGap = active.forwardTicksObserved;
-                    finalize(false);
+                    finalizeValid(false);
                     return;
                 }
 
                 if (active.forwardTicksObserved >= 20) {
                     active.forwardGap = null;
                     active.noRecurrenceBy20 = true;
-                    finalize(true);
-                } else {
-                    render();
+                    finalizeValid(true);
+                    return;
                 }
+
+                save();
+                render();
             }
 
-            function finalize(noRecurrenceBy20) {
-                if (!active || active.finalized) return;
+            function finalizeValid(noRecurrenceBy20) {
+                if (!active || active.finalized || active.outcomeValid !== true) return;
+                if (!active.continuity?.continuousFromEntry) {
+                    invalidateActive('CONTINUITY_ASSERTION_FAILED');
+                    return;
+                }
 
                 active.noRecurrenceBy20 = !!noRecurrenceBy20;
-                active.stop10 =
-                    active.forwardGap === null
-                        ? 1
-                        : (active.forwardGap > 10 ? 1 : 0);
-                active.tail15 =
-                    active.forwardGap === null
-                        ? 1
-                        : (active.forwardGap >= 15 ? 1 : 0);
+                active.stop10 = active.forwardGap === null ? 1 : (active.forwardGap > 10 ? 1 : 0);
+                active.tail15 = active.forwardGap === null ? 1 : (active.forwardGap >= 15 ? 1 : 0);
                 active.finalized = true;
                 active.finalizedAt = Date.now();
-
-                records.push(JSON.parse(JSON.stringify(active)));
-                save();
+                records.push(clone(active));
 
                 log(
-                    `🛡️ SAFE-TICK V1 OUTCOME | ${active.decision} | digit ${active.candidateDigit} | ` +
+                    `🛡️ SAFE-TICK V1.6 VALID OUTCOME | ${active.decision} | digit ${active.candidateDigit} | ` +
                     `gap ${active.forwardGap === null ? '>20' : active.forwardGap} | ` +
                     `STOP10 ${active.stop10 ? 'YES' : 'NO'} | Tail15 ${active.tail15 ? 'YES' : 'NO'}`,
                     active.stop10 ? 'WARNING' : 'SYSTEM'
                 );
 
-                render();
                 active = null;
                 save();
+                render();
             }
 
             function stats() {
-                const finalized = records.filter(r => r?.finalized);
+                const finalized = records.filter(r => r?.finalized && r?.outcomeValid === true && r?.continuity?.continuousFromEntry === true);
                 const accepted = finalized.filter(r => r.eligible);
                 const rejected = finalized.filter(r => !r.eligible);
                 const acceptedStop10 = accepted.filter(r => r.stop10 === 1);
                 const acceptedTail15 = accepted.filter(r => r.tail15 === 1);
 
                 return {
+                    validFinalized: finalized.length,
                     finalized: finalized.length,
+                    invalidated: invalidRecords.length,
                     accepted: accepted.length,
                     rejected: rejected.length,
                     acceptedStop10: acceptedStop10.length,
                     acceptedTail15: acceptedTail15.length,
                     acceptedStop10Rate: accepted.length ? acceptedStop10.length / accepted.length : 0,
-                    acceptedTail15Rate: accepted.length ? acceptedTail15.length / accepted.length : 0
+                    acceptedTail15Rate: accepted.length ? acceptedTail15.length / accepted.length : 0,
+                    remainingValidCandidates: Math.max(0, TARGET - finalized.length)
                 };
             }
 
@@ -11246,40 +11018,11 @@ window.executionLock = true;
             function render() {
                 const s = stats();
                 const cur = active;
-
                 setText('safeTickCandidateDigit', cur ? String(cur.candidateDigit) : '—');
-                setText(
-                    'safeTickFreq25',
-                    cur && Number.isFinite(cur.entryFeatures?.candidateFreq25)
-                        ? cur.entryFeatures.candidateFreq25.toFixed(3)
-                        : '—'
-                );
-                setText(
-                    'safeTickEntropy10',
-                    cur && Number.isFinite(cur.entryFeatures?.entropy10)
-                        ? cur.entryFeatures.entropy10.toFixed(3)
-                        : '—'
-                );
-                setText(
-                    'safeTickForwardGap',
-                    cur
-                        ? (
-                            cur.finalized
-                                ? (cur.forwardGap === null ? '>20' : String(cur.forwardGap))
-                                : String(cur.forwardTicksObserved)
-                          )
-                        : '—'
-                );
-                setText(
-                    'safeTickOutcomeText',
-                    cur
-                        ? (
-                            cur.finalized
-                                ? `STOP10 ${cur.stop10 ? 'YES' : 'NO'} · Tail15 ${cur.tail15 ? 'YES' : 'NO'}`
-                                : `observing future ticks ${cur.forwardTicksObserved}/20`
-                          )
-                        : 'awaiting outcome'
-                );
+                setText('safeTickFreq25', cur && Number.isFinite(cur.entryFeatures?.candidateFreq25) ? cur.entryFeatures.candidateFreq25.toFixed(3) : '—');
+                setText('safeTickEntropy10', cur && Number.isFinite(cur.entryFeatures?.entropy10) ? cur.entryFeatures.entropy10.toFixed(3) : '—');
+                setText('safeTickForwardGap', cur ? String(cur.forwardTicksObserved) : '—');
+                setText('safeTickOutcomeText', cur ? `strict contiguous ${cur.forwardTicksObserved}/20 · next e:${Number(cur.lastFutureEpoch) + EXPECTED_INTERVAL_SECONDS}` : `awaiting clean candidate · invalidated ${s.invalidated}`);
 
                 const decisionEl = document.getElementById('safeTickLiveDecision');
                 if (decisionEl) {
@@ -11295,29 +11038,26 @@ window.executionLock = true;
                     }
                 }
 
-                setText('safeTickFinalized', String(s.finalized));
+                setText('safeTickFinalized', String(s.validFinalized));
                 setText('safeTickAccepted', String(s.accepted));
                 setText('safeTickRejected', String(s.rejected));
                 setText('safeTickAcceptedStop10', String(s.acceptedStop10));
                 setText('safeTickAcceptedTail15', String(s.acceptedTail15));
 
-                const progress = Math.min(100, (s.finalized / TARGET) * 100);
-                setText('safeTickProgressText', `${s.finalized} / ${TARGET}`);
+                const progress = Math.min(100, (s.validFinalized / TARGET) * 100);
+                setText('safeTickProgressText', `${s.validFinalized} / ${TARGET}`);
                 const bar = document.getElementById('safeTickProgressBar');
                 if (bar) bar.style.width = `${progress.toFixed(1)}%`;
 
                 const summary = document.getElementById('safeTickSummary');
                 if (summary) {
-                    const stop10Rate = s.accepted
-                        ? `${(s.acceptedStop10Rate * 100).toFixed(1)}%`
-                        : '—';
-                    const tail15Rate = s.accepted
-                        ? `${(s.acceptedTail15Rate * 100).toFixed(1)}%`
-                        : '—';
+                    const stop10Rate = s.accepted ? `${(s.acceptedStop10Rate * 100).toFixed(1)}%` : '—';
+                    const tail15Rate = s.accepted ? `${(s.acceptedTail15Rate * 100).toFixed(1)}%` : '—';
                     summary.textContent =
-                        `Accepted ${s.accepted}/${s.finalized || 0} finalized · ` +
-                        `Accepted STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
-                        `Accepted Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
+                        `VALID ${s.validFinalized}/${TARGET} · invalidated ${s.invalidated} · ` +
+                        `Accepted ${s.accepted}/${s.validFinalized || 0} · ` +
+                        `STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
+                        `Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
                 }
             }
 
@@ -11325,109 +11065,62 @@ window.executionLock = true;
                 return {
                     schema: 'DIGITMATCHSTAR_SAFE_TICK_V1_SHADOW',
                     version: VERSION,
-                    rule: {
-                        candidateFreq25Max: FREQ25_MAX,
-                        entropy10Max: ENTROPY10_MAX
-                    },
+                    rule: { candidateFreq25Max: FREQ25_MAX, entropy10Max: ENTROPY10_MAX },
                     targetCandidates: TARGET,
                     alignment: {
-                        mode: 'STRICT_DERIV_EPOCH',
+                        mode: 'STRICT_DERIV_EPOCH_CONTIGUOUS',
                         entryRequiresEpoch: true,
                         futureTickDeduplication: 'epoch',
                         canonicalEventAuthoritative: true,
-                        legacyV14Mixed: false
+                        pollingFallbackEnabled: false,
+                        legacyMixed: false
                     },
-                    active: active ? JSON.parse(JSON.stringify(active)) : null,
+                    continuityPolicy: {
+                        required: true,
+                        expectedIntervalSeconds: EXPECTED_INTERVAL_SECONDS,
+                        gapAction: 'INVALIDATE_CANDIDATE',
+                        invalidCandidatesCountTowardTarget: false,
+                        resumeActiveCandidateAfterReload: false
+                    },
+                    active: active ? clone(active) : null,
                     stats: stats(),
-                    records: JSON.parse(JSON.stringify(records))
+                    records: clone(records),
+                    invalidRecords: clone(invalidRecords)
                 };
             }
 
             load();
 
-            // Canonical bot tick event is authoritative for SAFE-TICK V1.5.
-            let latestCanonicalTick = null;
-            let lastCanonicalEventAt = 0;
-
+            // SINGLE authoritative research stream. No window.lastTick polling fallback.
             window.addEventListener('digitmatchstar:tick', (event) => {
                 try {
-                    const detail = event?.detail?.tick || event?.detail || null;
-
-                    // V1.6 fast-reaction status: market ticks continue to drive
-                    // candidate/recovery analysis while server settlement reconciles.
-                    try {
-                        if (
-                            window.SERVER_EXECUTION?.enabled &&
-                            window.isBotRunning === true &&
-                            window.SERVER_EXECUTION?.state?.open_contract_id
-                        ) {
-                            const d = Number(detail?.digit);
-                            const e = Number(detail?.epoch);
-                            if (Number.isInteger(d) && Number.isFinite(e)) {
-                                updateTradeStatus(
-                                    'LIVE TICK ⚡',
-                                    `Epoch ${e} · digit ${d}`,
-                                    'Contract open · next recovery candidate is being re-scored while settlement reconciles',
-                                    'trade'
-                                );
-                            }
-                        }
-                    } catch (_) {}
-                    const t = normalizeTick(detail);
-                    if (!t) return;
-
-                    latestCanonicalTick = t;
-                    lastCanonicalEventAt = Date.now();
-                    onFutureTick(t);
+                    onCanonicalTick(event?.detail?.tick || event?.detail || null);
                 } catch (err) {
-                    console.warn('SAFE-TICK V1.5 canonical tick error:', err);
+                    console.warn('SAFE-TICK V1.6 canonical tick error:', err);
+                    if (active && !active.finalized) invalidateActive('CANONICAL_HANDLER_ERROR');
                 }
             });
 
-            // Fallback is used only if the canonical event has been silent.
-            // window.lastTick stores Deriv epoch under raw.epoch, which
-            // normalizeTick now reads correctly.
-            let fallbackEpoch = null;
-            setInterval(() => {
-                try {
-                    if (Date.now() - lastCanonicalEventAt < 2500) return;
-
-                    const t = normalizeTick(window.lastTick);
-                    if (!t || !Number.isFinite(Number(t.epoch))) return;
-
-                    const epoch = Number(t.epoch);
-                    if (epoch === fallbackEpoch) return;
-                    fallbackEpoch = epoch;
-
-                    onFutureTick(t);
-                } catch (_) {}
-            }, 250);
-
-            window.SafeTickLatestCanonicalTick = () => {
-                if (latestCanonicalTick) {
-                    return JSON.parse(JSON.stringify(latestCanonicalTick));
-                }
-                return normalizeTick(window.lastTick);
-            };
-
             window.addEventListener('load', render);
-            window.addEventListener('beforeunload', save);
+            window.addEventListener('beforeunload', () => {
+                // Persist for diagnostics; load() intentionally invalidates unfinished windows.
+                save();
+            });
             window.addEventListener('pagehide', save);
             document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'hidden') save();
+                if (document.visibilityState === 'hidden' && active && !active.finalized) {
+                    invalidateActive('PAGE_HIDDEN_BREAKS_CONTINUITY');
+                } else if (document.visibilityState === 'hidden') {
+                    save();
+                }
             });
             setTimeout(render, 500);
 
             return Object.freeze({
                 VERSION,
                 captureCandidate,
-                captureLatestCanonical() {
-                    const t =
-                        window.SafeTickLatestCanonicalTick?.() ||
-                        normalizeTick(window.lastTick);
-                    return captureCandidate(t);
-                },
-                onFutureTick,
+                onFutureTick: onCanonicalTick,
+                onCanonicalTick,
                 stats,
                 render,
                 exportState
@@ -11442,299 +11135,29 @@ window.executionLock = true;
         // REAL remains server-resident but requires explicit confirmation per purchase.
         // ============================================================================
         window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
-            enabled: (
-                sessionStorage.getItem('dms_server_execution_enabled') ??
-                localStorage.getItem('dms_server_execution_enabled')
-            ) !== '0',
-            apiUrl: (
-                sessionStorage.getItem('dms_server_execution_url') ||
-                localStorage.getItem('dms_server_execution_url') ||
-                'https://digitmatchstar-api.onrender.com'
-            ).replace(/\/+$/,''),
+            enabled: localStorage.getItem('dms_server_execution_enabled') === '1',
+            apiUrl: (localStorage.getItem('dms_server_execution_url') || '').replace(/\/+$/,''),
             state: null,
-            sessionId: Number(
-                sessionStorage.getItem('dms_server_session_id') ||
-                localStorage.getItem('dms_server_session_id') ||
-                0
-            ) || null,
             pollTimer: null,
-            lastCandidateSent: null,
-            continuousResearch: (
-                sessionStorage.getItem('dms_server_continuous_research') ??
-                localStorage.getItem('dms_server_continuous_research') ??
-                '1'
-            ) !== '0',
-            continuousRestartPending: false,
-            continuousRestartTimer: null,
-            continuousRestartAttempts: 0,
-            lastAutoRestartPhase: null,
-            lastCompletedServerCycleTrade: 0
+            lastCandidateSent: null
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
 
-        function formatServerMoney(value) {
-            const n = Number(value);
-            return Number.isFinite(n)
-                ? `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`
-                : '$0.00';
-        }
-
-        function renderServerTradeNarrative(st) {
-            if (!window.SERVER_EXECUTION?.enabled || !st) return;
-
-            const resultEl = document.getElementById('metricTradeResult');
-            const statusEl = document.getElementById('metricPreviousResult');
-            const actionEl = document.getElementById('metricNextAction');
-
-            if (!resultEl || !statusEl || !actionEl) return;
-
-            const phase = String(st.phase || 'IDLE').toUpperCase();
-            const tradeNo = Number(st.current_trade || 0);
-            const maxTrades = Number(st.max_trades || 0);
-            const digit = Number(st.candidate_digit);
-            const hasDigit = Number.isInteger(digit) && digit >= 0 && digit <= 9;
-            const stake = Number(st.current_stake || 0);
-            const pnl = Number(st.pnl || 0);
-            const contract = st.open_contract_id ? String(st.open_contract_id) : '';
-            const continuous = !!window.SERVER_EXECUTION?.continuousResearch &&
-                String(st.account_mode || '').toUpperCase() === 'DEMO';
-
-            let result = 'SERVER';
-            let status = 'Server worker ready';
-            let action = 'Waiting for the next action';
-            let resultClass = 'text-xs font-bold text-cyan-300';
-
-            switch (phase) {
-                case 'CONFIGURED':
-                    result = 'READY';
-                    status = hasDigit
-                        ? `Candidate digit ${digit} locked · base stake $${stake.toFixed(2)}`
-                        : 'Server session configured';
-                    action = 'Press START BOT to begin';
-                    resultClass = 'text-xs font-bold text-cyan-300';
-                    break;
-
-                case 'STARTING':
-                    result = 'STARTING ⚡';
-                    status = hasDigit
-                        ? `Starting cycle with digit ${digit}`
-                        : 'Starting server cycle';
-                    action = `Preparing trade ${tradeNo + 1}${maxTrades ? ` of ${maxTrades}` : ''}`;
-                    resultClass = 'text-xs font-bold text-yellow-300';
-                    break;
-
-                case 'REQUESTING_PROPOSAL':
-                    result = 'PREPARING TRADE';
-                    status = hasDigit
-                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
-                        : `Preparing trade ${tradeNo + 1}/${maxTrades || '—'}`;
-                    action = 'Requesting live proposal from Deriv…';
-                    resultClass = 'text-xs font-bold text-yellow-300';
-                    break;
-
-                case 'BUYING':
-                    result = 'BUYING ⚡';
-                    status = hasDigit
-                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · Buying DIGITMATCH ${digit} for $${stake.toFixed(2)}`
-                        : `Buying trade ${tradeNo + 1}`;
-                    action = 'Waiting for Deriv to confirm the contract…';
-                    resultClass = 'text-xs font-bold text-yellow-300';
-                    break;
-
-                case 'WAITING_SETTLEMENT':
-                    result = `TRADE ${tradeNo} OPEN`;
-                    status = hasDigit
-                        ? `DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}${contract ? ` · Contract ${contract}` : ''}`
-                        : `Trade ${tradeNo}/${maxTrades || '—'} is open`;
-                    action = 'Watching the contract · waiting for authoritative Deriv settlement…';
-                    resultClass = 'text-xs font-bold text-blue-300';
-                    break;
-
-                case 'RECOVERING':
-                    result = 'LOSS · RECOVERY';
-                    status = `Trade ${tradeNo} settled as a loss · Cycle P/L ${formatServerMoney(pnl)}`;
-                    action = hasDigit
-                        ? `Keeping digit ${digit} · next stake $${stake.toFixed(2)} · preparing trade ${tradeNo + 1}`
-                        : `Preparing recovery trade ${tradeNo + 1} at $${stake.toFixed(2)}`;
-                    resultClass = 'text-xs font-bold text-orange-300';
-                    break;
-
-                case 'WON':
-                    result = 'WIN ✅';
-                    status = `Cycle won on trade ${tradeNo} · Cycle P/L ${formatServerMoney(pnl)}`;
-                    action = continuous
-                        ? 'Continuous Research ON · selecting and freezing the next AI candidate…'
-                        : 'Cycle complete · press START BOT for another cycle';
-                    resultClass = 'text-xs font-bold text-green-300';
-                    break;
-
-                case 'MAX_TRADES_REACHED':
-                    result = 'MAX TRADES';
-                    status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
-                    action = continuous
-                        ? 'Continuous Research ON · preparing a fresh research cycle…'
-                        : 'Cycle stopped at your maximum trade limit';
-                    resultClass = 'text-xs font-bold text-orange-300';
-                    break;
-
-                case 'WAITING_CANDIDATE':
-                    result = 'WAITING FOR AI';
-                    status = 'Server is ready but no candidate digit is locked';
-                    action = 'Waiting for the Digit Intelligence Engine to produce the next candidate…';
-                    resultClass = 'text-xs font-bold text-cyan-300';
-                    break;
-
-                case 'RECONCILING':
-                case 'WAITING_SETTLEMENT_RECONCILE':
-                    result = 'RECONCILING';
-                    status = contract
-                        ? `Checking unresolved contract ${contract}`
-                        : 'Reconciling the previous server contract';
-                    action = 'Waiting for authoritative settlement before any new trade…';
-                    resultClass = 'text-xs font-bold text-purple-300';
-                    break;
-
-                case 'WAITING_REAL_CONFIRMATION':
-                    result = 'CONFIRM REQUIRED';
-                    status = hasDigit
-                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
-                        : 'REAL purchase is waiting';
-                    action = 'Explicit confirmation is required before this purchase';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
-                case 'PAUSED':
-                    result = 'PAUSED';
-                    status = `Cycle paused after trade ${tradeNo}`;
-                    action = 'Resume when ready';
-                    resultClass = 'text-xs font-bold text-gray-300';
-                    break;
-
-                case 'STOPPED':
-                case 'STOPPED_WAITING_SETTLEMENT':
-                    result = 'STOPPED';
-                    status = phase === 'STOPPED_WAITING_SETTLEMENT'
-                        ? 'Stop requested · an open contract is still being reconciled'
-                        : 'Server trading stopped';
-                    action = phase === 'STOPPED_WAITING_SETTLEMENT'
-                        ? 'Waiting for the existing contract to settle'
-                        : 'Press START BOT when you want to trade again';
-                    resultClass = 'text-xs font-bold text-gray-300';
-                    break;
-
-                case 'ERROR':
-                    result = 'SERVER ERROR';
-                    status = String(st.last_error || 'The server worker encountered an error');
-                    action = 'Review Worker Error above, then restart after the issue is resolved';
-                    resultClass = 'text-xs font-bold text-red-300';
-                    break;
-
-                default:
-                    if (st.running) {
-                        result = 'TRADING ⚡';
-                        status = `Server worker active · phase ${phase}`;
-                        action = hasDigit
-                            ? `Candidate ${digit} · trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`
-                            : 'Waiting for server progress…';
-                        resultClass = 'text-xs font-bold text-yellow-300';
-                    } else {
-                        result = phase || 'READY';
-                        status = 'Server worker is not currently buying';
-                        action = continuous
-                            ? 'Continuous Research is waiting for the next eligible cycle'
-                            : 'Press START BOT to begin';
-                        resultClass = 'text-xs font-bold text-gray-300';
-                    }
-            }
-
-            resultEl.textContent = result;
-            resultEl.className = resultClass;
-            statusEl.textContent = status;
-            actionEl.textContent = action;
-        }
-
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
-
-            // V1.6 deterministic server audio.
-            // Compare the newly received server state with the previous state;
-            // this avoids depending on seeing every short-lived polling phase.
-            try {
-                const phase = String(st.phase || '').toUpperCase();
-                const tradeNo = Number(st.current_trade || 0);
-                const contractId = st.open_contract_id ? String(st.open_contract_id) : '';
-                const pnl = Number(st.pnl || 0);
-
-                const prev = window.__dmsPrevServerAudioState || {
-                    phase: '',
-                    tradeNo: 0,
-                    contractId: '',
-                    pnl: 0
-                };
-
-                // A new contract id or trade number is the reliable purchase event.
-                if (
-                    contractId &&
-                    (
-                        contractId !== prev.contractId ||
-                        tradeNo > prev.tradeNo
-                    )
-                ) {
-                    playAudioFeedback('EXECUTION');
-                }
-
-                // Settlement outcomes are inferred from authoritative server transitions,
-                // not from transient UI polling labels.
-                if (phase === 'WON' && prev.phase !== 'WON') {
-                    playAudioFeedback('WIN');
-                } else if (
-                    phase === 'RECOVERING' &&
-                    (
-                        prev.phase !== 'RECOVERING' ||
-                        tradeNo > prev.tradeNo
-                    )
-                ) {
-                    playAudioFeedback('LOSS');
-                } else if (
-                    phase === 'MAX_TRADES_REACHED' &&
-                    prev.phase !== 'MAX_TRADES_REACHED'
-                ) {
-                    playAudioFeedback('LOSS');
-                } else if (phase === 'ERROR' && prev.phase !== 'ERROR') {
-                    playAudioFeedback('ERROR');
-                }
-
-                window.__dmsPrevServerAudioState = {
-                    phase,
-                    tradeNo,
-                    contractId,
-                    pnl
-                };
-            } catch (_) {}
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
-            const continuousBtn = serverExecEl('serverContinuousResearchBtn');
             const confirmBtn = serverExecEl('serverRealConfirmBtn');
 
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
             if (serverExecEl('serverExecMode')) {
                 serverExecEl('serverExecMode').textContent = s.enabled
-                    ? `SERVER · ${(st.account_mode || sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
+                    ? `SERVER · ${(st.account_mode || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
                     : 'BROWSER';
             }
             if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
-
-            const errorCard = serverExecEl('serverExecErrorCard');
-            const errorEl = serverExecEl('serverExecError');
-            const workerError = String(st.last_error || '').trim();
-
-            if (errorEl) errorEl.textContent = workerError || '—';
-            if (errorCard) errorCard.classList.toggle('hidden', !workerError);
-
-            // Trade Status card is rendered from the complete server phase below.
-
             if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
             if (serverExecEl('serverExecTrade')) {
                 serverExecEl('serverExecTrade').textContent =
@@ -11742,34 +11165,7 @@ window.executionLock = true;
             }
             if (serverExecEl('serverExecPnl')) {
                 const pnl = Number(st.pnl || 0);
-                const el = serverExecEl('serverExecPnl');
-
-                el.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
-
-                const won = String(st.phase || '').toUpperCase() === 'WON';
-                if (won || pnl > 0) {
-                    el.style.color = '#4ade80';
-                    el.style.fontWeight = '900';
-                } else {
-                    el.style.color = '#f87171';
-                    el.style.fontWeight = '900';
-                }
-            }
-
-            // Secure OAuth server mode has no raw Deriv token in the browser,
-            // so the old browser balance subscription cannot run. Use the
-            // server-maintained account balance instead.
-            const serverBalance = Number(st.account_balance);
-            if (Number.isFinite(serverBalance)) {
-                window.currentBalance = serverBalance;
-                if (!Number.isFinite(Number(window.startingBalance)) || Number(window.startingBalance) <= 0) {
-                    window.startingBalance = serverBalance - Number(st.pnl || 0);
-                }
-                const balanceElem = document.getElementById('metricAccountBalance');
-                if (balanceElem) {
-                    balanceElem.textContent = `$${serverBalance.toFixed(2)}`;
-                    balanceElem.className = 'text-lg font-bold balance-green';
-                }
+                serverExecEl('serverExecPnl').textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
             }
 
             if (badge) {
@@ -11795,23 +11191,6 @@ window.executionLock = true;
                     : 'server-exec-btn bg-sky-700 hover:bg-sky-600';
             }
 
-            if (continuousBtn) {
-                const demoMode = String(
-                    st.account_mode ||
-                    sessionStorage.getItem('selectedAccountMode') ||
-                    localStorage.getItem('selectedAccountMode') ||
-                    'DEMO'
-                ).toUpperCase() === 'DEMO';
-
-                continuousBtn.textContent =
-                    `Continuous Research: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
-
-                continuousBtn.disabled = !demoMode;
-                continuousBtn.className = s.continuousResearch && demoMode
-                    ? 'server-exec-btn bg-emerald-700 hover:bg-emerald-600'
-                    : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
-            }
-
             if (confirmBtn) {
                 const needsConfirm =
                     s.enabled &&
@@ -11826,333 +11205,33 @@ window.executionLock = true;
                 const pnl = document.getElementById('metricTotalProfit');
                 if (tc && Number.isFinite(Number(st.current_trade))) tc.textContent = String(st.current_trade);
                 if (stake && Number.isFinite(Number(st.current_stake))) stake.textContent = `$${Number(st.current_stake).toFixed(2)}`;
-                if (pnl && Number.isFinite(Number(st.pnl))) {
-                    const serverPnl = Number(st.pnl);
-                    pnl.textContent = `${serverPnl >= 0 ? '+' : ''}$${serverPnl.toFixed(2)}`;
-
-                    // Research display requirement:
-                    // red while the cycle has not yet produced a positive win,
-                    // bold green once the cycle is net-positive / WON.
-                    const won = String(st.phase || '').toUpperCase() === 'WON';
-                    const positive = serverPnl > 0;
-
-                    if (won || positive) {
-                        pnl.className = 'text-lg font-black text-green-400';
-                    } else {
-                        pnl.className = 'text-lg font-black text-red-400';
-                    }
-                }
+                if (pnl && Number.isFinite(Number(st.pnl))) pnl.textContent = `${Number(st.pnl) >= 0 ? '+' : ''}$${Number(st.pnl).toFixed(2)}`;
             }
-
-            renderServerTradeNarrative(st);
         }
 
         async function serverExecRequest(path, options = {}) {
             const s = window.SERVER_EXECUTION;
             if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
-            const jwt = getPlatformJwt();
-            if (!jwt) {
-                sessionStorage.removeItem('bot_authenticated');
-                localStorage.removeItem('bot_authenticated');
-                throw new Error('DigitMatchStar session expired. Reconnect through Deriv.');
-            }
             const res = await fetch(`${s.apiUrl}${path}`, {
                 method: options.method || 'GET',
-                headers: {
-                    'Content-Type':'application/json',
-                    'Authorization': `Bearer ${jwt}`,
-                    ...(options.headers || {})
-                },
+                headers: {'Content-Type':'application/json', ...(options.headers || {})},
                 body: options.body === undefined ? undefined : JSON.stringify(options.body),
                 cache: 'no-store'
             });
             let data = null;
             try { data = await res.json(); } catch (_) {}
-            if (res.status === 401) {
-                sessionStorage.removeItem('dms_platform_jwt');
-                sessionStorage.removeItem('bot_authenticated');
-                localStorage.removeItem('dms_platform_jwt');
-                localStorage.removeItem('bot_authenticated');
-            }
             if (!res.ok) {
                 throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
             }
             return data;
         }
 
-
-        function toggleServerContinuousResearch() {
-            const s = window.SERVER_EXECUTION;
-            const mode = String(
-                s.state?.account_mode ||
-                sessionStorage.getItem('selectedAccountMode') ||
-                localStorage.getItem('selectedAccountMode') ||
-                'DEMO'
-            ).toUpperCase();
-
-            if (mode !== 'DEMO') {
-                alert('Continuous Research is available only for DEMO accounts.');
-                return;
-            }
-
-            s.continuousResearch = !s.continuousResearch;
-
-            sessionStorage.setItem(
-                'dms_server_continuous_research',
-                s.continuousResearch ? '1' : '0'
-            );
-            try {
-                localStorage.setItem(
-                    'dms_server_continuous_research',
-                    s.continuousResearch ? '1' : '0'
-                );
-            } catch (_) {}
-
-            if (!s.continuousResearch) {
-                s.continuousRestartPending = false;
-                s.continuousRestartAttempts = 0;
-                if (s.continuousRestartTimer) {
-                    clearTimeout(s.continuousRestartTimer);
-                    s.continuousRestartTimer = null;
-                }
-            }
-
-            renderServerExecutionState();
-
-            log(
-                `🧪 Continuous DEMO Research ${s.continuousResearch ? 'ON' : 'OFF'}`,
-                'SYSTEM'
-            );
-        }
-
-        function freshDigitForContinuousServerCycle() {
-            if (sessionState.mode === 'ai') {
-                clearSessionDigitLock('Continuous server research cycle');
-                sessionState.manualOverride = false;
-                sessionState.sessionStarted = false;
-                sessionState.sessionDigit = null;
-
-                if (
-                    window.digitIntelligenceEngine?.warmupDone &&
-                    window.digitIntelligenceEngine?.currentRecommendation
-                ) {
-                    const digit = Number(
-                        window.digitIntelligenceEngine.currentRecommendation.digit
-                    );
-
-                    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
-                        const input = document.getElementById('predictedDigit');
-                        if (input) input.value = String(digit);
-
-                        lockSessionDigit(
-                            digit,
-                            true,
-                            'Continuous DEMO research'
-                        );
-
-                        return digit;
-                    }
-                }
-
-                return null;
-            }
-
-            const digit = Number(
-                document.getElementById('predictedDigit')?.value
-            );
-
-            if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
-                sessionState.sessionDigit = digit;
-                sessionState.sessionStarted = true;
-                sessionState.manualOverride = true;
-                return digit;
-            }
-
-            return null;
-        }
-
-        async function stopCompletedServerCycleForResearch() {
-            const s = window.SERVER_EXECUTION;
-            if (!s?.sessionId) return;
-
-            try {
-                const state = s.state || {};
-                if (state.running || state.open_contract_id) return;
-
-                await serverExecRequest(`/sessions/${s.sessionId}/stop`, {
-                    method: 'POST'
-                });
-            } catch (err) {
-                // Terminal WON / MAX_TRADES states can already be stopped;
-                // a redundant STOP failure should not prevent the next cycle.
-                console.warn('Continuous Research stop-cycle warning:', err);
-            }
-        }
-
-        async function restartContinuousServerResearchCycle(triggerPhase) {
-            const s = window.SERVER_EXECUTION;
-
-            if (
-                !s.enabled ||
-                !s.continuousResearch ||
-                s.continuousRestartPending ||
-                window.__dmsManualStopRequested === true ||
-                window.isBotRunning !== true
-            ) {
-                return;
-            }
-
-            const state = s.state || {};
-            const mode = String(state.account_mode || '').toUpperCase();
-
-            if (mode !== 'DEMO') return;
-            if (state.running || state.open_contract_id) return;
-
-            const terminalPhase = String(
-                triggerPhase || state.phase || ''
-            ).toUpperCase();
-
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) {
-                return;
-            }
-
-            s.continuousRestartPending = true;
-            s.continuousRestartAttempts += 1;
-
-            try {
-                updateTradeStatus(
-                    terminalPhase === 'WON' ? 'WIN ✅' : 'CYCLE COMPLETE',
-                    terminalPhase === 'WON'
-                        ? `Cycle won · preparing next DEMO research cycle`
-                        : `Maximum trades reached · preparing next research cycle`,
-                    'Stopping completed cycle before starting the next candidate…',
-                    terminalPhase === 'WON' ? 'win' : 'normal'
-                );
-
-                // User requirement: the bot should STOP the completed cycle
-                // and then START a completely fresh cycle.
-                await stopCompletedServerCycleForResearch();
-
-                // Clear the completed server session identity locally so the
-                // next start is treated as a fresh cycle by the browser layer.
-                s.sessionId = null;
-                s.state = null;
-                s.lastCandidateSent = null;
-
-                sessionStorage.removeItem('dms_server_session_id');
-                try {
-                    localStorage.removeItem('dms_server_session_id');
-                } catch (_) {}
-
-                // Give AI a short moment to update after the terminal tick.
-                await new Promise(resolve => setTimeout(resolve, 500));
-
-                let digit = freshDigitForContinuousServerCycle();
-
-                if (!Number.isInteger(digit)) {
-                    // Do not silently stop research just because AI is between
-                    // recommendations. Retry for a short period.
-                    if (s.continuousRestartAttempts < 10) {
-                        s.continuousRestartPending = false;
-                        s.continuousRestartTimer = setTimeout(() => {
-                            s.continuousRestartTimer = null;
-                            restartContinuousServerResearchCycle(terminalPhase);
-                        }, 1000);
-                        return;
-                    }
-
-                    throw new Error(
-                        'AI did not provide a valid candidate digit for the next research cycle.'
-                    );
-                }
-
-                updateTradeStatus(
-                    'RESTARTING ⚡',
-                    `Fresh DEMO cycle · AI digit ${digit}`,
-                    'Freezing research candidate and starting trade 1…',
-                    'normal'
-                );
-
-                log(
-                    `🧪 Continuous Research · ${terminalPhase} → STOP → fresh START · digit ${digit}`,
-                    'SYSTEM'
-                );
-
-                await startServerExecutionSession();
-
-                s.lastAutoRestartPhase = terminalPhase;
-                s.continuousRestartAttempts = 0;
-
-                updateTradeStatus(
-                    'TRADING ⚡',
-                    `Fresh server research cycle started · digit ${digit}`,
-                    'Waiting for trade 1 proposal…',
-                    'trade'
-                );
-
-            } catch (err) {
-                s.continuousRestartAttempts = 0;
-
-                log(
-                    `❌ Continuous Research restart failed: ${err.message}`,
-                    'ERROR'
-                );
-
-                updateTradeStatus(
-                    'SERVER ERROR',
-                    'Continuous Research restart failed',
-                    err.message,
-                    'loss'
-                );
-
-            } finally {
-                s.continuousRestartPending = false;
-            }
-        }
-
-        function maybeScheduleContinuousServerResearch() {
-            const s = window.SERVER_EXECUTION;
-            const st = s.state || {};
-
-            if (
-                !s.enabled ||
-                !s.continuousResearch ||
-                s.continuousRestartPending ||
-                window.__dmsManualStopRequested === true ||
-                window.isBotRunning !== true ||
-                String(st.account_mode || '').toUpperCase() !== 'DEMO' ||
-                st.running ||
-                st.open_contract_id
-            ) {
-                return;
-            }
-
-            const phase = String(st.phase || '').toUpperCase();
-
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) {
-                return;
-            }
-
-            if (s.continuousRestartTimer) return;
-
-            // Let settlement + SAFE-TICK outcome/rendering complete, then
-            // perform an explicit STOP -> fresh START lifecycle.
-            s.continuousRestartTimer = setTimeout(async () => {
-                s.continuousRestartTimer = null;
-                await restartContinuousServerResearchCycle(phase);
-            }, 1200);
-        }
-
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
             try {
-                const rows = await serverExecRequest('/sessions');
-                s.state = s.sessionId
-                    ? (rows.find(x => Number(x.id) === Number(s.sessionId)) || null)
-                    : (rows[0] || null);
+                s.state = await serverExecRequest('/state');
                 renderServerExecutionState();
-                maybeScheduleContinuousServerResearch();
             } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {
@@ -12165,18 +11244,17 @@ window.executionLock = true;
         function ensureServerExecutionPolling() {
             const s = window.SERVER_EXECUTION;
             if (s.pollTimer) clearInterval(s.pollTimer);
-            s.pollTimer = setInterval(pollServerExecutionState, 250);
+            s.pollTimer = setInterval(pollServerExecutionState, 1200);
             pollServerExecutionState();
         }
 
         function configureServerExecutionUrl() {
             const current = window.SERVER_EXECUTION.apiUrl || '';
-            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-api.onrender.com');
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current);
             if (raw === null) return;
             const value = String(raw).trim().replace(/\/+$/,'');
             window.SERVER_EXECUTION.apiUrl = value;
-            sessionStorage.setItem('dms_server_execution_url', value);
-            try { localStorage.setItem('dms_server_execution_url', value); } catch (_) {}
+            localStorage.setItem('dms_server_execution_url', value);
             renderServerExecutionState();
             if (window.SERVER_EXECUTION.enabled) ensureServerExecutionPolling();
         }
@@ -12193,22 +11271,17 @@ window.executionLock = true;
                 return;
             }
 
-            if (s.enabled && !getStoredDerivToken()) {
-                alert('Browser trading mode requires a raw Deriv token and is disabled for secure OAuth users. Keep SERVER mode enabled.');
-                return;
-            }
             s.enabled = !s.enabled;
-            sessionStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
-            try { localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0'); } catch (_) {}
+            localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
             renderServerExecutionState();
             ensureServerExecutionPolling();
             log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
         }
 
         function serverSessionConfigFromUi() {
-            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             return {
-                requested_mode: mode,
+                account_mode: mode,
                 symbol: document.getElementById('symbol')?.value || 'R_10',
                 base_stake: Number(document.getElementById('baseStake')?.value || 1),
                 multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
@@ -12227,64 +11300,20 @@ window.executionLock = true;
                 throw new Error('A valid digit 0–9 is required before starting server execution.');
             }
 
-            const accounts = await serverExecRequest('/auth/platform/me');
-            const wanted = String(cfg.requested_mode || 'DEMO').toLowerCase();
-            const account = (accounts.accounts || []).find(
-                a => String(a.account_type || '').toLowerCase() === wanted
-            );
-            if (!account) {
-                throw new Error(`No ${cfg.requested_mode} Deriv Options account is connected.`);
-            }
-
-            const created = await serverExecRequest('/sessions', {
-                method:'POST',
-                body:{
-                    account_id: account.account_id,
-                    symbol: cfg.symbol,
-                    base_stake: cfg.base_stake,
-                    multiplier: cfg.multiplier,
-                    max_trades: cfg.max_trades
-                }
-            });
-
-            // SERVER MODE RESEARCH BRIDGE:
-            // Browser execution used to trigger SAFE-TICK / Candidate DNA from
-            // analyzeAndTrade() immediately before executeTrade(). In server mode
-            // that browser path is intentionally bypassed, so explicitly freeze
-            // the current canonical T0 tick here for a NEW cycle only.
-            // Never create a new research candidate while reconciling an already
-            // open contract.
-            if (!created.reconcile_required && window.lastTick) {
-                try {
-                    window.SafeTickV1?.captureLatestCanonical?.();
-                } catch (err) {
-                    console.warn('SAFE-TICK server-mode capture failed:', err);
-                }
-                try {
-                    window.CandidateTickDNAV3?.captureCandidate?.(window.lastTick);
-                } catch (err) {
-                    console.warn('Candidate Tick DNA server-mode capture failed:', err);
-                }
-            }
-
-            s.sessionId = Number(created.id);
-            sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
-            try { localStorage.setItem('dms_server_session_id', String(s.sessionId)); } catch (_) {}
-
-            await serverExecRequest(`/sessions/${s.sessionId}/candidate`, {method:'POST', body:{digit}});
+            await serverExecRequest('/configure', {method:'POST', body:cfg});
+            await serverExecRequest('/candidate', {method:'POST', body:{digit}});
             s.lastCandidateSent = digit;
-            await serverExecRequest(`/sessions/${s.sessionId}/start`, {method:'POST'});
-            await pollServerExecutionState();
+            s.state = await serverExecRequest('/start', {method:'POST'});
             renderServerExecutionState();
             ensureServerExecutionPolling();
-            log(`☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
+            log(`☁ SERVER STARTED · ${cfg.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
             return true;
         }
 
         async function stopServerExecutionSession() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
-            if (!s.sessionId) return; await serverExecRequest(`/sessions/${s.sessionId}/stop`, {method:'POST'}); await pollServerExecutionState();
+            s.state = await serverExecRequest('/stop', {method:'POST'});
             renderServerExecutionState();
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
@@ -12294,7 +11323,7 @@ window.executionLock = true;
             if (!s.enabled) return;
             if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
             try {
-                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
+                await serverExecRequest('/real/confirm', {method:'POST'});
                 await pollServerExecutionState();
                 log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
             } catch (e) {
@@ -12388,15 +11417,6 @@ window.executionLock = true;
                 window.martingaleStep = (window.martingaleStep || 0) + 1;
                 window.cycleLosses = (window.cycleLosses || 0) + 1;
                 window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
-
-                // V1.6: do not keep a stale recovery digit across losses.
-                // The next eligible tick must re-score all 10 digits and either
-                // keep the current leader or switch to the stronger candidate.
-                window.recoveryDigitLock = null;
-                window.recoveryDigitTrades = 0;
-                window.recoveryDigitTradeLimit = 1;
-                resetAdaptiveRecoveryHold('PER_TRADE_RERANK');
-
                 renderTailRiskPanel();
                 log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
@@ -12441,16 +11461,9 @@ window.executionLock = true;
             window.maxCycleTrades = window.maxTrades;
             
             const token = getStoredDerivToken();
-            const platformJwt = getPlatformJwt();
-            if (window.SERVER_EXECUTION?.enabled) {
-                if (!platformJwt) {
-                    log('❌ DigitMatchStar session missing. Reconnect through Deriv.', 'CRITICAL');
-                    updateTradeStatus('ERROR', 'Session missing', 'Reconnect through Deriv', 'loss');
-                    return;
-                }
-            } else if (!token) {
-                log('❌ Legacy browser mode requires a Deriv token. Use SERVER mode.', 'CRITICAL');
-                updateTradeStatus('ERROR', 'Browser token unavailable', 'Use SERVER mode', 'loss');
+            if (!token) {
+                log('❌ No API token found. Please authenticate first.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'No API token found', 'Please authenticate first', 'loss');
                 return;
             }
             
@@ -12518,9 +11531,7 @@ window.isBotRunning = true;
             );
             initTone();
 
-            if (window.SERVER_EXECUTION?.enabled) {
-                log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
-            } else if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
                 connectWebSocket();
             } else {
                 log('✅ Reusing authenticated trading connection', 'SYSTEM');
@@ -12533,7 +11544,7 @@ window.isBotRunning = true;
             
             // Add connection verification
             setTimeout(() => {
-                if (!window.SERVER_EXECUTION?.enabled && window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+                if (window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
                     log('❌ WebSocket failed to connect', 'ERROR');
                     updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check network and API token', 'loss');
                 }
@@ -12690,16 +11701,6 @@ window.isBotRunning = true;
 
             if (window.isBotRunning) {
                 window.__dmsManualStopRequested = true;
-
-                if (window.SERVER_EXECUTION?.continuousRestartTimer) {
-                    clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
-                    window.SERVER_EXECUTION.continuousRestartTimer = null;
-                }
-
-                if (window.SERVER_EXECUTION) {
-                    window.SERVER_EXECUTION.continuousRestartPending = false;
-                    window.SERVER_EXECUTION.continuousRestartAttempts = 0;
-                }
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
                 }
@@ -12749,7 +11750,6 @@ window.isBotRunning = true;
         window.startBot = startBot;
         window.stopBot = stopBot;
         window.toggleBot = toggleBot;
-        window.toggleServerContinuousResearch = toggleServerContinuousResearch;
 
 
         function updateS20Label() {
@@ -12789,23 +11789,10 @@ window.isBotRunning = true;
             document.getElementById('metricTickRate').textContent = `Ticks/sec: ${tickRate.toFixed(1)}`;
         }
         
-        async function toggleSound() {
+        function toggleSound() {
             window.soundEnabled = !window.soundEnabled;
-            try {
-                localStorage.setItem('soundEnabled', String(window.soundEnabled));
-            } catch (_) {}
-
+            localStorage.setItem('soundEnabled', window.soundEnabled);
             updateSoundButton();
-
-            if (window.soundEnabled) {
-                await initTone();
-                if (window.ToneInitialized && window.synth) {
-                    try {
-                        window.synth.triggerAttackRelease("G4", "16n");
-                    } catch (_) {}
-                }
-            }
-
             log(`🔊 Sound ${window.soundEnabled ? 'ON' : 'OFF'}`, 'SYSTEM');
         }
         
@@ -12845,13 +11832,6 @@ window.isBotRunning = true;
                     window.synth.triggerAttackRelease("C4", "32n", Tone.now(), 0.3);
                 } else if (type === 'EXECUTION') {
                     window.synth.triggerAttackRelease("E5", "16n", Tone.now(), 0.5);
-                } else if (type === 'LOSS') {
-                    window.synth.triggerAttackRelease("G3", "8n", Tone.now(), 0.55);
-                    setTimeout(() => {
-                        try { window.synth.triggerAttackRelease("E3", "8n", Tone.now(), 0.45); } catch (_) {}
-                    }, 120);
-                } else if (type === 'ERROR') {
-                    window.synth.triggerAttackRelease("C3", "4n", Tone.now(), 0.6);
                 }
             } catch (e) {
                 console.error("Audio error:", e);
@@ -12904,26 +11884,6 @@ window.isBotRunning = true;
             try { updateSoundButton(); } catch(e) {}
         }
         
-
-        // Restore the saved sound state immediately; Tone itself is initialized
-        // only after a user gesture (START or the sound button), as required by browsers.
-        document.addEventListener('DOMContentLoaded', () => {
-            try { updateSoundButton(); } catch (_) {}
-        });
-
-        // V1.6 AUDIO BOOTSTRAP:
-        // Initialize Tone on the first user trading gesture so later settlement
-        // events cannot be lost merely because the sound engine was still locked.
-        document.addEventListener('click', (event) => {
-            try {
-                const target = event.target?.closest?.(
-                    '#toggleButton, #soundToggle, #serverRealConfirmBtn, button'
-                );
-                if (!target || !window.soundEnabled) return;
-                initTone();
-            } catch (_) {}
-        }, { passive: true });
-
         // QUEUE PROCESSOR - CRITICAL FOR TRADE EXECUTION
         function startQueueProcessor() {
             setInterval(() => {
