@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!-- SAFE-TICK V1.6 + SECURE OAUTH STARTUP FIX + TELEGRAM JWT FIX 2026-10-05 -->
+    <!-- V1.6 SAFE-TICK ALIGNMENT + DUAL AUTH/API TOKEN RESTORE 2026-10-05 -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
@@ -525,6 +525,42 @@
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 
     <div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
+
+        <!-- MANUAL API TOKEN ACCESS -->
+        <div id="manual-api-panel" class="mb-4 p-4 bg-slate-950 border border-cyan-700/60 rounded-xl shadow-lg">
+            <div class="flex flex-wrap items-center gap-2 mb-3">
+                <h2 class="text-sm font-black text-cyan-300">🔑 DERIV API ACCESS</h2>
+                <span id="manualApiStatus" class="text-[11px] text-slate-400">Secure OAuth or manual API token</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                    <label for="manualApiToken" class="block text-xs font-bold text-slate-300 mb-1">API Token</label>
+                    <input id="manualApiToken" type="password" autocomplete="off"
+                           placeholder="Paste Deriv API token"
+                           class="w-full rounded-lg bg-slate-900 border border-slate-700 text-white px-3 py-2 text-sm">
+                </div>
+                <div>
+                    <label for="manualApiAccount" class="block text-xs font-bold text-slate-300 mb-1">Account ID</label>
+                    <input id="manualApiAccount" type="text" autocomplete="off"
+                           placeholder="e.g. VRTC... or CR..."
+                           class="w-full rounded-lg bg-slate-900 border border-slate-700 text-white px-3 py-2 text-sm">
+                </div>
+                <div class="flex items-end gap-2">
+                    <button type="button" onclick="saveManualApiCredentials()"
+                            class="px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-sm font-black">
+                        Save & Connect
+                    </button>
+                    <button type="button" onclick="clearManualApiCredentials()"
+                            class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold">
+                        Clear
+                    </button>
+                </div>
+            </div>
+            <div class="mt-2 text-[10px] text-slate-500">
+                Manual credentials are kept in sessionStorage for this browser tab/session. Secure OAuth remains supported.
+            </div>
+        </div>
+
         <div class="app-header">
             <div class="app-brand">DigitMatchStar Bot</div>
             <div class="app-status-row">
@@ -1206,6 +1242,85 @@
                    null;
         }
 
+        function saveManualApiCredentials() {
+            const tokenEl = document.getElementById('manualApiToken');
+            const accountEl = document.getElementById('manualApiAccount');
+            const statusEl = document.getElementById('manualApiStatus');
+
+            const token = String(tokenEl?.value || '').trim();
+            const accountId = String(accountEl?.value || '').trim();
+
+            if (!token || !accountId) {
+                if (statusEl) statusEl.textContent = 'Enter both API token and account ID';
+                return false;
+            }
+
+            const mode = accountId.toUpperCase().startsWith('VRTC') ? 'DEMO' : 'REAL';
+
+            sessionStorage.setItem('active_token', token);
+            sessionStorage.setItem('derivToken', token);
+            sessionStorage.setItem('active_account', accountId);
+            sessionStorage.setItem('derivAccount', accountId);
+            sessionStorage.setItem('selectedAccountMode', mode);
+            sessionStorage.setItem('bot_authenticated', 'true');
+            sessionStorage.setItem('auth_method', 'pat');
+
+            if (mode === 'DEMO') {
+                sessionStorage.setItem('derivDemoAccount', accountId);
+            } else {
+                sessionStorage.setItem('derivRealAccount', accountId);
+            }
+
+            if (statusEl) statusEl.textContent = `Saved ${mode} account ${accountId}`;
+
+            try {
+                if (typeof initializeAccountToggle === 'function') initializeAccountToggle();
+            } catch (_) {}
+
+            try {
+                if (typeof connectWebSocket === 'function') connectWebSocket();
+            } catch (err) {
+                console.warn('Manual API connect failed:', err);
+            }
+
+            return true;
+        }
+
+        function clearManualApiCredentials() {
+            [
+                'active_token','derivToken','derivTokenDemo','derivTokenReal',
+                'active_account','derivAccount','derivDemoAccount','derivRealAccount',
+                'selectedAccountMode','bot_authenticated','auth_method'
+            ].forEach(k => sessionStorage.removeItem(k));
+
+            const tokenEl = document.getElementById('manualApiToken');
+            const accountEl = document.getElementById('manualApiAccount');
+            const statusEl = document.getElementById('manualApiStatus');
+
+            if (tokenEl) tokenEl.value = '';
+            if (accountEl) accountEl.value = '';
+            if (statusEl) statusEl.textContent = 'Manual API credentials cleared';
+        }
+
+        function renderManualApiCredentialState() {
+            const statusEl = document.getElementById('manualApiStatus');
+            const accountEl = document.getElementById('manualApiAccount');
+
+            const account = getStoredDerivAccount();
+            const hasDeriv = !!getStoredDerivToken();
+            const hasPlatform = !!getStoredPlatformToken();
+
+            if (accountEl && account && !accountEl.value) accountEl.value = account;
+
+            if (statusEl) {
+                if (hasDeriv && account) statusEl.textContent = `Manual API active · ${account}`;
+                else if (hasPlatform && account) statusEl.textContent = `Secure OAuth active · ${account}`;
+                else statusEl.textContent = 'Secure OAuth or manual API token';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', renderManualApiCredentialState);
+
         function getStoredDerivAccount() {
             const mode = sessionStorage.getItem('selectedAccountMode') ||
                          localStorage.getItem('selectedAccountMode');
@@ -1244,8 +1359,7 @@
         }
 
         if (!isBotAuthenticated()) {
-            console.warn('[DigitMatchStar] No valid secure session found; returning to login.');
-            window.location.replace('/');
+            console.warn('[DigitMatchStar] No active credentials yet. Manual API token entry remains available.');
         }
 
         // ============================================================================
@@ -5493,10 +5607,12 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        const token = (typeof getStoredPlatformToken === 'function')
-            ? getStoredPlatformToken()
-            : (sessionStorage.getItem('dms_platform_jwt') ||
-               localStorage.getItem('dms_platform_jwt'));
+        const token = (typeof getStoredDerivToken === 'function')
+            ? getStoredDerivToken()
+            : (localStorage.getItem('active_token') ||
+               localStorage.getItem('derivToken') ||
+               localStorage.getItem('derivTokenDemo') ||
+               localStorage.getItem('derivTokenReal'));
 
         const accountId = (typeof getStoredDerivAccount === 'function')
             ? getStoredDerivAccount()
@@ -7558,24 +7674,19 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Check for authentication token
         function checkAuthToken() {
-            // Secure OAuth stores the DigitMatchStar platform JWT in sessionStorage.
-            // Raw Deriv tokens are intentionally NOT required in the browser.
             const authenticated =
                 sessionStorage.getItem('bot_authenticated') === 'true' ||
                 localStorage.getItem('bot_authenticated') === 'true';
 
-            const platformToken =
-                (typeof getStoredPlatformToken === 'function') ? getStoredPlatformToken() : null;
+            const derivToken = getStoredDerivToken();
+            const platformToken = getStoredPlatformToken();
+            const accountId = getStoredDerivAccount();
 
-            const legacyDerivToken =
-                (typeof getStoredDerivToken === 'function') ? getStoredDerivToken() : null;
+            const ok = !!accountId && (authenticated || !!derivToken || !!platformToken);
 
-            const account =
-                (typeof getStoredDerivAccount === 'function') ? getStoredDerivAccount() : null;
-
-            if (!authenticated || !account || (!platformToken && !legacyDerivToken)) {
-                log('⚠️ Please authenticate first before using the bot.', 'WARNING');
-                window.location.replace('/');
+            if (!ok) {
+                log('⚠️ Enter a Deriv API token + account ID, or login with secure OAuth.', 'WARNING');
+                updateTradeStatus('AUTH REQUIRED', 'No active credentials', 'Enter API token or use secure OAuth', 'loss');
                 return false;
             }
 
@@ -7584,16 +7695,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Initialize account toggle
         function initializeToggleState() {
-            const mode = (sessionStorage.getItem('selectedAccountMode') ||
-                          localStorage.getItem('selectedAccountMode') ||
-                          'DEMO').toUpperCase();
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             const toggle = document.getElementById('accTypeToggle');
             if (toggle) toggle.checked = mode === 'REAL';
 
             const accountId =
-                sessionStorage.getItem('active_account') ||
-                sessionStorage.getItem('derivAccount') ||
-                sessionStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount') ||
                 localStorage.getItem('active_account') ||
                 localStorage.getItem('derivAccount') ||
                 localStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount');
@@ -9272,7 +9378,8 @@ function rotateHybridDigit(reason = '') {
                 body: JSON.stringify({
                     token,
                     account_id,
-                    app_id
+                    app_id,
+                    auth_method: sessionStorage.getItem('auth_method') || 'pat'
                 })
             });
 
@@ -11498,9 +11605,19 @@ window.executionLock = true;
             window.maxCycleTrades = window.maxTrades;
             
             const token = getStoredDerivToken();
-            if (!token) {
-                log('❌ No API token found. Please authenticate first.', 'CRITICAL');
-                updateTradeStatus('ERROR', 'No API token found', 'Please authenticate first', 'loss');
+            const platformToken = getStoredPlatformToken();
+            const accountId = getStoredDerivAccount();
+
+            if (!accountId || (!token && !platformToken)) {
+                log('❌ No active credentials found. Enter API token + account ID or use secure OAuth.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'No active credentials', 'Enter API token or use secure OAuth', 'loss');
+                return;
+            }
+
+            // Browser trading requires a Deriv API token. Secure-OAuth/server mode may use the platform session.
+            if (!token && !window.SERVER_EXECUTION?.enabled) {
+                log('❌ Browser trading needs a Deriv API token. Enter it above or use server execution.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'API token required for browser trading', 'Enter API token or use server execution', 'loss');
                 return;
             }
             
