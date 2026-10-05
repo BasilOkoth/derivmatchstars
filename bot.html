@@ -9,6 +9,7 @@
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
+    <!-- SERVER EXECUTION V1: backend-owned proposal/buy/settlement; DEMO survives dashboard closure; REAL per-buy confirmation -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -504,6 +505,19 @@
             }
         }
 
+
+/* === SERVER EXECUTION ENGINE === */
+.server-exec-panel{
+  margin-bottom:1rem;padding:12px 14px;border-radius:14px;
+  border:1px solid rgba(56,189,248,.35);
+  background:linear-gradient(145deg,rgba(8,47,73,.30),rgba(15,23,42,.92));
+}
+.server-exec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px}
+.server-exec-card{padding:8px 10px;border-radius:10px;background:rgba(15,23,42,.88);border:1px solid rgba(148,163,184,.16)}
+.server-exec-label{font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:800}
+.server-exec-value{font-size:13px;color:#e2e8f0;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.server-exec-btn{padding:.48rem .72rem;border-radius:.65rem;font-size:.75rem;font-weight:800;color:white}
+
 </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -724,6 +738,36 @@
                         <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
                             Persistent V1.3 cohort: refresh-safe local recovery enabled.
                         </div>
+                    </div>
+                </div>
+
+
+                <!-- SERVER EXECUTION ENGINE -->
+                <div id="server-execution-panel" class="server-exec-panel">
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <h2 class="text-sm font-black text-sky-300">☁ SERVER EXECUTION</h2>
+                        <span id="serverExecBadge" class="edge-pill text-yellow-300">NOT CONFIGURED</span>
+                        <button type="button" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()"
+                                class="server-exec-btn bg-sky-700 hover:bg-sky-600">Use Server</button>
+                        <button type="button" onclick="configureServerExecutionUrl()"
+                                class="server-exec-btn bg-slate-700 hover:bg-slate-600">Backend URL</button>
+                        <button type="button" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()"
+                                class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden">
+                            Confirm REAL Trade
+                        </button>
+                    </div>
+                    <div class="text-[11px] text-gray-400 mb-3">
+                        When enabled, proposal/buy/settlement ownership moves to the server worker.
+                        DEMO can continue after this dashboard closes. REAL state also stays on the server,
+                        but every new real-money purchase requires explicit confirmation.
+                    </div>
+                    <div class="server-exec-grid">
+                        <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Mode</div><div id="serverExecMode" class="server-exec-value">BROWSER</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div id="serverExecPhase" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Contract</div><div id="serverExecContract" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Trade</div><div id="serverExecTrade" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div id="serverExecPnl" class="server-exec-value">$0.00</div></div>
                     </div>
                 </div>
 
@@ -8931,6 +8975,10 @@ function rotateHybridDigit(reason = '') {
 // DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
+            setTimeout(() => {
+                renderServerExecutionState();
+                ensureServerExecutionPolling();
+            }, 250);
             startMinimizablePanelUI();
             runCanonicalDigitSelfTest();
             setTimeout(() => {
@@ -10281,6 +10329,7 @@ function rotateHybridDigit(reason = '') {
         }
 
         function processTickImmediately(tick) {
+            if (window.SERVER_EXECUTION?.enabled) return;
             if (window.stopAfterWin) return;
 
             // Never allow a second order while a proposal/buy is still awaiting
@@ -11142,8 +11191,218 @@ window.executionLock = true;
         })();
 
 
+
+        // ============================================================================
+        // SERVER EXECUTION BRIDGE V1
+        // DEMO may continue unattended on the server.
+        // REAL remains server-resident but requires explicit confirmation per purchase.
+        // ============================================================================
+        window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+            enabled: localStorage.getItem('dms_server_execution_enabled') === '1',
+            apiUrl: (localStorage.getItem('dms_server_execution_url') || '').replace(/\/+$/,''),
+            state: null,
+            pollTimer: null,
+            lastCandidateSent: null
+        };
+
+        function serverExecEl(id){ return document.getElementById(id); }
+
+        function renderServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            const st = s.state || {};
+            const badge = serverExecEl('serverExecBadge');
+            const toggle = serverExecEl('serverExecToggleBtn');
+            const confirmBtn = serverExecEl('serverRealConfirmBtn');
+
+            if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
+            if (serverExecEl('serverExecMode')) {
+                serverExecEl('serverExecMode').textContent = s.enabled
+                    ? `SERVER · ${(st.account_mode || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
+                    : 'BROWSER';
+            }
+            if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
+            if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
+            if (serverExecEl('serverExecTrade')) {
+                serverExecEl('serverExecTrade').textContent =
+                    Number.isFinite(Number(st.current_trade)) ? `${st.current_trade}/${st.max_trades ?? '—'}` : '—';
+            }
+            if (serverExecEl('serverExecPnl')) {
+                const pnl = Number(st.pnl || 0);
+                serverExecEl('serverExecPnl').textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+            }
+
+            if (badge) {
+                if (!s.apiUrl) {
+                    badge.textContent = 'NOT CONFIGURED';
+                    badge.className = 'edge-pill text-yellow-300';
+                } else if (s.enabled && st.running) {
+                    badge.textContent = 'SERVER ACTIVE';
+                    badge.className = 'edge-pill text-emerald-300';
+                } else if (s.enabled) {
+                    badge.textContent = 'SERVER READY';
+                    badge.className = 'edge-pill text-cyan-300';
+                } else {
+                    badge.textContent = 'BROWSER MODE';
+                    badge.className = 'edge-pill text-gray-300';
+                }
+            }
+
+            if (toggle) {
+                toggle.textContent = s.enabled ? 'Use Browser' : 'Use Server';
+                toggle.className = s.enabled
+                    ? 'server-exec-btn bg-rose-700 hover:bg-rose-600'
+                    : 'server-exec-btn bg-sky-700 hover:bg-sky-600';
+            }
+
+            if (confirmBtn) {
+                const needsConfirm =
+                    s.enabled &&
+                    String(st.account_mode || '').toUpperCase() === 'REAL' &&
+                    st.pending_real_confirmation === true;
+                confirmBtn.classList.toggle('hidden', !needsConfirm);
+            }
+
+            if (s.enabled && st) {
+                const tc = document.getElementById('metricTradeCount');
+                const stake = document.getElementById('metricCurrentStake');
+                const pnl = document.getElementById('metricTotalProfit');
+                if (tc && Number.isFinite(Number(st.current_trade))) tc.textContent = String(st.current_trade);
+                if (stake && Number.isFinite(Number(st.current_stake))) stake.textContent = `$${Number(st.current_stake).toFixed(2)}`;
+                if (pnl && Number.isFinite(Number(st.pnl))) pnl.textContent = `${Number(st.pnl) >= 0 ? '+' : ''}$${Number(st.pnl).toFixed(2)}`;
+            }
+        }
+
+        async function serverExecRequest(path, options = {}) {
+            const s = window.SERVER_EXECUTION;
+            if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
+            const res = await fetch(`${s.apiUrl}${path}`, {
+                method: options.method || 'GET',
+                headers: {'Content-Type':'application/json', ...(options.headers || {})},
+                body: options.body === undefined ? undefined : JSON.stringify(options.body),
+                cache: 'no-store'
+            });
+            let data = null;
+            try { data = await res.json(); } catch (_) {}
+            if (!res.ok) {
+                throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
+            }
+            return data;
+        }
+
+        async function pollServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+            try {
+                s.state = await serverExecRequest('/state');
+                renderServerExecutionState();
+            } catch (e) {
+                const badge = serverExecEl('serverExecBadge');
+                if (badge) {
+                    badge.textContent = 'SERVER OFFLINE';
+                    badge.className = 'edge-pill text-rose-300';
+                }
+            }
+        }
+
+        function ensureServerExecutionPolling() {
+            const s = window.SERVER_EXECUTION;
+            if (s.pollTimer) clearInterval(s.pollTimer);
+            s.pollTimer = setInterval(pollServerExecutionState, 1200);
+            pollServerExecutionState();
+        }
+
+        function configureServerExecutionUrl() {
+            const current = window.SERVER_EXECUTION.apiUrl || '';
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current);
+            if (raw === null) return;
+            const value = String(raw).trim().replace(/\/+$/,'');
+            window.SERVER_EXECUTION.apiUrl = value;
+            localStorage.setItem('dms_server_execution_url', value);
+            renderServerExecutionState();
+            if (window.SERVER_EXECUTION.enabled) ensureServerExecutionPolling();
+        }
+
+        async function toggleServerExecutionMode() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled && !s.apiUrl) {
+                configureServerExecutionUrl();
+                if (!s.apiUrl) return;
+            }
+
+            if (window.isBotRunning || s.state?.running || s.state?.open_contract_id) {
+                alert('Stop the current session and let any open contract settle before changing execution engine.');
+                return;
+            }
+
+            s.enabled = !s.enabled;
+            localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+            log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
+        }
+
+        function serverSessionConfigFromUi() {
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            return {
+                account_mode: mode,
+                symbol: document.getElementById('symbol')?.value || 'R_10',
+                base_stake: Number(document.getElementById('baseStake')?.value || 1),
+                multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
+                max_trades: Number(document.getElementById('maxTrades')?.value || 10)
+            };
+        }
+
+        async function startServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled) return false;
+            if (!s.apiUrl) throw new Error('Configure the server execution backend URL first.');
+
+            const cfg = serverSessionConfigFromUi();
+            const digit = Number(sessionState.sessionDigit ?? document.getElementById('predictedDigit')?.value);
+            if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
+                throw new Error('A valid digit 0–9 is required before starting server execution.');
+            }
+
+            await serverExecRequest('/configure', {method:'POST', body:cfg});
+            await serverExecRequest('/candidate', {method:'POST', body:{digit}});
+            s.lastCandidateSent = digit;
+            s.state = await serverExecRequest('/start', {method:'POST'});
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+            log(`☁ SERVER STARTED · ${cfg.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
+            return true;
+        }
+
+        async function stopServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+            s.state = await serverExecRequest('/stop', {method:'POST'});
+            renderServerExecutionState();
+            log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
+        }
+
+        async function confirmServerRealTrade() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled) return;
+            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
+            try {
+                await serverExecRequest('/real/confirm', {method:'POST'});
+                await pollServerExecutionState();
+                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
+            } catch (e) {
+                alert(e.message);
+                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
+            }
+        }
+
+        // In SERVER mode, the browser must never submit proposals/buys.
+
         // EXECUTE TRADE - CRITICAL FUNCTION
         function executeTrade(tick) {
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Browser trade submission suppressed — server owns execution.', 'SYSTEM');
+                return;
+            }
             const contractType = document.getElementById('contractType').value;
             const symbol = document.getElementById('symbol').value;
             const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
@@ -11500,20 +11759,52 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
-        function toggleBot() {
+        async function toggleBot() {
+            const serverMode = window.SERVER_EXECUTION?.enabled === true;
+
             if (window.isBotRunning) {
-                // Master STOP: disable Overnight/autopilot first so no timer or
-                // delayed restart can bring the bot back.
                 window.__dmsManualStopRequested = true;
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
                 }
+
+                if (serverMode) {
+                    try {
+                        await stopServerExecutionSession();
+                    } catch (e) {
+                        alert(`Server STOP failed: ${e.message}`);
+                        return;
+                    }
+                }
+
                 stopBot('Manual STOP');
-                // Intentionally keep __dmsManualStopRequested=true while stopped.
-                // It is cleared only by an explicit START or Overnight ON.
-            } else {
-                window.__dmsManualStopRequested = false;
+                return;
+            }
+
+            window.__dmsManualStopRequested = false;
+
+            if (!serverMode) {
                 startBot();
+                return;
+            }
+
+            // Keep the local UI/research lifecycle, but browser trade placement is
+            // disabled by SERVER EXECUTION guards.
+            startBot();
+            if (!window.isBotRunning) return;
+
+            try {
+                await startServerExecutionSession();
+                updateTradeStatus(
+                    'SERVER ACTIVE',
+                    'Server worker owns execution',
+                    'Dashboard may be closed; worker continues',
+                    'trade'
+                );
+            } catch (e) {
+                log(`❌ Server START failed: ${e.message}`, 'ERROR');
+                stopBot('Server start failed');
+                alert(`Server START failed: ${e.message}`);
             }
         }
 
