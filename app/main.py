@@ -14,10 +14,9 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.1-auth-integration",
+    version="2.1.6-reconcile-open-contract",
 )
 
-# Allow the public DigitMatchStar frontend to call this Render API.
 frontend_origin = settings.frontend_url.rstrip("/")
 
 app.add_middleware(
@@ -52,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.1-auth-integration",
+        "version": "2.1.6-reconcile-open-contract",
         "frontend_origin": frontend_origin,
     }
 
@@ -147,12 +146,34 @@ def create_session(
                 account_mode=mode,
             )
             db.add(s)
+            db.flush()
 
-        # Do not overwrite an active unresolved contract.
+        # IMPORTANT:
+        # If a previous trade has an unresolved/open contract, do NOT wipe it.
+        # Return the existing session so /start can resume reconciliation safely.
         if s.open_contract_id:
+            s.running = False
+            s.paused = False
+            s.phase = "RECONCILE_REQUIRED"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(s)
+
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "reconcile_required": True,
+                "open_contract_id": s.open_contract_id,
+            }
+
+        if s.running:
             raise HTTPException(
                 status_code=409,
-                detail="Open contract is still being reconciled",
+                detail="Session is already running",
             )
 
         s.account_mode = mode
@@ -164,13 +185,10 @@ def create_session(
 
         s.current_trade = 0
         s.pnl = 0.0
-
         s.running = False
         s.paused = False
-
         s.pending_real_confirmation = False
         s.pending_trade_json = None
-
         s.last_error = None
         s.phase = "CONFIGURED"
         s.updated_at = datetime.utcnow()
@@ -184,6 +202,7 @@ def create_session(
             "account_mode": s.account_mode,
             "symbol": s.symbol,
             "phase": s.phase,
+            "reconcile_required": False,
         }
 
     finally:
@@ -207,6 +226,15 @@ def candidate(
     try:
         s = owns_session(db, user_id, sid)
 
+        # Never change the frozen candidate while a contract is unresolved.
+        if s.open_contract_id:
+            return {
+                "ok": True,
+                "session_id": s.id,
+                "candidate_digit": s.candidate_digit,
+                "reconcile_required": True,
+            }
+
         s.candidate_digit = body.digit
         s.updated_at = datetime.utcnow()
 
@@ -216,6 +244,7 @@ def candidate(
             "ok": True,
             "session_id": s.id,
             "candidate_digit": s.candidate_digit,
+            "reconcile_required": False,
         }
 
     finally:
@@ -232,16 +261,29 @@ def start(
     try:
         s = owns_session(db, user_id, sid)
 
+        # An unresolved contract must be reconciled before any fresh proposal.
+        # Starting the worker is exactly how reconciliation happens.
+        if s.open_contract_id:
+            s.running = True
+            s.paused = False
+            s.phase = "RECONCILING"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+
+            db.commit()
+
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "reconciling": True,
+                "open_contract_id": s.open_contract_id,
+            }
+
         if s.candidate_digit is None:
             raise HTTPException(
                 status_code=400,
                 detail="Set a candidate digit before starting",
-            )
-
-        if s.open_contract_id:
-            raise HTTPException(
-                status_code=409,
-                detail="An existing contract is still being reconciled",
             )
 
         s.running = True
@@ -256,6 +298,7 @@ def start(
             "ok": True,
             "id": s.id,
             "phase": s.phase,
+            "reconciling": False,
         }
 
     finally:
