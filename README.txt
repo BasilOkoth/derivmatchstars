@@ -1,37 +1,35 @@
-DigitMatchStar V2.1.7 — Server Research + Balance Fix
+DigitMatchStar V2.2.0 — Continuous Research Restart + P/L Colors
 
-Upload frontend:
+Upload:
 - bot.html
 - bot-obfuscated.html
+- screen-recorder-safe-v5-2.js
 
-Upload backend:
-- app/main.py
-- app/engine.py
+FIX 1 — Continuous DEMO Research
+Previous build could remain in WON after settlement because it tried to reuse
+the completed session. V2.2.0 now performs the lifecycle explicitly:
 
-What this fixes
+WON / MAX_TRADES_REACHED
+→ wait briefly for research settlement
+→ STOP completed server cycle
+→ clear old session id locally
+→ unlock old AI digit
+→ obtain a fresh AI recommendation
+→ freeze the new research candidate
+→ create a fresh server session
+→ START at trade 1
 
-1. SAFE-TICK / Candidate DNA in SERVER mode
-Browser-mode research used to start inside analyzeAndTrade() immediately before
-executeTrade(). SERVER mode bypasses executeTrade(), so no research candidate
-was ever created. V2.1.7 explicitly freezes window.lastTick when a NEW server
-cycle starts. Future public ticks already feed the research outcome engine.
+If AI is temporarily between recommendations, it retries for up to ~10 seconds
+instead of silently remaining stopped.
 
-2. SAFE-TICK storage quota
-SAFE-TICK persistence is moved from localStorage to IndexedDB. Existing local
-research is migrated on first load when available.
+Manual STOP always cancels auto-restart.
 
-3. Blank balance in secure OAuth mode
-The browser intentionally has no raw Deriv OAuth token, so the old browser
-balance subscription cannot authenticate. The server now exposes account_balance
-and updates its balance snapshot after each settled contract. The dashboard uses
-that server value.
+DEMO ONLY. This does not auto-start REAL-money purchases.
 
-4. Reconciliation safety retained
-No new research candidate is recorded while an already-open contract is merely
-being reconciled.
+FIX 2 — P/L colors
+- During a cycle, P/L is bold RED while no positive win has been achieved.
+- When cycle P/L becomes positive / phase is WON, P/L becomes bold GREEN.
+- Applies to both the main P/L metric and Server P/L.
 
-Notes
-- Server P/L and account balance are separate metrics.
-- account_balance is based on the balance captured at OAuth connection plus
-  bot-settled P/L. If the same Deriv account is changed elsewhere, reconnecting
-  OAuth refreshes the snapshot.
+RECORDER
+Premium Recorder from V2.1.9 is retained unchanged.

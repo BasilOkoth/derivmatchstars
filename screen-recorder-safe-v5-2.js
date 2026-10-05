@@ -1,1135 +1,364 @@
 /*
- * DigitMatchStar Premium Capture v5.0
- * READ-ONLY observer. Does not patch or replace trading functions.
- *
- * Adds:
- * - capture-friendly view preparation
- * - full event timeline for premium guided videos
- * - snapshots of target digit, mode, trade count, stake, P/L and status
- * - tab audio requirement
- * - hidden capture controls while recording
+ * DigitMatchStar Premium Recorder v7.0
+ * Browser-only capture utility.
+ * - Compatible with secure OAuth/server execution (no raw Deriv token required)
+ * - Explicit browser screen-share permission is always required
+ * - Does not patch, place, stop, or alter trades
+ * - Records the current tab/screen and a lightweight event timeline
  */
 (() => {
   'use strict';
 
-  const VERSION = '6.5-admin-only-capture';
+  if (window.__DMS_PREMIUM_RECORDER_V7__) return;
+  window.__DMS_PREMIUM_RECORDER_V7__ = true;
 
+  const VERSION = '7.0-server-oauth-compatible';
   const state = {
-    displayStream: null,
+    stream: null,
     recorder: null,
     chunks: [],
-    captureStartedAt: null,
-    activeCycleId: null,
-    lastCompletedCycle: null,
-    lastSeenCurrent: false,
-    uploading: false,
+    startedAt: 0,
     panel: null,
-    observerTimer: null,
-    lastBlobUrl: null,
+    timer: null,
     events: [],
     lastFingerprint: '',
-    lastTradeCount: 0,
-    lastTargetDigit: null,
-    lastActiveContractId: null,
-    lastCurrentDigit: null,
-    lastCurrentTick: '',
-    lockedTradeTarget: null,
-    finalizingCycle: false,
-    tradingStarted: false,
-    lockedTradeNumber: 0,
-    savedView: null,
-    capturePrepared: false,
-    stopPending: false,
-    captureAuthorized: false,
-    accessChecked: false,
-    accessAccountId: '',
-    accessMonitorTimer: null
+    saving: false,
   };
 
-  function removeLegacyRecorderPanels() {
-    const legacyIds = [
-      'dms43-panel',
-      'dms42-panel',
-      'dms41-panel',
-      'dms40-panel'
-    ];
-    for (const id of legacyIds) {
-      try { document.getElementById(id)?.remove(); } catch (_) {}
-    }
+  const $ = id => document.getElementById(id);
+  const txt = id => String($(id)?.textContent || '').trim();
 
-    // Permanent safety net: if an old cached recorder script runs later,
-    // its panel remains hidden.
-    if (!document.getElementById('dms-single-recorder-guard')) {
-      const style = document.createElement('style');
-      style.id = 'dms-single-recorder-guard';
-      style.textContent = `
-        #dms43-panel,
-        #dms42-panel,
-        #dms41-panel,
-        #dms40-panel {
-          display: none !important;
-          visibility: hidden !important;
-          pointer-events: none !important;
-        }
-      `;
-      document.head.appendChild(style);
-    }
+  function platformAuthenticated() {
+    const jwt =
+      sessionStorage.getItem('dms_platform_jwt') ||
+      localStorage.getItem('dms_platform_jwt') ||
+      '';
+    const flag =
+      sessionStorage.getItem('bot_authenticated') === 'true' ||
+      localStorage.getItem('bot_authenticated') === 'true';
+    return !!jwt && flag;
   }
 
-  function enforceSingleRecorderWindow() {
-    removeLegacyRecorderPanels();
-
-    // Catch a legacy script that loads slightly after this recorder.
-    let passes = 0;
-    const timer = setInterval(() => {
-      removeLegacyRecorderPanels();
-      passes += 1;
-      if (passes >= 24) clearInterval(timer); // ~6 seconds
-    }, 250);
+  function safeFileStamp() {
+    return new Date().toISOString().replace(/[:.]/g, '-');
   }
 
-
-  const clone = value => {
-    try { return JSON.parse(JSON.stringify(value)); }
-    catch (_) { return null; }
-  };
-
-  const text = id => String(document.getElementById(id)?.textContent || '').trim();
-
-  function numberFromText(value) {
-    const n = Number(String(value ?? '').replace(/[^0-9+.-]/g, ''));
+  function numberFromText(v) {
+    const n = Number(String(v ?? '').replace(/[^0-9+.-]/g, ''));
     return Number.isFinite(n) ? n : null;
   }
 
-  function cp() {
-    const value = window.cyclePerformance;
-    return value && typeof value === 'object' ? value : null;
+  function snapshot() {
+    const s = window.SERVER_EXECUTION?.state || {};
+    return {
+      atMs: state.startedAt ? Date.now() - state.startedAt : 0,
+      phase: String(s.phase || ''),
+      accountMode: String(s.account_mode || ''),
+      symbol: String(s.symbol || document.getElementById('symbolSelect')?.value || ''),
+      candidateDigit: Number.isInteger(Number(s.candidate_digit))
+        ? Number(s.candidate_digit)
+        : null,
+      currentTick: txt('metricLiveTick'),
+      currentDigit: numberFromText(txt('metricLastDigit')),
+      trade: Number(s.current_trade ?? numberFromText(txt('metricTradeCount')) ?? 0),
+      maxTrades: Number(s.max_trades || 0),
+      stake: Number(s.current_stake ?? numberFromText(txt('metricCurrentStake')) ?? 0),
+      pnl: Number(s.pnl ?? numberFromText(txt('metricTotalProfit')) ?? 0),
+      balance: Number(s.account_balance ?? numberFromText(txt('metricAccountBalance')) ?? 0),
+      contractId: s.open_contract_id || null,
+      result: txt('metricTradeResult'),
+      status: txt('metricPreviousResult'),
+      action: txt('metricNextAction'),
+    };
   }
 
-  function currentCycle() {
-    const value = cp()?.current;
-    return value && typeof value === 'object' ? value : null;
+  function captureTimelineEvent(force = false) {
+    if (!state.startedAt) return;
+    const row = snapshot();
+    const fp = JSON.stringify([
+      row.phase, row.candidateDigit, row.currentTick, row.currentDigit,
+      row.trade, row.stake, row.pnl, row.contractId,
+      row.result, row.status, row.action
+    ]);
+    if (!force && fp === state.lastFingerprint) return;
+    state.lastFingerprint = fp;
+    state.events.push(row);
+    if (state.events.length > 500) state.events.shift();
   }
 
-  function cycleId(cycle) {
-    return String(
-      cycle?.id ??
-      cycle?.cycleId ??
-      cycle?.startedAt ??
-      cycle?.startTime ??
-      ''
-    );
-  }
-
-  function allHistory() {
-    const x = cp();
-    if (!x) return [];
-    const rows = [];
-    if (x.historyBySymbol && typeof x.historyBySymbol === 'object') {
-      for (const group of Object.values(x.historyBySymbol)) {
-        if (Array.isArray(group)) rows.push(...group);
-      }
-    }
-    for (const key of ['history', 'cycles', 'completed']) {
-      if (Array.isArray(x[key])) rows.push(...x[key]);
-    }
-    return rows.filter(Boolean);
-  }
-
-  function findCompletedCycle(id) {
-    if (!id) return null;
-    const rows = allHistory();
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (cycleId(rows[i]) === String(id)) return clone(rows[i]);
-    }
-    const x = cp();
-    for (const item of [x?.lastCompleted, x?.lastComplete, x?.lastCycle, x?.latest]) {
-      if (item && cycleId(item) === String(id)) return clone(item);
-    }
-    return null;
-  }
-
-  function getAccountId() {
-    if (typeof window.getStoredDerivAccount === 'function') {
-      try {
-        const v = window.getStoredDerivAccount();
-        if (v) return v;
-      } catch (_) {}
-    }
-    const mode = String(localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
-    return (
-      localStorage.getItem('active_account') ||
-      localStorage.getItem('derivAccount') ||
-      localStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount') ||
-      ''
-    );
-  }
-
-  function getToken() {
-    if (typeof window.getStoredDerivToken === 'function') {
-      try {
-        const v = window.getStoredDerivToken();
-        if (v) return v;
-      } catch (_) {}
-    }
-    return (
-      localStorage.getItem('active_token') ||
-      localStorage.getItem('derivToken') ||
-      localStorage.getItem('deriv_token') ||
-      localStorage.getItem('derivTokenDemo') ||
-      localStorage.getItem('derivTokenReal') ||
-      localStorage.getItem('authToken') ||
-      ''
-    );
-  }
-
-  function supportedMime() {
-    return [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm'
-    ].find(type => window.MediaRecorder?.isTypeSupported?.(type)) || '';
-  }
-
-  function status(message, tone='muted') {
-    const el = document.getElementById('dms50-status');
+  function setStatus(message, tone = 'muted') {
+    const el = $('dms70-rec-status');
     if (!el) return;
     el.textContent = message;
     const colors = {
-      muted:'#9ca3af', good:'#86efac', warn:'#fcd34d',
-      bad:'#fca5a5', info:'#67e8f9'
+      muted: '#94a3b8',
+      good: '#86efac',
+      warn: '#fde68a',
+      bad: '#fca5a5',
+      live: '#f87171',
     };
     el.style.color = colors[tone] || colors.muted;
   }
 
-  function makePanelDraggable(panel, handle) {
-    let dragging = false;
-    let sx = 0, sy = 0, sl = 0, st = 0;
-    handle.addEventListener('pointerdown', event => {
-      if (event.target.closest('button')) return;
-      dragging = true;
-      handle.setPointerCapture?.(event.pointerId);
-      const r = panel.getBoundingClientRect();
-      sx = event.clientX; sy = event.clientY; sl = r.left; st = r.top;
-      panel.style.right = 'auto'; panel.style.bottom = 'auto';
-      panel.style.left = `${sl}px`; panel.style.top = `${st}px`;
-      event.preventDefault();
-    });
-    handle.addEventListener('pointermove', event => {
-      if (!dragging) return;
-      const maxX = Math.max(0, innerWidth - panel.offsetWidth);
-      const maxY = Math.max(0, innerHeight - panel.offsetHeight);
-      panel.style.left = `${Math.min(maxX, Math.max(0, sl + event.clientX - sx))}px`;
-      panel.style.top = `${Math.min(maxY, Math.max(0, st + event.clientY - sy))}px`;
-    });
-    const end = () => { dragging = false; };
-    handle.addEventListener('pointerup', end);
-    handle.addEventListener('pointercancel', end);
+  function mimeType() {
+    const candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+    ];
+    return candidates.find(t => window.MediaRecorder?.isTypeSupported?.(t)) || '';
   }
 
-
-  function removeCapturePanel() {
-    try {
-      document.getElementById('dms50-panel')?.remove();
-    } catch (_) {}
-    state.panel = null;
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
-  async function checkCaptureAccess(force = false) {
-    const token = getToken();
-    const accountId = getAccountId();
+  function downloadTimeline() {
+    const payload = {
+      product: 'DigitMatchStar',
+      recorderVersion: VERSION,
+      generatedAt: new Date().toISOString(),
+      events: state.events,
+    };
+    downloadBlob(
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      `digitmatchstar-recording-${safeFileStamp()}.json`
+    );
+  }
 
-    if (!token || !accountId) {
-      state.captureAuthorized = false;
-      state.accessChecked = true;
-      state.accessAccountId = '';
-      removeCapturePanel();
-      return false;
-    }
-
-    if (
-      !force &&
-      state.accessChecked &&
-      state.accessAccountId === String(accountId)
-    ) {
-      return state.captureAuthorized;
-    }
-
-    state.accessAccountId = String(accountId);
+  async function stopAndSave(reason = 'manual') {
+    if (state.saving) return;
+    state.saving = true;
 
     try {
-      const response = await fetch('/api/capture-access', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ account_id: accountId })
+      captureTimelineEvent(true);
+      if (state.timer) {
+        clearInterval(state.timer);
+        state.timer = null;
+      }
+
+      const rec = state.recorder;
+      if (rec && rec.state !== 'inactive') {
+        await new Promise(resolve => {
+          rec.addEventListener('stop', resolve, { once: true });
+          try { rec.stop(); } catch (_) { resolve(); }
+        });
+      }
+
+      const blob = new Blob(state.chunks, {
+        type: rec?.mimeType || 'video/webm'
       });
 
-      const data = await response.json().catch(() => ({}));
-
-      state.accessChecked = true;
-      state.captureAuthorized = !!(
-        response.ok &&
-        data?.authorized === true
-      );
-
-      if (state.captureAuthorized) {
-        ensurePanel();
-        status('Admin capture ready', 'good');
+      if (blob.size > 0) {
+        downloadBlob(
+          blob,
+          `digitmatchstar-${safeFileStamp()}.webm`
+        );
+        downloadTimeline();
+        setStatus(`Saved ${(blob.size / 1024 / 1024).toFixed(1)} MB video + timeline`, 'good');
       } else {
-        removeCapturePanel();
+        setStatus('Recording stopped, but no video data was captured.', 'warn');
       }
+    } finally {
+      try {
+        state.stream?.getTracks?.().forEach(track => track.stop());
+      } catch (_) {}
+      state.stream = null;
+      state.recorder = null;
+      state.chunks = [];
+      state.startedAt = 0;
+      state.lastFingerprint = '';
+      state.saving = false;
 
-      return state.captureAuthorized;
-    } catch (error) {
-      state.accessChecked = true;
-      state.captureAuthorized = false;
-      removeCapturePanel();
-      console.warn('[DMS CAPTURE] access check failed:', error);
-      return false;
+      const start = $('dms70-rec-start');
+      const stop = $('dms70-rec-stop');
+      if (start) start.disabled = false;
+      if (stop) stop.disabled = true;
+      const badge = $('dms70-rec-badge');
+      if (badge) {
+        badge.textContent = 'READY';
+        badge.style.color = '#86efac';
+      }
     }
   }
 
-  function startCaptureAccessMonitor() {
-    if (state.accessMonitorTimer) return;
-
-    state.accessMonitorTimer = setInterval(() => {
-      const accountId = String(getAccountId() || '');
-
-      if (accountId !== state.accessAccountId) {
-        state.accessChecked = false;
-        checkCaptureAccess(true);
-      }
-    }, 4000);
-  }
-
-  function ensurePanel() {
-    if (document.getElementById('dms50-panel')) return;
-    const panel = document.createElement('div');
-    panel.id = 'dms50-panel';
-    panel.style.cssText = [
-      'position:fixed','right:12px','bottom:12px','z-index:2147483647',
-      'width:218px','padding:9px','border-radius:12px',
-      'background:rgba(4,12,9,.96)','border:1px solid rgba(74,222,128,.32)',
-      'box-shadow:0 12px 32px rgba(0,0,0,.38)',
-      'font-family:Inter,Arial,sans-serif','color:#f8fafc','user-select:none'
-    ].join(';');
-    panel.innerHTML = `
-      <div id="dms50-drag" style="display:flex;align-items:center;gap:6px;cursor:move">
-        <span style="font-size:13px">🎥</span>
-        <span style="font-size:11px;font-weight:900;color:#86efac;letter-spacing:.03em">
-          PREMIUM CAPTURE V5
-        </span>
-        <span style="margin-left:auto;font-size:10px;color:#64748b">⋮⋮</span>
-      </div>
-      <div id="dms50-status" style="font-size:10px;line-height:1.3;color:#9ca3af;margin:6px 0">
-        Ready
-      </div>
-      <button id="dms50-enable"
-        style="width:100%;border:0;border-radius:8px;padding:7px 8px;background:#16a34a;color:white;font-size:10px;font-weight:900;cursor:pointer">
-        Prepare + record
-      </button>
-      <div style="font-size:8.5px;line-height:1.25;color:#64748b;margin-top:6px">
-        Choose this tab and enable <b>Share tab audio</b>.
-      </div>`;
-    document.body.appendChild(panel);
-    state.panel = panel;
-    makePanelDraggable(panel, panel.querySelector('#dms50-drag'));
-    panel.querySelector('#dms50-enable')?.addEventListener('click', enableCapture);
-  }
-
-  function prepareCaptureView() {
-    if (state.capturePrepared) return;
-    state.savedView = {
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-      htmlZoom: document.documentElement.style.zoom || '',
-      bodyZoom: document.body?.style?.zoom || ''
-    };
-
-    // Visual-only preparation. This never touches trading state.
-    // Slightly zoom out so mode controls + metrics + status fit in the browser viewport.
-    document.documentElement.style.zoom = '0.94';
-
-    const anchor =
-      document.getElementById('mode_instant') ||
-      document.getElementById('mode_ai') ||
-      document.getElementById('predictedDigit') ||
-      document.getElementById('trade-result-container');
+  async function startRecording() {
+    if (!platformAuthenticated()) {
+      setStatus('Authenticate with DigitMatchStar first.', 'warn');
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia || !window.MediaRecorder) {
+      setStatus('Screen recording is not supported in this browser.', 'bad');
+      return;
+    }
 
     try {
-      anchor?.scrollIntoView?.({ block:'center', inline:'nearest', behavior:'instant' });
-      window.scrollBy({ top:-120, left:0, behavior:'instant' });
-    } catch (_) {
-      anchor?.scrollIntoView?.();
-      window.scrollBy(0, -120);
-    }
-
-    state.capturePrepared = true;
-  }
-
-  function restoreCaptureView() {
-    if (!state.savedView) return;
-    document.documentElement.style.zoom = state.savedView.htmlZoom;
-    if (document.body) document.body.style.zoom = state.savedView.bodyZoom;
-    window.scrollTo(state.savedView.scrollX, state.savedView.scrollY);
-    state.savedView = null;
-    state.capturePrepared = false;
-  }
-
-  function hidePanelFromCapture() {
-    if (state.panel) state.panel.style.display = 'none';
-  }
-
-  function restorePanel() {
-    if (state.panel) state.panel.style.display = 'block';
-  }
-
-
-  function readBotPnl() {
-    // Mirror the exact P/L visible on the bot first.
-    const displayed = numberFromText(text('metricTotalProfit'));
-    if (displayed !== null) return displayed;
-
-    const liveNet = Number(window.netProfit);
-    if (Number.isFinite(liveNet)) return liveNet;
-
-    const cycleNet = Number(window.cyclePerformance?.current?.netPnL);
-    if (Number.isFinite(cycleNet)) return cycleNet;
-
-    return 0;
-  }
-
-  function snapshot() {
-    const target = Number(state.lockedTradeTarget);
-    const mode = window.sessionState?.mode ||
-      (document.getElementById('mode_ai')?.classList.contains('bg-green-600') ? 'ai' : 'instant');
-
-    return {
-      atMs: state.captureStartedAt ? Math.max(0, Date.now() - state.captureStartedAt) : 0,
-      mode: String(mode || ''),
-      targetDigit: Number.isFinite(target) && target >= 0 && target <= 9 ? target : null,
-      currentDigit: numberFromText(text('metricLastDigit')),
-      currentTick: text('metricLiveTick'),
-      tradeCount: Number(window.tradeCount ?? numberFromText(text('metricTradeCount')) ?? 0),
-      stake: Number(window.currentStake ?? numberFromText(text('metricCurrentStake')) ?? 0),
-      pnl: readBotPnl(),
-      result: text('metricTradeResult'),
-      status: text('metricPreviousResult'),
-      action: text('metricNextAction'),
-      activeContractId: window.activeContract?.contractId ?? null
-    };
-  }
-
-  function addEvent(type, title, subtitle='', extra={}) {
-    if (!state.captureStartedAt) return;
-    const s = snapshot();
-    const event = {
-      type,
-      title,
-      subtitle,
-      ...s,
-      ...extra
-    };
-    const fp = JSON.stringify([
-      type, title, subtitle,
-      event.tradeCount, event.targetDigit, event.currentDigit, event.currentTick,
-      event.pnl, event.stake,
-      event.activeContractId, event.result, event.status, event.action
-    ]);
-    if (fp === state.lastFingerprint) return;
-    state.lastFingerprint = fp;
-    state.events.push(event);
-    if (state.events.length > 180) state.events.shift();
-    console.log('[DMS v5 event]', event);
-  }
-
-  function classifyStatus(s) {
-    const joined = `${s.result} ${s.status} ${s.action}`.toUpperCase();
-
-    if (/WIN CONFIRMED|DIGIT MATCH|FAST MATCH|MATCHED/.test(joined)) {
-      return [
-        'matched',
-        'DIGIT MATCHED',
-        `Trade ${Math.max(1, s.tradeCount)} matched target ${state.lockedTradeTarget ?? s.targetDigit ?? '-'} · waiting for final cycle P/L`
-      ];
-    }
-    if (/LOSS CONFIRMED|RECONCILED LOSS/.test(joined)) {
-      return ['loss_confirmed', 'NO MATCH · RECOVERY READY', `Trade ${s.tradeCount} confirmed as a miss`];
-    }
-    if (/VERIFYING RESULT|POSSIBLE LOSS|WAITING FOR DERIV/.test(joined)) {
-      return ['verifying', 'VERIFYING RESULT', 'Waiting for Deriv confirmation'];
-    }
-    if (/CONTRACT OPEN|WATCHING NEXT TICK/.test(joined)) {
-      return ['trade_open', `TRADE ${Math.max(1, s.tradeCount)} EXECUTING`, `Target digit ${s.targetDigit ?? '-'} · watching the next tick`];
-    }
-    if (/RECOVERY CHECK|RECOVERY ENTRY|RECOVERY/.test(joined)) {
-      return ['recovery', 'RECOVERY ENTRY', `Preparing trade ${Math.max(1, s.tradeCount + 1)}`];
-    }
-    if (/ENTRY CHECK/.test(joined)) {
-      return ['entry_check', 'ENTRY CHECK IN PROGRESS', 'Checking trading conditions'];
-    }
-    if (/AI AUTO ARMED|ANALYZ|SCANN|EVALUATING SAFE ENTRIES/.test(joined)) {
-      return ['scanning', 'SCANNING DIGITS...', 'Reading live ticks and analysing digits'];
-    }
-    if (/READY|LOCKED/.test(joined) && s.targetDigit !== null) {
-      return ['target_locked', `TARGET DIGIT LOCKED: ${s.targetDigit}`, 'This is the digit the bot is trying to match'];
-    }
-    if (/MAX TRADES|STOP LIMIT|BOT STOPPED/.test(joined)) {
-      return ['stopped', 'STOP LIMIT REACHED', `Cycle ended after ${s.tradeCount} trade(s)`];
-    }
-    return null;
-  }
-
-
-  function lockTargetFromConfirmedTrade() {
-    if (state.lockedTradeTarget !== null) return state.lockedTradeTarget;
-
-    // Strict rule:
-    // Do not lock from AI recommendation, predictedDigit input, or pre-trade cycle state.
-    // Lock only after a real trade exists.
-    const tradeCount = Number(window.tradeCount || 0);
-    const ac = window.activeContract || null;
-
-    const hasConfirmedTrade = (
-      tradeCount >= 1 ||
-      !!ac?.contractId ||
-      !!window.cycleHasPurchasedContract
-    );
-
-    if (!hasConfirmedTrade) return null;
-
-    const activeDigit = Number(ac?.predictedDigit);
-    const current = currentCycle();
-    const cycleDigit = Number(current?.digit);
-
-    let actual = null;
-
-    if (Number.isFinite(activeDigit) && activeDigit >= 0 && activeDigit <= 9) {
-      actual = activeDigit;
-    } else if (Number.isFinite(cycleDigit) && cycleDigit >= 0 && cycleDigit <= 9) {
-      actual = cycleDigit;
-    }
-
-    if (actual === null) return null;
-
-    state.lockedTradeTarget = actual;
-    state.lastTargetDigit = actual;
-    state.tradingStarted = true;
-    state.lockedTradeNumber = Math.max(1, tradeCount);
-
-    addEvent(
-      'target_locked',
-      `TARGET DIGIT: ${actual}`,
-      `Confirmed from Trade ${state.lockedTradeNumber} · fixed for this cycle`,
-      {
-        targetDigit: actual,
-        tradeCount: state.lockedTradeNumber,
-        pnl: readBotPnl()
-      }
-    );
-
-    return actual;
-  }
-
-  function wait(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  async function waitForBotPnl(targetPnl, timeoutMs = 2800) {
-    const target = Number(targetPnl);
-    if (!Number.isFinite(target)) return readBotPnl();
-
-    const started = Date.now();
-    let stable = 0;
-    let last = readBotPnl();
-
-    while (Date.now() - started < timeoutMs) {
-      last = readBotPnl();
-      if (Math.abs(last - target) < 0.01) {
-        stable += 1;
-        if (stable >= 3) return last;
-      } else {
-        stable = 0;
-      }
-      await wait(120);
-    }
-
-    return last;
-  }
-
-  async function finalizeCyclePresentation(completed) {
-    if (!completed || state.finalizingCycle) return;
-    state.finalizingCycle = true;
-    state.lastCompletedCycle = completed;
-
-    const won = String(completed.status || '').toUpperCase() === 'WIN';
-    const completedNet = Number(completed.netPnL ?? readBotPnl() ?? 0);
-    const totalInvestment = Number(completed.totalInvestment ?? 0);
-    const totalPayout = Number(completed.totalPayout ?? 0);
-    const trades = Array.isArray(completed.trades) ? completed.trades : [];
-
-    const winningTrade =
-      trades.find(t => String(t.result || '').toUpperCase() === 'WIN') ||
-      trades[trades.length - 1] ||
-      {};
-
-    const winningTradeNumber = Number(
-      completed.winningTradeNumber ??
-      winningTrade.tradeNumber ??
-      trades.length ??
-      0
-    );
-
-    const winningProfit = Number(
-      winningTrade.profit ??
-      completed.winningProfit ??
-      0
-    );
-
-    const winningStake = Number(
-      winningTrade.stake ??
-      winningTrade.buyPrice ??
-      0
-    );
-
-    const lossesBeforeWin = Math.max(0, totalInvestment - winningStake);
-
-    // Do not show the FINAL cycle result until the bot P/L has caught up.
-    const visibleFinalPnl = await waitForBotPnl(completedNet, 2800);
-    const syncedPnl =
-      Math.abs(Number(visibleFinalPnl) - completedNet) < 0.01
-        ? Number(visibleFinalPnl)
-        : completedNet;
-
-    addEvent(
-      won ? 'cycle_win' : 'cycle_stopped',
-      won
-        ? (syncedPnl >= 0 ? 'LOSSES RECOVERED' : 'CYCLE FINALIZED')
-        : 'CYCLE COMPLETE',
-      won
-        ? `Trade ${winningTradeNumber} matched target ${state.lockedTradeTarget ?? completed.digit ?? '-'} · final cycle P/L ${syncedPnl >= 0 ? '+' : '-'}$${Math.abs(syncedPnl).toFixed(2)}`
-        : `Cycle ended after ${trades.length} trade(s) · final P/L ${syncedPnl >= 0 ? '+' : '-'}$${Math.abs(syncedPnl).toFixed(2)}`,
-      {
-        pnl: syncedPnl,
-        cycleNetPnl: completedNet,
-        totalInvestment,
-        totalPayout,
-        winningProfit,
-        winningTradeNumber,
-        winningStake,
-        lossesBeforeWin,
-        recoveredLosses: won && syncedPnl >= 0,
-        tradeCount: trades.length,
-        targetDigit: state.lockedTradeTarget ?? completed.digit ?? null
-      }
-    );
-
-    // Let viewers read the synchronized final result.
-    await wait(3800);
-
-    if (state.recorder?.state === 'recording') {
-      stopRecorderCleanly();
-    }
-  }
-
-  function observeGuidedEvents() {
-    if (!state.captureStartedAt) return;
-
-    const s = snapshot();
-    const tradeCount = Number(s.tradeCount || 0);
-
-    // Before Trade 1: do not show target comparisons at all.
-    if (tradeCount < 1 && !window.activeContract?.contractId && !window.cycleHasPurchasedContract) {
-      state.lastCurrentDigit = s.currentDigit;
-      state.lastCurrentTick = s.currentTick;
-
-      addEvent(
-        'scanning',
-        'SCANNING DIGITS...',
-        'Waiting for Trade 1 to confirm the actual target',
-        {
-          targetDigit: null,
-          currentDigit: null,
-          tradeCount: 0,
-          pnl: readBotPnl()
-        }
-      );
-      return;
-    }
-
-    // Trade 1 or later: lock the actual target exactly once.
-    lockTargetFromConfirmedTrade();
-
-    const locked = state.lockedTradeTarget;
-    if (locked === null) return;
-
-    // Record trade-start events separately.
-    if (tradeCount > state.lastTradeCount) {
-      state.lastTradeCount = tradeCount;
-      addEvent(
-        'trade_bought',
-        `TRADE ${tradeCount} EXECUTING`,
-        `Target ${locked} · waiting for the next last digit`,
-        {
-          trade: tradeCount,
-          tradeCount,
-          targetDigit: locked,
-          pnl: readBotPnl(),
-          stake: s.stake
-        }
-      );
-    }
-
-    // Compare only NEW streaming last digits after Trade 1 has started.
-    const tickChanged = (
-      s.currentDigit !== null &&
-      (
-        s.currentDigit !== state.lastCurrentDigit ||
-        (s.currentTick && s.currentTick !== state.lastCurrentTick)
-      )
-    );
-
-    if (tickChanged) {
-      state.lastCurrentDigit = s.currentDigit;
-      state.lastCurrentTick = s.currentTick;
-
-      const matched = Number(s.currentDigit) === Number(locked);
-
-      addEvent(
-        matched ? 'tick_match' : 'tick_compare',
-        `TARGET ${locked}  VS  LAST DIGIT ${s.currentDigit}`,
-        matched
-          ? `MATCH DETECTED · Trade ${Math.max(1, tradeCount)}`
-          : `Trade ${Math.max(1, tradeCount)} · no match`,
-        {
-          targetDigit: locked,
-          currentDigit: s.currentDigit,
-          currentTick: s.currentTick,
-          tradeCount: Math.max(1, tradeCount),
-          pnl: readBotPnl(),
-          stake: s.stake
-        }
-      );
-    }
-
-    // Keep other real bot statuses only after trading starts.
-    const classified = classifyStatus(s);
-    if (classified && classified[0] !== 'scanning') {
-      addEvent(
-        classified[0],
-        classified[1],
-        classified[2],
-        {
-          targetDigit: locked,
-          tradeCount: Math.max(1, tradeCount),
-          pnl: readBotPnl(),
-          stake: s.stake
-        }
-      );
-    }
-  }
-
-  async function enableCapture() {
-    const allowed =
-      state.captureAuthorized ||
-      await checkCaptureAccess(true);
-
-    if (!allowed) {
-      removeCapturePanel();
-      console.warn(
-        '[DMS CAPTURE] Premium capture denied for this account.'
-      );
-      return;
-    }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      status('Use desktop Chrome/Edge', 'bad');
-      return;
-    }
-    if (state.recorder?.state === 'recording') {
-      status('Already recording', 'warn');
-      return;
-    }
-
-    prepareCaptureView();
-
-    try {
-      status('Choose this tab + Share tab audio…', 'info');
+      setStatus('Choose this DigitMatchStar tab. Enable tab audio if you want sound.', 'warn');
 
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal:30, max:30 },
-          width: { ideal:2560 },
-          height: { ideal:1440 }
+          frameRate: { ideal: 30, max: 60 }
         },
-        audio: {
-          echoCancellation:false,
-          noiseSuppression:false,
-          autoGainControl:false
-        },
-        preferCurrentTab:true,
-        selfBrowserSurface:'include',
-        surfaceSwitching:'include',
-        systemAudio:'include'
+        audio: true,
       });
 
-      if (!stream.getAudioTracks().length) {
-        stream.getTracks().forEach(t => t.stop());
-        status('Enable Share tab audio and retry', 'bad');
-        restoreCaptureView();
-        alert(
-          'DigitMatchStar Premium Capture needs tab audio.\n\n' +
-          'Choose the DigitMatchStar tab and enable "Share tab audio".'
-        );
-        return;
-      }
+      state.stream = stream;
+      state.chunks = [];
+      state.events = [];
+      state.startedAt = Date.now();
+      state.lastFingerprint = '';
 
-      state.displayStream = stream;
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-        if (state.recorder?.state === 'recording') {
-          stopRecorderCleanly();
-        }
-        state.displayStream = null;
-        restorePanel();
-        restoreCaptureView();
-      });
-
-      // Allow the visual-only zoom/scroll position to settle.
-      await new Promise(resolve => setTimeout(resolve, 450));
-      startSessionRecorder();
-    } catch (error) {
-      console.warn('[DMS v5] capture permission failed:', error);
-      status('Capture not enabled', 'bad');
-      restoreCaptureView();
-    }
-  }
-
-  function startSessionRecorder() {
-    if (!state.displayStream) return;
-
-    const options = {
-      videoBitsPerSecond: 12_000_000,
-      audioBitsPerSecond: 160_000
-    };
-    const mime = supportedMime();
-    if (mime) options.mimeType = mime;
-
-    state.chunks = [];
-    state.captureStartedAt = Date.now();
-    state.activeCycleId = null;
-    state.lastCompletedCycle = null;
-    state.lastSeenCurrent = !!currentCycle();
-    state.events = [];
-    state.stopPending = false;
-    state.lastFingerprint = '';
-    state.lastTradeCount = Number(window.tradeCount || 0);
-    state.lastTargetDigit = null;
-    state.lastActiveContractId = window.activeContract?.contractId ?? null;
-    state.lockedTradeTarget = null;
-    state.finalizingCycle = false;
-    state.lastTargetDigit = null;
-    state.lastCurrentDigit = snapshot().currentDigit;
-    state.lastCurrentTick = snapshot().currentTick;
-
-    addEvent('capture_ready', 'TRADING SCREEN READY', 'Waiting for the next cycle');
-    observeGuidedEvents();
-
-    try {
-      const recorder = new MediaRecorder(state.displayStream, options);
+      const mime = mimeType();
+      const options = mime ? { mimeType: mime, videoBitsPerSecond: 6_000_000 } : {};
+      const recorder = new MediaRecorder(stream, options);
       state.recorder = recorder;
-      recorder.ondataavailable = event => {
-        if (event.data?.size) state.chunks.push(event.data);
-      };
-      recorder.onerror = event => console.warn('[DMS v5] recorder error:', event);
-      recorder.onstop = finalizeRecording;
 
-      hidePanelFromCapture();
+      recorder.addEventListener('dataavailable', event => {
+        if (event.data && event.data.size > 0) state.chunks.push(event.data);
+      });
+
+      recorder.addEventListener('error', event => {
+        console.error('[DMS Recorder]', event.error || event);
+        setStatus(`Recorder error: ${event.error?.message || 'unknown error'}`, 'bad');
+      });
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.addEventListener('ended', () => stopAndSave('share-ended'), { once: true });
+      }
+
       recorder.start(1000);
+      captureTimelineEvent(true);
+      state.timer = setInterval(captureTimelineEvent, 350);
 
-      console.log('🎥 DigitMatchStar v5 guided capture started. Trading logic untouched.');
+      $('dms70-rec-start').disabled = true;
+      $('dms70-rec-stop').disabled = false;
+      const badge = $('dms70-rec-badge');
+      if (badge) {
+        badge.textContent = '● RECORDING';
+        badge.style.color = '#f87171';
+      }
+      setStatus('Recording live · STOP & SAVE when finished', 'live');
     } catch (error) {
-      restorePanel();
-      restoreCaptureView();
-      console.warn('[DMS v5] recorder start failed:', error);
-      status('Recorder could not start', 'bad');
-    }
-  }
-
-  function observeCycle() {
-    const current = currentCycle();
-
-    observeGuidedEvents();
-
-    if (current && !state.lastSeenCurrent) {
-      state.lastSeenCurrent = true;
-      state.activeCycleId = cycleId(current);
-
-      // Do not announce a locked target here.
-      addEvent(
-        'cycle_started',
-        'TRADING CYCLE STARTED',
-        'Waiting for Trade 1 confirmation',
-        {
-          targetDigit: null,
-          tradeCount: Number(window.tradeCount || 0),
-          pnl: readBotPnl()
-        }
+      setStatus(
+        error?.name === 'NotAllowedError'
+          ? 'Recording permission was cancelled.'
+          : `Could not start recorder: ${error?.message || error}`,
+        'bad'
       );
-      return;
-    }
-
-    if (!current && state.lastSeenCurrent) {
-      state.lastSeenCurrent = false;
-
-      if (state.activeCycleId) {
-        const completed = findCompletedCycle(state.activeCycleId);
-        if (completed) {
-          finalizeCyclePresentation(completed).catch(error => {
-            console.error('[DMS v6.0] final cycle presentation failed:', error);
-            setTimeout(() => {
-              if (state.recorder?.state === 'recording') stopRecorderCleanly();
-            }, 4000);
-          });
-        } else {
-          setTimeout(() => {
-            const retry = findCompletedCycle(state.activeCycleId);
-            if (retry) {
-              finalizeCyclePresentation(retry).catch(console.error);
-            } else if (state.recorder?.state === 'recording') {
-              stopRecorderCleanly();
-            }
-          }, 700);
-        }
-      }
     }
   }
 
-
-  function stopRecorderCleanly(delayMs = 180) {
-    if (!state.recorder || state.recorder.state !== 'recording' || state.stopPending) return;
-    state.stopPending = true;
-
-    try {
-      state.recorder.requestData();
-    } catch (_) {}
-
-    setTimeout(() => {
-      try {
-        if (state.recorder?.state === 'recording') {
-          state.recorder.stop();
-        }
-      } catch (error) {
-        console.warn('[DMS v5.6] clean stop failed:', error);
-        state.stopPending = false;
-      }
-    }, delayMs);
-  }
-
-  async function blobLooksLikeWebM(blob) {
-    if (!blob || blob.size < 32) return false;
-    try {
-      const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
-      return head[0] === 0x1A &&
-             head[1] === 0x45 &&
-             head[2] === 0xDF &&
-             head[3] === 0xA3;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async function finalizeRecording() {
-    state.stopPending = false;
-    restorePanel();
-
-    const mime = state.recorder?.mimeType || 'video/webm';
-    const blob = new Blob(state.chunks, { type:mime });
-
-    const validWebM = await blobLooksLikeWebM(blob);
-    console.log('[DMS v5.6] capture finalized', {
-      mime,
-      bytes: blob.size,
-      chunks: state.chunks.length,
-      validWebM
+  function makeDraggable(panel, handle) {
+    let active = false, sx = 0, sy = 0, sl = 0, st = 0;
+    handle.addEventListener('pointerdown', e => {
+      if (e.target.closest('button')) return;
+      active = true;
+      const r = panel.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
+      panel.style.right = 'auto';
+      panel.style.bottom = 'auto';
+      panel.style.left = `${sl}px`;
+      panel.style.top = `${st}px`;
+      handle.setPointerCapture?.(e.pointerId);
     });
-
-    if (!validWebM) {
-      status('Capture invalid — not uploaded. Retry recording.', 'bad');
-      console.error('[DMS v5.6] Invalid WebM capture; upload blocked.', {
-        mime,
-        bytes: blob.size,
-        chunks: state.chunks.length
-      });
-      exposeDownload(blob);
-      restoreCaptureView();
-      return;
-    }
-
-    if (state.lastBlobUrl) {
-      try { URL.revokeObjectURL(state.lastBlobUrl); } catch (_) {}
-    }
-    state.lastBlobUrl = URL.createObjectURL(blob);
-
-    const completed = state.lastCompletedCycle || findCompletedCycle(state.activeCycleId);
-
-    if (!completed) {
-      status('Clip saved, but no completed cycle was found', 'bad');
-      exposeDownload(blob);
-      restoreCaptureView();
-      return;
-    }
-
-    const payloadCycle = clone(completed) || {};
-    payloadCycle.captureStartedAt = state.captureStartedAt;
-    payloadCycle.captureHadAudio = true;
-    payloadCycle.captureVersion = VERSION;
-    payloadCycle.captureEvents = clone(state.events) || [];
-    payloadCycle.captureViewport = {
-      width: window.innerWidth,
-      height: window.innerHeight,
-      preparedZoom: 0.94
-    };
-
-    status('Building guided premium video…', 'info');
-
-    try {
-      await uploadForCompose(blob, payloadCycle);
-      status('Sent to Telegram ✓', 'good');
-    } catch (error) {
-      console.error('[DMS v5] premium upload failed:', error);
-      status(`Upload failed: ${error?.message || error}`, 'bad');
-      exposeDownload(blob);
-    } finally {
-      restoreCaptureView();
-    }
+    handle.addEventListener('pointermove', e => {
+      if (!active) return;
+      const x = Math.max(0, Math.min(innerWidth - panel.offsetWidth, sl + e.clientX - sx));
+      const y = Math.max(0, Math.min(innerHeight - panel.offsetHeight, st + e.clientY - sy));
+      panel.style.left = `${x}px`;
+      panel.style.top = `${y}px`;
+    });
+    const stop = () => { active = false; };
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
   }
 
-  function exposeDownload(blob) {
-    if (!state.panel) return;
-    let a = document.getElementById('dms50-download');
-    if (!a) {
-      a = document.createElement('a');
-      a.id = 'dms50-download';
-      a.textContent = 'Download raw clip';
-      a.style.cssText = [
-        'display:block','margin-top:6px','padding:6px','border-radius:7px',
-        'background:#1f2937','color:#fff','font-size:9px','font-weight:800',
-        'text-align:center','text-decoration:none'
-      ].join(';');
-      state.panel.appendChild(a);
+  function ensurePanel() {
+    if ($('dms70-rec-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'dms70-rec-panel';
+    panel.style.cssText = [
+      'position:fixed',
+      'right:14px',
+      'bottom:14px',
+      'z-index:2147483646',
+      'width:245px',
+      'padding:11px',
+      'border-radius:14px',
+      'background:rgba(7,15,28,.97)',
+      'border:1px solid rgba(56,189,248,.38)',
+      'box-shadow:0 18px 45px rgba(0,0,0,.45)',
+      'font-family:Inter,Arial,sans-serif',
+      'color:#f8fafc',
+    ].join(';');
+
+    panel.innerHTML = `
+      <div id="dms70-rec-drag" style="display:flex;align-items:center;gap:7px;cursor:move">
+        <span>🎥</span>
+        <span style="font-size:11px;font-weight:900;color:#7dd3fc;letter-spacing:.04em">
+          PREMIUM RECORDER
+        </span>
+        <span id="dms70-rec-badge" style="margin-left:auto;font-size:9px;font-weight:900;color:#86efac">
+          READY
+        </span>
+      </div>
+      <div id="dms70-rec-status"
+           style="font-size:10px;line-height:1.35;color:#94a3b8;margin:8px 0">
+        Record the live bot screen + trade-status timeline.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+        <button id="dms70-rec-start"
+                style="border:0;border-radius:8px;padding:8px;background:#0284c7;color:#fff;font-size:10px;font-weight:900;cursor:pointer">
+          ▶ RECORD
+        </button>
+        <button id="dms70-rec-stop" disabled
+                style="border:0;border-radius:8px;padding:8px;background:#be123c;color:#fff;font-size:10px;font-weight:900;cursor:pointer;opacity:.95">
+          ■ STOP & SAVE
+        </button>
+      </div>
+      <div style="font-size:8.5px;line-height:1.3;color:#64748b;margin-top:7px">
+        Browser permission is required. Selecting this tab gives the cleanest capture.
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+    state.panel = panel;
+
+    makeDraggable(panel, $('dms70-rec-drag'));
+    $('dms70-rec-start')?.addEventListener('click', startRecording);
+    $('dms70-rec-stop')?.addEventListener('click', () => stopAndSave('manual'));
+  }
+
+  function init() {
+    ensurePanel();
+    if (!platformAuthenticated()) {
+      setStatus('Sign in to use the recorder.', 'warn');
     }
-    a.href = state.lastBlobUrl;
-    a.download = `digitmatchstar-live-${state.activeCycleId || Date.now()}.webm`;
+    console.log(`🎥 DigitMatchStar Premium Recorder ${VERSION} loaded`);
   }
 
-  async function uploadForCompose(blob, cycle) {
-    if (state.uploading) throw new Error('Upload already in progress');
-
-    const token = getToken();
-    const accountId = getAccountId();
-    const id = cycleId(cycle);
-
-    if (!token) throw new Error('Deriv token unavailable');
-    if (!accountId) throw new Error('Deriv account ID unavailable');
-    if (!id) throw new Error('Cycle ID unavailable');
-
-    state.uploading = true;
-
-    try {
-      const ticketResponse = await fetch('/api/live-capture-ticket', {
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':`Bearer ${token}`
-        },
-        body:JSON.stringify({
-          account_id:accountId,
-          cycle_id:id,
-          theme:'premium-guided-v5'
-        })
-      });
-
-      const ticketData = await ticketResponse.json().catch(() => ({}));
-      if (!ticketResponse.ok) {
-        throw new Error(ticketData?.error || `Upload ticket failed (HTTP ${ticketResponse.status})`);
-      }
-      if (!ticketData?.uploadUrl || !ticketData?.ticket) {
-        throw new Error('Media-worker ticket response is incomplete');
-      }
-
-      const form = new FormData();
-      form.append('video', blob, `digitmatchstar-${id}.webm`);
-      form.append('ticket', ticketData.ticket);
-      form.append('cycle', JSON.stringify(cycle));
-      form.append('website', 'https://www.digitmatchstar.com');
-
-      let workerResponse;
-      try {
-        workerResponse = await fetch(ticketData.uploadUrl, {
-          method:'POST',
-          body:form,
-          mode:'cors'
-        });
-      } catch (_) {
-        throw new Error('Cannot reach media worker.');
-      }
-
-      const result = await workerResponse.json().catch(() => ({}));
-      if (!workerResponse.ok) {
-        throw new Error(result?.detail || result?.error || `Media worker failed (HTTP ${workerResponse.status})`);
-      }
-
-      window.__dmsLastPremiumVideo = result;
-      return result;
-    } finally {
-      state.uploading = false;
-    }
-  }
-
-  function boot() {
-    enforceSingleRecorderWindow();
-    removeCapturePanel();
-    checkCaptureAccess(true);
-    startCaptureAccessMonitor();
-    state.observerTimer = setInterval(observeCycle, 150);
-    console.log(
-      `🎥 DigitMatchStar Premium Capture ${VERSION} loaded. ` +
-      'Read-only event observer; trading functions untouched.'
-    );
-  }
+  window.DMSRecorder = {
+    version: VERSION,
+    start: startRecording,
+    stop: stopAndSave,
+    snapshot,
+  };
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once:true });
+    document.addEventListener('DOMContentLoaded', init, { once: true });
   } else {
-    boot();
+    init();
   }
-
-  window.dmsPremiumCapture = {
-    version:VERSION,
-    enable:async () => {
-      const allowed =
-        state.captureAuthorized ||
-        await checkCaptureAccess(true);
-
-      if (!allowed) return false;
-
-      await enableCapture();
-      return true;
-    },
-    getState:() => ({
-      recording:state.recorder?.state === 'recording',
-      captureStartedAt:state.captureStartedAt,
-      activeCycleId:state.activeCycleId,
-      eventCount:state.events.length,
-      hasAudio:!!state.displayStream?.getAudioTracks?.().length,
-      uploading:state.uploading,
-      captureAuthorized:state.captureAuthorized,
-      accessAccountId:state.accessAccountId
-    }),
-    getEvents:() => clone(state.events)
-  };
 })();

@@ -11368,10 +11368,193 @@ window.executionLock = true;
             ) !== '0',
             continuousRestartPending: false,
             continuousRestartTimer: null,
-            lastAutoRestartPhase: null
+            continuousRestartAttempts: 0,
+            lastAutoRestartPhase: null,
+            lastCompletedServerCycleTrade: 0
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
+
+        function formatServerMoney(value) {
+            const n = Number(value);
+            return Number.isFinite(n)
+                ? `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`
+                : '$0.00';
+        }
+
+        function renderServerTradeNarrative(st) {
+            if (!window.SERVER_EXECUTION?.enabled || !st) return;
+
+            const resultEl = document.getElementById('metricTradeResult');
+            const statusEl = document.getElementById('metricPreviousResult');
+            const actionEl = document.getElementById('metricNextAction');
+
+            if (!resultEl || !statusEl || !actionEl) return;
+
+            const phase = String(st.phase || 'IDLE').toUpperCase();
+            const tradeNo = Number(st.current_trade || 0);
+            const maxTrades = Number(st.max_trades || 0);
+            const digit = Number(st.candidate_digit);
+            const hasDigit = Number.isInteger(digit) && digit >= 0 && digit <= 9;
+            const stake = Number(st.current_stake || 0);
+            const pnl = Number(st.pnl || 0);
+            const contract = st.open_contract_id ? String(st.open_contract_id) : '';
+            const continuous = !!window.SERVER_EXECUTION?.continuousResearch &&
+                String(st.account_mode || '').toUpperCase() === 'DEMO';
+
+            let result = 'SERVER';
+            let status = 'Server worker ready';
+            let action = 'Waiting for the next action';
+            let resultClass = 'text-xs font-bold text-cyan-300';
+
+            switch (phase) {
+                case 'CONFIGURED':
+                    result = 'READY';
+                    status = hasDigit
+                        ? `Candidate digit ${digit} locked · base stake $${stake.toFixed(2)}`
+                        : 'Server session configured';
+                    action = 'Press START BOT to begin';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'STARTING':
+                    result = 'STARTING ⚡';
+                    status = hasDigit
+                        ? `Starting cycle with digit ${digit}`
+                        : 'Starting server cycle';
+                    action = `Preparing trade ${tradeNo + 1}${maxTrades ? ` of ${maxTrades}` : ''}`;
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'REQUESTING_PROPOSAL':
+                    result = 'PREPARING TRADE';
+                    status = hasDigit
+                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
+                        : `Preparing trade ${tradeNo + 1}/${maxTrades || '—'}`;
+                    action = 'Requesting live proposal from Deriv…';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'BUYING':
+                    result = 'BUYING ⚡';
+                    status = hasDigit
+                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · Buying DIGITMATCH ${digit} for $${stake.toFixed(2)}`
+                        : `Buying trade ${tradeNo + 1}`;
+                    action = 'Waiting for Deriv to confirm the contract…';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'WAITING_SETTLEMENT':
+                    result = `TRADE ${tradeNo} OPEN`;
+                    status = hasDigit
+                        ? `DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}${contract ? ` · Contract ${contract}` : ''}`
+                        : `Trade ${tradeNo}/${maxTrades || '—'} is open`;
+                    action = 'Watching the contract · waiting for authoritative Deriv settlement…';
+                    resultClass = 'text-xs font-bold text-blue-300';
+                    break;
+
+                case 'RECOVERING':
+                    result = 'LOSS · RECOVERY';
+                    status = `Trade ${tradeNo} settled as a loss · Cycle P/L ${formatServerMoney(pnl)}`;
+                    action = hasDigit
+                        ? `Keeping digit ${digit} · next stake $${stake.toFixed(2)} · preparing trade ${tradeNo + 1}`
+                        : `Preparing recovery trade ${tradeNo + 1} at $${stake.toFixed(2)}`;
+                    resultClass = 'text-xs font-bold text-orange-300';
+                    break;
+
+                case 'WON':
+                    result = 'WIN ✅';
+                    status = `Cycle won on trade ${tradeNo} · Cycle P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Continuous Research ON · selecting and freezing the next AI candidate…'
+                        : 'Cycle complete · press START BOT for another cycle';
+                    resultClass = 'text-xs font-bold text-green-300';
+                    break;
+
+                case 'MAX_TRADES_REACHED':
+                    result = 'MAX TRADES';
+                    status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Continuous Research ON · preparing a fresh research cycle…'
+                        : 'Cycle stopped at your maximum trade limit';
+                    resultClass = 'text-xs font-bold text-orange-300';
+                    break;
+
+                case 'WAITING_CANDIDATE':
+                    result = 'WAITING FOR AI';
+                    status = 'Server is ready but no candidate digit is locked';
+                    action = 'Waiting for the Digit Intelligence Engine to produce the next candidate…';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'RECONCILING':
+                case 'WAITING_SETTLEMENT_RECONCILE':
+                    result = 'RECONCILING';
+                    status = contract
+                        ? `Checking unresolved contract ${contract}`
+                        : 'Reconciling the previous server contract';
+                    action = 'Waiting for authoritative settlement before any new trade…';
+                    resultClass = 'text-xs font-bold text-purple-300';
+                    break;
+
+                case 'WAITING_REAL_CONFIRMATION':
+                    result = 'CONFIRM REQUIRED';
+                    status = hasDigit
+                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
+                        : 'REAL purchase is waiting';
+                    action = 'Explicit confirmation is required before this purchase';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
+                case 'PAUSED':
+                    result = 'PAUSED';
+                    status = `Cycle paused after trade ${tradeNo}`;
+                    action = 'Resume when ready';
+                    resultClass = 'text-xs font-bold text-gray-300';
+                    break;
+
+                case 'STOPPED':
+                case 'STOPPED_WAITING_SETTLEMENT':
+                    result = 'STOPPED';
+                    status = phase === 'STOPPED_WAITING_SETTLEMENT'
+                        ? 'Stop requested · an open contract is still being reconciled'
+                        : 'Server trading stopped';
+                    action = phase === 'STOPPED_WAITING_SETTLEMENT'
+                        ? 'Waiting for the existing contract to settle'
+                        : 'Press START BOT when you want to trade again';
+                    resultClass = 'text-xs font-bold text-gray-300';
+                    break;
+
+                case 'ERROR':
+                    result = 'SERVER ERROR';
+                    status = String(st.last_error || 'The server worker encountered an error');
+                    action = 'Review Worker Error above, then restart after the issue is resolved';
+                    resultClass = 'text-xs font-bold text-red-300';
+                    break;
+
+                default:
+                    if (st.running) {
+                        result = 'TRADING ⚡';
+                        status = `Server worker active · phase ${phase}`;
+                        action = hasDigit
+                            ? `Candidate ${digit} · trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`
+                            : 'Waiting for server progress…';
+                        resultClass = 'text-xs font-bold text-yellow-300';
+                    } else {
+                        result = phase || 'READY';
+                        status = 'Server worker is not currently buying';
+                        action = continuous
+                            ? 'Continuous Research is waiting for the next eligible cycle'
+                            : 'Press START BOT to begin';
+                        resultClass = 'text-xs font-bold text-gray-300';
+                    }
+            }
+
+            resultEl.textContent = result;
+            resultEl.className = resultClass;
+            statusEl.textContent = status;
+            actionEl.textContent = action;
+        }
 
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
@@ -11396,12 +11579,7 @@ window.executionLock = true;
             if (errorEl) errorEl.textContent = workerError || '—';
             if (errorCard) errorCard.classList.toggle('hidden', !workerError);
 
-            if (workerError && String(st.phase || '').toUpperCase() === 'ERROR') {
-                const status = document.getElementById('tradeStatusText');
-                const action = document.getElementById('tradeActionText');
-                if (status) status.textContent = 'SERVER ERROR';
-                if (action) action.textContent = workerError;
-            }
+            // Trade Status card is rendered from the complete server phase below.
 
             if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
             if (serverExecEl('serverExecTrade')) {
@@ -11410,7 +11588,18 @@ window.executionLock = true;
             }
             if (serverExecEl('serverExecPnl')) {
                 const pnl = Number(st.pnl || 0);
-                serverExecEl('serverExecPnl').textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                const el = serverExecEl('serverExecPnl');
+
+                el.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+
+                const won = String(st.phase || '').toUpperCase() === 'WON';
+                if (won || pnl > 0) {
+                    el.style.color = '#4ade80';
+                    el.style.fontWeight = '900';
+                } else {
+                    el.style.color = '#f87171';
+                    el.style.fontWeight = '900';
+                }
             }
 
             // Secure OAuth server mode has no raw Deriv token in the browser,
@@ -11483,8 +11672,25 @@ window.executionLock = true;
                 const pnl = document.getElementById('metricTotalProfit');
                 if (tc && Number.isFinite(Number(st.current_trade))) tc.textContent = String(st.current_trade);
                 if (stake && Number.isFinite(Number(st.current_stake))) stake.textContent = `$${Number(st.current_stake).toFixed(2)}`;
-                if (pnl && Number.isFinite(Number(st.pnl))) pnl.textContent = `${Number(st.pnl) >= 0 ? '+' : ''}$${Number(st.pnl).toFixed(2)}`;
+                if (pnl && Number.isFinite(Number(st.pnl))) {
+                    const serverPnl = Number(st.pnl);
+                    pnl.textContent = `${serverPnl >= 0 ? '+' : ''}$${serverPnl.toFixed(2)}`;
+
+                    // Research display requirement:
+                    // red while the cycle has not yet produced a positive win,
+                    // bold green once the cycle is net-positive / WON.
+                    const won = String(st.phase || '').toUpperCase() === 'WON';
+                    const positive = serverPnl > 0;
+
+                    if (won || positive) {
+                        pnl.className = 'text-lg font-black text-green-400';
+                    } else {
+                        pnl.className = 'text-lg font-black text-red-400';
+                    }
+                }
             }
+
+            renderServerTradeNarrative(st);
         }
 
         async function serverExecRequest(path, options = {}) {
@@ -11536,6 +11742,7 @@ window.executionLock = true;
             }
 
             s.continuousResearch = !s.continuousResearch;
+
             sessionStorage.setItem(
                 'dms_server_continuous_research',
                 s.continuousResearch ? '1' : '0'
@@ -11549,6 +11756,7 @@ window.executionLock = true;
 
             if (!s.continuousResearch) {
                 s.continuousRestartPending = false;
+                s.continuousRestartAttempts = 0;
                 if (s.continuousRestartTimer) {
                     clearTimeout(s.continuousRestartTimer);
                     s.continuousRestartTimer = null;
@@ -11556,6 +11764,7 @@ window.executionLock = true;
             }
 
             renderServerExecutionState();
+
             log(
                 `🧪 Continuous DEMO Research ${s.continuousResearch ? 'ON' : 'OFF'}`,
                 'SYSTEM'
@@ -11578,8 +11787,15 @@ window.executionLock = true;
                     );
 
                     if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
-                        document.getElementById('predictedDigit').value = String(digit);
-                        lockSessionDigit(digit, true, 'Continuous DEMO research');
+                        const input = document.getElementById('predictedDigit');
+                        if (input) input.value = String(digit);
+
+                        lockSessionDigit(
+                            digit,
+                            true,
+                            'Continuous DEMO research'
+                        );
+
                         return digit;
                     }
                 }
@@ -11601,6 +11817,24 @@ window.executionLock = true;
             return null;
         }
 
+        async function stopCompletedServerCycleForResearch() {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.sessionId) return;
+
+            try {
+                const state = s.state || {};
+                if (state.running || state.open_contract_id) return;
+
+                await serverExecRequest(`/sessions/${s.sessionId}/stop`, {
+                    method: 'POST'
+                });
+            } catch (err) {
+                // Terminal WON / MAX_TRADES states can already be stopped;
+                // a redundant STOP failure should not prevent the next cycle.
+                console.warn('Continuous Research stop-cycle warning:', err);
+            }
+        }
+
         async function restartContinuousServerResearchCycle(triggerPhase) {
             const s = window.SERVER_EXECUTION;
 
@@ -11620,53 +11854,103 @@ window.executionLock = true;
             if (mode !== 'DEMO') return;
             if (state.running || state.open_contract_id) return;
 
-            const terminalPhase = String(triggerPhase || state.phase || '').toUpperCase();
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) return;
+            const terminalPhase = String(
+                triggerPhase || state.phase || ''
+            ).toUpperCase();
+
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) {
+                return;
+            }
 
             s.continuousRestartPending = true;
+            s.continuousRestartAttempts += 1;
 
             try {
-                const digit = freshDigitForContinuousServerCycle();
+                updateTradeStatus(
+                    terminalPhase === 'WON' ? 'WIN ✅' : 'CYCLE COMPLETE',
+                    terminalPhase === 'WON'
+                        ? `Cycle won · preparing next DEMO research cycle`
+                        : `Maximum trades reached · preparing next research cycle`,
+                    'Stopping completed cycle before starting the next candidate…',
+                    terminalPhase === 'WON' ? 'win' : 'normal'
+                );
+
+                // User requirement: the bot should STOP the completed cycle
+                // and then START a completely fresh cycle.
+                await stopCompletedServerCycleForResearch();
+
+                // Clear the completed server session identity locally so the
+                // next start is treated as a fresh cycle by the browser layer.
+                s.sessionId = null;
+                s.state = null;
+                s.lastCandidateSent = null;
+
+                sessionStorage.removeItem('dms_server_session_id');
+                try {
+                    localStorage.removeItem('dms_server_session_id');
+                } catch (_) {}
+
+                // Give AI a short moment to update after the terminal tick.
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                let digit = freshDigitForContinuousServerCycle();
 
                 if (!Number.isInteger(digit)) {
-                    // AI may be between recommendations. Try again on a later poll.
-                    s.continuousRestartPending = false;
-                    return;
+                    // Do not silently stop research just because AI is between
+                    // recommendations. Retry for a short period.
+                    if (s.continuousRestartAttempts < 10) {
+                        s.continuousRestartPending = false;
+                        s.continuousRestartTimer = setTimeout(() => {
+                            s.continuousRestartTimer = null;
+                            restartContinuousServerResearchCycle(terminalPhase);
+                        }, 1000);
+                        return;
+                    }
+
+                    throw new Error(
+                        'AI did not provide a valid candidate digit for the next research cycle.'
+                    );
                 }
 
                 updateTradeStatus(
-                    'RESEARCH',
-                    `Cycle complete · preparing next DEMO candidate ${digit}`,
-                    'Continuous Research is starting the next cycle',
+                    'RESTARTING ⚡',
+                    `Fresh DEMO cycle · AI digit ${digit}`,
+                    'Freezing research candidate and starting trade 1…',
                     'normal'
                 );
 
                 log(
-                    `🧪 Continuous Research · ${terminalPhase} → next DEMO cycle · digit ${digit}`,
+                    `🧪 Continuous Research · ${terminalPhase} → STOP → fresh START · digit ${digit}`,
                     'SYSTEM'
                 );
 
                 await startServerExecutionSession();
 
                 s.lastAutoRestartPhase = terminalPhase;
+                s.continuousRestartAttempts = 0;
 
                 updateTradeStatus(
-                    'SERVER ACTIVE',
-                    `Continuous DEMO research · digit ${digit}`,
-                    'Next research cycle started automatically',
+                    'TRADING ⚡',
+                    `Fresh server research cycle started · digit ${digit}`,
+                    'Waiting for trade 1 proposal…',
                     'trade'
                 );
+
             } catch (err) {
+                s.continuousRestartAttempts = 0;
+
                 log(
                     `❌ Continuous Research restart failed: ${err.message}`,
                     'ERROR'
                 );
+
                 updateTradeStatus(
                     'SERVER ERROR',
                     'Continuous Research restart failed',
                     err.message,
                     'loss'
                 );
+
             } finally {
                 s.continuousRestartPending = false;
             }
@@ -11690,16 +11974,19 @@ window.executionLock = true;
             }
 
             const phase = String(st.phase || '').toUpperCase();
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) return;
+
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) {
+                return;
+            }
 
             if (s.continuousRestartTimer) return;
 
-            // Brief delay lets research outcome/final UI state settle before
-            // freezing the next candidate.
+            // Let settlement + SAFE-TICK outcome/rendering complete, then
+            // perform an explicit STOP -> fresh START lifecycle.
             s.continuousRestartTimer = setTimeout(async () => {
                 s.continuousRestartTimer = null;
                 await restartContinuousServerResearchCycle(phase);
-            }, 1500);
+            }, 1200);
         }
 
         async function pollServerExecutionState() {
@@ -12245,8 +12532,10 @@ window.isBotRunning = true;
                     clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
                     window.SERVER_EXECUTION.continuousRestartTimer = null;
                 }
+
                 if (window.SERVER_EXECUTION) {
                     window.SERVER_EXECUTION.continuousRestartPending = false;
+                    window.SERVER_EXECUTION.continuousRestartAttempts = 0;
                 }
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
