@@ -56,6 +56,15 @@ linear-gradient(180deg,#04100b,#07150f 55%,#040a07);color:#f8fafc}
 <script>
 const DMS_API = "https://digitmatchstar-api.onrender.com";
 
+/*
+ * TEMPORARY SAFE ROUTE
+ * Current bot.html is the newer full build.
+ * bot-obfuscated.html is currently an older/out-of-sync build.
+ * Keep login pointed at bot.html until the obfuscated file is regenerated
+ * from the exact current bot.html.
+ */
+const BOT_ENTRY_PATH = "/bot.html";
+
 function clearLegacyDerivBrowserSecrets(){
   [
     "active_token","derivToken","derivTokenDemo","derivTokenReal",
@@ -81,8 +90,8 @@ function safeLocalSet(key, value){
 function savePlatformSession(payload){
   clearLegacyDerivBrowserSecrets();
 
-  // V2.1.1: authentication/session state belongs in sessionStorage so a full
-  // research localStorage cannot block login.
+  // Authentication/session state belongs in sessionStorage so large research
+  // data in localStorage cannot block login.
   sessionStorage.setItem("dms_platform_jwt", payload.token);
   sessionStorage.setItem("bot_authenticated", "true");
   sessionStorage.setItem("auth_method", "dms_server_oauth_v211");
@@ -91,14 +100,22 @@ function savePlatformSession(payload){
   const selected = chooseAccount(payload.accounts || [], payload.requested_mode);
   if (!selected) throw new Error("No Deriv Options account was returned.");
 
-  const mode = String(selected.account_type || payload.requested_mode || "DEMO").toUpperCase() === "REAL" ? "REAL" : "DEMO";
+  const mode =
+    String(selected.account_type || payload.requested_mode || "DEMO").toUpperCase() === "REAL"
+      ? "REAL"
+      : "DEMO";
 
   // Keep all values required by the bot in sessionStorage.
   sessionStorage.setItem("selectedAccountMode", mode);
   sessionStorage.setItem("active_account", selected.account_id);
   sessionStorage.setItem("derivAccount", selected.account_id);
-  if (mode === "REAL") sessionStorage.setItem("derivRealAccount", selected.account_id);
-  else sessionStorage.setItem("derivDemoAccount", selected.account_id);
+
+  if (mode === "REAL") {
+    sessionStorage.setItem("derivRealAccount", selected.account_id);
+  } else {
+    sessionStorage.setItem("derivDemoAccount", selected.account_id);
+  }
+
   sessionStorage.setItem("dms_server_execution_url", DMS_API);
   sessionStorage.setItem("dms_server_execution_enabled", "1");
 
@@ -112,12 +129,22 @@ function savePlatformSession(payload){
 
 async function connectDeriv(mode){
   const status = document.getElementById("authStatus");
+
   try{
     status.textContent = "Preparing secure Deriv login…";
-    const res = await fetch(`${DMS_API}/auth/deriv/start?mode=${encodeURIComponent(mode)}`);
+
+    const res = await fetch(
+      `${DMS_API}/auth/deriv/start?mode=${encodeURIComponent(mode)}`
+    );
+
     const data = await res.json();
-    if(!res.ok || !data.authorization_url) throw new Error(data.detail || "Could not start Deriv OAuth");
+
+    if(!res.ok || !data.authorization_url){
+      throw new Error(data.detail || "Could not start Deriv OAuth");
+    }
+
     window.location.href = data.authorization_url;
+
   }catch(err){
     status.textContent = "Connection failed: " + err.message;
   }
@@ -134,21 +161,37 @@ async function exchangeTicket(){
     history.replaceState({}, document.title, "/");
     return;
   }
+
   if(!ticket) return;
 
   try{
     status.textContent = "Completing secure login…";
+
     const res = await fetch(`${DMS_API}/auth/platform/exchange`,{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ticket})
     });
+
     const data = await res.json();
-    if(!res.ok || !data.token) throw new Error(data.detail || "Login ticket exchange failed");
+
+    if(!res.ok || !data.token){
+      throw new Error(data.detail || "Login ticket exchange failed");
+    }
+
     savePlatformSession(data);
+
+    // Remove one-time OAuth ticket from the visible URL before entering the bot.
     history.replaceState({}, document.title, "/");
-    window.location.replace("/bot-obfuscated.html");
+
+    // IMPORTANT:
+    // Route to the current full bot build. Switch this back to
+    // /bot-obfuscated.html only after that file has been regenerated from
+    // the current bot.html and tested.
+    window.location.replace(BOT_ENTRY_PATH);
+
   }catch(err){
+    console.error("[DigitMatchStar OAuth]", err);
     status.textContent = "Login failed: " + err.message;
     history.replaceState({}, document.title, "/");
   }
