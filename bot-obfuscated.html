@@ -9,6 +9,7 @@
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
+    <!-- SERVER EXECUTION V2.1: per-user OAuth/JWT backend; encrypted Deriv token; server-owned fixed-digit cycle -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -504,6 +505,19 @@
             }
         }
 
+
+/* === SERVER EXECUTION ENGINE === */
+.server-exec-panel{
+  margin-bottom:1rem;padding:12px 14px;border-radius:14px;
+  border:1px solid rgba(56,189,248,.35);
+  background:linear-gradient(145deg,rgba(8,47,73,.30),rgba(15,23,42,.92));
+}
+.server-exec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px}
+.server-exec-card{padding:8px 10px;border-radius:10px;background:rgba(15,23,42,.88);border:1px solid rgba(148,163,184,.16)}
+.server-exec-label{font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:800}
+.server-exec-value{font-size:13px;color:#e2e8f0;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.server-exec-btn{padding:.48rem .72rem;border-radius:.65rem;font-size:.75rem;font-weight:800;color:white}
+
 </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
 </head>
@@ -645,6 +659,118 @@
                     </div>
                 </div>
 
+
+                <!-- SAFE-TICK V1 SHADOW VALIDATION -->
+                <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
+                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
+                        <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.4 RICH-DNA · SHADOW</span>
+                        <button type="button" onclick="downloadSafeTickV1Data()"
+                                class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
+                            ⬇ Export
+                        </button>
+                        <span id="safeTickLiveDecision" class="ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200">
+                            WAITING FOR CANDIDATE
+                        </span>
+                    </div>
+
+                    <div class="text-[11px] text-gray-400 mb-3">
+                        Frozen rule:
+                        <b class="text-gray-200">candidateFreq25 ≤ 0.08</b>
+                        AND
+                        <b class="text-gray-200">entropy10 ≤ 2.521928</b>.
+                        Research-only: this panel does not block or place trades.
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Candidate Digit</div>
+                            <div id="safeTickCandidateDigit" class="text-xl font-black text-white">—</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Freq25</div>
+                            <div id="safeTickFreq25" class="text-xl font-black text-white">—</div>
+                            <div class="text-[10px] text-gray-500">must be ≤ 0.08</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Entropy10</div>
+                            <div id="safeTickEntropy10" class="text-xl font-black text-white">—</div>
+                            <div class="text-[10px] text-gray-500">must be ≤ 2.521928</div>
+                        </div>
+                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+                            <div class="text-[10px] uppercase text-gray-400 font-bold">Forward Gap</div>
+                            <div id="safeTickForwardGap" class="text-xl font-black text-yellow-300">—</div>
+                            <div id="safeTickOutcomeText" class="text-[10px] text-gray-500">awaiting outcome</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        <div class="p-2 bg-gray-800 rounded border border-gray-700">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Finalized</div>
+                            <div id="safeTickFinalized" class="text-lg font-black text-white">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-emerald-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted</div>
+                            <div id="safeTickAccepted" class="text-lg font-black text-emerald-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-rose-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Rejected</div>
+                            <div id="safeTickRejected" class="text-lg font-black text-rose-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-yellow-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted STOP10</div>
+                            <div id="safeTickAcceptedStop10" class="text-lg font-black text-yellow-300">0</div>
+                        </div>
+                        <div class="p-2 bg-gray-800 rounded border border-purple-700/50">
+                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted Tail15</div>
+                            <div id="safeTickAcceptedTail15" class="text-lg font-black text-purple-300">0</div>
+                        </div>
+                    </div>
+
+                    <div class="mt-3 p-2.5 bg-slate-950 rounded-lg border border-slate-700">
+                        <div class="flex justify-between text-[11px] mb-1">
+                            <span class="text-gray-400">Fresh validation progress</span>
+                            <span id="safeTickProgressText" class="font-bold text-cyan-300">0 / 500</span>
+                        </div>
+                        <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+                            <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
+                        </div>
+                        <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
+                            Persistent V1.3 cohort: refresh-safe local recovery enabled.
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- SERVER EXECUTION ENGINE -->
+                <div id="server-execution-panel" class="server-exec-panel">
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <h2 class="text-sm font-black text-sky-300">☁ SERVER EXECUTION</h2>
+                        <span id="serverExecBadge" class="edge-pill text-yellow-300">NOT CONFIGURED</span>
+                        <button type="button" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()"
+                                class="server-exec-btn bg-sky-700 hover:bg-sky-600">Use Server</button>
+                        <button type="button" onclick="configureServerExecutionUrl()"
+                                class="server-exec-btn bg-slate-700 hover:bg-slate-600">Backend URL</button>
+                        <button type="button" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()"
+                                class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden">
+                            Confirm REAL Trade
+                        </button>
+                    </div>
+                    <div class="text-[11px] text-gray-400 mb-3">
+                        When enabled, proposal/buy/settlement ownership moves to the server worker.
+                        DEMO can continue after this dashboard closes. REAL state also stays on the server,
+                        but every new real-money purchase requires explicit confirmation.
+                    </div>
+                    <div class="server-exec-grid">
+                        <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Mode</div><div id="serverExecMode" class="server-exec-value">BROWSER</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div id="serverExecPhase" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Contract</div><div id="serverExecContract" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Trade</div><div id="serverExecTrade" class="server-exec-value">—</div></div>
+                        <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div id="serverExecPnl" class="server-exec-value">$0.00</div></div>
+                    </div>
+                </div>
+
                 <!-- MARTINGALE CALCULATOR -->
                 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
                     <h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
@@ -779,9 +905,9 @@
                     <!-- Max Trades -->
                     <div>
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="10" min="1" step="1" inputmode="numeric" 
+                        <input type="number" id="maxTrades" value="20" min="20" step="1" inputmode="numeric" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Choose any positive whole number. Max Trades is the user-defined purchased-contract limit for each cycle.</p>
+                        <p class="text-[10px] text-gray-500 mt-1">Validation build: Max Trades is held at 20 so cycles can be observed beyond trade 10 and classified at depth ≥15.</p>
                     </div>
 
                     <!-- Max Trades is now the single user-defined cycle cap -->
@@ -885,7 +1011,7 @@
                     </button>
 
                     <button id="overnightResearchToggleBtn" type="button"
-                            onclick="setOvernightResearch()"
+                            
                             class="premium-research-btn premium-overnight-btn"
                             title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
                         <span>🌙</span><span id="overnightResearchToggleLabel">OVERNIGHT: OFF</span>
@@ -1031,7 +1157,8 @@
                 ['post-stop-depth-panel', 'post-stop-depth'],
                 ['digit-dna-panel', 'digit-dna'],
                 ['digit-feature-panel', 'digit-feature'],
-                ['randomness-auditor-panel', 'randomness-auditor']
+                ['randomness-auditor-panel', 'randomness-auditor'],
+                ['safe-tick-v1-panel', 'safe-tick-v1']
             ];
 
             for (const [id, key] of configs) {
@@ -1057,7 +1184,13 @@
         // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
+        function getPlatformJwt() {
+            return localStorage.getItem('dms_platform_jwt') || '';
+        }
+
         function getStoredDerivToken() {
+            // V2.1: raw Deriv OAuth tokens are intentionally not stored in the browser.
+            // Legacy token lookup remains only for old browser-mode installations.
             return localStorage.getItem('active_token') ||
                    localStorage.getItem('derivToken') ||
                    localStorage.getItem('derivTokenDemo') ||
@@ -1092,7 +1225,7 @@
         }
 
         function isBotAuthenticated() {
-            return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
+            return localStorage.getItem('bot_authenticated') === 'true' && !!getPlatformJwt();
         }
 
         if (!isBotAuthenticated()) {
@@ -5534,6 +5667,32 @@ window.cyclePerformance = {
             finalReason: null
         };
 
+        // Entry Tick DNA V3.6: synchronous direct capture into the loaded shadow lab.
+        // This avoids event timing/polling races on one-tick contracts.
+        try {
+            if (window.EntryTickDNAV2?.captureStart) {
+                const ok = window.EntryTickDNAV2.captureStart(this.current, window.lastTick || null);
+                if (!ok) console.warn('Entry Tick DNA direct start capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle start');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct start capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-started', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(this.current)),
+                    entryTick: window.lastTick ? JSON.parse(JSON.stringify(window.lastTick)) : null,
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-start event failed:', err);
+        }
+
         log(
             `🔁 CYCLE START | ${symbol} | digit ${digit} | entry edge ` +
             `${Number.isFinite(this.current.entry.liveEdge) ? (this.current.entry.liveEdge * 100).toFixed(2) + ' pp' : 'n/a'}`,
@@ -5717,6 +5876,31 @@ window.cyclePerformance = {
                 `⚠️ CYCLE/SESSION P&L MISMATCH | cycle ${c.netPnL.toFixed(2)} vs session ledger ${sessionLedgerPnL.toFixed(2)}`,
                 'WARNING'
             );
+        }
+
+        // Entry Tick DNA V3.6: synchronously finalize the exact authoritative cycle
+        // BEFORE this.current is cleared.
+        try {
+            if (window.EntryTickDNAV2?.captureFinalize) {
+                const ok = window.EntryTickDNAV2.captureFinalize(c);
+                if (!ok) console.warn('Entry Tick DNA direct final capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle finalization');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct final capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-finalized', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(c)),
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-finalized event failed:', err);
         }
 
         this.current = null;
@@ -6760,7 +6944,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.baseStake = 1.0;
         window.currentStake = 1.0;
         window.multiplier = 1.15;
-        window.maxTrades = 10;
+        window.maxTrades = 20;
         window.maxCycleTrades = window.maxTrades;
         window.cycleRotations = 0;
         window.tradeCount = 0;
@@ -8797,6 +8981,10 @@ function rotateHybridDigit(reason = '') {
 // DOM Ready
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
+            setTimeout(() => {
+                renderServerExecutionState();
+                ensureServerExecutionPolling();
+            }, 250);
             startMinimizablePanelUI();
             runCanonicalDigitSelfTest();
             setTimeout(() => {
@@ -9237,6 +9425,25 @@ function rotateHybridDigit(reason = '') {
             };
             
             window.lastTick = tickData;
+
+            // Tick DNA Lab: expose the exact canonical live tick used by this bot.
+            // Research-only event; does not modify trading behavior.
+            try {
+                window.dispatchEvent(new CustomEvent('digitmatchstar:tick', {
+                    detail: {
+                        symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
+                        quote: Number(tick.quote),
+                        formattedQuote: formattedTick,
+                        epoch: Number(tick.epoch) || Math.floor(Date.now() / 1000),
+                        pip_size: Number.isFinite(Number(tick.pip_size))
+                            ? Number(tick.pip_size)
+                            : getSymbolDecimals(tick.symbol || window.tickFormat?.symbol, tick),
+                        digit,
+                        receivedAt: Date.now()
+                    }
+                }));
+            } catch (_) {}
+
             rememberMarketTick(tickData);
             
             // Update UI - show the digit clearly
@@ -10128,6 +10335,7 @@ function rotateHybridDigit(reason = '') {
         }
 
         function processTickImmediately(tick) {
+            if (window.SERVER_EXECUTION?.enabled) return;
             if (window.stopAfterWin) return;
 
             // Never allow a second order while a proposal/buy is still awaiting
@@ -10364,6 +10572,27 @@ window.executionLock = true;
                 );
 
                 playAudioFeedback('EXECUTION');
+
+                // Candidate Tick DNA V3.7 — EXACT T0 ALIGNMENT.
+                // Research-only: on the FIRST purchase opportunity in a cycle,
+                // freeze this exact tick and define the research target as THIS
+                // tick's own last digit. Trading selection/execution is unchanged.
+                if (!window.cycleHasPurchasedContract) {
+                    try {
+                        // SAFE-TICK V1 uses the exact same aligned candidate tick.
+                        // SHADOW ONLY: it records ACCEPT/REJECT but never blocks execution.
+                        window.SafeTickV1?.captureCandidate?.(tick);
+                    } catch (err) {
+                        console.warn('SAFE-TICK V1 capture failed:', err);
+                    }
+
+                    try {
+                        window.CandidateTickDNAV3?.captureCandidate?.(tick);
+                    } catch (err) {
+                        console.warn('Candidate Tick DNA V3.7 capture failed:', err);
+                    }
+                }
+
                 executeTrade(tick);
 
             } catch (error) {
@@ -10374,8 +10603,855 @@ window.executionLock = true;
             }
         }
         
+
+        function downloadSafeTickV1Data() {
+            try {
+                const payload = window.SafeTickV1?.exportState?.();
+                if (!payload) throw new Error('SAFE-TICK V1 is not loaded');
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `safe-tick-v1-shadow-R_10-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                log('🛡️ SAFE-TICK V1 shadow data exported', 'SYSTEM');
+            } catch (err) {
+                console.error(err);
+                log(`SAFE-TICK V1 export failed: ${err?.message || err}`, 'ERROR');
+            }
+        }
+
+
+        // ============================================================================
+        // DIGITMATCHSTAR SAFE-TICK V1 — FROZEN SHADOW SELECTOR
+        // Discovery rule frozen 2026-10-04:
+        //   candidateFreq25 <= 0.08 AND entropy10 <= 2.5219280948873625
+        //
+        // IMPORTANT:
+        // - Entry-time information only.
+        // - SHADOW ONLY. It does not block or place a trade.
+        // - Outcome is measured on FUTURE ticks only.
+        // - STOP10 = forwardGap > 10 (or no recurrence by tick 20).
+        // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
+        // ============================================================================
+        window.SafeTickV1 = (() => {
+            const VERSION = 'SAFE-TICK-V1.4-RICH-DNA-2026-10-05';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_3_persistent_shadow_r10';
+            const TARGET = 500;
+            const FREQ25_MAX = 0.08;
+            const ENTROPY10_MAX = 2.5219280948873625;
+
+            let active = null;
+            let records = [];
+            let lastSeenEpoch = null;
+
+            function entropy10(arr) {
+                if (!Array.isArray(arr) || !arr.length) return NaN;
+                const counts = Array(10).fill(0);
+                for (const d of arr) {
+                    const n = Number(d);
+                    if (Number.isInteger(n) && n >= 0 && n <= 9) counts[n]++;
+                }
+                let h = 0;
+                const N = arr.length;
+                for (const n of counts) {
+                    if (!n) continue;
+                    const p = n / N;
+                    h -= p * Math.log2(p);
+                }
+                return h;
+            }
+
+            function load() {
+                try {
+                    // 1) Load the current V1.3 store.
+                    let parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+
+                    // 2) Migration fallback: recover any valid finalized data from V1.2
+                    // so a code upgrade does not silently make the user's research vanish.
+                    if (!parsed) {
+                        const legacy = JSON.parse(
+                            localStorage.getItem('digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10') || 'null'
+                        );
+                        if (legacy && Array.isArray(legacy.records)) {
+                            parsed = legacy;
+                        }
+                    }
+
+                    if (parsed) {
+                        if (Array.isArray(parsed.records)) {
+                            records = parsed.records;
+                        }
+                        if (parsed.active && !parsed.active.finalized) {
+                            active = parsed.active;
+                        }
+                        if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
+                            lastSeenEpoch = parsed.lastSeenEpoch;
+                        }
+                    }
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.4 restore failed:', err);
+                }
+
+                render();
+            }
+
+            function save() {
+                try {
+                    const payload = {
+                        version: VERSION,
+                        target: TARGET,
+                        active: active ? JSON.parse(JSON.stringify(active)) : null,
+                        records: records.slice(-5000),
+                        lastSeenEpoch,
+                        savedAt: Date.now()
+                    };
+
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
+                    // Secondary emergency mirror. If the main key is corrupted or
+                    // accidentally overwritten, the last good state can still recover.
+                    localStorage.setItem(
+                        `${STORAGE_KEY}:backup`,
+                        JSON.stringify(payload)
+                    );
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.4 save failed:', err);
+                }
+            }
+
+            function featureSnapshot(candidateDigit) {
+                const all = Array.isArray(window.lastDigits)
+                    ? window.lastDigits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    : [];
+
+                const entropy = (arr) => entropy10(arr);
+
+                const freq = (n) => {
+                    const w = all.slice(-n);
+                    return w.length
+                        ? w.filter(d => d === candidateDigit).length / w.length
+                        : NaN;
+                };
+
+                const w5 = all.slice(-5);
+                const w10 = all.slice(-10);
+                const w25 = all.slice(-25);
+                const w50 = all.slice(-50);
+                const w100 = all.slice(-100);
+
+                // Count adjacent equal-digit pairs over the most recent 25 digits.
+                // This is descriptive DNA only; it does NOT change the frozen V1 rule.
+                let adjacentRepeats = 0;
+                for (let i = 1; i < w25.length; i++) {
+                    if (w25[i] === w25[i - 1]) adjacentRepeats++;
+                }
+
+                // Quote-DNA comes from the canonical recent market-tick buffer.
+                const market = Array.isArray(window.recentMarketTicks)
+                    ? window.recentMarketTicks
+                        .map(t => ({
+                            quote: Number(t?.price ?? t?.raw?.quote ?? t?.quote),
+                            digit: Number(t?.digit),
+                            epoch: Number(t?.raw?.epoch ?? t?.epoch ?? 0)
+                        }))
+                        .filter(t => Number.isFinite(t.quote))
+                    : [];
+
+                const q = market.slice(-26).map(t => t.quote);
+                const deltas = [];
+                for (let i = 1; i < q.length; i++) {
+                    deltas.push(q[i] - q[i - 1]);
+                }
+
+                const last25Deltas = deltas.slice(-25);
+                const w25MeanQuoteDelta = last25Deltas.length
+                    ? last25Deltas.reduce((a, b) => a + b, 0) / last25Deltas.length
+                    : NaN;
+
+                const immediateQuoteDelta = deltas.length
+                    ? deltas[deltas.length - 1]
+                    : NaN;
+
+                return {
+                    contextN: all.length,
+
+                    // Frozen V1 decision fields
+                    candidateFreq25: freq(25),
+                    entropy10: entropy(w10),
+
+                    // Rich pre-entry DNA for future failure-vs-success analysis
+                    adjacentRepeats,
+                    w25MeanQuoteDelta,
+                    candidateFreq5: freq(5),
+                    candidateFreq10: freq(10),
+                    candidateFreq50: freq(50),
+                    candidateFreq100: freq(100),
+                    entropy5: entropy(w5),
+                    entropy25: entropy(w25),
+                    immediateQuoteDelta,
+                    immediateDirection: Number.isFinite(immediateQuoteDelta)
+                        ? (immediateQuoteDelta > 0 ? 1 : (immediateQuoteDelta < 0 ? -1 : 0))
+                        : null,
+                    candidateLastDigit: candidateDigit,
+                    alignmentGuaranteed: true,
+                    featureSchema: 'SAFE-TICK-RICH-DNA-V1'
+                };
+            }
+
+            function normalizeTick(tick) {
+                const fallback = window.lastTick || null;
+                const source = tick || fallback;
+                if (!source) return null;
+
+                const symbol =
+                    source.symbol ||
+                    fallback?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+
+                const rawQuote =
+                    source.quote ??
+                    source.price ??
+                    fallback?.quote ??
+                    fallback?.price ??
+                    null;
+
+                const explicitDigit = Number(source.digit);
+                const fallbackDigit = Number(fallback?.digit);
+
+                let digit = Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
+                    ? explicitDigit
+                    : (
+                        Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
+                            ? fallbackDigit
+                            : Number(getLastDigitFromQuote?.(rawQuote, null, symbol))
+                      );
+
+                // IMPORTANT: Number(null) === 0 in JavaScript. Treat null/undefined/
+                // empty values as MISSING before numeric conversion so T0 never becomes e:0.
+                const toPositiveFinite = (value) => {
+                    if (value === null || value === undefined || value === '') return null;
+                    const n = Number(value);
+                    return Number.isFinite(n) && n > 0 ? n : null;
+                };
+
+                const sourceEpoch = toPositiveFinite(source.epoch);
+                const fallbackEpoch = toPositiveFinite(fallback?.epoch);
+
+                // executeTrade() can receive a lightweight tick without epoch.
+                // window.lastTick is the canonical market tick at that instant.
+                const epoch = sourceEpoch ?? fallbackEpoch ?? null;
+
+                const sourceReceivedAt = toPositiveFinite(source.receivedAt);
+                const fallbackReceivedAt = toPositiveFinite(fallback?.receivedAt);
+                const receivedAt = sourceReceivedAt ?? fallbackReceivedAt ?? null;
+
+                const quoteText = rawQuote === null || rawQuote === undefined
+                    ? ''
+                    : String(rawQuote);
+
+                return {
+                    symbol,
+                    quote: rawQuote,
+                    quoteText,
+                    digit,
+                    epoch,
+                    receivedAt
+                };
+            }
+
+            function tickKey(t) {
+                if (!t) return null;
+
+                const epoch =
+                    t.epoch !== null && t.epoch !== undefined && t.epoch !== ''
+                        ? Number(t.epoch)
+                        : null;
+
+                if (Number.isFinite(epoch) && epoch > 0) {
+                    return `e:${epoch}`;
+                }
+
+                const receivedAt =
+                    t.receivedAt !== null && t.receivedAt !== undefined && t.receivedAt !== ''
+                        ? Number(t.receivedAt)
+                        : null;
+
+                if (Number.isFinite(receivedAt) && receivedAt > 0) {
+                    return `r:${receivedAt}|q:${t.quoteText}|d:${t.digit}`;
+                }
+
+                // Last-resort identity only; canonical builds should normally have epoch.
+                return `q:${t.quoteText}|d:${t.digit}`;
+            }
+
+            function captureCandidate(tick) {
+                const t = normalizeTick(tick);
+                if (!t) return null;
+
+                if (t.symbol !== 'R_10') {
+                    render();
+                    return null;
+                }
+
+                // Keep outcomes non-overlapping: one candidate is followed until
+                // recurrence or T+20 before another candidate is admitted.
+                if (active && !active.finalized) return active;
+
+                const digit = Number(t.digit);
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
+
+                const f = featureSnapshot(digit);
+                const eligible =
+                    Number.isFinite(f.candidateFreq25) &&
+                    Number.isFinite(f.entropy10) &&
+                    f.candidateFreq25 <= FREQ25_MAX &&
+                    f.entropy10 <= ENTROPY10_MAX;
+
+                active = {
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+                    symbol: t.symbol,
+                    capturedAt: Date.now(),
+                    entryEpoch: (t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0) ? Number(t.epoch) : null,
+                    entryReceivedAt: (t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0) ? Number(t.receivedAt) : null,
+                    entryTickKey: tickKey(t),
+                    entryQuote: t.quote,
+                    candidateDigit: digit,
+                    entryFeatures: f,
+                    eligible,
+                    decision: eligible ? 'ACCEPT_SHADOW' : 'REJECT_SHADOW',
+                    forwardTicksObserved: 0,
+                    forwardGap: null,
+                    stop10: null,
+                    tail15: null,
+                    noRecurrenceBy20: false,
+                    finalized: false,
+                    sameTickSkipped: false,
+                    lastFutureTickKey: null
+                };
+
+                log(
+                    `🛡️ SAFE-TICK V1.4 RICH-DNA | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
+                    `T0 ${active.entryEpoch ?? active.entryTickKey}`,
+                    eligible ? 'SYSTEM' : 'WARNING'
+                );
+
+                save();
+                render();
+                return active;
+            }
+
+            function onFutureTick(tick) {
+                if (!active || active.finalized || !tick) return;
+
+                const t = normalizeTick(tick);
+                if (!t || t.symbol !== active.symbol) return;
+
+                const key = tickKey(t);
+
+                // Strong T0 exclusion. The exact candidate tick can be emitted again
+                // by the canonical tick event or by the fallback poll. It is NEVER T+1.
+                if (active.entryTickKey && key === active.entryTickKey) {
+                    active.sameTickSkipped = true;
+                    save();
+                    return;
+                }
+
+                if (
+                    active.entryEpoch !== null &&
+                    t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0 &&
+                    Number(t.epoch) <= Number(active.entryEpoch)
+                ) {
+                    return;
+                }
+
+                if (
+                    active.entryEpoch === null &&
+                    active.entryReceivedAt !== null &&
+                    t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0 &&
+                    Number(t.receivedAt) <= Number(active.entryReceivedAt)
+                ) {
+                    return;
+                }
+
+                // Event + polling fallback can both surface the same future tick.
+                if (key && key === active.lastFutureTickKey) return;
+                active.lastFutureTickKey = key;
+
+                const digit = Number(t.digit);
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+
+                active.forwardTicksObserved += 1;
+                save();
+
+                if (digit === active.candidateDigit) {
+                    active.forwardGap = active.forwardTicksObserved;
+                    finalize(false);
+                    return;
+                }
+
+                if (active.forwardTicksObserved >= 20) {
+                    active.forwardGap = null;
+                    active.noRecurrenceBy20 = true;
+                    finalize(true);
+                } else {
+                    render();
+                }
+            }
+
+            function finalize(noRecurrenceBy20) {
+                if (!active || active.finalized) return;
+
+                active.noRecurrenceBy20 = !!noRecurrenceBy20;
+                active.stop10 =
+                    active.forwardGap === null
+                        ? 1
+                        : (active.forwardGap > 10 ? 1 : 0);
+                active.tail15 =
+                    active.forwardGap === null
+                        ? 1
+                        : (active.forwardGap >= 15 ? 1 : 0);
+                active.finalized = true;
+                active.finalizedAt = Date.now();
+
+                records.push(JSON.parse(JSON.stringify(active)));
+                save();
+
+                log(
+                    `🛡️ SAFE-TICK V1 OUTCOME | ${active.decision} | digit ${active.candidateDigit} | ` +
+                    `gap ${active.forwardGap === null ? '>20' : active.forwardGap} | ` +
+                    `STOP10 ${active.stop10 ? 'YES' : 'NO'} | Tail15 ${active.tail15 ? 'YES' : 'NO'}`,
+                    active.stop10 ? 'WARNING' : 'SYSTEM'
+                );
+
+                render();
+                active = null;
+                save();
+            }
+
+            function stats() {
+                const finalized = records.filter(r => r?.finalized);
+                const accepted = finalized.filter(r => r.eligible);
+                const rejected = finalized.filter(r => !r.eligible);
+                const acceptedStop10 = accepted.filter(r => r.stop10 === 1);
+                const acceptedTail15 = accepted.filter(r => r.tail15 === 1);
+
+                return {
+                    finalized: finalized.length,
+                    accepted: accepted.length,
+                    rejected: rejected.length,
+                    acceptedStop10: acceptedStop10.length,
+                    acceptedTail15: acceptedTail15.length,
+                    acceptedStop10Rate: accepted.length ? acceptedStop10.length / accepted.length : 0,
+                    acceptedTail15Rate: accepted.length ? acceptedTail15.length / accepted.length : 0
+                };
+            }
+
+            function setText(id, value, className = null) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = value;
+                if (className) el.className = className;
+            }
+
+            function render() {
+                const s = stats();
+                const cur = active;
+
+                setText('safeTickCandidateDigit', cur ? String(cur.candidateDigit) : '—');
+                setText(
+                    'safeTickFreq25',
+                    cur && Number.isFinite(cur.entryFeatures?.candidateFreq25)
+                        ? cur.entryFeatures.candidateFreq25.toFixed(3)
+                        : '—'
+                );
+                setText(
+                    'safeTickEntropy10',
+                    cur && Number.isFinite(cur.entryFeatures?.entropy10)
+                        ? cur.entryFeatures.entropy10.toFixed(3)
+                        : '—'
+                );
+                setText(
+                    'safeTickForwardGap',
+                    cur
+                        ? (
+                            cur.finalized
+                                ? (cur.forwardGap === null ? '>20' : String(cur.forwardGap))
+                                : String(cur.forwardTicksObserved)
+                          )
+                        : '—'
+                );
+                setText(
+                    'safeTickOutcomeText',
+                    cur
+                        ? (
+                            cur.finalized
+                                ? `STOP10 ${cur.stop10 ? 'YES' : 'NO'} · Tail15 ${cur.tail15 ? 'YES' : 'NO'}`
+                                : `observing future ticks ${cur.forwardTicksObserved}/20`
+                          )
+                        : 'awaiting outcome'
+                );
+
+                const decisionEl = document.getElementById('safeTickLiveDecision');
+                if (decisionEl) {
+                    if (!cur) {
+                        decisionEl.textContent = 'WAITING FOR CANDIDATE';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200';
+                    } else if (cur.eligible) {
+                        decisionEl.textContent = '✅ ACCEPT_SHADOW';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-700 text-emerald-50';
+                    } else {
+                        decisionEl.textContent = '⛔ REJECT_SHADOW';
+                        decisionEl.className = 'ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-rose-800 text-rose-50';
+                    }
+                }
+
+                setText('safeTickFinalized', String(s.finalized));
+                setText('safeTickAccepted', String(s.accepted));
+                setText('safeTickRejected', String(s.rejected));
+                setText('safeTickAcceptedStop10', String(s.acceptedStop10));
+                setText('safeTickAcceptedTail15', String(s.acceptedTail15));
+
+                const progress = Math.min(100, (s.finalized / TARGET) * 100);
+                setText('safeTickProgressText', `${s.finalized} / ${TARGET}`);
+                const bar = document.getElementById('safeTickProgressBar');
+                if (bar) bar.style.width = `${progress.toFixed(1)}%`;
+
+                const summary = document.getElementById('safeTickSummary');
+                if (summary) {
+                    const stop10Rate = s.accepted
+                        ? `${(s.acceptedStop10Rate * 100).toFixed(1)}%`
+                        : '—';
+                    const tail15Rate = s.accepted
+                        ? `${(s.acceptedTail15Rate * 100).toFixed(1)}%`
+                        : '—';
+                    summary.textContent =
+                        `Accepted ${s.accepted}/${s.finalized || 0} finalized · ` +
+                        `Accepted STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
+                        `Accepted Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
+                }
+            }
+
+            function exportState() {
+                return {
+                    schema: 'DIGITMATCHSTAR_SAFE_TICK_V1_SHADOW',
+                    version: VERSION,
+                    rule: {
+                        candidateFreq25Max: FREQ25_MAX,
+                        entropy10Max: ENTROPY10_MAX
+                    },
+                    targetCandidates: TARGET,
+                    active: active ? JSON.parse(JSON.stringify(active)) : null,
+                    stats: stats(),
+                    records: JSON.parse(JSON.stringify(records))
+                };
+            }
+
+            load();
+
+            // Consume the canonical tick event if available.
+            window.addEventListener('digitmatchstar:tick', (event) => {
+                try {
+                    onFutureTick(event?.detail?.tick || event?.detail || null);
+                } catch (err) {
+                    console.warn('SAFE-TICK V1 future tick error:', err);
+                }
+            });
+
+            // Fallback: lightweight poll of canonical window.lastTick for builds
+            // where the tick event is not emitted.
+            let fallbackEpoch = null;
+            setInterval(() => {
+                try {
+                    const t = window.lastTick;
+                    if (!t) return;
+                    const epoch = Number(t.epoch ?? NaN);
+                    if (Number.isFinite(epoch) && epoch === fallbackEpoch) return;
+                    fallbackEpoch = epoch;
+                    onFutureTick(t);
+                } catch (_) {}
+            }, 250);
+
+            window.addEventListener('load', render);
+            window.addEventListener('beforeunload', save);
+            window.addEventListener('pagehide', save);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') save();
+            });
+            setTimeout(render, 500);
+
+            return Object.freeze({
+                VERSION,
+                captureCandidate,
+                onFutureTick,
+                stats,
+                render,
+                exportState
+            });
+        })();
+
+
+
+        // ============================================================================
+        // SERVER EXECUTION BRIDGE V1
+        // DEMO may continue unattended on the server.
+        // REAL remains server-resident but requires explicit confirmation per purchase.
+        // ============================================================================
+        window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+            enabled: localStorage.getItem('dms_server_execution_enabled') !== '0',
+            apiUrl: (localStorage.getItem('dms_server_execution_url') || 'https://digitmatchstar-api.onrender.com').replace(/\/+$/,''),
+            state: null,
+            sessionId: Number(localStorage.getItem('dms_server_session_id') || 0) || null,
+            pollTimer: null,
+            lastCandidateSent: null
+        };
+
+        function serverExecEl(id){ return document.getElementById(id); }
+
+        function renderServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            const st = s.state || {};
+            const badge = serverExecEl('serverExecBadge');
+            const toggle = serverExecEl('serverExecToggleBtn');
+            const confirmBtn = serverExecEl('serverRealConfirmBtn');
+
+            if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
+            if (serverExecEl('serverExecMode')) {
+                serverExecEl('serverExecMode').textContent = s.enabled
+                    ? `SERVER · ${(st.account_mode || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
+                    : 'BROWSER';
+            }
+            if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
+            if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
+            if (serverExecEl('serverExecTrade')) {
+                serverExecEl('serverExecTrade').textContent =
+                    Number.isFinite(Number(st.current_trade)) ? `${st.current_trade}/${st.max_trades ?? '—'}` : '—';
+            }
+            if (serverExecEl('serverExecPnl')) {
+                const pnl = Number(st.pnl || 0);
+                serverExecEl('serverExecPnl').textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+            }
+
+            if (badge) {
+                if (!s.apiUrl) {
+                    badge.textContent = 'NOT CONFIGURED';
+                    badge.className = 'edge-pill text-yellow-300';
+                } else if (s.enabled && st.running) {
+                    badge.textContent = 'SERVER ACTIVE';
+                    badge.className = 'edge-pill text-emerald-300';
+                } else if (s.enabled) {
+                    badge.textContent = 'SERVER READY';
+                    badge.className = 'edge-pill text-cyan-300';
+                } else {
+                    badge.textContent = 'BROWSER MODE';
+                    badge.className = 'edge-pill text-gray-300';
+                }
+            }
+
+            if (toggle) {
+                toggle.textContent = s.enabled ? 'Use Browser' : 'Use Server';
+                toggle.className = s.enabled
+                    ? 'server-exec-btn bg-rose-700 hover:bg-rose-600'
+                    : 'server-exec-btn bg-sky-700 hover:bg-sky-600';
+            }
+
+            if (confirmBtn) {
+                const needsConfirm =
+                    s.enabled &&
+                    String(st.account_mode || '').toUpperCase() === 'REAL' &&
+                    st.pending_real_confirmation === true;
+                confirmBtn.classList.toggle('hidden', !needsConfirm);
+            }
+
+            if (s.enabled && st) {
+                const tc = document.getElementById('metricTradeCount');
+                const stake = document.getElementById('metricCurrentStake');
+                const pnl = document.getElementById('metricTotalProfit');
+                if (tc && Number.isFinite(Number(st.current_trade))) tc.textContent = String(st.current_trade);
+                if (stake && Number.isFinite(Number(st.current_stake))) stake.textContent = `$${Number(st.current_stake).toFixed(2)}`;
+                if (pnl && Number.isFinite(Number(st.pnl))) pnl.textContent = `${Number(st.pnl) >= 0 ? '+' : ''}$${Number(st.pnl).toFixed(2)}`;
+            }
+        }
+
+        async function serverExecRequest(path, options = {}) {
+            const s = window.SERVER_EXECUTION;
+            if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
+            const jwt = getPlatformJwt();
+            if (!jwt) {
+                localStorage.removeItem('bot_authenticated');
+                throw new Error('DigitMatchStar session expired. Reconnect through Deriv.');
+            }
+            const res = await fetch(`${s.apiUrl}${path}`, {
+                method: options.method || 'GET',
+                headers: {
+                    'Content-Type':'application/json',
+                    'Authorization': `Bearer ${jwt}`,
+                    ...(options.headers || {})
+                },
+                body: options.body === undefined ? undefined : JSON.stringify(options.body),
+                cache: 'no-store'
+            });
+            let data = null;
+            try { data = await res.json(); } catch (_) {}
+            if (res.status === 401) {
+                localStorage.removeItem('dms_platform_jwt');
+                localStorage.removeItem('bot_authenticated');
+            }
+            if (!res.ok) {
+                throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
+            }
+            return data;
+        }
+
+        async function pollServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+            try {
+                const rows = await serverExecRequest('/sessions');
+                s.state = s.sessionId
+                    ? (rows.find(x => Number(x.id) === Number(s.sessionId)) || null)
+                    : (rows[0] || null);
+                renderServerExecutionState();
+            } catch (e) {
+                const badge = serverExecEl('serverExecBadge');
+                if (badge) {
+                    badge.textContent = 'SERVER OFFLINE';
+                    badge.className = 'edge-pill text-rose-300';
+                }
+            }
+        }
+
+        function ensureServerExecutionPolling() {
+            const s = window.SERVER_EXECUTION;
+            if (s.pollTimer) clearInterval(s.pollTimer);
+            s.pollTimer = setInterval(pollServerExecutionState, 1200);
+            pollServerExecutionState();
+        }
+
+        function configureServerExecutionUrl() {
+            const current = window.SERVER_EXECUTION.apiUrl || '';
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-api.onrender.com');
+            if (raw === null) return;
+            const value = String(raw).trim().replace(/\/+$/,'');
+            window.SERVER_EXECUTION.apiUrl = value;
+            localStorage.setItem('dms_server_execution_url', value);
+            renderServerExecutionState();
+            if (window.SERVER_EXECUTION.enabled) ensureServerExecutionPolling();
+        }
+
+        async function toggleServerExecutionMode() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled && !s.apiUrl) {
+                configureServerExecutionUrl();
+                if (!s.apiUrl) return;
+            }
+
+            if (window.isBotRunning || s.state?.running || s.state?.open_contract_id) {
+                alert('Stop the current session and let any open contract settle before changing execution engine.');
+                return;
+            }
+
+            if (s.enabled && !getStoredDerivToken()) {
+                alert('Browser trading mode requires a raw Deriv token and is disabled for secure OAuth users. Keep SERVER mode enabled.');
+                return;
+            }
+            s.enabled = !s.enabled;
+            localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+            log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
+        }
+
+        function serverSessionConfigFromUi() {
+            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            return {
+                requested_mode: mode,
+                symbol: document.getElementById('symbol')?.value || 'R_10',
+                base_stake: Number(document.getElementById('baseStake')?.value || 1),
+                multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
+                max_trades: Number(document.getElementById('maxTrades')?.value || 10)
+            };
+        }
+
+        async function startServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled) return false;
+            if (!s.apiUrl) throw new Error('Configure the server execution backend URL first.');
+
+            const cfg = serverSessionConfigFromUi();
+            const digit = Number(sessionState.sessionDigit ?? document.getElementById('predictedDigit')?.value);
+            if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
+                throw new Error('A valid digit 0–9 is required before starting server execution.');
+            }
+
+            const accounts = await serverExecRequest('/auth/platform/me');
+            const wanted = String(cfg.requested_mode || 'DEMO').toLowerCase();
+            const account = (accounts.accounts || []).find(
+                a => String(a.account_type || '').toLowerCase() === wanted
+            );
+            if (!account) {
+                throw new Error(`No ${cfg.requested_mode} Deriv Options account is connected.`);
+            }
+
+            const created = await serverExecRequest('/sessions', {
+                method:'POST',
+                body:{
+                    account_id: account.account_id,
+                    symbol: cfg.symbol,
+                    base_stake: cfg.base_stake,
+                    multiplier: cfg.multiplier,
+                    max_trades: cfg.max_trades
+                }
+            });
+            s.sessionId = Number(created.id);
+            localStorage.setItem('dms_server_session_id', String(s.sessionId));
+
+            await serverExecRequest(`/sessions/${s.sessionId}/candidate`, {method:'POST', body:{digit}});
+            s.lastCandidateSent = digit;
+            await serverExecRequest(`/sessions/${s.sessionId}/start`, {method:'POST'});
+            await pollServerExecutionState();
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+            log(`☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
+            return true;
+        }
+
+        async function stopServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+            if (!s.sessionId) return; await serverExecRequest(`/sessions/${s.sessionId}/stop`, {method:'POST'}); await pollServerExecutionState();
+            renderServerExecutionState();
+            log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
+        }
+
+        async function confirmServerRealTrade() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled) return;
+            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
+            try {
+                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
+                await pollServerExecutionState();
+                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
+            } catch (e) {
+                alert(e.message);
+                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
+            }
+        }
+
+        // In SERVER mode, the browser must never submit proposals/buys.
+
         // EXECUTE TRADE - CRITICAL FUNCTION
         function executeTrade(tick) {
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Browser trade submission suppressed — server owns execution.', 'SYSTEM');
+                return;
+            }
             const contractType = document.getElementById('contractType').value;
             const symbol = document.getElementById('symbol').value;
             const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
@@ -10474,7 +11550,8 @@ window.executionLock = true;
         function getUserMaxTrades() {
             const input = document.getElementById('maxTrades');
             const raw = Number.parseInt(input?.value, 10);
-            const value = Number.isFinite(raw) && raw >= 1 ? raw : 10;
+            // Tick DNA V2.2 validation requires an uncensored 20-trade observation window.
+            const value = Number.isFinite(raw) && raw >= 20 ? raw : 20;
             if (input && String(value) !== String(input.value).trim()) {
                 input.value = String(value);
             }
@@ -10483,6 +11560,7 @@ window.executionLock = true;
 
         // START BOT - CRITICAL FUNCTION
         function startBot() {
+            window.__dmsManualStopRequested = false;
             if (window.isBotRunning) {
                 stopBot();
                 return;
@@ -10495,9 +11573,16 @@ window.executionLock = true;
             window.maxCycleTrades = window.maxTrades;
             
             const token = getStoredDerivToken();
-            if (!token) {
-                log('❌ No API token found. Please authenticate first.', 'CRITICAL');
-                updateTradeStatus('ERROR', 'No API token found', 'Please authenticate first', 'loss');
+            const platformJwt = getPlatformJwt();
+            if (window.SERVER_EXECUTION?.enabled) {
+                if (!platformJwt) {
+                    log('❌ DigitMatchStar session missing. Reconnect through Deriv.', 'CRITICAL');
+                    updateTradeStatus('ERROR', 'Session missing', 'Reconnect through Deriv', 'loss');
+                    return;
+                }
+            } else if (!token) {
+                log('❌ Legacy browser mode requires a Deriv token. Use SERVER mode.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'Browser token unavailable', 'Use SERVER mode', 'loss');
                 return;
             }
             
@@ -10565,7 +11650,9 @@ window.isBotRunning = true;
             );
             initTone();
 
-            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
+            } else if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
                 connectWebSocket();
             } else {
                 log('✅ Reusing authenticated trading connection', 'SYSTEM');
@@ -10578,7 +11665,7 @@ window.isBotRunning = true;
             
             // Add connection verification
             setTimeout(() => {
-                if (window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+                if (!window.SERVER_EXECUTION?.enabled && window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
                     log('❌ WebSocket failed to connect', 'ERROR');
                     updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check network and API token', 'loss');
                 }
@@ -10589,20 +11676,41 @@ window.isBotRunning = true;
         function stopBot(reason) {
             if (!window.isBotRunning) return;
 
-            // V57.7.3: STOP means STOP. No background/overnight controller is
-            // allowed to restart trading. Public research may continue separately.
-            window.manualTradingStopped = true;
+            // V2.4 CONTINUOUS OVERNIGHT:
+            // The overnight controller now exposes its state on window so this
+            // core trading function can reliably distinguish manual stops from
+            // normal cycle completion.
+            const reasonText = String(reason || '');
+            const hardFault = /settlement reconciliation mismatch|invalid token|authorization/i.test(reasonText);
+            const explicitManual =
+                window.__dmsManualStopRequested === true ||
+                /manual stop|overnight switched off|autopilot manually paused/i.test(reasonText);
 
-            // Manual STOP overrides overnight mode and prevents auto-restart.
-            try {
-                if (typeof loadState === 'function' && typeof saveState === 'function') {
-                    const overnightState = loadState();
-                    if (overnightState?.overnightEnabled) {
-                        overnightState.overnightEnabled = false;
-                        saveState(overnightState);
-                    }
+            // A genuine manual stop is a MASTER STOP: cancel both the live
+            // trading session and the persisted Overnight watchdog state.
+            if (explicitManual && typeof window.__dmsDisableOvernightState === 'function') {
+                try { window.__dmsDisableOvernightState(reasonText || 'Manual STOP'); } catch (_) {}
+            }
+
+            const overnightAutoContinue =
+                window.__dmsOvernightEnabled === true &&
+                window.__dmsOvernightAccount === 'DEMO' &&
+                !hardFault &&
+                !explicitManual;
+
+            window.manualTradingStopped = !overnightAutoContinue;
+
+            if (!overnightAutoContinue) {
+                window.__dmsOvernightRestartPending = false;
+                if (explicitManual || hardFault) {
+                    window.__dmsOvernightEnabled = false;
                 }
-            } catch (_) {}
+            } else {
+                window.__dmsOvernightRestartPending = true;
+                try {
+                    log(`🌙 Overnight cycle finished (${reasonText || 'automatic stop'}) · next DEMO cycle will auto-start`, 'SYSTEM');
+                } catch (_) {}
+            }
 
             // Start the no-money post-stop watch BEFORE archiving the live cycle.
             // This catches the normal "Maximum trades reached" path too.
@@ -10623,6 +11731,25 @@ window.isBotRunning = true;
             window.nextTradeAllowed = false;
             window.stopAfterWin = false;
             updateButtonState();
+
+            // Restart only after stopBot cleanup has completed. The watchdog
+            // below also retries every 2 seconds while Overnight remains ON.
+            if (overnightAutoContinue) {
+                setTimeout(() => {
+                    try {
+                        if (
+                            window.__dmsOvernightEnabled === true &&
+                            window.__dmsOvernightAccount === 'DEMO' &&
+                            window.isBotRunning !== true
+                        ) {
+                            window.__dmsOvernightRestartPending = false;
+                            startBot();
+                        }
+                    } catch (err) {
+                        try { console.error('Overnight restart failed:', err); } catch (_) {}
+                    }
+                }, 2200);
+            }
             
             log('⏹️ Bot stopped', 'SYSTEM');
             if (reason) log(`🛑 Stop reason: ${reason}`, 'SYSTEM');
@@ -10690,13 +11817,61 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
-        function toggleBot() {
+        async async function toggleBot() {
+            const serverMode = window.SERVER_EXECUTION?.enabled === true;
+
             if (window.isBotRunning) {
-                stopBot();
-            } else {
+                window.__dmsManualStopRequested = true;
+                if (typeof window.__dmsDisableOvernightState === 'function') {
+                    try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
+                }
+
+                if (serverMode) {
+                    try {
+                        await stopServerExecutionSession();
+                    } catch (e) {
+                        alert(`Server STOP failed: ${e.message}`);
+                        return;
+                    }
+                }
+
+                stopBot('Manual STOP');
+                return;
+            }
+
+            window.__dmsManualStopRequested = false;
+
+            if (!serverMode) {
                 startBot();
+                return;
+            }
+
+            // Keep the local UI/research lifecycle, but browser trade placement is
+            // disabled by SERVER EXECUTION guards.
+            startBot();
+            if (!window.isBotRunning) return;
+
+            try {
+                await startServerExecutionSession();
+                updateTradeStatus(
+                    'SERVER ACTIVE',
+                    'Server worker owns execution',
+                    'Dashboard may be closed; worker continues',
+                    'trade'
+                );
+            } catch (e) {
+                log(`❌ Server START failed: ${e.message}`, 'ERROR');
+                stopBot('Server start failed');
+                alert(`Server START failed: ${e.message}`);
             }
         }
+
+        // V2.5: explicitly expose the core controls. The overnight controller
+        // must not depend on indirect eval/globalBinding lookup.
+        window.startBot = startBot;
+        window.stopBot = stopBot;
+        window.toggleBot = toggleBot;
+
 
         function updateS20Label() {
             const v = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
@@ -12550,26 +13725,17 @@ window.isBotRunning = true;
         function stopExistingBot(reason) {
             if (isRunning() === false) return true;
 
-            const stop = globalBinding('stopBot');
-            if (typeof stop === 'function') {
+            if (typeof window.stopBot === 'function') {
                 try {
-                    stop();
+                    window.stopBot(reason || 'Overnight controller stop');
                     const s = loadState();
                     s.lastStopReason = reason;
                     saveState(s);
                     lastActionAt = Date.now();
                     return true;
-                } catch (_) {}
-            }
-
-            const btn = document.getElementById('toggleButton');
-            if (btn && String(btn.textContent || '').toUpperCase().includes('STOP')) {
-                btn.click();
-                const s = loadState();
-                s.lastStopReason = reason;
-                saveState(s);
-                lastActionAt = Date.now();
-                return true;
+                } catch (err) {
+                    try { console.error('Direct overnight stopBot failed:', err); } catch (_) {}
+                }
             }
 
             return false;
@@ -12578,13 +13744,14 @@ window.isBotRunning = true;
         function startExistingBot() {
             if (isRunning() === true) return true;
 
-            const start = globalBinding('startBot');
-            if (typeof start === 'function') {
+            if (typeof window.startBot === 'function') {
                 try {
-                    start();
+                    window.startBot();
                     lastActionAt = Date.now();
                     return true;
-                } catch (_) {}
+                } catch (err) {
+                    try { console.error('Direct overnight startBot failed:', err); } catch (_) {}
+                }
             }
 
             const btn = document.getElementById('toggleButton');
@@ -12632,6 +13799,11 @@ window.isBotRunning = true;
             s.enabled = wantOn;
             s.lastStopReason = null;
 
+            // V2.4: expose overnight state to the core trading scope.
+            window.__dmsOvernightEnabled = wantOn;
+            window.__dmsOvernightAccount = detectedAccount;
+            if (!wantOn) window.__dmsOvernightRestartPending = false;
+
             if (wantOn) {
                 s.overnightStartedAt = new Date().toISOString();
                 if (!Number.isFinite(Number(s.overnightCycles))) s.overnightCycles = 0;
@@ -12648,18 +13820,22 @@ window.isBotRunning = true;
 
             if (wantOn) {
                 window.manualTradingStopped = false;
+                window.__dmsManualStopRequested = false;
+                window.__dmsOvernightEnabled = true;
+                window.__dmsOvernightAccount = 'DEMO';
                 acquireScreenWakeLock().catch(() => {});
                 selectAiAuto();
 
-                if (isRunning() !== true) {
-                    startExistingBot();
-                }
-
                 startOvernightLoop();
+                if (isRunning() !== true) {
+                    setTimeout(() => overnightTick().catch(() => {}), 150);
+                }
                 render(s, detectedAccount, currentExecutionMode(), isRunning(),
                     '🌙 Overnight ON · research + DEMO trading active'
                 );
             } else {
+                window.__dmsOvernightEnabled = false;
+                window.__dmsOvernightRestartPending = false;
                 stopOvernightLoop();
                 releaseScreenWakeLock().catch(() => {});
                 if (isRunning() === true) {
@@ -12676,6 +13852,30 @@ window.isBotRunning = true;
         }
 
         window.setOvernightResearch = setOvernightResearch;
+        window.diagnoseOvernight = function() {
+            const result = {
+                accountMode: accountMode(),
+                overnightState: loadState(),
+                globals: {
+                    startBot: typeof window.startBot,
+                    stopBot: typeof window.stopBot,
+                    isBotRunning: window.isBotRunning,
+                    overnightEnabled: window.__dmsOvernightEnabled,
+                    overnightAccount: window.__dmsOvernightAccount
+                },
+                button: (() => {
+                    const b = document.getElementById('overnightResearchToggleBtn');
+                    return b ? {
+                        exists: true,
+                        bound: b.dataset.dmsDirectBound || null,
+                        label: document.getElementById('overnightResearchToggleLabel')?.textContent || null
+                    } : { exists: false };
+                })()
+            };
+            console.log('Overnight diagnostics', result);
+            return result;
+        };
+
         window.testOvernightResearchToggle = function() {
             const before = loadState();
             const okOn = setOvernightResearch(true);
@@ -12882,20 +14082,30 @@ window.isBotRunning = true;
 
         async function overnightTick() {
             const s = loadState();
-            if (!s.overnightEnabled) return;
+            if (!s.overnightEnabled || window.__dmsOvernightEnabled !== true) return;
 
             if (accountMode() !== 'DEMO') {
                 setOvernightResearch(false);
                 return;
             }
 
+            window.__dmsOvernightAccount = 'DEMO';
             acquireScreenWakeLock().catch(() => {});
             selectAiAuto();
 
-            // Research and trading are both active only because the user explicitly
-            // turned the single Overnight button ON.
-            if (isRunning() !== true) {
-                startExistingBot();
+            // V2.4 watchdog: if an automatic cycle stop leaves the bot idle,
+            // restart it directly. This does not require pressing START BOT.
+            if (isRunning() !== true && window.__dmsManualStopRequested !== true) {
+                try {
+                    if (typeof window.startBot === 'function') {
+                        window.startBot();
+                    } else {
+                        startExistingBot();
+                    }
+                } catch (err) {
+                    try { console.error('Overnight watchdog start failed:', err); } catch (_) {}
+                    startExistingBot();
+                }
             }
 
             archiveCompletedCycles(completedIds());
@@ -12916,7 +14126,7 @@ window.isBotRunning = true;
             if (overnightLoopTimer) clearInterval(overnightLoopTimer);
             overnightLoopTimer = setInterval(() => {
                 overnightTick().catch(() => {});
-            }, 1500);
+            }, 2000);
             setTimeout(() => {
                 overnightTick().catch(() => {});
             }, 100);
@@ -12929,6 +14139,30 @@ window.isBotRunning = true;
             }
         }
 
+        // V2.6: non-recursive master shutdown used by the core STOP BOT button.
+        // This disables persisted Overnight/autopilot state and cancels the
+        // watchdog without calling stopBot() again.
+        window.__dmsDisableOvernightState = function(reason = 'Manual STOP') {
+            try {
+                const s = loadState();
+                s.overnightEnabled = false;
+                s.enabled = false;
+                s.lastStopReason = reason;
+                saveState(s);
+            } catch (_) {}
+
+            window.__dmsOvernightEnabled = false;
+            window.__dmsOvernightRestartPending = false;
+            window.__dmsManualStopRequested = true;
+
+            try { stopOvernightLoop(); } catch (_) {}
+            try { releaseScreenWakeLock().catch(() => {}); } catch (_) {}
+            try { updateSingleOvernightButton(); } catch (_) {}
+
+            return true;
+        };
+
+
         window.OvernightResearchController = {
             on: () => setOvernightResearch(true),
             off: () => setOvernightResearch(false),
@@ -12940,6 +14174,37 @@ window.isBotRunning = true;
             isRunning
         };
 
+        // V2.5 direct top-button binding. No inline handler and no eval lookup.
+        function bindDirectOvernightButton() {
+            const btn = document.getElementById('overnightResearchToggleBtn');
+            if (!btn || btn.dataset.dmsDirectBound === '1') return;
+            btn.dataset.dmsDirectBound = '1';
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                try {
+                    const before = !!loadState().overnightEnabled;
+                    const ok = setOvernightResearch(!before);
+                    if (!ok && !before) {
+                        console.warn('Overnight start rejected. Account mode:', accountMode());
+                    }
+                } catch (err) {
+                    console.error('Direct Overnight button failed:', err);
+                    try {
+                        alert('Overnight button error: ' + (err?.message || err));
+                    } catch (_) {}
+                }
+            });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bindDirectOvernightButton, { once: true });
+        } else {
+            bindDirectOvernightButton();
+        }
+        setTimeout(bindDirectOvernightButton, 500);
+
+
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible' && loadState().overnightEnabled) {
                 acquireScreenWakeLock().catch(() => {});
@@ -12949,6 +14214,9 @@ window.isBotRunning = true;
         // IMPORTANT: overnight never resumes automatically after refresh.
         // A fresh explicit click is required before unattended trading can start.
         {
+            window.__dmsOvernightEnabled = false;
+            window.__dmsOvernightRestartPending = false;
+            window.__dmsManualStopRequested = false;
             const s = loadState();
             if (s.overnightEnabled) {
                 s.overnightEnabled = false;
@@ -12981,9 +14249,13 @@ window.isBotRunning = true;
 
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX"
+data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
 data-instant-unchanged="true"
 data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible"></div>
+data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.3-persistent-shadow-validation"></div>
+
+    <!-- Tick DNA → Tail Risk Validation V2 integration -->
+    <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
+
 </body>
 </html>

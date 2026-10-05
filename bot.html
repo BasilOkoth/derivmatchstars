@@ -9,7 +9,7 @@
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
-    <!-- SERVER EXECUTION V1: backend-owned proposal/buy/settlement; DEMO survives dashboard closure; REAL per-buy confirmation -->
+    <!-- SERVER EXECUTION V2.1: per-user OAuth/JWT backend; encrypted Deriv token; server-owned fixed-digit cycle -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -1184,7 +1184,13 @@
         // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
+        function getPlatformJwt() {
+            return localStorage.getItem('dms_platform_jwt') || '';
+        }
+
         function getStoredDerivToken() {
+            // V2.1: raw Deriv OAuth tokens are intentionally not stored in the browser.
+            // Legacy token lookup remains only for old browser-mode installations.
             return localStorage.getItem('active_token') ||
                    localStorage.getItem('derivToken') ||
                    localStorage.getItem('derivTokenDemo') ||
@@ -1219,7 +1225,7 @@
         }
 
         function isBotAuthenticated() {
-            return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
+            return localStorage.getItem('bot_authenticated') === 'true' && !!getPlatformJwt();
         }
 
         if (!isBotAuthenticated()) {
@@ -11198,9 +11204,10 @@ window.executionLock = true;
         // REAL remains server-resident but requires explicit confirmation per purchase.
         // ============================================================================
         window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
-            enabled: localStorage.getItem('dms_server_execution_enabled') === '1',
-            apiUrl: (localStorage.getItem('dms_server_execution_url') || '').replace(/\/+$/,''),
+            enabled: localStorage.getItem('dms_server_execution_enabled') !== '0',
+            apiUrl: (localStorage.getItem('dms_server_execution_url') || 'https://digitmatchstar-api.onrender.com').replace(/\/+$/,''),
             state: null,
+            sessionId: Number(localStorage.getItem('dms_server_session_id') || 0) || null,
             pollTimer: null,
             lastCandidateSent: null
         };
@@ -11275,14 +11282,27 @@ window.executionLock = true;
         async function serverExecRequest(path, options = {}) {
             const s = window.SERVER_EXECUTION;
             if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
+            const jwt = getPlatformJwt();
+            if (!jwt) {
+                localStorage.removeItem('bot_authenticated');
+                throw new Error('DigitMatchStar session expired. Reconnect through Deriv.');
+            }
             const res = await fetch(`${s.apiUrl}${path}`, {
                 method: options.method || 'GET',
-                headers: {'Content-Type':'application/json', ...(options.headers || {})},
+                headers: {
+                    'Content-Type':'application/json',
+                    'Authorization': `Bearer ${jwt}`,
+                    ...(options.headers || {})
+                },
                 body: options.body === undefined ? undefined : JSON.stringify(options.body),
                 cache: 'no-store'
             });
             let data = null;
             try { data = await res.json(); } catch (_) {}
+            if (res.status === 401) {
+                localStorage.removeItem('dms_platform_jwt');
+                localStorage.removeItem('bot_authenticated');
+            }
             if (!res.ok) {
                 throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
             }
@@ -11293,7 +11313,10 @@ window.executionLock = true;
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
             try {
-                s.state = await serverExecRequest('/state');
+                const rows = await serverExecRequest('/sessions');
+                s.state = s.sessionId
+                    ? (rows.find(x => Number(x.id) === Number(s.sessionId)) || null)
+                    : (rows[0] || null);
                 renderServerExecutionState();
             } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
@@ -11313,7 +11336,7 @@ window.executionLock = true;
 
         function configureServerExecutionUrl() {
             const current = window.SERVER_EXECUTION.apiUrl || '';
-            const raw = prompt('Enter the DigitMatchStar server execution API URL', current);
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-api.onrender.com');
             if (raw === null) return;
             const value = String(raw).trim().replace(/\/+$/,'');
             window.SERVER_EXECUTION.apiUrl = value;
@@ -11334,6 +11357,10 @@ window.executionLock = true;
                 return;
             }
 
+            if (s.enabled && !getStoredDerivToken()) {
+                alert('Browser trading mode requires a raw Deriv token and is disabled for secure OAuth users. Keep SERVER mode enabled.');
+                return;
+            }
             s.enabled = !s.enabled;
             localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
             renderServerExecutionState();
@@ -11344,7 +11371,7 @@ window.executionLock = true;
         function serverSessionConfigFromUi() {
             const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             return {
-                account_mode: mode,
+                requested_mode: mode,
                 symbol: document.getElementById('symbol')?.value || 'R_10',
                 base_stake: Number(document.getElementById('baseStake')?.value || 1),
                 multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
@@ -11363,20 +11390,42 @@ window.executionLock = true;
                 throw new Error('A valid digit 0–9 is required before starting server execution.');
             }
 
-            await serverExecRequest('/configure', {method:'POST', body:cfg});
-            await serverExecRequest('/candidate', {method:'POST', body:{digit}});
+            const accounts = await serverExecRequest('/auth/platform/me');
+            const wanted = String(cfg.requested_mode || 'DEMO').toLowerCase();
+            const account = (accounts.accounts || []).find(
+                a => String(a.account_type || '').toLowerCase() === wanted
+            );
+            if (!account) {
+                throw new Error(`No ${cfg.requested_mode} Deriv Options account is connected.`);
+            }
+
+            const created = await serverExecRequest('/sessions', {
+                method:'POST',
+                body:{
+                    account_id: account.account_id,
+                    symbol: cfg.symbol,
+                    base_stake: cfg.base_stake,
+                    multiplier: cfg.multiplier,
+                    max_trades: cfg.max_trades
+                }
+            });
+            s.sessionId = Number(created.id);
+            localStorage.setItem('dms_server_session_id', String(s.sessionId));
+
+            await serverExecRequest(`/sessions/${s.sessionId}/candidate`, {method:'POST', body:{digit}});
             s.lastCandidateSent = digit;
-            s.state = await serverExecRequest('/start', {method:'POST'});
+            await serverExecRequest(`/sessions/${s.sessionId}/start`, {method:'POST'});
+            await pollServerExecutionState();
             renderServerExecutionState();
             ensureServerExecutionPolling();
-            log(`☁ SERVER STARTED · ${cfg.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
+            log(`☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
             return true;
         }
 
         async function stopServerExecutionSession() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
-            s.state = await serverExecRequest('/stop', {method:'POST'});
+            if (!s.sessionId) return; await serverExecRequest(`/sessions/${s.sessionId}/stop`, {method:'POST'}); await pollServerExecutionState();
             renderServerExecutionState();
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
@@ -11386,7 +11435,7 @@ window.executionLock = true;
             if (!s.enabled) return;
             if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
             try {
-                await serverExecRequest('/real/confirm', {method:'POST'});
+                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
                 await pollServerExecutionState();
                 log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
             } catch (e) {
@@ -11524,9 +11573,16 @@ window.executionLock = true;
             window.maxCycleTrades = window.maxTrades;
             
             const token = getStoredDerivToken();
-            if (!token) {
-                log('❌ No API token found. Please authenticate first.', 'CRITICAL');
-                updateTradeStatus('ERROR', 'No API token found', 'Please authenticate first', 'loss');
+            const platformJwt = getPlatformJwt();
+            if (window.SERVER_EXECUTION?.enabled) {
+                if (!platformJwt) {
+                    log('❌ DigitMatchStar session missing. Reconnect through Deriv.', 'CRITICAL');
+                    updateTradeStatus('ERROR', 'Session missing', 'Reconnect through Deriv', 'loss');
+                    return;
+                }
+            } else if (!token) {
+                log('❌ Legacy browser mode requires a Deriv token. Use SERVER mode.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'Browser token unavailable', 'Use SERVER mode', 'loss');
                 return;
             }
             
@@ -11594,7 +11650,9 @@ window.isBotRunning = true;
             );
             initTone();
 
-            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
+            } else if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
                 connectWebSocket();
             } else {
                 log('✅ Reusing authenticated trading connection', 'SYSTEM');
@@ -11607,7 +11665,7 @@ window.isBotRunning = true;
             
             // Add connection verification
             setTimeout(() => {
-                if (window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+                if (!window.SERVER_EXECUTION?.enabled && window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
                     log('❌ WebSocket failed to connect', 'ERROR');
                     updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check network and API token', 'loss');
                 }
@@ -11759,7 +11817,7 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
-        async function toggleBot() {
+        async async function toggleBot() {
             const serverMode = window.SERVER_EXECUTION?.enabled === true;
 
             if (window.isBotRunning) {
