@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
@@ -664,7 +665,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.5 EXACT-EPOCH · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.6 STRICT-CONTIGUOUS · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -5538,40 +5539,69 @@ window.tailPrecursorLab = {
 
 /* === DigitMatchStar official result publisher === */
 window.matchstarPublisher = {
-    storageKey: 'matchstar_telegram_preview_cycle_ids_v2',
+    storageKey: 'matchstar_telegram_preview_cycle_ids_v3',
+
     publishedIds() {
         try {
             const rows = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
             return Array.isArray(rows) ? rows : [];
-        } catch (_) { return []; }
+        } catch (_) {
+            return [];
+        }
     },
+
     remember(id) {
         if (!id) return;
         const rows = this.publishedIds();
         if (!rows.includes(id)) rows.push(id);
-        try { localStorage.setItem(this.storageKey, JSON.stringify(rows.slice(-500))); } catch (_) {}
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(rows.slice(-500)));
+        } catch (_) {}
     },
+
+    authCandidates() {
+        const platformJwt =
+            (typeof getPlatformJwt === 'function' ? getPlatformJwt() : '') ||
+            sessionStorage.getItem('dms_platform_jwt') ||
+            localStorage.getItem('dms_platform_jwt') ||
+            '';
+
+        const derivToken =
+            (typeof getStoredDerivToken === 'function' ? getStoredDerivToken() : '') ||
+            sessionStorage.getItem('active_token') ||
+            localStorage.getItem('active_token') ||
+            localStorage.getItem('derivToken') ||
+            '';
+
+        const out = [];
+        if (platformJwt) out.push({ mode: 'platform', token: platformJwt });
+        if (derivToken && derivToken !== platformJwt) out.push({ mode: 'deriv', token: derivToken });
+        return out;
+    },
+
+    accountId() {
+        return (typeof getStoredDerivAccount === 'function')
+            ? getStoredDerivAccount()
+            : (
+                sessionStorage.getItem('active_account') ||
+                sessionStorage.getItem('derivAccount') ||
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('derivAccount') ||
+                localStorage.getItem('derivDemoAccount') ||
+                localStorage.getItem('derivRealAccount') ||
+                ''
+            );
+    },
+
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        // Secure OAuth mode: the browser intentionally has NO raw Deriv token.
-        // Use the DigitMatchStar platform JWT. /api/publish-cycle verifies it
-        // against the Render backend before accepting a Telegram publication.
-        const token = (typeof getPlatformJwt === 'function')
-            ? getPlatformJwt()
-            : (sessionStorage.getItem('dms_platform_jwt') ||
-               localStorage.getItem('dms_platform_jwt') ||
-               '');
+        const accountId = this.accountId();
+        const auths = this.authCandidates();
 
-        const accountId = (typeof getStoredDerivAccount === 'function')
-            ? getStoredDerivAccount()
-            : (localStorage.getItem('active_account') ||
-               localStorage.getItem('derivAccount') ||
-               localStorage.getItem('derivDemoAccount') ||
-               localStorage.getItem('derivRealAccount'));
-
-        if (!token || !accountId) {
-            const msg = `📣 Telegram publish skipped: missing ${!token ? 'platform session token' : 'account ID'}`;
+        if (!accountId || !auths.length) {
+            const msg =
+                `📣 Telegram publish skipped: missing ${!accountId ? 'account ID' : 'publisher authentication'}`;
             console.warn('[MatchStar Publisher]', msg);
             if (typeof log === 'function') log(msg, 'WARNING');
             return;
@@ -5592,57 +5622,80 @@ window.matchstarPublisher = {
                 totalPayout: cycle.totalPayout,
                 netPnL: cycle.netPnL,
                 maxStake: cycle.maxStake,
-                trades: Array.isArray(cycle.trades) ? cycle.trades.map(t => ({
-                    tradeNumber: t.tradeNumber,
-                    digit: t.digit,
-                    stake: t.stake,
-                    result: t.result,
-                    finalDigit: t.finalDigit,
-                    payout: t.payout,
-                    profit: t.profit
-                })) : []
+                trades: Array.isArray(cycle.trades)
+                    ? cycle.trades.map(t => ({
+                        tradeNumber: t.tradeNumber,
+                        digit: t.digit,
+                        stake: t.stake,
+                        result: t.result,
+                        finalDigit: t.finalDigit,
+                        payout: t.payout,
+                        profit: t.profit
+                    }))
+                    : []
             }
         };
 
-        try {
-            const response = await fetch('/api/publish-cycle', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(payload)
-            });
-            const data = await response.json().catch(() => ({}));
+        let lastError = null;
 
-            // Approval-first publisher:
-            // HTTP 200 + pendingApproval means the private preview was delivered
-            // successfully and is waiting for owner approval. It is NOT a failure.
-            if (response.ok && data?.pendingApproval) {
-                this.remember(cycle.id);
-                if (typeof log === 'function') {
-                    log(`📣 Telegram approval preview sent privately | ${cycle.status} | awaiting approval`, 'SYSTEM');
+        // Prefer secure platform JWT. If that session is unavailable/stale and
+        // a legacy/manual Deriv token exists, retry once with verified Deriv auth.
+        for (const auth of auths) {
+            try {
+                const response = await fetch('/api/publish-cycle', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${auth.token}`,
+                        'X-DMS-Auth-Mode': auth.mode
+                    },
+                    body: JSON.stringify({
+                        ...payload,
+                        auth_mode: auth.mode
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok && data?.pendingApproval) {
+                    this.remember(cycle.id);
+                    if (typeof log === 'function') {
+                        log(
+                            `📣 Telegram approval preview SENT | ${cycle.status} | auth ${auth.mode} | awaiting approval`,
+                            'SYSTEM'
+                        );
+                    }
+                    return data;
                 }
-            } else if (response.ok && data?.published) {
-                // Backward compatibility with direct-public publishing.
-                this.remember(cycle.id);
-                if (typeof log === 'function') {
-                    log(`📣 Official result published | ${cycle.status}`, 'SYSTEM');
+
+                if (response.ok && data?.published) {
+                    this.remember(cycle.id);
+                    if (typeof log === 'function') {
+                        log(`📣 Telegram result published | ${cycle.status}`, 'SYSTEM');
+                    }
+                    return data;
                 }
-            } else {
-                const errorText = data?.error || `HTTP ${response.status}`;
-                console.warn('[MatchStar Publisher]', errorText);
-                if (typeof log === 'function') {
-                    log(`📣 Telegram publish failed (${response.status}): ${errorText}`, 'WARNING');
-                }
-            }
-        } catch (err) {
-            const errorText = err?.message || String(err);
-            console.warn('[MatchStar Publisher]', errorText);
-            if (typeof log === 'function') {
-                log(`📣 Telegram publish error: ${errorText}`, 'WARNING');
+
+                lastError = data?.error || `HTTP ${response.status}`;
+                console.warn(
+                    `[MatchStar Publisher] ${auth.mode} authentication failed:`,
+                    lastError
+                );
+
+                // Only try the next auth candidate for auth/session failures.
+                if (![401, 403].includes(Number(response.status))) break;
+
+            } catch (err) {
+                lastError = err?.message || String(err);
+                console.warn('[MatchStar Publisher]', lastError);
+                break;
             }
         }
+
+        if (typeof log === 'function') {
+            log(`📣 Telegram publish failed: ${lastError || 'unknown error'}`, 'WARNING');
+        }
+        return null;
     }
 };
 
@@ -9528,22 +9581,29 @@ function rotateHybridDigit(reason = '') {
             
             window.lastTick = tickData;
 
-            // Tick DNA Lab: expose the exact canonical live tick used by this bot.
-            // Research-only event; does not modify trading behavior.
+            // Tick DNA / SAFE-TICK research: expose ONLY the exact Deriv canonical tick.
+            // IMPORTANT: research alignment must never invent an epoch from Date.now().
+            // If Deriv did not provide a positive epoch, the research event is skipped.
             try {
-                window.dispatchEvent(new CustomEvent('digitmatchstar:tick', {
-                    detail: {
-                        symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
-                        quote: Number(tick.quote),
-                        formattedQuote: formattedTick,
-                        epoch: Number(tick.epoch) || Math.floor(Date.now() / 1000),
-                        pip_size: Number.isFinite(Number(tick.pip_size))
-                            ? Number(tick.pip_size)
-                            : getSymbolDecimals(tick.symbol || window.tickFormat?.symbol, tick),
-                        digit,
-                        receivedAt: Date.now()
-                    }
-                }));
+                const canonicalEpoch = Number(tick.epoch);
+                if (Number.isFinite(canonicalEpoch) && canonicalEpoch > 0) {
+                    window.dispatchEvent(new CustomEvent('digitmatchstar:tick', {
+                        detail: {
+                            symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
+                            quote: Number(tick.quote),
+                            formattedQuote: formattedTick,
+                            epoch: canonicalEpoch,
+                            pip_size: Number.isFinite(Number(tick.pip_size))
+                                ? Number(tick.pip_size)
+                                : getSymbolDecimals(tick.symbol || window.tickFormat?.symbol, tick),
+                            digit,
+                            receivedAt: Date.now(),
+                            canonical: true
+                        }
+                    }));
+                } else {
+                    console.warn('[SAFE-TICK] Canonical Deriv epoch missing; research tick skipped.');
+                }
             } catch (_) {}
 
             rememberMarketTick(tickData);
@@ -10683,7 +10743,7 @@ window.executionLock = true;
                     try {
                         // SAFE-TICK V1 uses the exact same aligned candidate tick.
                         // SHADOW ONLY: it records ACCEPT/REJECT but never blocks execution.
-                        window.SafeTickV1?.captureCandidate?.(tick);
+                        window.SafeTickV1?.captureLatestCanonical?.();
                     } catch (err) {
                         console.warn('SAFE-TICK V1 capture failed:', err);
                     }
@@ -10740,15 +10800,26 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.5-EXACT-EPOCH-2026-10-05';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_5_exact_epoch_shadow_r10';
+            const VERSION = 'SAFE-TICK-V1.6-STRICT-CONTIGUOUS-EPOCH-2026-10-05';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
+            const EXPECTED_INTERVAL_SECONDS = 2; // R_10 canonical Deriv stream
+            const MAX_CAPTURE_LAG_MS = 5000;
+
+            const SAFE_IDB_DB = 'digitmatchstar-research';
+            const SAFE_IDB_STORE = 'safe_tick_shadow';
+            const SAFE_IDB_KEY = 'R_10_V1_6_STRICT_CONTIGUOUS';
 
             let active = null;
             let records = [];
-            let lastSeenEpoch = null;
+            let invalidRecords = [];
+            let latestCanonicalTick = null;
+            let lastCanonicalEpoch = null;
+
+            function clone(v) {
+                return JSON.parse(JSON.stringify(v));
+            }
 
             function entropy10(arr) {
                 if (!Array.isArray(arr) || !arr.length) return NaN;
@@ -10758,18 +10829,13 @@ window.executionLock = true;
                     if (Number.isInteger(n) && n >= 0 && n <= 9) counts[n]++;
                 }
                 let h = 0;
-                const N = arr.length;
                 for (const n of counts) {
                     if (!n) continue;
-                    const p = n / N;
+                    const p = n / arr.length;
                     h -= p * Math.log2(p);
                 }
                 return h;
             }
-
-            const SAFE_IDB_DB = 'digitmatchstar-research';
-            const SAFE_IDB_STORE = 'safe_tick_shadow';
-            const SAFE_IDB_KEY = 'R_10_V1_5_EXACT_EPOCH';
 
             function openSafeTickDB() {
                 return new Promise((resolve, reject) => {
@@ -10814,44 +10880,47 @@ window.executionLock = true;
                 }
             }
 
-            function applySavedState(parsed) {
-                if (!parsed) return;
-                if (Array.isArray(parsed.records)) records = parsed.records;
-                if (parsed.active && !parsed.active.finalized) active = parsed.active;
-                if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
-                    lastSeenEpoch = parsed.lastSeenEpoch;
-                }
-            }
-
-            function load() {
-                render();
-
-                idbReadSafeTick()
-                    .then((saved) => {
-                        if (saved && saved.version === VERSION) {
-                            applySavedState(saved);
-                            render();
-                        }
-                    })
-                    .catch((err) => {
-                        console.warn('SAFE-TICK V1.5 IndexedDB restore failed:', err);
-                    });
+            function snapshotForSave() {
+                return {
+                    version: VERSION,
+                    target: TARGET,
+                    active: active ? clone(active) : null,
+                    records: records.slice(-5000),
+                    invalidRecords: invalidRecords.slice(-5000),
+                    lastCanonicalEpoch,
+                    savedAt: Date.now()
+                };
             }
 
             function save() {
-                const payload = {
-                    version: VERSION,
-                    target: TARGET,
-                    active: active ? JSON.parse(JSON.stringify(active)) : null,
-                    records: records.slice(-5000),
-                    lastSeenEpoch,
-                    savedAt: Date.now()
-                };
-
-                // IndexedDB is the primary SAFE-TICK store from V1.4.1 onward.
-                idbWriteSafeTick(payload).catch((err) => {
-                    console.warn('SAFE-TICK IndexedDB save failed:', err);
+                idbWriteSafeTick(snapshotForSave()).catch(err => {
+                    console.warn('SAFE-TICK V1.6 IndexedDB save failed:', err);
                 });
+            }
+
+            async function load() {
+                try {
+                    const saved = await idbReadSafeTick();
+                    if (saved?.version === VERSION) {
+                        if (Array.isArray(saved.records)) records = saved.records;
+                        if (Array.isArray(saved.invalidRecords)) invalidRecords = saved.invalidRecords;
+
+                        // A forward window cannot remain provably contiguous across reload.
+                        if (saved.active && !saved.active.finalized) {
+                            const orphan = clone(saved.active);
+                            orphan.outcomeValid = false;
+                            orphan.invalidReason = 'SESSION_RESUME_BREAKS_CONTINUITY';
+                            orphan.invalidatedAt = Date.now();
+                            orphan.finalized = false;
+                            invalidRecords.push(orphan);
+                        }
+                    }
+                } catch (err) {
+                    console.warn('SAFE-TICK V1.6 restore failed:', err);
+                }
+                active = null;
+                render();
+                save();
             }
 
             function featureSnapshot(candidateDigit) {
@@ -10859,70 +10928,53 @@ window.executionLock = true;
                     ? window.lastDigits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
                     : [];
 
-                const entropy = (arr) => entropy10(arr);
-
                 const freq = (n) => {
                     const w = all.slice(-n);
-                    return w.length
-                        ? w.filter(d => d === candidateDigit).length / w.length
-                        : NaN;
+                    return w.length ? w.filter(d => d === candidateDigit).length / w.length : NaN;
                 };
 
                 const w5 = all.slice(-5);
                 const w10 = all.slice(-10);
                 const w25 = all.slice(-25);
-                const w50 = all.slice(-50);
-                const w100 = all.slice(-100);
 
-                // Count adjacent equal-digit pairs over the most recent 25 digits.
-                // This is descriptive DNA only; it does NOT change the frozen V1 rule.
                 let adjacentRepeats = 0;
                 for (let i = 1; i < w25.length; i++) {
                     if (w25[i] === w25[i - 1]) adjacentRepeats++;
                 }
 
-                // Quote-DNA comes from the canonical recent market-tick buffer.
                 const market = Array.isArray(window.recentMarketTicks)
                     ? window.recentMarketTicks
                         .map(t => ({
                             quote: Number(t?.price ?? t?.raw?.quote ?? t?.quote),
                             digit: Number(t?.digit),
-                            epoch: Number(t?.raw?.epoch ?? t?.epoch ?? 0)
+                            epoch: Number(t?.raw?.epoch ?? t?.epoch)
                         }))
                         .filter(t => Number.isFinite(t.quote))
                     : [];
 
                 const q = market.slice(-26).map(t => t.quote);
                 const deltas = [];
-                for (let i = 1; i < q.length; i++) {
-                    deltas.push(q[i] - q[i - 1]);
-                }
+                for (let i = 1; i < q.length; i++) deltas.push(q[i] - q[i - 1]);
 
                 const last25Deltas = deltas.slice(-25);
                 const w25MeanQuoteDelta = last25Deltas.length
                     ? last25Deltas.reduce((a, b) => a + b, 0) / last25Deltas.length
                     : NaN;
 
-                const immediateQuoteDelta = deltas.length
-                    ? deltas[deltas.length - 1]
-                    : NaN;
+                const immediateQuoteDelta = deltas.length ? deltas[deltas.length - 1] : NaN;
 
                 return {
                     contextN: all.length,
-
-                    // Frozen V1 decision fields
                     candidateFreq25: freq(25),
-                    entropy10: entropy(w10),
-
-                    // Rich pre-entry DNA for future failure-vs-success analysis
+                    entropy10: entropy10(w10),
                     adjacentRepeats,
                     w25MeanQuoteDelta,
                     candidateFreq5: freq(5),
                     candidateFreq10: freq(10),
                     candidateFreq50: freq(50),
                     candidateFreq100: freq(100),
-                    entropy5: entropy(w5),
-                    entropy25: entropy(w25),
+                    entropy5: entropy10(w5),
+                    entropy25: entropy10(w25),
                     immediateQuoteDelta,
                     immediateDirection: Number.isFinite(immediateQuoteDelta)
                         ? (immediateQuoteDelta > 0 ? 1 : (immediateQuoteDelta < 0 ? -1 : 0))
@@ -10933,151 +10985,86 @@ window.executionLock = true;
                 };
             }
 
-            function normalizeTick(tick) {
-                const fallback = window.lastTick || null;
-                const source = tick || fallback;
-                if (!source) return null;
+            function normalizeCanonicalTick(tick) {
+                if (!tick) return null;
 
-                const raw = source.raw || null;
-                const fallbackRaw = fallback?.raw || null;
+                const raw = tick.raw || null;
+                const epoch = Number(tick.epoch ?? raw?.epoch);
+                const digit = Number(tick.digit);
+
+                if (!Number.isFinite(epoch) || epoch <= 0) return null;
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
 
                 const symbol =
-                    source.symbol ||
+                    tick.symbol ||
                     raw?.symbol ||
-                    fallback?.symbol ||
-                    fallbackRaw?.symbol ||
                     document.getElementById('symbol')?.value ||
-                    window.tickFormat?.symbol ||
                     'UNKNOWN';
 
-                const rawQuote =
-                    source.quote ??
-                    raw?.quote ??
-                    source.price ??
-                    fallback?.quote ??
-                    fallbackRaw?.quote ??
-                    fallback?.price ??
-                    null;
+                const quoteRaw = tick.quote ?? tick.price ?? raw?.quote ?? null;
+                const quote = quoteRaw === null || quoteRaw === undefined ? null : Number(quoteRaw);
 
-                const explicitDigit = Number(source.digit);
-                const fallbackDigit = Number(fallback?.digit);
+                const receivedAtRaw = Number(tick.receivedAt ?? tick.time ?? Date.now());
+                const receivedAt = Number.isFinite(receivedAtRaw) && receivedAtRaw > 0
+                    ? receivedAtRaw
+                    : Date.now();
 
-                const digit =
-                    Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
-                        ? explicitDigit
-                        : (
-                            Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
-                                ? fallbackDigit
-                                : Number(getLastDigitFromQuote?.(rawQuote, raw, symbol))
-                          );
-
-                const positiveFinite = (value) => {
-                    if (value === null || value === undefined || value === '') return null;
-                    const n = Number(value);
-                    return Number.isFinite(n) && n > 0 ? n : null;
-                };
-
-                // IMPORTANT: window.lastTick stores the original Deriv payload in
-                // `.raw`, so raw.epoch must be checked. This was the source of the
-                // old entryEpoch=null alignment bug.
-                const epoch =
-                    positiveFinite(source.epoch) ??
-                    positiveFinite(raw?.epoch) ??
-                    positiveFinite(fallback?.epoch) ??
-                    positiveFinite(fallbackRaw?.epoch) ??
-                    null;
-
-                const receivedAt =
-                    positiveFinite(source.receivedAt) ??
-                    positiveFinite(source.time) ??
-                    positiveFinite(fallback?.receivedAt) ??
-                    positiveFinite(fallback?.time) ??
-                    null;
-
-                const formatted =
-                    source.formattedQuote ??
-                    source.formattedPrice ??
-                    fallback?.formattedQuote ??
-                    fallback?.formattedPrice ??
-                    null;
-
-                const quoteText =
-                    formatted !== null && formatted !== undefined && formatted !== ''
-                        ? String(formatted)
-                        : (
-                            rawQuote === null || rawQuote === undefined
-                                ? ''
-                                : String(rawQuote)
-                          );
-
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
-                    return null;
-                }
-
-                return {
-                    symbol,
-                    quote: rawQuote === null || rawQuote === undefined
-                        ? null
-                        : Number(rawQuote),
-                    quoteText,
-                    digit,
-                    epoch,
-                    receivedAt
-                };
+                return { symbol, quote, digit, epoch, receivedAt };
             }
 
-            function tickKey(t) {
-                if (!t) return null;
+            function invalidateActive(reason, details = {}) {
+                if (!active || active.finalized) return;
 
-                const epoch =
-                    t.epoch !== null && t.epoch !== undefined && t.epoch !== ''
-                        ? Number(t.epoch)
-                        : null;
+                active.outcomeValid = false;
+                active.invalidReason = reason;
+                active.invalidatedAt = Date.now();
+                active.finalized = false;
 
-                if (Number.isFinite(epoch) && epoch > 0) {
-                    return `e:${epoch}`;
-                }
+                active.continuity = active.continuity || {};
+                active.continuity.continuousFromEntry = false;
+                Object.assign(active.continuity, details);
 
-                const receivedAt =
-                    t.receivedAt !== null && t.receivedAt !== undefined && t.receivedAt !== ''
-                        ? Number(t.receivedAt)
-                        : null;
+                invalidRecords.push(clone(active));
 
-                if (Number.isFinite(receivedAt) && receivedAt > 0) {
-                    return `r:${receivedAt}|q:${t.quoteText}|d:${t.digit}`;
-                }
+                try {
+                    log(
+                        `⚠️ SAFE-TICK V1.6 INVALID | ${reason} | digit ${active.candidateDigit} | ` +
+                        `T0 ${active.entryEpoch} | observed ${active.forwardTicksObserved}`,
+                        'WARNING'
+                    );
+                } catch (_) {}
 
-                // Last-resort identity only; canonical builds should normally have epoch.
-                return `q:${t.quoteText}|d:${t.digit}`;
+                active = null;
+                save();
+                render();
             }
 
             function captureCandidate(tick) {
-                const t = normalizeTick(tick);
-                if (!t) return null;
+                const t = normalizeCanonicalTick(tick);
+                if (!t || t.symbol !== 'R_10') return null;
 
-                if (t.symbol !== 'R_10') {
-                    render();
-                    return null;
-                }
-
-                // Keep outcomes non-overlapping: one candidate is followed until
-                // recurrence or T+20 before another candidate is admitted.
                 if (active && !active.finalized) return active;
 
-                const digit = Number(t.digit);
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
-
-                // Exact alignment is mandatory. If T0 has no real Deriv epoch,
-                // skip it rather than creating an unauditable research record.
-                if (!Number.isFinite(Number(t.epoch)) || Number(t.epoch) <= 0) {
+                // T0 MUST be the currently observed canonical Deriv event, never a queued/stale tick.
+                if (!latestCanonicalTick || Number(latestCanonicalTick.epoch) !== Number(t.epoch)) {
                     console.warn(
-                        'SAFE-TICK V1.5 candidate skipped: exact Deriv epoch unavailable',
-                        tick
+                        '[SAFE-TICK V1.6] Candidate skipped: T0 is not the latest canonical Deriv epoch.',
+                        { candidateEpoch: t.epoch, latestCanonicalEpoch: latestCanonicalTick?.epoch }
                     );
                     return null;
                 }
 
-                const f = featureSnapshot(digit);
+                if (Number(latestCanonicalTick.digit) !== Number(t.digit)) {
+                    console.warn('[SAFE-TICK V1.6] Candidate skipped: canonical digit mismatch.');
+                    return null;
+                }
+
+                if (Date.now() - Number(t.receivedAt) > MAX_CAPTURE_LAG_MS) {
+                    console.warn('[SAFE-TICK V1.6] Candidate skipped: stale canonical T0.');
+                    return null;
+                }
+
+                const f = featureSnapshot(t.digit);
                 const eligible =
                     Number.isFinite(f.candidateFreq25) &&
                     Number.isFinite(f.entropy10) &&
@@ -11089,15 +11076,17 @@ window.executionLock = true;
                     symbol: t.symbol,
                     capturedAt: Date.now(),
                     entryEpoch: Number(t.epoch),
-                    entryReceivedAt: (t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0) ? Number(t.receivedAt) : null,
+                    entryReceivedAt: Number(t.receivedAt),
                     entryTickKey: `e:${Number(t.epoch)}`,
-                    alignmentMode: 'STRICT_DERIV_EPOCH',
+                    alignmentMode: 'STRICT_DERIV_EPOCH_CONTIGUOUS',
                     entryDigitSource: 'canonical_tick_digit',
                     entryQuote: t.quote,
-                    candidateDigit: digit,
+                    candidateDigit: Number(t.digit),
                     entryFeatures: f,
                     eligible,
                     decision: eligible ? 'ACCEPT_SHADOW' : 'REJECT_SHADOW',
+                    outcomeValid: true,
+                    invalidReason: null,
                     forwardTicksObserved: 0,
                     forwardGap: null,
                     stop10: null,
@@ -11106,74 +11095,89 @@ window.executionLock = true;
                     finalized: false,
                     sameTickSkipped: false,
                     lastFutureTickKey: null,
-                    lastFutureEpoch: null,
+                    lastFutureEpoch: Number(t.epoch),
                     forwardEpochs: [],
-                    forwardDigits: []
+                    forwardDigits: [],
+                    continuity: {
+                        required: true,
+                        expectedIntervalSeconds: EXPECTED_INTERVAL_SECONDS,
+                        continuousFromEntry: true,
+                        missingTickCount: 0,
+                        firstMissingExpectedEpoch: null,
+                        largestEpochJump: 0
+                    }
                 };
 
-                log(
-                    `🛡️ SAFE-TICK V1.5 EXACT-EPOCH | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
-                    `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
-                    `T0 ${active.entryEpoch ?? active.entryTickKey}`,
-                    eligible ? 'SYSTEM' : 'WARNING'
-                );
+                try {
+                    log(
+                        `🛡️ SAFE-TICK V1.6 STRICT T0 | digit ${active.candidateDigit} | ` +
+                        `F25 ${f.candidateFreq25.toFixed(3)} | H10 ${f.entropy10.toFixed(3)} | ` +
+                        `${active.decision} | e:${active.entryEpoch}`,
+                        eligible ? 'SYSTEM' : 'WARNING'
+                    );
+                } catch (_) {}
 
                 save();
                 render();
                 return active;
             }
 
-            function onFutureTick(tick) {
-                if (!active || active.finalized || !tick) return;
+            function onCanonicalTick(tick) {
+                const t = normalizeCanonicalTick(tick);
+                if (!t || t.symbol !== 'R_10') return;
 
-                const t = normalizeTick(tick);
-                if (!t || t.symbol !== active.symbol) return;
+                // Duplicate canonical event: ignore. Backwards event: stale, ignore.
+                if (lastCanonicalEpoch !== null) {
+                    if (Number(t.epoch) === Number(lastCanonicalEpoch)) return;
+                    if (Number(t.epoch) < Number(lastCanonicalEpoch)) return;
+                }
 
-                const epoch = Number(t.epoch);
-                const entryEpoch = Number(active.entryEpoch);
+                lastCanonicalEpoch = Number(t.epoch);
+                latestCanonicalTick = clone(t);
 
-                // Every outcome tick must be a real Deriv tick occurring strictly
-                // AFTER T0. This is the core no-leakage / no-same-tick guarantee.
-                if (!Number.isFinite(epoch) || epoch <= 0) return;
-                if (!Number.isFinite(entryEpoch) || entryEpoch <= 0) return;
-
-                if (epoch <= entryEpoch) {
-                    if (epoch === entryEpoch) {
-                        active.sameTickSkipped = true;
-                    }
+                if (!active || active.finalized) {
+                    save();
                     return;
                 }
 
-                // Canonical event + fallback polling may surface the same tick.
-                // Count one Deriv epoch once and only once.
-                if (
-                    active.lastFutureEpoch !== null &&
-                    Number(active.lastFutureEpoch) === epoch
-                ) {
+                if (Number(t.epoch) === Number(active.entryEpoch)) {
+                    active.sameTickSkipped = true;
+                    save();
+                    return;
+                }
+                if (Number(t.epoch) < Number(active.entryEpoch)) return;
+
+                const expectedEpoch = Number(active.lastFutureEpoch) + EXPECTED_INTERVAL_SECONDS;
+                const jump = Number(t.epoch) - Number(active.lastFutureEpoch);
+
+                active.continuity.largestEpochJump = Math.max(
+                    Number(active.continuity.largestEpochJump || 0),
+                    jump
+                );
+
+                // Critical alignment rule:
+                // if one R_10 canonical epoch is missing, DO NOT slide a later tick into T+N.
+                if (Number(t.epoch) !== expectedEpoch) {
+                    const missing = Number(t.epoch) > expectedEpoch
+                        ? Math.max(1, Math.round((Number(t.epoch) - expectedEpoch) / EXPECTED_INTERVAL_SECONDS))
+                        : 0;
+
+                    invalidateActive('FORWARD_EPOCH_GAP', {
+                        missingTickCount: missing,
+                        firstMissingExpectedEpoch: expectedEpoch,
+                        observedEpochAfterGap: Number(t.epoch),
+                        largestEpochJump: jump
+                    });
                     return;
                 }
 
-                // Ignore an older/out-of-order event rather than corrupting the
-                // 1-based forward-gap sequence.
-                if (
-                    active.lastFutureEpoch !== null &&
-                    epoch < Number(active.lastFutureEpoch)
-                ) {
-                    return;
-                }
-
-                const digit = Number(t.digit);
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
-
-                active.lastFutureEpoch = epoch;
-                active.lastFutureTickKey = `e:${epoch}`;
+                active.lastFutureEpoch = Number(t.epoch);
+                active.lastFutureTickKey = `e:${Number(t.epoch)}`;
                 active.forwardTicksObserved += 1;
-                active.forwardEpochs.push(epoch);
-                active.forwardDigits.push(digit);
+                active.forwardEpochs.push(Number(t.epoch));
+                active.forwardDigits.push(Number(t.digit));
 
-                save();
-
-                if (digit === active.candidateDigit) {
+                if (Number(t.digit) === Number(active.candidateDigit)) {
                     active.forwardGap = active.forwardTicksObserved;
                     finalize(false);
                     return;
@@ -11183,43 +11187,48 @@ window.executionLock = true;
                     active.forwardGap = null;
                     active.noRecurrenceBy20 = true;
                     finalize(true);
-                } else {
-                    render();
+                    return;
                 }
+
+                save();
+                render();
             }
 
             function finalize(noRecurrenceBy20) {
-                if (!active || active.finalized) return;
+                if (!active || active.finalized || active.outcomeValid !== true) return;
+                if (!active.continuity?.continuousFromEntry) {
+                    invalidateActive('CONTINUITY_ASSERTION_FAILED');
+                    return;
+                }
 
                 active.noRecurrenceBy20 = !!noRecurrenceBy20;
-                active.stop10 =
-                    active.forwardGap === null
-                        ? 1
-                        : (active.forwardGap > 10 ? 1 : 0);
-                active.tail15 =
-                    active.forwardGap === null
-                        ? 1
-                        : (active.forwardGap >= 15 ? 1 : 0);
+                active.stop10 = active.forwardGap === null ? 1 : (active.forwardGap > 10 ? 1 : 0);
+                active.tail15 = active.forwardGap === null ? 1 : (active.forwardGap >= 15 ? 1 : 0);
                 active.finalized = true;
                 active.finalizedAt = Date.now();
 
-                records.push(JSON.parse(JSON.stringify(active)));
-                save();
+                records.push(clone(active));
 
-                log(
-                    `🛡️ SAFE-TICK V1 OUTCOME | ${active.decision} | digit ${active.candidateDigit} | ` +
-                    `gap ${active.forwardGap === null ? '>20' : active.forwardGap} | ` +
-                    `STOP10 ${active.stop10 ? 'YES' : 'NO'} | Tail15 ${active.tail15 ? 'YES' : 'NO'}`,
-                    active.stop10 ? 'WARNING' : 'SYSTEM'
-                );
+                try {
+                    log(
+                        `🛡️ SAFE-TICK V1.6 VALID | ${active.decision} | digit ${active.candidateDigit} | ` +
+                        `gap ${active.forwardGap === null ? '>20' : active.forwardGap} | ` +
+                        `STOP10 ${active.stop10 ? 'YES' : 'NO'} | Tail15 ${active.tail15 ? 'YES' : 'NO'}`,
+                        active.stop10 ? 'WARNING' : 'SYSTEM'
+                    );
+                } catch (_) {}
 
-                render();
                 active = null;
                 save();
+                render();
             }
 
             function stats() {
-                const finalized = records.filter(r => r?.finalized);
+                const finalized = records.filter(
+                    r => r?.finalized &&
+                         r?.outcomeValid === true &&
+                         r?.continuity?.continuousFromEntry === true
+                );
                 const accepted = finalized.filter(r => r.eligible);
                 const rejected = finalized.filter(r => !r.eligible);
                 const acceptedStop10 = accepted.filter(r => r.stop10 === 1);
@@ -11227,6 +11236,8 @@ window.executionLock = true;
 
                 return {
                     finalized: finalized.length,
+                    validFinalized: finalized.length,
+                    invalidated: invalidRecords.length,
                     accepted: accepted.length,
                     rejected: rejected.length,
                     acceptedStop10: acceptedStop10.length,
@@ -11236,11 +11247,9 @@ window.executionLock = true;
                 };
             }
 
-            function setText(id, value, className = null) {
+            function setText(id, value) {
                 const el = document.getElementById(id);
-                if (!el) return;
-                el.textContent = value;
-                if (className) el.className = className;
+                if (el) el.textContent = value;
             }
 
             function render() {
@@ -11260,25 +11269,12 @@ window.executionLock = true;
                         ? cur.entryFeatures.entropy10.toFixed(3)
                         : '—'
                 );
-                setText(
-                    'safeTickForwardGap',
-                    cur
-                        ? (
-                            cur.finalized
-                                ? (cur.forwardGap === null ? '>20' : String(cur.forwardGap))
-                                : String(cur.forwardTicksObserved)
-                          )
-                        : '—'
-                );
+                setText('safeTickForwardGap', cur ? String(cur.forwardTicksObserved) : '—');
                 setText(
                     'safeTickOutcomeText',
                     cur
-                        ? (
-                            cur.finalized
-                                ? `STOP10 ${cur.stop10 ? 'YES' : 'NO'} · Tail15 ${cur.tail15 ? 'YES' : 'NO'}`
-                                : `observing future ticks ${cur.forwardTicksObserved}/20`
-                          )
-                        : 'awaiting outcome'
+                        ? `strict contiguous ${cur.forwardTicksObserved}/20 · next e:${Number(cur.lastFutureEpoch) + EXPECTED_INTERVAL_SECONDS}`
+                        : `awaiting clean candidate · invalidated ${s.invalidated}`
                 );
 
                 const decisionEl = document.getElementById('safeTickLiveDecision');
@@ -11295,14 +11291,15 @@ window.executionLock = true;
                     }
                 }
 
-                setText('safeTickFinalized', String(s.finalized));
+                setText('safeTickFinalized', String(s.validFinalized));
                 setText('safeTickAccepted', String(s.accepted));
                 setText('safeTickRejected', String(s.rejected));
                 setText('safeTickAcceptedStop10', String(s.acceptedStop10));
                 setText('safeTickAcceptedTail15', String(s.acceptedTail15));
 
-                const progress = Math.min(100, (s.finalized / TARGET) * 100);
-                setText('safeTickProgressText', `${s.finalized} / ${TARGET}`);
+                const progress = Math.min(100, (s.validFinalized / TARGET) * 100);
+                setText('safeTickProgressText', `${s.validFinalized} / ${TARGET}`);
+
                 const bar = document.getElementById('safeTickProgressBar');
                 if (bar) bar.style.width = `${progress.toFixed(1)}%`;
 
@@ -11314,10 +11311,12 @@ window.executionLock = true;
                     const tail15Rate = s.accepted
                         ? `${(s.acceptedTail15Rate * 100).toFixed(1)}%`
                         : '—';
+
                     summary.textContent =
-                        `Accepted ${s.accepted}/${s.finalized || 0} finalized · ` +
-                        `Accepted STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
-                        `Accepted Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
+                        `VALID ${s.validFinalized}/${TARGET} · invalidated ${s.invalidated} · ` +
+                        `Accepted ${s.accepted}/${s.validFinalized || 0} · ` +
+                        `STOP10 ${s.acceptedStop10}/${s.accepted || 0} (${stop10Rate}) · ` +
+                        `Tail15 ${s.acceptedTail15}/${s.accepted || 0} (${tail15Rate})`;
                 }
             }
 
@@ -11331,103 +11330,75 @@ window.executionLock = true;
                     },
                     targetCandidates: TARGET,
                     alignment: {
-                        mode: 'STRICT_DERIV_EPOCH',
+                        mode: 'STRICT_DERIV_EPOCH_CONTIGUOUS',
                         entryRequiresEpoch: true,
+                        candidateMustEqualLatestCanonicalEpoch: true,
                         futureTickDeduplication: 'epoch',
                         canonicalEventAuthoritative: true,
-                        legacyV14Mixed: false
+                        pollingFallbackEnabled: false,
+                        legacyMixed: false
                     },
-                    active: active ? JSON.parse(JSON.stringify(active)) : null,
+                    continuityPolicy: {
+                        required: true,
+                        expectedIntervalSeconds: EXPECTED_INTERVAL_SECONDS,
+                        gapAction: 'INVALIDATE_CANDIDATE',
+                        invalidCandidatesCountTowardTarget: false,
+                        resumeActiveCandidateAfterReload: false
+                    },
+                    active: active ? clone(active) : null,
                     stats: stats(),
-                    records: JSON.parse(JSON.stringify(records))
+                    records: clone(records),
+                    invalidRecords: clone(invalidRecords)
                 };
             }
 
-            load();
-
-            // Canonical bot tick event is authoritative for SAFE-TICK V1.5.
-            let latestCanonicalTick = null;
-            let lastCanonicalEventAt = 0;
-
+            // The canonical event is the ONLY research stream. No polling fallback.
             window.addEventListener('digitmatchstar:tick', (event) => {
                 try {
-                    const detail = event?.detail?.tick || event?.detail || null;
-
-                    // V1.6 fast-reaction status: market ticks continue to drive
-                    // candidate/recovery analysis while server settlement reconciles.
-                    try {
-                        if (
-                            window.SERVER_EXECUTION?.enabled &&
-                            window.isBotRunning === true &&
-                            window.SERVER_EXECUTION?.state?.open_contract_id
-                        ) {
-                            const d = Number(detail?.digit);
-                            const e = Number(detail?.epoch);
-                            if (Number.isInteger(d) && Number.isFinite(e)) {
-                                updateTradeStatus(
-                                    'LIVE TICK ⚡',
-                                    `Epoch ${e} · digit ${d}`,
-                                    'Contract open · next recovery candidate is being re-scored while settlement reconciles',
-                                    'trade'
-                                );
-                            }
-                        }
-                    } catch (_) {}
-                    const t = normalizeTick(detail);
-                    if (!t) return;
-
-                    latestCanonicalTick = t;
-                    lastCanonicalEventAt = Date.now();
-                    onFutureTick(t);
+                    onCanonicalTick(event?.detail?.tick || event?.detail || null);
                 } catch (err) {
-                    console.warn('SAFE-TICK V1.5 canonical tick error:', err);
+                    console.warn('SAFE-TICK V1.6 canonical tick error:', err);
+                    if (active && !active.finalized) invalidateActive('CANONICAL_HANDLER_ERROR');
                 }
             });
 
-            // Fallback is used only if the canonical event has been silent.
-            // window.lastTick stores Deriv epoch under raw.epoch, which
-            // normalizeTick now reads correctly.
-            let fallbackEpoch = null;
-            setInterval(() => {
-                try {
-                    if (Date.now() - lastCanonicalEventAt < 2500) return;
+            window.SafeTickLatestCanonicalTick = () =>
+                latestCanonicalTick ? clone(latestCanonicalTick) : null;
 
-                    const t = normalizeTick(window.lastTick);
-                    if (!t || !Number.isFinite(Number(t.epoch))) return;
-
-                    const epoch = Number(t.epoch);
-                    if (epoch === fallbackEpoch) return;
-                    fallbackEpoch = epoch;
-
-                    onFutureTick(t);
-                } catch (_) {}
-            }, 250);
-
-            window.SafeTickLatestCanonicalTick = () => {
-                if (latestCanonicalTick) {
-                    return JSON.parse(JSON.stringify(latestCanonicalTick));
+            window.addEventListener('beforeunload', () => {
+                if (active && !active.finalized) {
+                    invalidateActive('PAGE_UNLOAD_BREAKS_CONTINUITY');
+                } else {
+                    save();
                 }
-                return normalizeTick(window.lastTick);
-            };
+            });
 
-            window.addEventListener('load', render);
-            window.addEventListener('beforeunload', save);
-            window.addEventListener('pagehide', save);
+            window.addEventListener('pagehide', () => {
+                if (active && !active.finalized) {
+                    invalidateActive('PAGE_HIDE_BREAKS_CONTINUITY');
+                } else {
+                    save();
+                }
+            });
+
             document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'hidden') save();
+                if (document.visibilityState === 'hidden' && active && !active.finalized) {
+                    invalidateActive('PAGE_HIDDEN_BREAKS_CONTINUITY');
+                }
             });
+
+            load();
             setTimeout(render, 500);
 
             return Object.freeze({
                 VERSION,
                 captureCandidate,
                 captureLatestCanonical() {
-                    const t =
-                        window.SafeTickLatestCanonicalTick?.() ||
-                        normalizeTick(window.lastTick);
-                    return captureCandidate(t);
+                    const t = window.SafeTickLatestCanonicalTick?.();
+                    return t ? captureCandidate(t) : null;
                 },
-                onFutureTick,
+                onFutureTick: onCanonicalTick,
+                onCanonicalTick,
                 stats,
                 render,
                 exportState
