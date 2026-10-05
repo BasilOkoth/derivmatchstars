@@ -765,6 +765,10 @@
                         <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Mode</div><div id="serverExecMode" class="server-exec-value">BROWSER</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div id="serverExecPhase" class="server-exec-value">—</div></div>
+                        <div id="serverExecErrorCard" class="server-exec-card hidden" style="grid-column: 1 / -1;">
+                            <div class="server-exec-label">Worker error</div>
+                            <div id="serverExecError" class="server-exec-value" style="white-space: normal; word-break: break-word;">—</div>
+                        </div>
                         <div class="server-exec-card"><div class="server-exec-label">Contract</div><div id="serverExecContract" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Trade</div><div id="serverExecTrade" class="server-exec-value">—</div></div>
                         <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div id="serverExecPnl" class="server-exec-value">$0.00</div></div>
@@ -1047,6 +1051,9 @@
             body.classList.toggle('hidden', willHide);
             if (btn) btn.textContent = willHide ? '+' : '−';
             try {
+                sessionStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
+            } catch (_) {}
+            try {
                 localStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
             } catch (_) {}
         }
@@ -1054,7 +1061,10 @@
         function restoreResearchPanelState(bodyId, buttonId, storageKey) {
             let minimized = false;
             try {
-                minimized = localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
+                const sessionSaved = sessionStorage.getItem(`matchstar_panel_min_${storageKey}`);
+                minimized = sessionSaved !== null
+                    ? sessionSaved === '1'
+                    : localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
             } catch (_) {}
             const body = document.getElementById(bodyId);
             const btn = document.getElementById(buttonId);
@@ -1063,22 +1073,38 @@
         }
 
         function getPanelMinimizedState(key, fallback = false) {
+            const storageKey = `matchstar_panel_min_${key}`;
             try {
-                const saved = localStorage.getItem(`matchstar_panel_min_${key}`);
-                return saved === null ? !!fallback : saved === '1';
+                const sessionSaved = sessionStorage.getItem(storageKey);
+                if (sessionSaved !== null) return sessionSaved === '1';
+            } catch (_) {}
+            try {
+                const localSaved = localStorage.getItem(storageKey);
+                return localSaved === null ? !!fallback : localSaved === '1';
             } catch (_) {
                 return !!fallback;
             }
         }
 
         function savePanelMinimizedState(key, minimized) {
-            try {
-                localStorage.setItem(`matchstar_panel_min_${key}`, minimized ? '1' : '0');
-            } catch (_) {}
+            const storageKey = `matchstar_panel_min_${key}`;
+            const value = minimized ? '1' : '0';
+            try { sessionStorage.setItem(storageKey, value); } catch (_) {}
+            try { localStorage.setItem(storageKey, value); } catch (_) {}
         }
 
         function makePanelMinimizable(panel, options = {}) {
             if (!panel || panel.dataset.matchstarMinReady === '1') return;
+
+            // Panels with their own built-in minimize controls should not be wrapped again.
+            if (
+                panel.querySelector(':scope > .matchstar-min-body') ||
+                panel.querySelector('[id$="-min-btn"]') ||
+                panel.querySelector('[id$="-minimize"]')
+            ) {
+                panel.dataset.matchstarMinReady = 'native';
+                return;
+            }
 
             const key = options.key || panel.id || 'panel';
             const defaultMinimized = !!options.defaultMinimized;
@@ -1167,19 +1193,54 @@
             }
         }
 
+        let matchstarMinObserver = null;
+
         function startMinimizablePanelUI() {
-            initializeStaticMinimizablePanels();
-            decorateDynamicMinimizablePanels();
-
-            const observer = new MutationObserver(() => {
+            try {
+                initializeStaticMinimizablePanels();
                 decorateDynamicMinimizablePanels();
-            });
 
-            observer.observe(document.body, {
-                childList: true,
-                subtree: true
-            });
+                if (!matchstarMinObserver && document.body) {
+                    matchstarMinObserver = new MutationObserver(() => {
+                        try { decorateDynamicMinimizablePanels(); } catch (_) {}
+                    });
+
+                    matchstarMinObserver.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+            } catch (err) {
+                console.warn('[DigitMatchStar] minimizable panel initialization warning:', err);
+            }
         }
+
+        // Initialize minimizable UI independently of the trading/bootstrap listener.
+        // This keeps panel controls working even if another startup component throws.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startMinimizablePanelUI, { once: true });
+        } else {
+            setTimeout(startMinimizablePanelUI, 0);
+        }
+
+        // Universal fallback for minimize buttons using aria-controls.
+        document.addEventListener('click', (event) => {
+            const btn = event.target.closest('button[aria-controls]');
+            if (!btn) return;
+            const bodyId = btn.getAttribute('aria-controls');
+            if (!bodyId) return;
+            const body = document.getElementById(bodyId);
+            if (!body) return;
+
+            // Buttons initialized by makePanelMinimizable already have their own listener.
+            if (btn.closest('[data-matchstar-min-ready="1"]')) return;
+
+            event.preventDefault();
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            btn.textContent = minimized ? '+' : '−';
+            btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+        });
 
         // ============================================================================
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
@@ -9174,7 +9235,10 @@ function rotateHybridDigit(reason = '') {
             if (edgeScannerMinBtn && edgeScannerBody) {
                 let minimized = false;
                 try {
-                    minimized = localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
+                    const sessionSaved = sessionStorage.getItem('matchstar_edge_scanner_minimized');
+                    minimized = sessionSaved !== null
+                        ? sessionSaved === '1'
+                        : localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
                 } catch (_) {}
 
                 const applyEdgeScannerState = () => {
@@ -9182,6 +9246,9 @@ function rotateHybridDigit(reason = '') {
                     edgeScannerMinBtn.textContent = minimized ? '+' : '−';
                     edgeScannerMinBtn.title = minimized ? 'Expand edge monitor' : 'Minimize edge monitor';
                     edgeScannerMinBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                    try {
+                        sessionStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
+                    } catch (_) {}
                     try {
                         localStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
                     } catch (_) {}
@@ -11261,6 +11328,21 @@ window.executionLock = true;
                     : 'BROWSER';
             }
             if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
+
+            const errorCard = serverExecEl('serverExecErrorCard');
+            const errorEl = serverExecEl('serverExecError');
+            const workerError = String(st.last_error || '').trim();
+
+            if (errorEl) errorEl.textContent = workerError || '—';
+            if (errorCard) errorCard.classList.toggle('hidden', !workerError);
+
+            if (workerError && String(st.phase || '').toUpperCase() === 'ERROR') {
+                const status = document.getElementById('tradeStatusText');
+                const action = document.getElementById('tradeActionText');
+                if (status) status.textContent = 'SERVER ERROR';
+                if (action) action.textContent = workerError;
+            }
+
             if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
             if (serverExecEl('serverExecTrade')) {
                 serverExecEl('serverExecTrade').textContent =
