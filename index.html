@@ -68,24 +68,46 @@ function chooseAccount(accounts, requestedMode){
   return accounts.find(a => String(a.account_type || "").toLowerCase() === wanted) || accounts[0] || null;
 }
 
+function safeLocalSet(key, value){
+  try{
+    localStorage.setItem(key, value);
+    return true;
+  }catch(err){
+    console.warn(`[DigitMatchStar] localStorage full; could not persist ${key}`, err);
+    return false;
+  }
+}
+
 function savePlatformSession(payload){
   clearLegacyDerivBrowserSecrets();
-  localStorage.setItem("dms_platform_jwt", payload.token);
-  localStorage.setItem("bot_authenticated", "true");
-  localStorage.setItem("auth_method", "dms_server_oauth_v21");
-  localStorage.setItem("deriv_accounts", JSON.stringify(payload.accounts || []));
+
+  // V2.1.1: authentication/session state belongs in sessionStorage so a full
+  // research localStorage cannot block login.
+  sessionStorage.setItem("dms_platform_jwt", payload.token);
+  sessionStorage.setItem("bot_authenticated", "true");
+  sessionStorage.setItem("auth_method", "dms_server_oauth_v211");
+  sessionStorage.setItem("deriv_accounts", JSON.stringify(payload.accounts || []));
 
   const selected = chooseAccount(payload.accounts || [], payload.requested_mode);
   if (!selected) throw new Error("No Deriv Options account was returned.");
 
   const mode = String(selected.account_type || payload.requested_mode || "DEMO").toUpperCase() === "REAL" ? "REAL" : "DEMO";
-  localStorage.setItem("selectedAccountMode", mode);
-  localStorage.setItem("active_account", selected.account_id);
-  localStorage.setItem("derivAccount", selected.account_id);
-  if (mode === "REAL") localStorage.setItem("derivRealAccount", selected.account_id);
-  else localStorage.setItem("derivDemoAccount", selected.account_id);
-  localStorage.setItem("dms_server_execution_url", DMS_API);
-  localStorage.setItem("dms_server_execution_enabled", "1");
+
+  // Keep all values required by the bot in sessionStorage.
+  sessionStorage.setItem("selectedAccountMode", mode);
+  sessionStorage.setItem("active_account", selected.account_id);
+  sessionStorage.setItem("derivAccount", selected.account_id);
+  if (mode === "REAL") sessionStorage.setItem("derivRealAccount", selected.account_id);
+  else sessionStorage.setItem("derivDemoAccount", selected.account_id);
+  sessionStorage.setItem("dms_server_execution_url", DMS_API);
+  sessionStorage.setItem("dms_server_execution_enabled", "1");
+
+  // Non-critical persistence only. Failure here must never block authentication.
+  safeLocalSet("selectedAccountMode", mode);
+  safeLocalSet("active_account", selected.account_id);
+  safeLocalSet("derivAccount", selected.account_id);
+  safeLocalSet("dms_server_execution_url", DMS_API);
+  safeLocalSet("dms_server_execution_enabled", "1");
 }
 
 async function connectDeriv(mode){
