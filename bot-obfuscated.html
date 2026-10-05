@@ -751,6 +751,8 @@
                                 class="server-exec-btn bg-sky-700 hover:bg-sky-600">Use Server</button>
                         <button type="button" onclick="configureServerExecutionUrl()"
                                 class="server-exec-btn bg-slate-700 hover:bg-slate-600">Backend URL</button>
+                        <button type="button" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()"
+                                class="server-exec-btn bg-emerald-700 hover:bg-emerald-600">Continuous Research: ON</button>
                         <button type="button" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()"
                                 class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden">
                             Confirm REAL Trade
@@ -758,8 +760,10 @@
                     </div>
                     <div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
-                        DEMO can continue after this dashboard closes. REAL state also stays on the server,
-                        but every new real-money purchase requires explicit confirmation.
+                        A started DEMO cycle can continue after this dashboard closes. Continuous Research can
+                        automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
+                        so the browser can select and freeze the next AI candidate and record research.
+                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
                     </div>
                     <div class="server-exec-grid">
                         <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
@@ -11356,7 +11360,15 @@ window.executionLock = true;
                 0
             ) || null,
             pollTimer: null,
-            lastCandidateSent: null
+            lastCandidateSent: null,
+            continuousResearch: (
+                sessionStorage.getItem('dms_server_continuous_research') ??
+                localStorage.getItem('dms_server_continuous_research') ??
+                '1'
+            ) !== '0',
+            continuousRestartPending: false,
+            continuousRestartTimer: null,
+            lastAutoRestartPhase: null
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
@@ -11366,6 +11378,7 @@ window.executionLock = true;
             const st = s.state || {};
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
+            const continuousBtn = serverExecEl('serverContinuousResearchBtn');
             const confirmBtn = serverExecEl('serverRealConfirmBtn');
 
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
@@ -11439,6 +11452,23 @@ window.executionLock = true;
                     : 'server-exec-btn bg-sky-700 hover:bg-sky-600';
             }
 
+            if (continuousBtn) {
+                const demoMode = String(
+                    st.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase() === 'DEMO';
+
+                continuousBtn.textContent =
+                    `Continuous Research: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
+
+                continuousBtn.disabled = !demoMode;
+                continuousBtn.className = s.continuousResearch && demoMode
+                    ? 'server-exec-btn bg-emerald-700 hover:bg-emerald-600'
+                    : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
+            }
+
             if (confirmBtn) {
                 const needsConfirm =
                     s.enabled &&
@@ -11490,6 +11520,188 @@ window.executionLock = true;
             return data;
         }
 
+
+        function toggleServerContinuousResearch() {
+            const s = window.SERVER_EXECUTION;
+            const mode = String(
+                s.state?.account_mode ||
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            if (mode !== 'DEMO') {
+                alert('Continuous Research is available only for DEMO accounts.');
+                return;
+            }
+
+            s.continuousResearch = !s.continuousResearch;
+            sessionStorage.setItem(
+                'dms_server_continuous_research',
+                s.continuousResearch ? '1' : '0'
+            );
+            try {
+                localStorage.setItem(
+                    'dms_server_continuous_research',
+                    s.continuousResearch ? '1' : '0'
+                );
+            } catch (_) {}
+
+            if (!s.continuousResearch) {
+                s.continuousRestartPending = false;
+                if (s.continuousRestartTimer) {
+                    clearTimeout(s.continuousRestartTimer);
+                    s.continuousRestartTimer = null;
+                }
+            }
+
+            renderServerExecutionState();
+            log(
+                `🧪 Continuous DEMO Research ${s.continuousResearch ? 'ON' : 'OFF'}`,
+                'SYSTEM'
+            );
+        }
+
+        function freshDigitForContinuousServerCycle() {
+            if (sessionState.mode === 'ai') {
+                clearSessionDigitLock('Continuous server research cycle');
+                sessionState.manualOverride = false;
+                sessionState.sessionStarted = false;
+                sessionState.sessionDigit = null;
+
+                if (
+                    window.digitIntelligenceEngine?.warmupDone &&
+                    window.digitIntelligenceEngine?.currentRecommendation
+                ) {
+                    const digit = Number(
+                        window.digitIntelligenceEngine.currentRecommendation.digit
+                    );
+
+                    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+                        document.getElementById('predictedDigit').value = String(digit);
+                        lockSessionDigit(digit, true, 'Continuous DEMO research');
+                        return digit;
+                    }
+                }
+
+                return null;
+            }
+
+            const digit = Number(
+                document.getElementById('predictedDigit')?.value
+            );
+
+            if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+                sessionState.sessionDigit = digit;
+                sessionState.sessionStarted = true;
+                sessionState.manualOverride = true;
+                return digit;
+            }
+
+            return null;
+        }
+
+        async function restartContinuousServerResearchCycle(triggerPhase) {
+            const s = window.SERVER_EXECUTION;
+
+            if (
+                !s.enabled ||
+                !s.continuousResearch ||
+                s.continuousRestartPending ||
+                window.__dmsManualStopRequested === true ||
+                window.isBotRunning !== true
+            ) {
+                return;
+            }
+
+            const state = s.state || {};
+            const mode = String(state.account_mode || '').toUpperCase();
+
+            if (mode !== 'DEMO') return;
+            if (state.running || state.open_contract_id) return;
+
+            const terminalPhase = String(triggerPhase || state.phase || '').toUpperCase();
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) return;
+
+            s.continuousRestartPending = true;
+
+            try {
+                const digit = freshDigitForContinuousServerCycle();
+
+                if (!Number.isInteger(digit)) {
+                    // AI may be between recommendations. Try again on a later poll.
+                    s.continuousRestartPending = false;
+                    return;
+                }
+
+                updateTradeStatus(
+                    'RESEARCH',
+                    `Cycle complete · preparing next DEMO candidate ${digit}`,
+                    'Continuous Research is starting the next cycle',
+                    'normal'
+                );
+
+                log(
+                    `🧪 Continuous Research · ${terminalPhase} → next DEMO cycle · digit ${digit}`,
+                    'SYSTEM'
+                );
+
+                await startServerExecutionSession();
+
+                s.lastAutoRestartPhase = terminalPhase;
+
+                updateTradeStatus(
+                    'SERVER ACTIVE',
+                    `Continuous DEMO research · digit ${digit}`,
+                    'Next research cycle started automatically',
+                    'trade'
+                );
+            } catch (err) {
+                log(
+                    `❌ Continuous Research restart failed: ${err.message}`,
+                    'ERROR'
+                );
+                updateTradeStatus(
+                    'SERVER ERROR',
+                    'Continuous Research restart failed',
+                    err.message,
+                    'loss'
+                );
+            } finally {
+                s.continuousRestartPending = false;
+            }
+        }
+
+        function maybeScheduleContinuousServerResearch() {
+            const s = window.SERVER_EXECUTION;
+            const st = s.state || {};
+
+            if (
+                !s.enabled ||
+                !s.continuousResearch ||
+                s.continuousRestartPending ||
+                window.__dmsManualStopRequested === true ||
+                window.isBotRunning !== true ||
+                String(st.account_mode || '').toUpperCase() !== 'DEMO' ||
+                st.running ||
+                st.open_contract_id
+            ) {
+                return;
+            }
+
+            const phase = String(st.phase || '').toUpperCase();
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) return;
+
+            if (s.continuousRestartTimer) return;
+
+            // Brief delay lets research outcome/final UI state settle before
+            // freezing the next candidate.
+            s.continuousRestartTimer = setTimeout(async () => {
+                s.continuousRestartTimer = null;
+                await restartContinuousServerResearchCycle(phase);
+            }, 1500);
+        }
+
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
@@ -11499,6 +11711,7 @@ window.executionLock = true;
                     ? (rows.find(x => Number(x.id) === Number(s.sessionId)) || null)
                     : (rows[0] || null);
                 renderServerExecutionState();
+                maybeScheduleContinuousServerResearch();
             } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {
@@ -12027,6 +12240,14 @@ window.isBotRunning = true;
 
             if (window.isBotRunning) {
                 window.__dmsManualStopRequested = true;
+
+                if (window.SERVER_EXECUTION?.continuousRestartTimer) {
+                    clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
+                    window.SERVER_EXECUTION.continuousRestartTimer = null;
+                }
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.continuousRestartPending = false;
+                }
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
                 }
@@ -12076,6 +12297,7 @@ window.isBotRunning = true;
         window.startBot = startBot;
         window.stopBot = stopBot;
         window.toggleBot = toggleBot;
+        window.toggleServerContinuousResearch = toggleServerContinuousResearch;
 
 
         function updateS20Label() {
