@@ -12,23 +12,24 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DEMO-only event-driven execution engine.
+    DEMO-only low-latency execution engine.
 
-    Key change from the previous worker:
-    - no 0.5-second settlement polling loop
-    - no foreground WAITING_SETTLEMENT gate
-    - each DEMO contract gets a proposal_open_contract subscription
-    - settlement is processed as an async callback
-    - recovery is scheduled immediately after a confirmed DEMO loss
+    V24 changes:
+    - no foreground WAITING_SETTLEMENT polling
+    - proposal_open_contract uses subscription callbacks
+    - while Trade N is open, the engine prefetches the proposal for Trade N+1
+    - on confirmed loss, it buys the prefetched recovery immediately
+    - if the prefetched proposal is stale/rejected, it falls back to a fresh proposal
     - REAL automated purchases remain disabled
     """
 
     def __init__(self):
         self.task = None
-        self.clients = {}  # key=(user_id, account_id)
-        self.contract_subscriptions = {}  # session_id -> subscription_id
-        self.session_tasks = {}  # session_id -> asyncio.Task
-        self.session_locks = {}  # session_id -> asyncio.Lock
+        self.clients = {}
+        self.contract_subscriptions = {}
+        self.session_tasks = {}
+        self.session_locks = {}
+        self.prefetched_recovery = {}  # sid -> payload
 
     async def start(self):
         if not self.task or self.task.done():
@@ -94,8 +95,6 @@ class MultiUserEngine:
         return client
 
     async def run_forever(self):
-        # This loop only discovers sessions that need a fresh execution task.
-        # Contract settlement itself is push-driven by Deriv subscriptions.
         while True:
             db = SessionLocal()
             try:
@@ -117,8 +116,7 @@ class MultiUserEngine:
                         self._safe_step(sid)
                     )
 
-            # Lower orchestration latency without settlement polling.
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
     async def _safe_step(self, sid: int):
         try:
@@ -138,6 +136,55 @@ class MultiUserEngine:
             finally:
                 db.close()
 
+    async def _currency_for(self, db, s) -> str:
+        account = (
+            db.query(DerivAccount)
+            .filter(
+                DerivAccount.user_id == s.user_id,
+                DerivAccount.account_id == s.account_id,
+            )
+            .first()
+        )
+        return (
+            str(account.currency).upper()
+            if account and account.currency
+            else "USD"
+        )
+
+    async def _request_proposal_payload(
+        self,
+        client,
+        *,
+        symbol,
+        digit,
+        stake,
+        trade_no,
+        currency,
+    ):
+        proposal = await client.proposal_digitmatch(
+            symbol=symbol,
+            digit=digit,
+            amount=stake,
+            duration=1,
+            currency=currency,
+        )
+
+        p = proposal.get("proposal") or {}
+        if not p.get("id"):
+            raise RuntimeError(
+                f"PROPOSAL: Deriv returned no proposal id; keys={list(proposal.keys())}"
+            )
+
+        return {
+            "proposal_id": p["id"],
+            "ask_price": float(p.get("ask_price") or stake),
+            "payout": float(p.get("payout") or 0),
+            "digit": int(digit),
+            "stake": float(stake),
+            "trade_no": int(trade_no),
+            "currency": currency,
+        }
+
     async def step(self, sid: int):
         async with self._lock(sid):
             db = SessionLocal()
@@ -153,8 +200,6 @@ class MultiUserEngine:
 
                 client = await self._client(s.user_id, s.account_id)
 
-                # If a DEMO contract is already open, do not poll it.
-                # Ensure it has a push subscription and leave the foreground lane free.
                 if s.open_contract_id:
                     if sid not in self.contract_subscriptions:
                         await self._subscribe_open_contract(
@@ -165,7 +210,13 @@ class MultiUserEngine:
                             client=client,
                         )
 
-                    s.phase = "PIPELINE_ACTIVE"
+                    # Keep the UI truthful: current contract is open, but the next
+                    # recovery proposal may already be ready in memory.
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -186,43 +237,45 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # Automated execution is deliberately DEMO-only.
                 if str(s.account_mode).upper() != "DEMO":
                     s.running = False
                     s.phase = "REAL_AUTOMATION_DISABLED"
                     s.last_error = (
-                        "Automated server execution is DEMO-only in this build. "
-                        "REAL purchases require a separate explicit manual-confirmation flow."
+                        "Automated server execution is DEMO-only in this build."
                     )
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
 
-                account = (
-                    db.query(DerivAccount)
-                    .filter(
-                        DerivAccount.user_id == s.user_id,
-                        DerivAccount.account_id == s.account_id,
-                    )
-                    .first()
-                )
+                currency = await self._currency_for(db, s)
 
-                currency = (
-                    str(account.currency).upper()
-                    if account and account.currency
-                    else "USD"
-                )
+                # If this step follows a loss, use the prefetched proposal first.
+                prefetched = self.prefetched_recovery.pop(sid, None)
+                if prefetched:
+                    s.phase = "BUYING_PREARMED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                    try:
+                        await self._execute_demo_buy(
+                            db, s, client, prefetched, prearmed=True
+                        )
+                        return
+                    except Exception:
+                        # Proposal can expire/stale. Fall back to a fresh quote.
+                        pass
 
                 s.phase = "REQUESTING_PROPOSAL"
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
                 try:
-                    proposal = await client.proposal_digitmatch(
+                    payload = await self._request_proposal_payload(
+                        client,
                         symbol=s.symbol,
                         digit=s.candidate_digit,
-                        amount=s.current_stake,
-                        duration=1,
+                        stake=s.current_stake,
+                        trade_no=s.current_trade + 1,
                         currency=currency,
                     )
                 except Exception as exc:
@@ -230,43 +283,34 @@ class MultiUserEngine:
                         f"PROPOSAL [{s.symbol}/{currency}/digit {s.candidate_digit}]: {exc}"
                     ) from exc
 
-                p = proposal.get("proposal") or {}
-                if not p.get("id"):
-                    raise RuntimeError(
-                        f"PROPOSAL: Deriv returned no proposal id; keys={list(proposal.keys())}"
-                    )
-
-                payload = {
-                    "proposal_id": p["id"],
-                    "ask_price": float(p.get("ask_price") or s.current_stake),
-                    "payout": float(p.get("payout") or 0),
-                    "digit": int(s.candidate_digit),
-                    "stake": float(s.current_stake),
-                    "trade_no": int(s.current_trade) + 1,
-                    "currency": currency,
-                }
-
-                await self._execute_demo_buy(db, s, client, payload)
+                await self._execute_demo_buy(
+                    db, s, client, payload, prearmed=False
+                )
 
             finally:
                 db.close()
 
-    async def _execute_demo_buy(self, db, s, client, payload):
+    async def _execute_demo_buy(
+        self,
+        db,
+        s,
+        client,
+        payload,
+        *,
+        prearmed: bool,
+    ):
         if str(s.account_mode).upper() != "DEMO":
             raise RuntimeError("Automated purchase blocked outside DEMO mode")
 
-        s.phase = "BUYING"
+        s.phase = "BUYING_PREARMED" if prearmed else "BUYING"
         s.updated_at = datetime.utcnow()
         db.commit()
 
-        try:
-            result = await client.buy(
-                payload["proposal_id"],
-                payload["ask_price"],
-                demo=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"BUY: {exc}") from exc
+        result = await client.buy(
+            payload["proposal_id"],
+            payload["ask_price"],
+            demo=True,
+        )
 
         buy = result.get("buy") or {}
         if not buy.get("contract_id"):
@@ -313,16 +357,85 @@ class MultiUserEngine:
             client=client,
         )
 
+        # Pre-arm the next recovery proposal while this DEMO contract is open.
+        # No paid next contract is purchased here.
+        if s.current_trade < s.max_trades:
+            asyncio.create_task(
+                self._prefetch_next_recovery(
+                    sid=s.id,
+                    user_id=s.user_id,
+                    account_id=s.account_id,
+                    symbol=s.symbol,
+                    digit=int(s.candidate_digit),
+                    next_stake=round(
+                        float(s.current_stake) * float(s.multiplier), 2
+                    ),
+                    next_trade_no=int(s.current_trade) + 1,
+                )
+            )
+
+    async def _prefetch_next_recovery(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        digit,
+        next_stake,
+        next_trade_no,
+    ):
+        try:
+            client = await self._client(user_id, account_id)
+
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if not s or not s.running or not s.open_contract_id:
+                    return
+                currency = await self._currency_for(db, s)
+            finally:
+                db.close()
+
+            payload = await self._request_proposal_payload(
+                client,
+                symbol=symbol,
+                digit=digit,
+                stake=next_stake,
+                trade_no=next_trade_no,
+                currency=currency,
+            )
+
+            # Only keep it if the same session is still on the same open trade.
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if (
+                    s
+                    and s.running
+                    and s.open_contract_id
+                    and int(s.current_trade) + 1 == int(next_trade_no)
+                ):
+                    self.prefetched_recovery[sid] = payload
+                    s.phase = "RECOVERY_PREARMED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
+
+        except Exception:
+            # Prefetch is only an optimization. Fresh proposal remains fallback.
+            self.prefetched_recovery.pop(sid, None)
+
     async def _subscribe_open_contract(
         self,
         *,
-        sid: int,
-        user_id: str,
-        account_id: str,
-        contract_id: str,
-        client: DerivWS,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        client,
     ):
-        # Replace any stale subscription associated with this session.
         old_sub = self.contract_subscriptions.pop(sid, None)
         if old_sub:
             try:
@@ -348,11 +461,11 @@ class MultiUserEngine:
     async def _handle_contract_update(
         self,
         *,
-        sid: int,
-        user_id: str,
-        account_id: str,
-        contract_id: str,
-        data: dict,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        data,
     ):
         poc = data.get("proposal_open_contract") or {}
         if not poc.get("is_sold"):
@@ -365,7 +478,6 @@ class MultiUserEngine:
                 if not s:
                     return
 
-                # Ignore a late update from an older/replaced contract.
                 if str(s.open_contract_id or "") != str(contract_id):
                     return
 
@@ -405,11 +517,13 @@ class MultiUserEngine:
                 s.pending_real_confirmation = False
 
                 if profit > 0:
+                    self.prefetched_recovery.pop(sid, None)
                     s.current_stake = s.base_stake
                     s.phase = "WON"
                     s.running = False
                 else:
                     if s.current_trade >= s.max_trades:
+                        self.prefetched_recovery.pop(sid, None)
                         s.phase = "MAX_TRADES_REACHED"
                         s.running = False
                     else:
@@ -417,7 +531,11 @@ class MultiUserEngine:
                             float(s.current_stake) * float(s.multiplier),
                             2,
                         )
-                        s.phase = "RECOVERING"
+                        s.phase = (
+                            "RECOVERY_PREARMED"
+                            if sid in self.prefetched_recovery
+                            else "RECOVERING"
+                        )
 
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -425,7 +543,6 @@ class MultiUserEngine:
             finally:
                 db.close()
 
-        # Unsubscribe after the sold update.
         client = self.clients.get((user_id, account_id))
         sub_id = self.contract_subscriptions.pop(sid, None)
         if client and sub_id:
@@ -434,7 +551,7 @@ class MultiUserEngine:
             except Exception:
                 pass
 
-        # A confirmed DEMO loss schedules the next recovery immediately.
+        # Confirmed DEMO loss: run the next step immediately.
         db = SessionLocal()
         try:
             s = db.get(TradingSession, sid)
@@ -443,22 +560,19 @@ class MultiUserEngine:
                 and s.running
                 and not s.paused
                 and not s.open_contract_id
-                and str(s.phase).upper() == "RECOVERING"
                 and int(s.current_trade) < int(s.max_trades)
             )
         finally:
             db.close()
 
         if should_continue:
-            task = self.session_tasks.get(sid)
-            if not task or task.done():
-                self.session_tasks[sid] = asyncio.create_task(
-                    self._safe_step(sid)
-                )
+            self.session_tasks[sid] = asyncio.create_task(
+                self._safe_step(sid)
+            )
 
     async def confirm_real(self, user_id: str, session_id: int):
         raise RuntimeError(
-            "Automated REAL-money execution is disabled in this event-driven build."
+            "Automated REAL-money execution is disabled in this low-latency build."
         )
 
 
