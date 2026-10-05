@@ -90,11 +90,13 @@ class DerivWS:
         try:
             await self.ws.send(json.dumps(request_payload))
             data = await asyncio.wait_for(future, timeout)
+
         except asyncio.TimeoutError as exc:
             self.pending.pop(req_id, None)
             raise RuntimeError(
                 f"Deriv WebSocket request timed out after {timeout:.0f}s"
             ) from exc
+
         except Exception:
             self.pending.pop(req_id, None)
             raise
@@ -119,6 +121,14 @@ class DerivWS:
         duration: int = 1,
         currency: str = "USD",
     ):
+        """
+        Request a DIGITMATCH proposal using Deriv's current WebSocket schema.
+
+        Important:
+        The current Deriv proposal API uses `underlying_symbol`.
+        The legacy `symbol` property is rejected with:
+        InputValidationFailed: Properties not allowed: symbol.
+        """
         return await self.request(
             {
                 "proposal": 1,
@@ -129,7 +139,7 @@ class DerivWS:
                 "duration": int(duration),
                 "duration_unit": "t",
                 "barrier": str(int(digit)),
-                "symbol": symbol,
+                "underlying_symbol": str(symbol),
             }
         )
 
