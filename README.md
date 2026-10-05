@@ -69,3 +69,15 @@ Example configure REAL:
 Do not run the old browser purchase engine at the same time as this server engine.
 Once server execution is enabled, `bot.html` should become controls + visualization only,
 otherwise duplicate purchases are possible.
+
+
+## PostgreSQL / Render update (V1.1)
+
+This package now includes the PostgreSQL driver `psycopg[binary]` and automatically
+normalizes Render database URLs:
+
+- `postgres://...` -> `postgresql+psycopg://...`
+- `postgresql://...` -> `postgresql+psycopg://...`
+
+For Render, set `DATABASE_URL` to the **Internal Database URL** of your Render Postgres
+database when the API service and database are in the same Render region.
