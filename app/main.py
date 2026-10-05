@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.1.6-reconcile-open-contract",
+    version="2.1.7-server-research-balance",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.1.6-reconcile-open-contract",
+        "version": "2.1.7-server-research-balance",
         "frontend_origin": frontend_origin,
     }
 
@@ -79,26 +79,41 @@ def sessions(user_id: str = Depends(current_user_id)):
             .all()
         )
 
-        return [
-            {
-                "id": s.id,
-                "account_id": s.account_id,
-                "account_mode": s.account_mode,
-                "symbol": s.symbol,
-                "running": s.running,
-                "paused": s.paused,
-                "phase": s.phase,
-                "current_trade": s.current_trade,
-                "max_trades": s.max_trades,
-                "current_stake": s.current_stake,
-                "candidate_digit": s.candidate_digit,
-                "open_contract_id": s.open_contract_id,
-                "pnl": s.pnl,
-                "pending_real_confirmation": s.pending_real_confirmation,
-                "last_error": s.last_error,
-            }
-            for s in rows
-        ]
+        result = []
+
+        for s in rows:
+            acct = (
+                db.query(DerivAccount)
+                .filter(
+                    DerivAccount.user_id == user_id,
+                    DerivAccount.account_id == s.account_id,
+                )
+                .first()
+            )
+
+            result.append(
+                {
+                    "id": s.id,
+                    "account_id": s.account_id,
+                    "account_mode": s.account_mode,
+                    "account_balance": acct.balance if acct else None,
+                    "account_currency": acct.currency if acct else None,
+                    "symbol": s.symbol,
+                    "running": s.running,
+                    "paused": s.paused,
+                    "phase": s.phase,
+                    "current_trade": s.current_trade,
+                    "max_trades": s.max_trades,
+                    "current_stake": s.current_stake,
+                    "candidate_digit": s.candidate_digit,
+                    "open_contract_id": s.open_contract_id,
+                    "pnl": s.pnl,
+                    "pending_real_confirmation": s.pending_real_confirmation,
+                    "last_error": s.last_error,
+                }
+            )
+
+        return result
 
     finally:
         db.close()

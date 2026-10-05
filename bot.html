@@ -10754,62 +10754,109 @@ window.executionLock = true;
                 return h;
             }
 
-            function load() {
-                try {
-                    // 1) Load the current V1.3 store.
-                    let parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            const SAFE_IDB_DB = 'digitmatchstar-research';
+            const SAFE_IDB_STORE = 'safe_tick_shadow';
+            const SAFE_IDB_KEY = 'R_10_V1';
 
-                    // 2) Migration fallback: recover any valid finalized data from V1.2
-                    // so a code upgrade does not silently make the user's research vanish.
-                    if (!parsed) {
-                        const legacy = JSON.parse(
+            function openSafeTickDB() {
+                return new Promise((resolve, reject) => {
+                    const req = indexedDB.open(SAFE_IDB_DB, 1);
+                    req.onupgradeneeded = () => {
+                        const db = req.result;
+                        if (!db.objectStoreNames.contains(SAFE_IDB_STORE)) {
+                            db.createObjectStore(SAFE_IDB_STORE);
+                        }
+                    };
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+            }
+
+            async function idbReadSafeTick() {
+                const db = await openSafeTickDB();
+                try {
+                    return await new Promise((resolve, reject) => {
+                        const tx = db.transaction(SAFE_IDB_STORE, 'readonly');
+                        const req = tx.objectStore(SAFE_IDB_STORE).get(SAFE_IDB_KEY);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => reject(req.error);
+                    });
+                } finally {
+                    db.close();
+                }
+            }
+
+            async function idbWriteSafeTick(payload) {
+                const db = await openSafeTickDB();
+                try {
+                    await new Promise((resolve, reject) => {
+                        const tx = db.transaction(SAFE_IDB_STORE, 'readwrite');
+                        tx.objectStore(SAFE_IDB_STORE).put(payload, SAFE_IDB_KEY);
+                        tx.oncomplete = () => resolve();
+                        tx.onerror = () => reject(tx.error);
+                        tx.onabort = () => reject(tx.error);
+                    });
+                } finally {
+                    db.close();
+                }
+            }
+
+            function applySavedState(parsed) {
+                if (!parsed) return;
+                if (Array.isArray(parsed.records)) records = parsed.records;
+                if (parsed.active && !parsed.active.finalized) active = parsed.active;
+                if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
+                    lastSeenEpoch = parsed.lastSeenEpoch;
+                }
+            }
+
+            function load() {
+                // Fast migration fallback from the previous localStorage build.
+                let legacyParsed = null;
+                try {
+                    legacyParsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+                    if (!legacyParsed) {
+                        legacyParsed = JSON.parse(
                             localStorage.getItem('digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10') || 'null'
                         );
-                        if (legacy && Array.isArray(legacy.records)) {
-                            parsed = legacy;
-                        }
                     }
-
-                    if (parsed) {
-                        if (Array.isArray(parsed.records)) {
-                            records = parsed.records;
-                        }
-                        if (parsed.active && !parsed.active.finalized) {
-                            active = parsed.active;
-                        }
-                        if (parsed.lastSeenEpoch !== undefined && parsed.lastSeenEpoch !== null) {
-                            lastSeenEpoch = parsed.lastSeenEpoch;
-                        }
-                    }
+                    applySavedState(legacyParsed);
                 } catch (err) {
-                    console.warn('SAFE-TICK V1.4 restore failed:', err);
+                    console.warn('SAFE-TICK legacy restore warning:', err);
                 }
 
                 render();
+
+                // Authoritative persistence is now IndexedDB, which has far more
+                // capacity than localStorage and does not compete with auth/UI keys.
+                idbReadSafeTick()
+                    .then((saved) => {
+                        if (saved) {
+                            applySavedState(saved);
+                            render();
+                        } else if (legacyParsed) {
+                            return idbWriteSafeTick(legacyParsed);
+                        }
+                    })
+                    .catch((err) => {
+                        console.warn('SAFE-TICK IndexedDB restore failed:', err);
+                    });
             }
 
             function save() {
-                try {
-                    const payload = {
-                        version: VERSION,
-                        target: TARGET,
-                        active: active ? JSON.parse(JSON.stringify(active)) : null,
-                        records: records.slice(-5000),
-                        lastSeenEpoch,
-                        savedAt: Date.now()
-                    };
+                const payload = {
+                    version: VERSION,
+                    target: TARGET,
+                    active: active ? JSON.parse(JSON.stringify(active)) : null,
+                    records: records.slice(-5000),
+                    lastSeenEpoch,
+                    savedAt: Date.now()
+                };
 
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-
-                    // Secondary emergency mirror. If the main key is corrupted or
-                    // accidentally overwritten, the last good state can still recover.
-                    localStorage.setItem(
-                        `${STORAGE_KEY}:backup`,
-                        JSON.stringify(payload)
-                    );
-                } catch (err) {
-                    console.warn('SAFE-TICK V1.4 save failed:', err);
-                }
+                // IndexedDB is the primary SAFE-TICK store from V1.4.1 onward.
+                idbWriteSafeTick(payload).catch((err) => {
+                    console.warn('SAFE-TICK IndexedDB save failed:', err);
+                });
             }
 
             function featureSnapshot(candidateDigit) {
@@ -11353,6 +11400,22 @@ window.executionLock = true;
                 serverExecEl('serverExecPnl').textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
             }
 
+            // Secure OAuth server mode has no raw Deriv token in the browser,
+            // so the old browser balance subscription cannot run. Use the
+            // server-maintained account balance instead.
+            const serverBalance = Number(st.account_balance);
+            if (Number.isFinite(serverBalance)) {
+                window.currentBalance = serverBalance;
+                if (!Number.isFinite(Number(window.startingBalance)) || Number(window.startingBalance) <= 0) {
+                    window.startingBalance = serverBalance - Number(st.pnl || 0);
+                }
+                const balanceElem = document.getElementById('metricAccountBalance');
+                if (balanceElem) {
+                    balanceElem.textContent = `$${serverBalance.toFixed(2)}`;
+                    balanceElem.className = 'text-lg font-bold balance-green';
+                }
+            }
+
             if (badge) {
                 if (!s.apiUrl) {
                     badge.textContent = 'NOT CONFIGURED';
@@ -11489,7 +11552,7 @@ window.executionLock = true;
         }
 
         function serverSessionConfigFromUi() {
-            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
             return {
                 requested_mode: mode,
                 symbol: document.getElementById('symbol')?.value || 'R_10',
@@ -11529,6 +11592,27 @@ window.executionLock = true;
                     max_trades: cfg.max_trades
                 }
             });
+
+            // SERVER MODE RESEARCH BRIDGE:
+            // Browser execution used to trigger SAFE-TICK / Candidate DNA from
+            // analyzeAndTrade() immediately before executeTrade(). In server mode
+            // that browser path is intentionally bypassed, so explicitly freeze
+            // the current canonical T0 tick here for a NEW cycle only.
+            // Never create a new research candidate while reconciling an already
+            // open contract.
+            if (!created.reconcile_required && window.lastTick) {
+                try {
+                    window.SafeTickV1?.captureCandidate?.(window.lastTick);
+                } catch (err) {
+                    console.warn('SAFE-TICK server-mode capture failed:', err);
+                }
+                try {
+                    window.CandidateTickDNAV3?.captureCandidate?.(window.lastTick);
+                } catch (err) {
+                    console.warn('Candidate Tick DNA server-mode capture failed:', err);
+                }
+            }
+
             s.sessionId = Number(created.id);
             sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
             try { localStorage.setItem('dms_server_session_id', String(s.sessionId)); } catch (_) {}

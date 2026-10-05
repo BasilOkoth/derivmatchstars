@@ -161,6 +161,21 @@ class MultiUserEngine:
                         log.settled_at = datetime.utcnow()
                         log.raw_json = json.dumps(data)
 
+                    # Keep the server-side account balance snapshot current.
+                    # Deriv's settled `profit` is net P/L for the contract, so
+                    # adding it once at settlement tracks this bot's account change.
+                    account = (
+                        db.query(DerivAccount)
+                        .filter(
+                            DerivAccount.user_id == s.user_id,
+                            DerivAccount.account_id == s.account_id,
+                        )
+                        .first()
+                    )
+                    if account and account.balance is not None:
+                        account.balance = float(account.balance) + profit
+                        account.updated_at = datetime.utcnow()
+
                     s.open_contract_id = None
                     s.pending_trade_json = None
                     s.pending_real_confirmation = False

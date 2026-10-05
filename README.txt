@@ -1,28 +1,37 @@
-DigitMatchStar V2.1.4 Worker Error Fix
+DigitMatchStar V2.1.7 — Server Research + Balance Fix
 
-BACKEND — upload to repository root:
-- app/engine.py
-- app/deriv_rest.py
-- app/deriv_ws.py
-
-FRONTEND:
+Upload frontend:
 - bot.html
 - bot-obfuscated.html
 
-What is fixed:
-1. Server worker now shows the exact failed stage: AUTH, OTP, WEBSOCKET,
-   PROPOSAL, BUY, or SETTLEMENT.
-2. Failed sessions stop instead of retrying the same failure every 0.5 seconds.
-3. Proposal currency now comes from the connected Deriv account instead of
-   being hard-coded to USD.
-4. WebSocket connection/reconnection handling is more defensive.
-5. HTTP/Deriv errors are preserved in a safe diagnostic form.
-6. Dashboard now displays last_error directly under Worker phase.
-7. DEMO server execution remains automatic.
-8. REAL purchasing remains confirmation-based.
+Upload backend:
+- app/main.py
+- app/engine.py
 
-After deployment:
-- reconnect DEMO
-- start the bot
-- if Deriv rejects anything, the exact reason will appear in the dashboard
-  rather than only showing Worker phase: ERROR.
+What this fixes
+
+1. SAFE-TICK / Candidate DNA in SERVER mode
+Browser-mode research used to start inside analyzeAndTrade() immediately before
+executeTrade(). SERVER mode bypasses executeTrade(), so no research candidate
+was ever created. V2.1.7 explicitly freezes window.lastTick when a NEW server
+cycle starts. Future public ticks already feed the research outcome engine.
+
+2. SAFE-TICK storage quota
+SAFE-TICK persistence is moved from localStorage to IndexedDB. Existing local
+research is migrated on first load when available.
+
+3. Blank balance in secure OAuth mode
+The browser intentionally has no raw Deriv OAuth token, so the old browser
+balance subscription cannot authenticate. The server now exposes account_balance
+and updates its balance snapshot after each settled contract. The dashboard uses
+that server value.
+
+4. Reconciliation safety retained
+No new research candidate is recorded while an already-open contract is merely
+being reconciled.
+
+Notes
+- Server P/L and account balance are separate metrics.
+- account_balance is based on the balance captured at OAuth connection plus
+  bot-settled P/L. If the same Deriv account is changed elsewhere, reconnecting
+  OAuth refreshes the snapshot.
