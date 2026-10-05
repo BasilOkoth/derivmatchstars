@@ -1185,7 +1185,9 @@
         // AUTHENTICATION GUARD - users must authenticate before opening this bot file
         // ============================================================================
         function getPlatformJwt() {
-            return localStorage.getItem('dms_platform_jwt') || '';
+            return sessionStorage.getItem('dms_platform_jwt') ||
+                   localStorage.getItem('dms_platform_jwt') ||
+                   '';
         }
 
         function getStoredDerivToken() {
@@ -1198,24 +1200,30 @@
         }
 
         function getStoredDerivAccount() {
-            const mode = localStorage.getItem('selectedAccountMode');
+            const mode =
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode');
+
+            const get = (key) =>
+                sessionStorage.getItem(key) ||
+                localStorage.getItem(key);
 
             if (mode === 'DEMO') {
-                return localStorage.getItem('active_account') ||
-                       localStorage.getItem('derivAccount') ||
-                       localStorage.getItem('derivDemoAccount');
+                return get('active_account') ||
+                       get('derivAccount') ||
+                       get('derivDemoAccount');
             }
 
             if (mode === 'REAL') {
-                return localStorage.getItem('active_account') ||
-                       localStorage.getItem('derivAccount') ||
-                       localStorage.getItem('derivRealAccount');
+                return get('active_account') ||
+                       get('derivAccount') ||
+                       get('derivRealAccount');
             }
 
-            return localStorage.getItem('active_account') ||
-                   localStorage.getItem('derivAccount') ||
-                   localStorage.getItem('derivDemoAccount') ||
-                   localStorage.getItem('derivRealAccount');
+            return get('active_account') ||
+                   get('derivAccount') ||
+                   get('derivDemoAccount') ||
+                   get('derivRealAccount');
         }
 
         function getDerivAppIdForRest() {
@@ -1225,7 +1233,11 @@
         }
 
         function isBotAuthenticated() {
-            return localStorage.getItem('bot_authenticated') === 'true' && !!getPlatformJwt();
+            const authenticated =
+                sessionStorage.getItem('bot_authenticated') === 'true' ||
+                localStorage.getItem('bot_authenticated') === 'true';
+
+            return authenticated && !!getPlatformJwt();
         }
 
         if (!isBotAuthenticated()) {
@@ -7544,12 +7556,22 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Check for authentication token
         function checkAuthToken() {
-            const token = getStoredDerivToken();
-            const authenticated = localStorage.getItem('bot_authenticated') === 'true';
+            const authenticated = isBotAuthenticated();
 
-            if (!authenticated || !token) {
+            if (!authenticated) {
                 log('⚠️ Please authenticate first before using the bot.', 'WARNING');
                 window.location.replace('/');
+                return false;
+            }
+
+            // Secure server mode does not require a raw Deriv token in the browser.
+            if (window.SERVER_EXECUTION?.enabled) {
+                return !!getPlatformJwt();
+            }
+
+            // Legacy browser execution still requires the raw Deriv token.
+            if (!getStoredDerivToken()) {
+                log('⚠️ Browser execution requires legacy Deriv credentials. Use SERVER mode.', 'WARNING');
                 return false;
             }
 
@@ -11204,10 +11226,21 @@ window.executionLock = true;
         // REAL remains server-resident but requires explicit confirmation per purchase.
         // ============================================================================
         window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
-            enabled: localStorage.getItem('dms_server_execution_enabled') !== '0',
-            apiUrl: (localStorage.getItem('dms_server_execution_url') || 'https://digitmatchstar-api.onrender.com').replace(/\/+$/,''),
+            enabled: (
+                sessionStorage.getItem('dms_server_execution_enabled') ??
+                localStorage.getItem('dms_server_execution_enabled')
+            ) !== '0',
+            apiUrl: (
+                sessionStorage.getItem('dms_server_execution_url') ||
+                localStorage.getItem('dms_server_execution_url') ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/,''),
             state: null,
-            sessionId: Number(localStorage.getItem('dms_server_session_id') || 0) || null,
+            sessionId: Number(
+                sessionStorage.getItem('dms_server_session_id') ||
+                localStorage.getItem('dms_server_session_id') ||
+                0
+            ) || null,
             pollTimer: null,
             lastCandidateSent: null
         };
@@ -11284,6 +11317,7 @@ window.executionLock = true;
             if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
             const jwt = getPlatformJwt();
             if (!jwt) {
+                sessionStorage.removeItem('bot_authenticated');
                 localStorage.removeItem('bot_authenticated');
                 throw new Error('DigitMatchStar session expired. Reconnect through Deriv.');
             }
@@ -11300,6 +11334,8 @@ window.executionLock = true;
             let data = null;
             try { data = await res.json(); } catch (_) {}
             if (res.status === 401) {
+                sessionStorage.removeItem('dms_platform_jwt');
+                sessionStorage.removeItem('bot_authenticated');
                 localStorage.removeItem('dms_platform_jwt');
                 localStorage.removeItem('bot_authenticated');
             }
@@ -11362,7 +11398,8 @@ window.executionLock = true;
                 return;
             }
             s.enabled = !s.enabled;
-            localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
+            sessionStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
+            try { localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0'); } catch (_) {}
             renderServerExecutionState();
             ensureServerExecutionPolling();
             log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
@@ -11410,7 +11447,8 @@ window.executionLock = true;
                 }
             });
             s.sessionId = Number(created.id);
-            localStorage.setItem('dms_server_session_id', String(s.sessionId));
+            sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
+            try { localStorage.setItem('dms_server_session_id', String(s.sessionId)); } catch (_) {}
 
             await serverExecRequest(`/sessions/${s.sessionId}/candidate`, {method:'POST', body:{digit}});
             s.lastCandidateSent = digit;
