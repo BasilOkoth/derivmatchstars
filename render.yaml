@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: digitmatchstar-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DERIV_APP_ID
+        sync: false
+      - key: DERIV_DEMO_TOKEN
+        sync: false
+      - key: DERIV_REAL_TOKEN
+        sync: false
+      - key: ALLOW_REAL_MODE
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
