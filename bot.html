@@ -1182,47 +1182,68 @@
         }
 
         // ============================================================================
-        // AUTHENTICATION GUARD - users must authenticate before opening this bot file
+        // AUTHENTICATION GUARD — SECURE SERVER OAUTH COMPATIBLE
+        // index.html stores the DigitMatchStar platform JWT in sessionStorage and
+        // intentionally removes raw Deriv tokens from the browser. Do NOT require a
+        // browser Deriv token merely to open bot.html.
         // ============================================================================
         function getStoredDerivToken() {
-            return localStorage.getItem('active_token') ||
+            // Legacy/browser-direct fallback only. Secure OAuth normally returns null.
+            return sessionStorage.getItem('active_token') ||
+                   sessionStorage.getItem('derivToken') ||
+                   sessionStorage.getItem('derivTokenDemo') ||
+                   sessionStorage.getItem('derivTokenReal') ||
+                   localStorage.getItem('active_token') ||
                    localStorage.getItem('derivToken') ||
                    localStorage.getItem('derivTokenDemo') ||
                    localStorage.getItem('derivTokenReal');
         }
 
+        function getStoredPlatformToken() {
+            return sessionStorage.getItem('dms_platform_jwt') ||
+                   localStorage.getItem('dms_platform_jwt') ||
+                   null;
+        }
+
         function getStoredDerivAccount() {
-            const mode = localStorage.getItem('selectedAccountMode');
+            const mode = sessionStorage.getItem('selectedAccountMode') ||
+                         localStorage.getItem('selectedAccountMode');
+
+            const read = (key) => sessionStorage.getItem(key) || localStorage.getItem(key);
 
             if (mode === 'DEMO') {
-                return localStorage.getItem('active_account') ||
-                       localStorage.getItem('derivAccount') ||
-                       localStorage.getItem('derivDemoAccount');
+                return read('active_account') || read('derivAccount') || read('derivDemoAccount');
             }
 
             if (mode === 'REAL') {
-                return localStorage.getItem('active_account') ||
-                       localStorage.getItem('derivAccount') ||
-                       localStorage.getItem('derivRealAccount');
+                return read('active_account') || read('derivAccount') || read('derivRealAccount');
             }
 
-            return localStorage.getItem('active_account') ||
-                   localStorage.getItem('derivAccount') ||
-                   localStorage.getItem('derivDemoAccount') ||
-                   localStorage.getItem('derivRealAccount');
+            return read('active_account') ||
+                   read('derivAccount') ||
+                   read('derivDemoAccount') ||
+                   read('derivRealAccount');
         }
 
         function getDerivAppIdForRest() {
-            return localStorage.getItem('deriv_app_id') ||
+            return sessionStorage.getItem('deriv_app_id') ||
+                   sessionStorage.getItem('deriv_client_id') ||
+                   localStorage.getItem('deriv_app_id') ||
                    localStorage.getItem('deriv_client_id') ||
                    '34uXWAMOwfAO5EtltnV4n';
         }
 
         function isBotAuthenticated() {
-            return localStorage.getItem('bot_authenticated') === 'true' && !!getStoredDerivToken();
+            const authFlag = sessionStorage.getItem('bot_authenticated') === 'true' ||
+                             localStorage.getItem('bot_authenticated') === 'true';
+            const secureOAuth = !!getStoredPlatformToken();
+            const legacyBrowserAuth = !!getStoredDerivToken();
+            const account = !!getStoredDerivAccount();
+            return authFlag && account && (secureOAuth || legacyBrowserAuth);
         }
 
         if (!isBotAuthenticated()) {
+            console.warn('[DigitMatchStar] No valid secure session found; returning to login.');
             window.location.replace('/');
         }
 
