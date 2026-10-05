@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- SAFE-TICK V1.6 + SECURE OAUTH STARTUP FIX + TELEGRAM JWT FIX 2026-10-05 -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Deriv DigitMatchStar Bot</title>
@@ -5492,12 +5493,10 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
-        const token = (typeof getStoredDerivToken === 'function')
-            ? getStoredDerivToken()
-            : (localStorage.getItem('active_token') ||
-               localStorage.getItem('derivToken') ||
-               localStorage.getItem('derivTokenDemo') ||
-               localStorage.getItem('derivTokenReal'));
+        const token = (typeof getStoredPlatformToken === 'function')
+            ? getStoredPlatformToken()
+            : (sessionStorage.getItem('dms_platform_jwt') ||
+               localStorage.getItem('dms_platform_jwt'));
 
         const accountId = (typeof getStoredDerivAccount === 'function')
             ? getStoredDerivAccount()
@@ -7559,10 +7558,22 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Check for authentication token
         function checkAuthToken() {
-            const token = getStoredDerivToken();
-            const authenticated = localStorage.getItem('bot_authenticated') === 'true';
+            // Secure OAuth stores the DigitMatchStar platform JWT in sessionStorage.
+            // Raw Deriv tokens are intentionally NOT required in the browser.
+            const authenticated =
+                sessionStorage.getItem('bot_authenticated') === 'true' ||
+                localStorage.getItem('bot_authenticated') === 'true';
 
-            if (!authenticated || !token) {
+            const platformToken =
+                (typeof getStoredPlatformToken === 'function') ? getStoredPlatformToken() : null;
+
+            const legacyDerivToken =
+                (typeof getStoredDerivToken === 'function') ? getStoredDerivToken() : null;
+
+            const account =
+                (typeof getStoredDerivAccount === 'function') ? getStoredDerivAccount() : null;
+
+            if (!authenticated || !account || (!platformToken && !legacyDerivToken)) {
                 log('⚠️ Please authenticate first before using the bot.', 'WARNING');
                 window.location.replace('/');
                 return false;
@@ -7573,11 +7584,16 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         
         // Initialize account toggle
         function initializeToggleState() {
-            const mode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const mode = (sessionStorage.getItem('selectedAccountMode') ||
+                          localStorage.getItem('selectedAccountMode') ||
+                          'DEMO').toUpperCase();
             const toggle = document.getElementById('accTypeToggle');
             if (toggle) toggle.checked = mode === 'REAL';
 
             const accountId =
+                sessionStorage.getItem('active_account') ||
+                sessionStorage.getItem('derivAccount') ||
+                sessionStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount') ||
                 localStorage.getItem('active_account') ||
                 localStorage.getItem('derivAccount') ||
                 localStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount');
