@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: digitmatchstar-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+      - key: DATABASE_URL
+        sync: false
+      - key: DERIV_CLIENT_ID
+        sync: false
+      - key: DERIV_REDIRECT_URI
+        sync: false
+      - key: DERIV_SCOPE
+        value: "trade account_manage"
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: PLATFORM_JWT_SECRET
+        sync: false
+      - key: PLATFORM_JWT_ALGORITHM
+        value: "HS256"
+      - key: PLATFORM_JWT_HOURS
+        value: "12"
+      - key: FRONTEND_URL
+        value: "https://www.digitmatchstar.com"
+      - key: ALLOW_REAL_MODE
+        value: "false"
