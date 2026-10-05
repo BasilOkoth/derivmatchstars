@@ -1,35 +1,34 @@
-DigitMatchStar V2.2.0 — Continuous Research Restart + P/L Colors
+DigitMatchStar — Old Stable Base + SAFE-TICK Alignment + Sound
 
-Upload:
+Files:
 - bot.html
 - bot-obfuscated.html
-- screen-recorder-safe-v5-2.js
 
-FIX 1 — Continuous DEMO Research
-Previous build could remain in WON after settlement because it tried to reuse
-the completed session. V2.2.0 now performs the lifecycle explicitly:
+Both files are intentionally synchronized from the two old-base files you supplied.
 
-WON / MAX_TRADES_REACHED
-→ wait briefly for research settlement
-→ STOP completed server cycle
-→ clear old session id locally
-→ unlock old AI digit
-→ obtain a fresh AI recommendation
-→ freeze the new research candidate
-→ create a fresh server session
-→ START at trade 1
+SAFE-TICK alignment correction
+- V1.5 starts a NEW cohort; old V1.4 records are not mixed into it.
+- T0 candidate capture now requires a real positive Deriv epoch.
+- normalizeTick reads window.lastTick.raw.epoch, which was missing before.
+- canonical digitmatchstar:tick events are authoritative.
+- future ticks must have epoch > entryEpoch.
+- event + fallback duplicates are deduplicated by Deriv epoch.
+- out-of-order epochs are ignored.
+- forwardEpochs and forwardDigits are stored for direct audit.
+- the frozen rule itself is unchanged:
+  candidateFreq25 <= 0.08
+  entropy10 <= 2.5219280948873625
 
-If AI is temporarily between recommendations, it retries for up to ~10 seconds
-instead of silently remaining stopped.
+Sound
+- Existing sound button retained.
+- Saved ON/OFF preference is restored on load.
+- Enabling sound initializes Tone.js after the user gesture.
+- Execution sound on BUYING.
+- WIN chord on WON.
+- LOSS tone on RECOVERING.
+- Error tone on server ERROR.
+- Server polling is deduplicated so the same state does not beep repeatedly.
 
-Manual STOP always cancels auto-restart.
-
-DEMO ONLY. This does not auto-start REAL-money purchases.
-
-FIX 2 — P/L colors
-- During a cycle, P/L is bold RED while no positive win has been achieved.
-- When cycle P/L becomes positive / phase is WON, P/L becomes bold GREEN.
-- Applies to both the main P/L metric and Server P/L.
-
-RECORDER
-Premium Recorder from V2.1.9 is retained unchanged.
+Validation
+- Both output files are byte-for-byte synchronized.
+- All inline JavaScript blocks passed Node syntax checking.

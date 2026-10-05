@@ -664,7 +664,7 @@
                 <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
                     <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
                         <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.4 RICH-DNA · SHADOW</span>
+                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.5 EXACT-EPOCH · SHADOW</span>
                         <button type="button" onclick="downloadSafeTickV1Data()"
                                 class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
                             ⬇ Export
@@ -7005,7 +7005,14 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.req_id = 0;
         window.isBotRunning = false;
         window.isConnecting = false;
-        window.soundEnabled = true;
+        window.soundEnabled = (() => {
+            try {
+                const saved = localStorage.getItem('soundEnabled');
+                return saved === null ? true : saved === 'true';
+            } catch (_) {
+                return true;
+            }
+        })();
         window.ToneInitialized = false;
         window.synth = null;
         
@@ -10731,8 +10738,8 @@ window.executionLock = true;
         // - tail15 = forwardGap >= 15 (or no recurrence by tick 20).
         // ============================================================================
         window.SafeTickV1 = (() => {
-            const VERSION = 'SAFE-TICK-V1.4-RICH-DNA-2026-10-05';
-            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_3_persistent_shadow_r10';
+            const VERSION = 'SAFE-TICK-V1.5-EXACT-EPOCH-2026-10-05';
+            const STORAGE_KEY = 'digitmatchstar_safe_tick_v1_5_exact_epoch_shadow_r10';
             const TARGET = 500;
             const FREQ25_MAX = 0.08;
             const ENTROPY10_MAX = 2.5219280948873625;
@@ -10760,7 +10767,7 @@ window.executionLock = true;
 
             const SAFE_IDB_DB = 'digitmatchstar-research';
             const SAFE_IDB_STORE = 'safe_tick_shadow';
-            const SAFE_IDB_KEY = 'R_10_V1';
+            const SAFE_IDB_KEY = 'R_10_V1_5_EXACT_EPOCH';
 
             function openSafeTickDB() {
                 return new Promise((resolve, reject) => {
@@ -10815,35 +10822,17 @@ window.executionLock = true;
             }
 
             function load() {
-                // Fast migration fallback from the previous localStorage build.
-                let legacyParsed = null;
-                try {
-                    legacyParsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-                    if (!legacyParsed) {
-                        legacyParsed = JSON.parse(
-                            localStorage.getItem('digitmatchstar_safe_tick_v1_2_true_epoch_shadow_r10') || 'null'
-                        );
-                    }
-                    applySavedState(legacyParsed);
-                } catch (err) {
-                    console.warn('SAFE-TICK legacy restore warning:', err);
-                }
-
                 render();
 
-                // Authoritative persistence is now IndexedDB, which has far more
-                // capacity than localStorage and does not compete with auth/UI keys.
                 idbReadSafeTick()
                     .then((saved) => {
-                        if (saved) {
+                        if (saved && saved.version === VERSION) {
                             applySavedState(saved);
                             render();
-                        } else if (legacyParsed) {
-                            return idbWriteSafeTick(legacyParsed);
                         }
                     })
                     .catch((err) => {
-                        console.warn('SAFE-TICK IndexedDB restore failed:', err);
+                        console.warn('SAFE-TICK V1.5 IndexedDB restore failed:', err);
                     });
             }
 
@@ -10947,57 +10936,87 @@ window.executionLock = true;
                 const source = tick || fallback;
                 if (!source) return null;
 
+                const raw = source.raw || null;
+                const fallbackRaw = fallback?.raw || null;
+
                 const symbol =
                     source.symbol ||
+                    raw?.symbol ||
                     fallback?.symbol ||
+                    fallbackRaw?.symbol ||
                     document.getElementById('symbol')?.value ||
                     window.tickFormat?.symbol ||
                     'UNKNOWN';
 
                 const rawQuote =
                     source.quote ??
+                    raw?.quote ??
                     source.price ??
                     fallback?.quote ??
+                    fallbackRaw?.quote ??
                     fallback?.price ??
                     null;
 
                 const explicitDigit = Number(source.digit);
                 const fallbackDigit = Number(fallback?.digit);
 
-                let digit = Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
-                    ? explicitDigit
-                    : (
-                        Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
-                            ? fallbackDigit
-                            : Number(getLastDigitFromQuote?.(rawQuote, null, symbol))
-                      );
+                const digit =
+                    Number.isInteger(explicitDigit) && explicitDigit >= 0 && explicitDigit <= 9
+                        ? explicitDigit
+                        : (
+                            Number.isInteger(fallbackDigit) && fallbackDigit >= 0 && fallbackDigit <= 9
+                                ? fallbackDigit
+                                : Number(getLastDigitFromQuote?.(rawQuote, raw, symbol))
+                          );
 
-                // IMPORTANT: Number(null) === 0 in JavaScript. Treat null/undefined/
-                // empty values as MISSING before numeric conversion so T0 never becomes e:0.
-                const toPositiveFinite = (value) => {
+                const positiveFinite = (value) => {
                     if (value === null || value === undefined || value === '') return null;
                     const n = Number(value);
                     return Number.isFinite(n) && n > 0 ? n : null;
                 };
 
-                const sourceEpoch = toPositiveFinite(source.epoch);
-                const fallbackEpoch = toPositiveFinite(fallback?.epoch);
+                // IMPORTANT: window.lastTick stores the original Deriv payload in
+                // `.raw`, so raw.epoch must be checked. This was the source of the
+                // old entryEpoch=null alignment bug.
+                const epoch =
+                    positiveFinite(source.epoch) ??
+                    positiveFinite(raw?.epoch) ??
+                    positiveFinite(fallback?.epoch) ??
+                    positiveFinite(fallbackRaw?.epoch) ??
+                    null;
 
-                // executeTrade() can receive a lightweight tick without epoch.
-                // window.lastTick is the canonical market tick at that instant.
-                const epoch = sourceEpoch ?? fallbackEpoch ?? null;
+                const receivedAt =
+                    positiveFinite(source.receivedAt) ??
+                    positiveFinite(source.time) ??
+                    positiveFinite(fallback?.receivedAt) ??
+                    positiveFinite(fallback?.time) ??
+                    null;
 
-                const sourceReceivedAt = toPositiveFinite(source.receivedAt);
-                const fallbackReceivedAt = toPositiveFinite(fallback?.receivedAt);
-                const receivedAt = sourceReceivedAt ?? fallbackReceivedAt ?? null;
+                const formatted =
+                    source.formattedQuote ??
+                    source.formattedPrice ??
+                    fallback?.formattedQuote ??
+                    fallback?.formattedPrice ??
+                    null;
 
-                const quoteText = rawQuote === null || rawQuote === undefined
-                    ? ''
-                    : String(rawQuote);
+                const quoteText =
+                    formatted !== null && formatted !== undefined && formatted !== ''
+                        ? String(formatted)
+                        : (
+                            rawQuote === null || rawQuote === undefined
+                                ? ''
+                                : String(rawQuote)
+                          );
+
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
+                    return null;
+                }
 
                 return {
                     symbol,
-                    quote: rawQuote,
+                    quote: rawQuote === null || rawQuote === undefined
+                        ? null
+                        : Number(rawQuote),
                     quoteText,
                     digit,
                     epoch,
@@ -11046,6 +11065,16 @@ window.executionLock = true;
                 const digit = Number(t.digit);
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
 
+                // Exact alignment is mandatory. If T0 has no real Deriv epoch,
+                // skip it rather than creating an unauditable research record.
+                if (!Number.isFinite(Number(t.epoch)) || Number(t.epoch) <= 0) {
+                    console.warn(
+                        'SAFE-TICK V1.5 candidate skipped: exact Deriv epoch unavailable',
+                        tick
+                    );
+                    return null;
+                }
+
                 const f = featureSnapshot(digit);
                 const eligible =
                     Number.isFinite(f.candidateFreq25) &&
@@ -11057,9 +11086,11 @@ window.executionLock = true;
                     id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
                     symbol: t.symbol,
                     capturedAt: Date.now(),
-                    entryEpoch: (t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0) ? Number(t.epoch) : null,
+                    entryEpoch: Number(t.epoch),
                     entryReceivedAt: (t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0) ? Number(t.receivedAt) : null,
-                    entryTickKey: tickKey(t),
+                    entryTickKey: `e:${Number(t.epoch)}`,
+                    alignmentMode: 'STRICT_DERIV_EPOCH',
+                    entryDigitSource: 'canonical_tick_digit',
                     entryQuote: t.quote,
                     candidateDigit: digit,
                     entryFeatures: f,
@@ -11072,11 +11103,14 @@ window.executionLock = true;
                     noRecurrenceBy20: false,
                     finalized: false,
                     sameTickSkipped: false,
-                    lastFutureTickKey: null
+                    lastFutureTickKey: null,
+                    lastFutureEpoch: null,
+                    forwardEpochs: [],
+                    forwardDigits: []
                 };
 
                 log(
-                    `🛡️ SAFE-TICK V1.4 RICH-DNA | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
+                    `🛡️ SAFE-TICK V1.5 EXACT-EPOCH | digit ${digit} | F25 ${f.candidateFreq25.toFixed(3)} | ` +
                     `H10 ${f.entropy10.toFixed(3)} | ${active.decision} | ` +
                     `T0 ${active.entryEpoch ?? active.entryTickKey}`,
                     eligible ? 'SYSTEM' : 'WARNING'
@@ -11093,41 +11127,48 @@ window.executionLock = true;
                 const t = normalizeTick(tick);
                 if (!t || t.symbol !== active.symbol) return;
 
-                const key = tickKey(t);
+                const epoch = Number(t.epoch);
+                const entryEpoch = Number(active.entryEpoch);
 
-                // Strong T0 exclusion. The exact candidate tick can be emitted again
-                // by the canonical tick event or by the fallback poll. It is NEVER T+1.
-                if (active.entryTickKey && key === active.entryTickKey) {
-                    active.sameTickSkipped = true;
-                    save();
+                // Every outcome tick must be a real Deriv tick occurring strictly
+                // AFTER T0. This is the core no-leakage / no-same-tick guarantee.
+                if (!Number.isFinite(epoch) || epoch <= 0) return;
+                if (!Number.isFinite(entryEpoch) || entryEpoch <= 0) return;
+
+                if (epoch <= entryEpoch) {
+                    if (epoch === entryEpoch) {
+                        active.sameTickSkipped = true;
+                    }
                     return;
                 }
 
+                // Canonical event + fallback polling may surface the same tick.
+                // Count one Deriv epoch once and only once.
                 if (
-                    active.entryEpoch !== null &&
-                    t.epoch !== null && t.epoch !== undefined && Number.isFinite(Number(t.epoch)) && Number(t.epoch) > 0 &&
-                    Number(t.epoch) <= Number(active.entryEpoch)
+                    active.lastFutureEpoch !== null &&
+                    Number(active.lastFutureEpoch) === epoch
                 ) {
                     return;
                 }
 
+                // Ignore an older/out-of-order event rather than corrupting the
+                // 1-based forward-gap sequence.
                 if (
-                    active.entryEpoch === null &&
-                    active.entryReceivedAt !== null &&
-                    t.receivedAt !== null && t.receivedAt !== undefined && Number.isFinite(Number(t.receivedAt)) && Number(t.receivedAt) > 0 &&
-                    Number(t.receivedAt) <= Number(active.entryReceivedAt)
+                    active.lastFutureEpoch !== null &&
+                    epoch < Number(active.lastFutureEpoch)
                 ) {
                     return;
                 }
-
-                // Event + polling fallback can both surface the same future tick.
-                if (key && key === active.lastFutureTickKey) return;
-                active.lastFutureTickKey = key;
 
                 const digit = Number(t.digit);
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
 
+                active.lastFutureEpoch = epoch;
+                active.lastFutureTickKey = `e:${epoch}`;
                 active.forwardTicksObserved += 1;
+                active.forwardEpochs.push(epoch);
+                active.forwardDigits.push(digit);
+
                 save();
 
                 if (digit === active.candidateDigit) {
@@ -11287,6 +11328,13 @@ window.executionLock = true;
                         entropy10Max: ENTROPY10_MAX
                     },
                     targetCandidates: TARGET,
+                    alignment: {
+                        mode: 'STRICT_DERIV_EPOCH',
+                        entryRequiresEpoch: true,
+                        futureTickDeduplication: 'epoch',
+                        canonicalEventAuthoritative: true,
+                        legacyV14Mixed: false
+                    },
                     active: active ? JSON.parse(JSON.stringify(active)) : null,
                     stats: stats(),
                     records: JSON.parse(JSON.stringify(records))
@@ -11295,28 +11343,49 @@ window.executionLock = true;
 
             load();
 
-            // Consume the canonical tick event if available.
+            // Canonical bot tick event is authoritative for SAFE-TICK V1.5.
+            let latestCanonicalTick = null;
+            let lastCanonicalEventAt = 0;
+
             window.addEventListener('digitmatchstar:tick', (event) => {
                 try {
-                    onFutureTick(event?.detail?.tick || event?.detail || null);
+                    const detail = event?.detail?.tick || event?.detail || null;
+                    const t = normalizeTick(detail);
+                    if (!t) return;
+
+                    latestCanonicalTick = t;
+                    lastCanonicalEventAt = Date.now();
+                    onFutureTick(t);
                 } catch (err) {
-                    console.warn('SAFE-TICK V1 future tick error:', err);
+                    console.warn('SAFE-TICK V1.5 canonical tick error:', err);
                 }
             });
 
-            // Fallback: lightweight poll of canonical window.lastTick for builds
-            // where the tick event is not emitted.
+            // Fallback is used only if the canonical event has been silent.
+            // window.lastTick stores Deriv epoch under raw.epoch, which
+            // normalizeTick now reads correctly.
             let fallbackEpoch = null;
             setInterval(() => {
                 try {
-                    const t = window.lastTick;
-                    if (!t) return;
-                    const epoch = Number(t.epoch ?? NaN);
-                    if (Number.isFinite(epoch) && epoch === fallbackEpoch) return;
+                    if (Date.now() - lastCanonicalEventAt < 2500) return;
+
+                    const t = normalizeTick(window.lastTick);
+                    if (!t || !Number.isFinite(Number(t.epoch))) return;
+
+                    const epoch = Number(t.epoch);
+                    if (epoch === fallbackEpoch) return;
                     fallbackEpoch = epoch;
+
                     onFutureTick(t);
                 } catch (_) {}
             }, 250);
+
+            window.SafeTickLatestCanonicalTick = () => {
+                if (latestCanonicalTick) {
+                    return JSON.parse(JSON.stringify(latestCanonicalTick));
+                }
+                return normalizeTick(window.lastTick);
+            };
 
             window.addEventListener('load', render);
             window.addEventListener('beforeunload', save);
@@ -11329,6 +11398,12 @@ window.executionLock = true;
             return Object.freeze({
                 VERSION,
                 captureCandidate,
+                captureLatestCanonical() {
+                    const t =
+                        window.SafeTickLatestCanonicalTick?.() ||
+                        normalizeTick(window.lastTick);
+                    return captureCandidate(t);
+                },
                 onFutureTick,
                 stats,
                 render,
@@ -11559,6 +11634,28 @@ window.executionLock = true;
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
+
+            // Server execution is polled repeatedly. Sound only once for each
+            // meaningful phase/trade/contract transition.
+            try {
+                const phase = String(st.phase || '').toUpperCase();
+                const fingerprint =
+                    `${phase}|${st.current_trade ?? ''}|${st.open_contract_id ?? ''}|${Number(st.pnl || 0).toFixed(2)}`;
+
+                if (fingerprint !== window.__dmsLastServerSoundFingerprint) {
+                    window.__dmsLastServerSoundFingerprint = fingerprint;
+
+                    if (phase === 'WON') {
+                        playAudioFeedback('WIN');
+                    } else if (phase === 'RECOVERING') {
+                        playAudioFeedback('LOSS');
+                    } else if (phase === 'BUYING') {
+                        playAudioFeedback('EXECUTION');
+                    } else if (phase === 'ERROR') {
+                        playAudioFeedback('ERROR');
+                    }
+                }
+            } catch (_) {}
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
             const continuousBtn = serverExecEl('serverContinuousResearchBtn');
@@ -12102,7 +12199,7 @@ window.executionLock = true;
             // open contract.
             if (!created.reconcile_required && window.lastTick) {
                 try {
-                    window.SafeTickV1?.captureCandidate?.(window.lastTick);
+                    window.SafeTickV1?.captureLatestCanonical?.();
                 } catch (err) {
                     console.warn('SAFE-TICK server-mode capture failed:', err);
                 }
@@ -12626,10 +12723,23 @@ window.isBotRunning = true;
             document.getElementById('metricTickRate').textContent = `Ticks/sec: ${tickRate.toFixed(1)}`;
         }
         
-        function toggleSound() {
+        async function toggleSound() {
             window.soundEnabled = !window.soundEnabled;
-            localStorage.setItem('soundEnabled', window.soundEnabled);
+            try {
+                localStorage.setItem('soundEnabled', String(window.soundEnabled));
+            } catch (_) {}
+
             updateSoundButton();
+
+            if (window.soundEnabled) {
+                await initTone();
+                if (window.ToneInitialized && window.synth) {
+                    try {
+                        window.synth.triggerAttackRelease("G4", "16n");
+                    } catch (_) {}
+                }
+            }
+
             log(`🔊 Sound ${window.soundEnabled ? 'ON' : 'OFF'}`, 'SYSTEM');
         }
         
@@ -12669,6 +12779,13 @@ window.isBotRunning = true;
                     window.synth.triggerAttackRelease("C4", "32n", Tone.now(), 0.3);
                 } else if (type === 'EXECUTION') {
                     window.synth.triggerAttackRelease("E5", "16n", Tone.now(), 0.5);
+                } else if (type === 'LOSS') {
+                    window.synth.triggerAttackRelease("G3", "8n", Tone.now(), 0.55);
+                    setTimeout(() => {
+                        try { window.synth.triggerAttackRelease("E3", "8n", Tone.now(), 0.45); } catch (_) {}
+                    }, 120);
+                } else if (type === 'ERROR') {
+                    window.synth.triggerAttackRelease("C3", "4n", Tone.now(), 0.6);
                 }
             } catch (e) {
                 console.error("Audio error:", e);
@@ -12721,6 +12838,13 @@ window.isBotRunning = true;
             try { updateSoundButton(); } catch(e) {}
         }
         
+
+        // Restore the saved sound state immediately; Tone itself is initialized
+        // only after a user gesture (START or the sound button), as required by browsers.
+        document.addEventListener('DOMContentLoaded', () => {
+            try { updateSoundButton(); } catch (_) {}
+        });
+
         // QUEUE PROCESSOR - CRITICAL FOR TRADE EXECUTION
         function startQueueProcessor() {
             setInterval(() => {
