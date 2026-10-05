@@ -9,7 +9,7 @@
     <!-- V21 INSTANT tick-pipeline: aligned outcome tick advances recovery once; next contract is sent immediately; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
-    <!-- SERVER EXECUTION V2.1: per-user OAuth/JWT backend; encrypted Deriv token; server-owned fixed-digit cycle -->
+    <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -7035,7 +7035,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.martingaleStep = 0;
         window.recoveryDigitLock = null;
         window.recoveryDigitTrades = 0;
-        window.recoveryDigitTradeLimit = 3;
+        window.recoveryDigitTradeLimit = 1;
 
         // V57.7 — Adaptive recovery hold.
         // Starts with the existing 3-purchase hold, then renews one trade at a time
@@ -7044,7 +7044,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             enabled: true,
             initialHold: 3,
             minHold: 2,
-            maxHold: 6,
+            maxHold: 1,
             extensionStep: 1,
             minAgreementForExtension: 1,
             strongAgreementForExtension: 2,
@@ -11350,6 +11350,27 @@ window.executionLock = true;
             window.addEventListener('digitmatchstar:tick', (event) => {
                 try {
                     const detail = event?.detail?.tick || event?.detail || null;
+
+                    // V1.6 fast-reaction status: market ticks continue to drive
+                    // candidate/recovery analysis while server settlement reconciles.
+                    try {
+                        if (
+                            window.SERVER_EXECUTION?.enabled &&
+                            window.isBotRunning === true &&
+                            window.SERVER_EXECUTION?.state?.open_contract_id
+                        ) {
+                            const d = Number(detail?.digit);
+                            const e = Number(detail?.epoch);
+                            if (Number.isInteger(d) && Number.isFinite(e)) {
+                                updateTradeStatus(
+                                    'LIVE TICK ⚡',
+                                    `Epoch ${e} · digit ${d}`,
+                                    'Contract open · next recovery candidate is being re-scored while settlement reconciles',
+                                    'trade'
+                                );
+                            }
+                        }
+                    } catch (_) {}
                     const t = normalizeTick(detail);
                     if (!t) return;
 
@@ -11635,26 +11656,60 @@ window.executionLock = true;
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
 
-            // Server execution is polled repeatedly. Sound only once for each
-            // meaningful phase/trade/contract transition.
+            // V1.6 deterministic server audio.
+            // Compare the newly received server state with the previous state;
+            // this avoids depending on seeing every short-lived polling phase.
             try {
                 const phase = String(st.phase || '').toUpperCase();
-                const fingerprint =
-                    `${phase}|${st.current_trade ?? ''}|${st.open_contract_id ?? ''}|${Number(st.pnl || 0).toFixed(2)}`;
+                const tradeNo = Number(st.current_trade || 0);
+                const contractId = st.open_contract_id ? String(st.open_contract_id) : '';
+                const pnl = Number(st.pnl || 0);
 
-                if (fingerprint !== window.__dmsLastServerSoundFingerprint) {
-                    window.__dmsLastServerSoundFingerprint = fingerprint;
+                const prev = window.__dmsPrevServerAudioState || {
+                    phase: '',
+                    tradeNo: 0,
+                    contractId: '',
+                    pnl: 0
+                };
 
-                    if (phase === 'WON') {
-                        playAudioFeedback('WIN');
-                    } else if (phase === 'RECOVERING') {
-                        playAudioFeedback('LOSS');
-                    } else if (phase === 'BUYING') {
-                        playAudioFeedback('EXECUTION');
-                    } else if (phase === 'ERROR') {
-                        playAudioFeedback('ERROR');
-                    }
+                // A new contract id or trade number is the reliable purchase event.
+                if (
+                    contractId &&
+                    (
+                        contractId !== prev.contractId ||
+                        tradeNo > prev.tradeNo
+                    )
+                ) {
+                    playAudioFeedback('EXECUTION');
                 }
+
+                // Settlement outcomes are inferred from authoritative server transitions,
+                // not from transient UI polling labels.
+                if (phase === 'WON' && prev.phase !== 'WON') {
+                    playAudioFeedback('WIN');
+                } else if (
+                    phase === 'RECOVERING' &&
+                    (
+                        prev.phase !== 'RECOVERING' ||
+                        tradeNo > prev.tradeNo
+                    )
+                ) {
+                    playAudioFeedback('LOSS');
+                } else if (
+                    phase === 'MAX_TRADES_REACHED' &&
+                    prev.phase !== 'MAX_TRADES_REACHED'
+                ) {
+                    playAudioFeedback('LOSS');
+                } else if (phase === 'ERROR' && prev.phase !== 'ERROR') {
+                    playAudioFeedback('ERROR');
+                }
+
+                window.__dmsPrevServerAudioState = {
+                    phase,
+                    tradeNo,
+                    contractId,
+                    pnl
+                };
             } catch (_) {}
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
@@ -12108,7 +12163,7 @@ window.executionLock = true;
         function ensureServerExecutionPolling() {
             const s = window.SERVER_EXECUTION;
             if (s.pollTimer) clearInterval(s.pollTimer);
-            s.pollTimer = setInterval(pollServerExecutionState, 1200);
+            s.pollTimer = setInterval(pollServerExecutionState, 250);
             pollServerExecutionState();
         }
 
@@ -12331,6 +12386,15 @@ window.executionLock = true;
                 window.martingaleStep = (window.martingaleStep || 0) + 1;
                 window.cycleLosses = (window.cycleLosses || 0) + 1;
                 window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
+
+                // V1.6: do not keep a stale recovery digit across losses.
+                // The next eligible tick must re-score all 10 digits and either
+                // keep the current leader or switch to the stronger candidate.
+                window.recoveryDigitLock = null;
+                window.recoveryDigitTrades = 0;
+                window.recoveryDigitTradeLimit = 1;
+                resetAdaptiveRecoveryHold('PER_TRADE_RERANK');
+
                 renderTailRiskPanel();
                 log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
@@ -12844,6 +12908,19 @@ window.isBotRunning = true;
         document.addEventListener('DOMContentLoaded', () => {
             try { updateSoundButton(); } catch (_) {}
         });
+
+        // V1.6 AUDIO BOOTSTRAP:
+        // Initialize Tone on the first user trading gesture so later settlement
+        // events cannot be lost merely because the sound engine was still locked.
+        document.addEventListener('click', (event) => {
+            try {
+                const target = event.target?.closest?.(
+                    '#toggleButton, #soundToggle, #serverRealConfirmBtn, button'
+                );
+                if (!target || !window.soundEnabled) return;
+                initTone();
+            } catch (_) {}
+        }, { passive: true });
 
         // QUEUE PROCESSOR - CRITICAL FOR TRADE EXECUTION
         function startQueueProcessor() {

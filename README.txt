@@ -1,34 +1,31 @@
-DigitMatchStar — Old Stable Base + SAFE-TICK Alignment + Sound
+DigitMatchStar V1.6 — Fast Recovery Reaction + Deterministic Sound
 
-Files:
-- bot.html
-- bot-obfuscated.html
+What changed in both bot.html and bot-obfuscated.html
+1. SAFE-TICK V1.5 exact-epoch alignment is preserved.
+2. Recovery digit is re-ranked after EVERY confirmed loss:
+   - hold length = 1
+   - stale recovery lock is cleared on loss
+   - next eligible trade re-scores all 10 digits.
+3. Server dashboard polling reduced from 1200 ms to 250 ms.
+4. Sound now keys off durable lifecycle changes:
+   - new contract/trade -> execution tone
+   - RECOVERING -> loss tone
+   - WON -> win chord
+   - MAX_TRADES_REACHED -> loss/end tone
+   - ERROR -> error tone
+5. Tone initializes on the first user trading gesture and queues a cue if an
+   event arrives before audio is unlocked.
+6. While a server contract is open, each canonical tick updates the trade-status
+   UI to show that live recovery analysis is still running.
 
-Both files are intentionally synchronized from the two old-base files you supplied.
-
-SAFE-TICK alignment correction
-- V1.5 starts a NEW cohort; old V1.4 records are not mixed into it.
-- T0 candidate capture now requires a real positive Deriv epoch.
-- normalizeTick reads window.lastTick.raw.epoch, which was missing before.
-- canonical digitmatchstar:tick events are authoritative.
-- future ticks must have epoch > entryEpoch.
-- event + fallback duplicates are deduplicated by Deriv epoch.
-- out-of-order epochs are ignored.
-- forwardEpochs and forwardDigits are stored for direct audit.
-- the frozen rule itself is unchanged:
-  candidateFreq25 <= 0.08
-  entropy10 <= 2.5219280948873625
-
-Sound
-- Existing sound button retained.
-- Saved ON/OFF preference is restored on load.
-- Enabling sound initializes Tone.js after the user gesture.
-- Execution sound on BUYING.
-- WIN chord on WON.
-- LOSS tone on RECOVERING.
-- Error tone on server ERROR.
-- Server polling is deduplicated so the same state does not beep repeatedly.
+IMPORTANT EXECUTION NOTE
+Secure OAuth SERVER mode still leaves the actual Deriv purchase/settlement
+sequence under the backend worker. These two HTML files can make the browser
+react immediately to ticks and re-rank the next digit, but they cannot make the
+backend submit a new purchase before the backend decides the previous contract
+has settled. Changing that actual server buy timing requires updating the
+server worker/API code as well.
 
 Validation
-- Both output files are byte-for-byte synchronized.
-- All inline JavaScript blocks passed Node syntax checking.
+- bot.html and bot-obfuscated.html are byte-for-byte synchronized.
+- inline JavaScript passes Node syntax checking.
