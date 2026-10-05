@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- EXECUTION SYNC V23: EXACT NEXT-EPOCH PIPELINE; DERIV SETTLEMENT RECONCILES IN BACKGROUND -->
     <!-- EXECUTION SYNC V22: DERIV SETTLEMENT AUTHORITATIVE; PUBLIC TICKS NEVER ADVANCE MARTINGALE -->
     <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
     <meta charset="UTF-8" />
@@ -8,7 +9,7 @@
     <title>Deriv DigitMatchStar Bot</title>
     <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
     <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-    <!-- V22 SETTLEMENT-SYNC: Deriv paid settlement decides every WIN/LOSS; recovery begins only after confirmed LOSS -->
+    <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
     <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
     <!-- Contract Lifecycle v3 -->
     <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
@@ -9656,10 +9657,27 @@ function rotateHybridDigit(reason = '') {
                 window.postStopDepthTracker.onPublicTick(tickData);
             }
 
-            // Resolve the current one-tick contract against this tick immediately.
+            // Exact-outcome tick pipeline. Settlement confirmation remains subscribed
+            // and reconciles in the background.
             const fastResult = observeActiveContractTick(tickData);
 
             if (
+                window.isBotRunning &&
+                fastResult?.fastLoss &&
+                !window.stopAfterWin
+            ) {
+                if (window.tradeCount >= window.maxTrades) {
+                    window.nextTradeAllowed = false;
+                    stopBot('Maximum trades reached');
+                    return;
+                }
+
+                submitRecoveryOnce(
+                    fastResult.contractId,
+                    tickData,
+                    'EXACT_PUBLIC_OUTCOME_FAST_LOSS'
+                );
+            } else if (
                 window.isBotRunning &&
                 !hasOpenContract() &&
                 !window.stopAfterWin
@@ -13332,7 +13350,12 @@ window.isBotRunning = true;
             window.executionLock = true;
             window.nextTradeAllowed = false;
             log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
-            updateTradeStatus('CONTRACT OPEN', `Target digit ${window.activeContract.predictedDigit}`, 'Waiting for Deriv paid settlement tick · public feed is display/research only', 'trade');
+            updateTradeStatus(
+                'TICK PIPELINE ACTIVE',
+                `Target digit ${window.activeContract.predictedDigit}`,
+                'Exact next outcome tick drives execution · settlement reconciles in background',
+                'trade'
+            );
             if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
         }
 
@@ -13441,80 +13464,151 @@ window.isBotRunning = true;
             return true;
         }
 
+        function expectedPaidOutcomeEpoch(ac) {
+            // R_10 canonical public ticks are on the 2-second cadence.
+            // Use ONLY Deriv's contract-start epoch. Never use the browser's
+            // latest tick at buy-confirmation time; that was the desync source.
+            const start = Number(ac?.serverStartEpoch || 0);
+            if (!start) return 0;
+            return start + 2;
+        }
+
         function contractTickBarrierEpoch(ac) {
-            // Diagnostic only in V22. Never used to decide a paid WIN/LOSS.
-            return Math.max(
-                Number(ac?.proposalSourceEpoch || ac?.armedAfterEpoch || 0),
-                Number(ac?.serverStartEpoch || 0)
-            );
+            // Diagnostic only in V23.
+            return Number(ac?.serverStartEpoch || 0);
         }
 
         function findBufferedSettlementTick(ac) {
             if (!ac || !ac.alignmentReady || ac.tickResolved) return null;
-            const barrier = contractTickBarrierEpoch(ac);
-            if (!barrier) return null;
 
-            return window.recentMarketTicks
-                .filter(t => Number(t?.raw?.epoch || 0) > barrier)
-                .sort((a, b) => Number(a?.raw?.epoch || 0) - Number(b?.raw?.epoch || 0))[0] || null;
+            const expectedEpoch = expectedPaidOutcomeEpoch(ac);
+            if (!expectedEpoch) return null;
+
+            // Exact epoch only. Never slide a later tick into the paid outcome slot.
+            return window.recentMarketTicks.find(
+                t => Number(t?.raw?.epoch || 0) === expectedEpoch
+            ) || null;
         }
 
         function resolveBufferedSettlementTick(ac) {
-            // EXECUTION SYNC V22:
-            // Intentionally no-op. A buffered/public market tick cannot prove which
-            // tick Deriv actually used to settle a purchased one-tick contract.
-            // Settlement is resolved only in handleOpenContractUpdate().
-            return false;
+            if (!ac || ac.settled || ac.tickResolved) return false;
+            const buffered = findBufferedSettlementTick(ac);
+            if (!buffered) return false;
+
+            const result = observeActiveContractTick(buffered);
+
+            if (
+                result?.fastLoss &&
+                window.isBotRunning &&
+                !window.stopAfterWin &&
+                window.tradeCount < window.maxTrades
+            ) {
+                submitRecoveryOnce(
+                    result.contractId,
+                    buffered,
+                    'EXACT_BUFFERED_OUTCOME_FAST_LOSS'
+                );
+            }
+
+            return !!result?.handled;
         }
 
         function observeActiveContractTick(tickData) {
             const ac = window.activeContract;
-            if (!ac || ac.settled || !ac.contractId) {
+            if (!ac || ac.settled || !ac.contractId || ac.tickResolved) {
                 return { handled: false, fastLoss: false, fastWin: false, contractId: null };
+            }
+
+            if (!ac.alignmentReady || !Number(ac.serverStartEpoch || 0)) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
             }
 
             const epoch = Number(tickData?.raw?.epoch || 0);
             const digit = Number(tickData?.digit);
+            const expectedEpoch = expectedPaidOutcomeEpoch(ac);
 
-            if (!epoch || !Number.isInteger(digit)) {
+            if (!epoch || !Number.isInteger(digit) || !expectedEpoch) {
                 return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
             }
 
-            // EXECUTION SYNC V22:
-            // The public R_10 stream is useful for the display/research, but it is NOT
-            // allowed to decide the paid contract outcome. Proposal/buy latency means a
-            // public tick visible after clicking/arming can still be before the contract's
-            // actual one-tick settlement. Only Deriv proposal_open_contract settlement
-            // (exit_spot + exit_spot_time + profit/status) can resolve WIN/LOSS.
-            ac.latestPublicEpoch = epoch;
-            ac.latestPublicDigit = digit;
-            ac.latestPublicPrice = Number(tickData?.price);
-
-            if (digit === Number(ac.predictedDigit)) {
-                ac.publicMatchSeen = true;
-                ac.publicMatchEpoch = epoch;
-                ac.publicMatchDigit = digit;
-
-                updateTradeStatus(
-                    'MATCH SEEN · VERIFYING',
-                    `Public digit ${digit} matches target ${ac.predictedDigit}`,
-                    'Waiting for Deriv paid-contract settlement before declaring WIN',
-                    'trade'
-                );
-
-                log(
-                    `🟡 PUBLIC MATCH SEEN | digit ${digit} = target ${ac.predictedDigit} | ` +
-                    `epoch ${epoch} | contract ${ac.contractId} | awaiting Deriv settlement`,
-                    'WARNING'
-                );
+            // Consume ONLY the exact expected outcome epoch.
+            if (epoch !== expectedEpoch) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
             }
 
+            ac.tickResolved = true;
+            ac.settlementTickObserved = true;
+            ac.observedDigit = digit;
+            ac.observedPrice = Number(tickData?.price);
+            ac.observedEpoch = epoch;
+            ac.expectedOutcomeEpoch = expectedEpoch;
+
+            if (digit === Number(ac.predictedDigit)) {
+                ac.fastOutcome = 'WIN';
+                ac.fastOutcomeAt = Date.now();
+                ac.matchDetected = true;
+                ac.status = 'EXACT_TICK_MATCH';
+
+                // Stop immediately on the exact matching paid-outcome tick.
+                // Deriv settlement confirmation runs in the background.
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+
+                log(
+                    `🎯 EXACT OUTCOME MATCH | Contract ${ac.contractId} | e:${epoch} | ` +
+                    `digit ${digit} = target ${ac.predictedDigit} | settlement confirming in background`,
+                    'WIN'
+                );
+
+                updateTradeStatus(
+                    'WIN DETECTED 🎯',
+                    `Digit ${digit} matched target ${ac.predictedDigit} on exact outcome tick`,
+                    'Settlement confirmation running in background',
+                    'win'
+                );
+
+                return {
+                    handled: true,
+                    fastLoss: false,
+                    fastWin: true,
+                    contractId: ac.contractId,
+                    outcomeEpoch: epoch
+                };
+            }
+
+            ac.fastOutcome = 'LOSS';
+            ac.fastOutcomeAt = Date.now();
+            ac.status = 'EXACT_TICK_LOSS';
+
+            if (!ac.progressionApplied) {
+                applyFastLossProgression(ac);
+            }
+
+            // Release immediately so recovery can be purchased before the next tick.
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
+
+            log(
+                `⚡ EXACT TICK LOSS | Contract ${ac.contractId} | e:${epoch} digit ${digit} ≠ ` +
+                `target ${ac.predictedDigit} | recovery arming now`,
+                'LOSS'
+            );
+
+            updateTradeStatus(
+                'NEXT TICK ARMED',
+                `Digit ${digit} ≠ target ${ac.predictedDigit}`,
+                `Preparing trade ${window.tradeCount + 1} now · settlement reconciles in background`,
+                'trade'
+            );
+
             return {
-                handled: false,
-                fastLoss: false,
+                handled: true,
+                fastLoss: true,
                 fastWin: false,
                 contractId: ac.contractId,
-                observationalOnly: true
+                outcomeEpoch: epoch
             };
         }
 
@@ -13565,9 +13659,11 @@ window.isBotRunning = true;
 
             if (envelope?.subscription?.id) ac.subscriptionId = envelope.subscription.id;
 
-            updateContractAlignmentFromDeriv(ac, contract);
-            // V22: public/buffered ticks never resolve a paid contract.
-            // Wait for Deriv's sold/won/lost settlement below.
+            const alignmentBecameReady = updateContractAlignmentFromDeriv(ac, contract);
+
+            if (alignmentBecameReady && !ac.tickResolved) {
+                resolveBufferedSettlementTick(ac);
+            }
 
             const status = String(contract.status || '').toLowerCase();
             const isSold = contract.is_sold === true || Number(contract.is_sold) === 1 || ['won','lost','sold'].includes(status);
@@ -13594,20 +13690,58 @@ window.isBotRunning = true;
                 contract?.exit_spot_time ?? contract?.sell_spot_time ?? 0
             );
 
-            // V22: authoritative paid-contract settlement.
-            // Public stream observations are retained only for diagnostics.
-            if (
-                ac.publicMatchSeen &&
+            const observedEpochForOutcome = Number(ac.observedEpoch || 0);
+            const sameProvenSettlementEpoch =
+                observedEpochForOutcome > 0 &&
                 derivExitEpochForOutcome > 0 &&
-                Number(ac.publicMatchEpoch || 0) !== derivExitEpochForOutcome
-            ) {
+                observedEpochForOutcome === derivExitEpochForOutcome;
+
+            // Background reconciliation: fast execution can continue, but Deriv
+            // remains authoritative if the paid contract disagrees.
+            if (ac.fastOutcome === 'WIN' && !confirmedWin) {
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(
+                        ac,
+                        contract,
+                        'same settlement epoch: stream WIN but Deriv LOSS'
+                    );
+                    return;
+                }
                 log(
-                    `🧭 PUBLIC/PAID TICK DIFFERENCE | contract ${contractId} | ` +
-                    `public match e:${Number(ac.publicMatchEpoch || 0)} digit ${ac.publicMatchDigit} | ` +
-                    `paid exit e:${derivExitEpochForOutcome} digit ${finalDigit ?? '?'} | ` +
-                    `Deriv settlement is authoritative`,
-                    'SYSTEM'
+                    `🧭 BACKGROUND ALIGNMENT CORRECTION | Contract ${contractId}: ` +
+                    `stream WIN e:${observedEpochForOutcome || '?'}; Deriv LOSS e:${derivExitEpochForOutcome || '?'}`,
+                    'WARNING'
                 );
+            }
+
+            if (ac.fastOutcome === 'LOSS' && confirmedWin) {
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(
+                        ac,
+                        contract,
+                        'same settlement epoch: stream LOSS but Deriv WIN'
+                    );
+                    return;
+                }
+                log(
+                    `🧭 BACKGROUND ALIGNMENT CORRECTION | Contract ${contractId}: ` +
+                    `stream LOSS e:${observedEpochForOutcome || '?'}; Deriv WIN e:${derivExitEpochForOutcome || '?'}`,
+                    'WARNING'
+                );
+            }
+
+            if (
+                sameProvenSettlementEpoch &&
+                ac.observedDigit !== null &&
+                finalDigit !== null &&
+                Number(ac.observedDigit) !== Number(finalDigit)
+            ) {
+                hardStopOnReconciliationMismatch(
+                    ac,
+                    contract,
+                    'same settlement epoch but public digit differs from Deriv exit digit'
+                );
+                return;
             }
 
             if (confirmedWin) {
@@ -13664,9 +13798,8 @@ window.isBotRunning = true;
             window.lastTradeWon = false;
 
             log(
-                `❌ CONFIRMED DERIV LOSS | Contract ${contractId} | paid final digit ${finalDigit ?? '?'} | ` +
-                `prediction ${ac.predictedDigit} | exit epoch ${derivExitEpochForOutcome || '?'} | ` +
-                `profit $${actualProfit.toFixed(2)}`,
+                `✅ BACKGROUND DERIV LOSS | Contract ${contractId} | final digit ${finalDigit ?? '?'} | ` +
+                `prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`,
                 'LOSS'
             );
 
@@ -13678,49 +13811,58 @@ window.isBotRunning = true;
                 actualProfit
             );
 
-            // Advance martingale exactly once, and only after Deriv confirms LOSS.
+            // Usually progression already happened on the exact public outcome tick.
+            // If the browser missed that tick, apply confirmed progression once here.
             if (!ac.progressionApplied) {
+                log(
+                    `⚠️ Exact public outcome unavailable for contract ${contractId}; ` +
+                    `applying confirmed settlement progression once`,
+                    'WARNING'
+                );
                 applyFastLossProgression(ac);
             }
 
-            // The paid contract is now closed. Release the execution lane.
             window.settlementLedger.delete(contractId);
-            if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
+
+            const isStillCurrentContract =
+                window.activeContract &&
+                Number(window.activeContract.contractId) === contractId;
+
+            if (isStillCurrentContract) {
                 window.activeContract = null;
-            }
 
-            window.executionLock = false;
-            window.nextTradeAllowed = true;
+                const pendingOrderExists =
+                    window.pendingProposals &&
+                    window.pendingProposals.size > 0;
 
-            // Do not continue beyond the configured cap.
-            if (window.tradeCount >= window.maxTrades) {
-                window.nextTradeAllowed = false;
-                stopBot('Maximum trades reached');
-                return;
-            }
+                if (
+                    window.isBotRunning &&
+                    !window.stopAfterWin &&
+                    !pendingOrderExists &&
+                    !window.recoverySubmissionState?.inFlight &&
+                    window.tradeCount < window.maxTrades
+                ) {
+                    window.executionLock = false;
+                    window.nextTradeAllowed = true;
 
-            // Start the next recovery only AFTER the previous paid contract has settled.
-            // Use the latest public tick only as the proposal trigger/context; it is NOT
-            // treated as the previous contract's outcome tick.
-            if (
-                window.isBotRunning &&
-                !window.stopAfterWin &&
-                !window.SERVER_EXECUTION?.enabled
-            ) {
-                const triggerTick = window.lastTick;
-                if (triggerTick) {
-                    log(
-                        `🔄 DERIV-SETTLED RECOVERY | previous contract ${contractId} confirmed LOSS | ` +
-                        `submitting next trade from current market context`,
-                        'TRADE'
-                    );
-                    submitRecoveryOnce(
-                        contractId,
-                        triggerTick,
-                        'DERIV_SETTLEMENT_CONFIRMED_LOSS'
-                    );
+                    const triggerTick = window.lastTick;
+                    if (triggerTick) {
+                        submitRecoveryOnce(
+                            contractId,
+                            triggerTick,
+                            'SETTLEMENT_FALLBACK_ONLY'
+                        );
+                    }
                 }
             }
+
+            // If a newer pipelined contract is already active, do not touch its state.
+            log(
+                `✅ SETTLEMENT RECONCILED IN BACKGROUND | Contract ${contractId} | ` +
+                `progressionApplied=${!!ac.progressionApplied}`,
+                'SYSTEM'
+            );
+
         }
 
 
