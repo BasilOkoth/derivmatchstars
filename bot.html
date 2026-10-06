@@ -1049,6 +1049,13 @@
                             <div class="mt-2 text-[10px] text-gray-400">
                                 TAE now uses a dedicated server-side read-only tick socket, independent of proposal/buy/settlement traffic. It learns even while Trade 0 is idle.
                             </div>
+
+                            <button id="taePanelExportBtn"
+                                    type="button"
+                                    onclick="downloadTargetAttractionResults()"
+                                    class="mt-3 w-full px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white font-black text-xs border border-emerald-400/40">
+                                📊 EXPORT TARGET ATTRACTION RESULTS
+                            </button>
                         </div>
 
                         <div class="trade-actions">
@@ -1073,6 +1080,13 @@
                             onclick="downloadMatchStarResearchReport()"
                             class="premium-research-btn premium-export-btn">
                         <span>⬇</span><span>EXPORT FULL DATA</span>
+                    </button>
+
+                    <button id="mainTaeExportBtn" type="button"
+                            onclick="downloadTargetAttractionResults()"
+                            class="premium-research-btn premium-export-btn"
+                            title="Export persisted Target Attraction Engine forward-only T10 research">
+                        <span>📊</span><span>EXPORT TAE RESULTS</span>
                     </button>
 
                     <button id="resetPerformanceBtn" type="button"
@@ -12084,7 +12098,7 @@ window.executionLock = true;
 
                 if (!sid) {
                     throw new Error(
-                        'No server trading session exists yet. Start/configure the bot first.'
+                        'No server research session exists yet. Wait for SERVER ACTIVE / TAE stream, then export again.'
                     );
                 }
 
