@@ -169,6 +169,9 @@ class MultiUserEngine:
                     s.phase = "RATE_LIMIT_BACKOFF"
                     s.updated_at = datetime.utcnow()
                     db.commit()
+
+                    # Return control after a short pause. The orchestration loop
+                    # can retry later; this task never remains stuck forever.
                     await asyncio.sleep(2.0)
                     return
 
@@ -412,16 +415,28 @@ class MultiUserEngine:
                 expected_trade_no = int(s.current_trade) + 1
                 payload = self.prefetched_recovery.pop(sid, None)
 
-                # CRITICAL RATE-LIMIT RULE:
-                # if the proposal for this exact recovery is already being
-                # prepared, wait for that ONE request. Do NOT start a second
-                # fallback proposal after an arbitrary timeout.
+                # Wait briefly for the ONE prefetch already in flight.
+                #
+                # Never wait forever: if Deriv has stalled the proposal request,
+                # cancel that prefetch cleanly before making one fresh fallback.
+                # This avoids both UI hangs and duplicate simultaneous proposals.
                 if not payload:
                     prefetch_task = self.prefetch_tasks.get(sid)
 
                     if prefetch_task and not prefetch_task.done():
                         try:
-                            await asyncio.shield(prefetch_task)
+                            await asyncio.wait_for(
+                                asyncio.shield(prefetch_task),
+                                timeout=1.25,
+                            )
+                        except asyncio.TimeoutError:
+                            prefetch_task.cancel()
+                            try:
+                                await prefetch_task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                pass
                         except Exception:
                             pass
 
@@ -442,6 +457,10 @@ class MultiUserEngine:
                 if not valid_prefetch:
                     # Only one fresh fallback proposal is allowed, and
                     # DerivWS serializes/rate-limits it globally per socket.
+                    s.phase = "RECOVERY_PROPOSAL_FALLBACK"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                     currency = await self._currency_for(db, s)
                     client = await self._client(user_id, account_id)
 

@@ -191,12 +191,23 @@ class DerivWS:
             async with self._send_lock:
                 await self.ws.send(json.dumps(request_payload))
             data = await asyncio.wait_for(future, timeout)
+
+        except asyncio.CancelledError:
+            # Critical for proposal-prefetch cancellation: do not leave a dead
+            # request future registered in the shared WebSocket client.
+            self.pending.pop(req_id, None)
+            self.pending_subscription_callbacks.pop(req_id, None)
+            if not future.done():
+                future.cancel()
+            raise
+
         except asyncio.TimeoutError as exc:
             self.pending.pop(req_id, None)
             self.pending_subscription_callbacks.pop(req_id, None)
             raise RuntimeError(
                 f"Deriv WebSocket request timed out after {timeout:.0f}s"
             ) from exc
+
         except Exception:
             self.pending.pop(req_id, None)
             self.pending_subscription_callbacks.pop(req_id, None)
@@ -244,20 +255,15 @@ class DerivWS:
 
         # ONE proposal lane per account/socket.
         #
-        # The previous build allowed a prefetch request to remain in-flight and,
-        # after 800 ms, the engine could start a fallback proposal for the same
-        # recovery. Even though requests were serialized, that still generated
-        # too many proposal calls in a short period and triggered Deriv RateLimit.
-        #
-        # This client therefore:
-        #   1) serializes every proposal request,
-        #   2) enforces minimum spacing,
-        #   3) applies a shared adaptive cooldown after RateLimit,
-        #   4) treats RateLimit as recoverable instead of immediately failing.
+        # IMPORTANT:
+        # This is deliberately BOUNDED. The previous build could remain inside
+        # this method forever during sustained Deriv throttling, leaving the UI
+        # stuck on REQUESTING_PROPOSAL.
         async with self._proposal_lock:
             timeout_retry_used = False
+            max_rate_limit_attempts = 3
 
-            while True:
+            for attempt in range(max_rate_limit_attempts):
                 now = time.monotonic()
 
                 spacing_wait = self._proposal_min_interval - (
@@ -271,9 +277,8 @@ class DerivWS:
 
                 try:
                     self._last_proposal_at = time.monotonic()
-                    data = await self.request(payload)
+                    data = await self.request(payload, timeout=5)
 
-                    # Success: reset throttling state.
                     self._rate_limit_streak = 0
                     self._proposal_cooldown_until = 0.0
                     return data
@@ -282,34 +287,39 @@ class DerivWS:
                     text = str(exc).lower()
 
                     if "timed out" in text and not timeout_retry_used:
-                        # Proposal is read-only, so reconnecting once is safe.
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
-                        # Recoverable back-pressure from Deriv.
                         self._rate_limit_streak = min(
                             self._rate_limit_streak + 1,
                             6,
                         )
 
-                        backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)
-                        backoff = backoff_table[
-                            self._rate_limit_streak - 1
-                        ]
-
+                        # Short bounded backoff. If Deriv is still throttling
+                        # after these attempts, return control to the engine so
+                        # the UI shows RATE_LIMIT_BACKOFF rather than hanging.
+                        backoff_table = (1.0, 2.0, 3.0)
+                        backoff = backoff_table[attempt]
                         self._proposal_cooldown_until = (
                             time.monotonic() + backoff
                         )
 
-                        # Hold the proposal lock during backoff. This is
-                        # intentional: no other prefetch/fallback should send
-                        # another proposal while Deriv is throttling us.
+                        if attempt >= max_rate_limit_attempts - 1:
+                            raise RuntimeError(
+                                "RateLimit: proposal API remains throttled "
+                                "after bounded retry"
+                            ) from exc
+
                         await asyncio.sleep(backoff)
                         continue
 
                     raise
+
+            raise RuntimeError(
+                "Proposal request failed after bounded retry"
+            )
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
