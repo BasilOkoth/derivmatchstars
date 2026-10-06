@@ -5,7 +5,14 @@ from collections import deque
 from datetime import datetime
 
 from .db import SessionLocal
-from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
+from .models import (
+    TradingSession,
+    DerivCredential,
+    DerivAccount,
+    TradeLog,
+    TAEState,
+    TAEObservation,
+)
 from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
@@ -13,7 +20,7 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine + V31 Target Attraction Engine.
+    DigitMatchStar DEMO low-latency engine + V33 Persistent Target Attraction Engine.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -66,8 +73,10 @@ class MultiUserEngine:
         self.tick_digit_history = {}      # sid -> deque(maxlen=100)
         self.tae_pending = {}             # sid -> list of unresolved samples
         self.tae_models = {}              # sid -> model state
-        self.tae_records = {}             # sid -> matured forward-only observations
+        self.tae_records = {}             # sid -> recent matured observations
         self.target_digit_by_sid = {}     # sid -> currently selected digit
+        self.tae_loaded = set()           # sessions restored from DB
+        self.tae_ticks_since_persist = {} # lightweight history persistence cadence
 
         self.tae_horizon = 10
         self.tae_min_history = 100
@@ -286,6 +295,9 @@ class MultiUserEngine:
         return int(digits[-1]) if digits else None
 
     def _history(self, sid: int):
+        if sid not in self.tae_loaded:
+            self._load_tae_state(sid)
+
         history = self.tick_digit_history.get(sid)
         if history is None:
             history = deque(maxlen=100)
@@ -317,29 +329,201 @@ class MultiUserEngine:
         z = math.exp(value)
         return z / (1.0 + z)
 
+    def _default_tae_model(self):
+        baseline = 1.0 - (0.9 ** self.tae_horizon)
+        bias = math.log(baseline / (1.0 - baseline))
+
+        return {
+            "weights": [0.0] * 12,
+            "bias": bias,
+            "trained": 0,
+            "positives": 0,
+            "brier_sum": 0.0,
+            "forward_predictions": 0,
+            "forward_hits": 0,
+            "selected_predictions": 0,
+            "selected_hits": 0,
+            "last_probability": None,
+            "last_features": None,
+            "last_target": None,
+        }
+
+    def _load_tae_state(self, sid: int):
+        if sid in self.tae_loaded:
+            return
+
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(TAEState)
+                .filter(TAEState.trading_session_id == sid)
+                .first()
+            )
+
+            if row:
+                try:
+                    model = json.loads(row.model_json or "{}")
+                except Exception:
+                    model = {}
+
+                default = self._default_tae_model()
+                default.update(
+                    {
+                        k: v
+                        for k, v in model.items()
+                        if k in default
+                    }
+                )
+
+                weights = default.get("weights")
+                if not isinstance(weights, list) or len(weights) != 12:
+                    default["weights"] = [0.0] * 12
+
+                self.tae_models[sid] = default
+
+                try:
+                    history = json.loads(row.history_json or "[]")
+                except Exception:
+                    history = []
+
+                cleaned = []
+                for value in history[-100:]:
+                    try:
+                        digit = int(value)
+                    except Exception:
+                        continue
+                    if 0 <= digit <= 9:
+                        cleaned.append(digit)
+
+                self.tick_digit_history[sid] = deque(
+                    cleaned,
+                    maxlen=100,
+                )
+
+                if row.target_digit is not None:
+                    self.target_digit_by_sid[sid] = int(row.target_digit)
+
+            else:
+                self.tae_models[sid] = self._default_tae_model()
+                self.tick_digit_history.setdefault(
+                    sid,
+                    deque(maxlen=100),
+                )
+
+            # Never restore pending forward labels after process downtime.
+            # Missing ticks would make them non-contiguous and scientifically
+            # invalid, so restart with a clean pending queue.
+            self.tae_pending[sid] = []
+            self.tae_loaded.add(sid)
+
+        finally:
+            db.close()
+
+    def _persist_tae_state(self, sid: int):
+        self._load_tae_state(sid)
+
+        db = SessionLocal()
+        try:
+            session = db.get(TradingSession, sid)
+            if not session:
+                return
+
+            row = (
+                db.query(TAEState)
+                .filter(TAEState.trading_session_id == sid)
+                .first()
+            )
+
+            if row is None:
+                row = TAEState(
+                    trading_session_id=sid,
+                    user_id=session.user_id,
+                    account_id=session.account_id,
+                    symbol=session.symbol,
+                )
+                db.add(row)
+
+            row.user_id = session.user_id
+            row.account_id = session.account_id
+            row.symbol = session.symbol
+            row.target_digit = self.target_digit_by_sid.get(sid)
+            row.model_json = json.dumps(
+                self._tae_model(sid),
+                separators=(",", ":"),
+            )
+            row.history_json = json.dumps(
+                list(self._history(sid)),
+                separators=(",", ":"),
+            )
+            row.updated_at = datetime.utcnow()
+
+            db.commit()
+        finally:
+            db.close()
+
+    def _persist_tae_observation(self, sid: int, record: dict):
+        db = SessionLocal()
+        try:
+            session = db.get(TradingSession, sid)
+            if not session:
+                return
+
+            existing = (
+                db.query(TAEObservation)
+                .filter(
+                    TAEObservation.trading_session_id == sid,
+                    TAEObservation.sample_index
+                    == int(record["sample_index"]),
+                )
+                .first()
+            )
+
+            if existing is None:
+                db.add(
+                    TAEObservation(
+                        trading_session_id=sid,
+                        user_id=session.user_id,
+                        account_id=session.account_id,
+                        symbol=session.symbol,
+                        sample_index=int(record["sample_index"]),
+                        target_digit=int(record["target_digit"]),
+                        prediction_t0_probability=float(
+                            record["prediction_t0_probability"]
+                        ),
+                        selected=bool(record["selected"]),
+                        arm_threshold=float(record["arm_threshold"]),
+                        label_return_by_t10=int(
+                            record["label_return_by_t10"]
+                        ),
+                        stop10=int(record["stop10"]),
+                        forward_gap=(
+                            int(record["forward_gap"])
+                            if record.get("forward_gap") is not None
+                            else None
+                        ),
+                        horizon=int(record["horizon"]),
+                        features_json=json.dumps(
+                            list(record["features"]),
+                            separators=(",", ":"),
+                        ),
+                        model_trained_samples_at_t0=int(
+                            record["model_trained_samples_at_t0"]
+                        ),
+                    )
+                )
+
+            db.commit()
+        finally:
+            db.close()
+
     def _tae_model(self, sid: int):
+        self._load_tae_state(sid)
+
         model = self.tae_models.get(sid)
         if model is None:
-            # Independent-random baseline for at least one hit in 10 draws:
-            # 1 - 0.9**10 ~= 0.6513. This is only the starting intercept.
-            baseline = 1.0 - (0.9 ** self.tae_horizon)
-            bias = math.log(baseline / (1.0 - baseline))
-
-            model = {
-                "weights": [0.0] * 12,
-                "bias": bias,
-                "trained": 0,
-                "positives": 0,
-                "brier_sum": 0.0,
-                "forward_predictions": 0,
-                "forward_hits": 0,
-                "selected_predictions": 0,
-                "selected_hits": 0,
-                "last_probability": None,
-                "last_features": None,
-                "last_target": None,
-            }
+            model = self._default_tae_model()
             self.tae_models[sid] = model
+
         return model
 
     def _tae_features(self, sid: int, target_digit: int):
@@ -496,38 +680,51 @@ class MultiUserEngine:
                     model["selected_hits"] += label
 
                 records = self.tae_records.setdefault(sid, [])
-                records.append(
-                    {
-                        "sample_index": len(records) + 1,
-                        "target_digit": int(sample["target"]),
-                        "prediction_t0_probability": predicted,
-                        "selected": bool(sample["selected"]),
-                        "arm_threshold": float(self.tae_arm_probability),
-                        "label_return_by_t10": int(label),
-                        "stop10": int(not bool(label)),
-                        "forward_gap": (
-                            int(sample["forward_gap"])
-                            if sample.get("forward_gap") is not None
-                            else None
-                        ),
-                        "horizon": int(self.tae_horizon),
-                        "features": list(sample["features"]),
-                        "model_trained_samples_at_t0": int(
-                            sample.get("trained_at_t0") or 0
-                        ),
-                    }
-                )
 
-                # Keep a substantial in-memory research window without
-                # unbounded growth.
-                if len(records) > 10000:
-                    del records[:-10000]
+                record = {
+                    # forward_predictions is incremented immediately above and
+                    # is persisted, so this remains unique across redeploys.
+                    "sample_index": int(model["forward_predictions"]),
+                    "target_digit": int(sample["target"]),
+                    "prediction_t0_probability": predicted,
+                    "selected": bool(sample["selected"]),
+                    "arm_threshold": float(self.tae_arm_probability),
+                    "label_return_by_t10": int(label),
+                    "stop10": int(not bool(label)),
+                    "forward_gap": (
+                        int(sample["forward_gap"])
+                        if sample.get("forward_gap") is not None
+                        else None
+                    ),
+                    "horizon": int(self.tae_horizon),
+                    "features": list(sample["features"]),
+                    "model_trained_samples_at_t0": int(
+                        sample.get("trained_at_t0") or 0
+                    ),
+                }
+
+                records.append(record)
+                if len(records) > 1000:
+                    del records[:-1000]
+
+                # Persist every matured observation AND the updated model.
+                # This is the research checkpoint that survives Render
+                # redeploys/restarts when the configured database persists.
+                self._persist_tae_observation(sid, record)
+                self._persist_tae_state(sid)
             else:
                 still_pending.append(sample)
 
         self.tae_pending[sid] = still_pending
 
         self._history(sid).append(int(digit))
+
+        self.tae_ticks_since_persist[sid] = (
+            int(self.tae_ticks_since_persist.get(sid) or 0) + 1
+        )
+        if self.tae_ticks_since_persist[sid] >= 10:
+            self.tae_ticks_since_persist[sid] = 0
+            self._persist_tae_state(sid)
 
         features = self._tae_features(sid, int(target))
         if features is None:
@@ -564,13 +761,33 @@ class MultiUserEngine:
         trained = int(model["trained"])
         selected = int(model["selected_predictions"])
         forward_n = int(model["forward_predictions"])
+        history_n = len(self._history(sid))
+        pending = list(self.tae_pending.get(sid, []))
+
+        next_maturity = None
+        if pending:
+            next_maturity = min(
+                int(sample.get("remaining") or self.tae_horizon)
+                for sample in pending
+            )
 
         return {
             "name": "TARGET_ATTRACTION_ENGINE_V1",
+            "version": "V33-PERSISTENT",
             "horizon": self.tae_horizon,
+            "minimum_history": self.tae_min_history,
+            "history_count": history_n,
+            "history_ready": history_n >= self.tae_min_history,
+            "pending_observations": len(pending),
+            "next_sample_matures_in_ticks": next_maturity,
             "min_train_samples": self.tae_min_train_samples,
             "arm_probability": self.tae_arm_probability,
             "trained_samples": trained,
+            "training_progress": min(
+                1.0,
+                trained / self.tae_min_train_samples
+                if self.tae_min_train_samples else 1.0,
+            ),
             "positive_rate": (
                 model["positives"] / trained
                 if trained else None
@@ -601,6 +818,12 @@ class MultiUserEngine:
                 and model["last_probability"] is not None
                 and model["last_probability"] >= self.tae_arm_probability
             ),
+            "persistent": True,
+            "persistence_note": (
+                "Matured observations and model state are stored in the "
+                "configured database. Unresolved T10 samples are discarded "
+                "after a process restart because continuity was interrupted."
+            ),
             "note": (
                 "Forward-only research score. It estimates recurrence within "
                 "10 ticks; it does not control or alter Deriv's RNG."
@@ -609,12 +832,58 @@ class MultiUserEngine:
 
     def export_target_attraction(self, sid: int):
         """
-        Return a complete research export for the current in-process TAE run.
-        Only matured forward observations are included in records.
+        Export persisted matured forward observations plus live model status.
         """
         status = self.target_attraction_status(sid)
-        records = list(self.tae_records.get(sid, []))
-        pending = list(self.tae_pending.get(sid, []))
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TAEObservation)
+                .filter(TAEObservation.trading_session_id == sid)
+                .order_by(TAEObservation.sample_index.asc())
+                .all()
+            )
+
+            records = []
+            for row in rows:
+                try:
+                    features = json.loads(row.features_json or "[]")
+                except Exception:
+                    features = []
+
+                records.append(
+                    {
+                        "sample_index": int(row.sample_index),
+                        "target_digit": int(row.target_digit),
+                        "prediction_t0_probability": float(
+                            row.prediction_t0_probability
+                        ),
+                        "selected": bool(row.selected),
+                        "arm_threshold": float(row.arm_threshold),
+                        "label_return_by_t10": int(
+                            row.label_return_by_t10
+                        ),
+                        "stop10": int(row.stop10),
+                        "forward_gap": (
+                            int(row.forward_gap)
+                            if row.forward_gap is not None
+                            else None
+                        ),
+                        "horizon": int(row.horizon),
+                        "features": features,
+                        "model_trained_samples_at_t0": int(
+                            row.model_trained_samples_at_t0
+                        ),
+                        "created_at": (
+                            row.created_at.isoformat()
+                            if row.created_at
+                            else None
+                        ),
+                    }
+                )
+        finally:
+            db.close()
 
         feature_names = [
             "gap_since_target_scaled",
@@ -633,8 +902,9 @@ class MultiUserEngine:
 
         return {
             "schema": "DIGITMATCHSTAR_TARGET_ATTRACTION_ENGINE_V1_EXPORT",
-            "version": "V32-TAE-EXPORT-2026-10-06",
+            "version": "V33-PERSISTENT-TAE-2026-10-06",
             "forward_only": True,
+            "persistent_database": True,
             "horizon_ticks": int(self.tae_horizon),
             "feature_names": feature_names,
             "entry_policy": {
@@ -646,11 +916,12 @@ class MultiUserEngine:
             },
             "status": status,
             "records_count": len(records),
-            "pending_count": len(pending),
+            "pending_count": len(self.tae_pending.get(sid, [])),
             "records": records,
             "note": (
-                "Records are matured forward-only observations. The model "
-                "estimates recurrence within T10 and does not control Deriv RNG."
+                "Matured observations are persisted in the configured database. "
+                "Pending observations are intentionally not restored after a "
+                "server restart because strict tick continuity was interrupted."
             ),
         }
 
@@ -929,7 +1200,12 @@ class MultiUserEngine:
                     return
 
                 if s.candidate_digit is not None:
-                    self.target_digit_by_sid[sid] = int(s.candidate_digit)
+                    previous_target = self.target_digit_by_sid.get(sid)
+                    current_target = int(s.candidate_digit)
+                    self.target_digit_by_sid[sid] = current_target
+
+                    if previous_target != current_target:
+                        self._persist_tae_state(sid)
 
                 if s.last_error:
                     # Clear ordinary stale errors once the worker is healthy.

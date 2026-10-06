@@ -918,7 +918,7 @@
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
                         <input type="number" id="maxTrades" value="20" min="20" step="1" inputmode="numeric" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Validation build: Max Trades is held at 20 so cycles can be observed beyond trade 10 and classified at depth ≥15.</p>
+                        <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. Target Attraction research evaluates recurrence within T10 independently of the cycle cap.</p>
                     </div>
 
                     <!-- Max Trades is now the single user-defined cycle cap -->
@@ -990,6 +990,55 @@
                             <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
                             <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Start bot to begin</p>
                         </div>
+                        <div id="tae-live-panel"
+                             class="mt-3 p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-xs">
+                            <div class="flex items-center justify-between gap-2 mb-2">
+                                <div class="font-black text-emerald-300">🎯 TARGET ATTRACTION ENGINE</div>
+                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">PERSISTENT · FORWARD-ONLY</div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+                                <span class="text-gray-400">Target:</span>
+                                <span id="tae-live-target" class="font-bold text-white">—</span>
+
+                                <span class="text-gray-400">History:</span>
+                                <span id="tae-live-history" class="font-bold text-white">0 / 100</span>
+
+                                <span class="text-gray-400">Pending T10 samples:</span>
+                                <span id="tae-live-pending" class="font-bold text-white">0</span>
+
+                                <span class="text-gray-400">Next sample matures:</span>
+                                <span id="tae-live-next" class="font-bold text-white">—</span>
+
+                                <span class="text-gray-400">Matured training:</span>
+                                <span id="tae-live-trained" class="font-bold text-white">0 / 250</span>
+
+                                <span class="text-gray-400">Training progress:</span>
+                                <span id="tae-live-progress-text" class="font-bold text-white">0.0%</span>
+
+                                <span class="text-gray-400">Observed T10 hit rate:</span>
+                                <span id="tae-live-hit" class="font-bold text-white">—</span>
+
+                                <span class="text-gray-400">Selected STOP10:</span>
+                                <span id="tae-live-stop10" class="font-bold text-white">—</span>
+
+                                <span class="text-gray-400">Current P(return ≤ T10):</span>
+                                <span id="tae-live-prob" class="font-bold text-yellow-300">—</span>
+
+                                <span class="text-gray-400">Model state:</span>
+                                <span id="tae-live-state" class="font-black text-yellow-300">WARMING</span>
+                            </div>
+
+                            <div class="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden">
+                                <div id="tae-live-progress-bar"
+                                     class="h-full bg-emerald-500 transition-all duration-300"
+                                     style="width:0%"></div>
+                            </div>
+
+                            <div class="mt-2 text-[10px] text-gray-400">
+                                Matured observations and model state survive server redeploys when the configured database persists.
+                            </div>
+                        </div>
+
                         <div class="trade-actions">
                             <button id="toggleButton" onclick="toggleBot()" class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150">🚀 START BOT</button>
                             <button id="s20Button" onclick="openS20Config()" class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150" title="Tail-risk cap">🧯 S20: <span id="s20Value">5</span>%</button>
@@ -11460,6 +11509,82 @@ window.executionLock = true;
                 : '$0.00';
         }
 
+        function renderTargetAttractionStatus(st) {
+            const tae = st?.tae || null;
+
+            const setText = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+
+            const pct = (value, digits = 1) => {
+                const n = Number(value);
+                return Number.isFinite(n)
+                    ? `${(n * 100).toFixed(digits)}%`
+                    : '—';
+            };
+
+            if (!tae) {
+                setText('tae-live-state', 'WAITING');
+                return;
+            }
+
+            const trained = Number(tae.trained_samples || 0);
+            const minTrain = Number(tae.min_train_samples || 250);
+            const history = Number(tae.history_count || 0);
+            const minHistory = Number(tae.minimum_history || 100);
+            const pending = Number(tae.pending_observations || 0);
+            const next = tae.next_sample_matures_in_ticks;
+            const target = tae.current_target ?? st?.candidate_digit ?? '—';
+            const progress = Math.max(
+                0,
+                Math.min(
+                    100,
+                    Number(tae.training_progress || 0) * 100
+                )
+            );
+
+            setText('tae-live-target', String(target));
+            setText(
+                'tae-live-history',
+                `${history} / ${minHistory}${tae.history_ready ? ' ✓' : ''}`
+            );
+            setText('tae-live-pending', String(pending));
+            setText(
+                'tae-live-next',
+                Number.isFinite(Number(next))
+                    ? `${Number(next)} tick${Number(next) === 1 ? '' : 's'}`
+                    : '—'
+            );
+            setText('tae-live-trained', `${trained} / ${minTrain}`);
+            setText('tae-live-progress-text', `${progress.toFixed(1)}%`);
+            setText('tae-live-hit', pct(tae.forward_hit_rate));
+            setText('tae-live-stop10', pct(tae.selected_stop10_rate));
+            setText('tae-live-prob', pct(tae.current_probability_t10));
+
+            let state = 'WARMING';
+            if (tae.armed_now) state = 'ARMED';
+            else if (tae.ready) state = 'SCORING / WAITING';
+            else if (!tae.history_ready) state = 'HISTORY WARMING';
+            else state = 'MODEL WARMING';
+
+            setText('tae-live-state', state);
+
+            const stateEl = document.getElementById('tae-live-state');
+            if (stateEl) {
+                stateEl.className =
+                    tae.armed_now
+                        ? 'font-black text-emerald-300'
+                        : tae.ready
+                            ? 'font-black text-cyan-300'
+                            : 'font-black text-yellow-300';
+            }
+
+            const bar = document.getElementById('tae-live-progress-bar');
+            if (bar) bar.style.width = `${progress.toFixed(1)}%`;
+        }
+
+
         function renderServerTradeNarrative(st) {
             if (!window.SERVER_EXECUTION?.enabled || !st) return;
 
@@ -11502,6 +11627,45 @@ window.executionLock = true;
                         : 'Starting server cycle';
                     action = `Preparing trade ${tradeNo + 1}${maxTrades ? ` of ${maxTrades}` : ''}`;
                     resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_HISTORY_WARMING':
+                    result = 'LEARNING 🧠';
+                    status = `Target ${hasDigit ? digit : '—'} · collecting live history`;
+                    action = st.tae
+                        ? `History ${Number(st.tae.history_count || 0)}/${Number(st.tae.minimum_history || 100)} · no trade placed yet`
+                        : 'Collecting forward-only context';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_MODEL_WARMING':
+                    result = 'LEARNING 🧠';
+                    status = `Target Attraction forward-training`;
+                    action = st.tae
+                        ? `${Number(st.tae.trained_samples || 0)}/${Number(st.tae.min_train_samples || 250)} matured · ${Number(st.tae.pending_observations || 0)} pending`
+                        : 'Waiting for matured T10 samples';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_SCORING':
+                case 'TAE_WAITING':
+                    result = 'TAE SCORING';
+                    status = hasDigit
+                        ? `Target ${digit} · waiting for stronger T10 entry`
+                        : 'Target Attraction scoring';
+                    action = st.tae && Number.isFinite(Number(st.tae.current_probability_t10))
+                        ? `P(return≤T10) ${(Number(st.tae.current_probability_t10) * 100).toFixed(1)}% · arm at ${(Number(st.tae.arm_probability || 0.8) * 100).toFixed(0)}%`
+                        : 'Waiting for current probability';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'TAE_ARMED':
+                    result = 'TAE ARMED ✅';
+                    status = hasDigit
+                        ? `Target ${digit} passed the T10 entry threshold`
+                        : 'Target Attraction armed';
+                    action = 'Preparing Trade 1';
+                    resultClass = 'text-xs font-bold text-emerald-300';
                     break;
 
                 case 'REQUESTING_PROPOSAL':
@@ -11824,6 +11988,7 @@ window.executionLock = true;
                 }
             }
 
+            renderTargetAttractionStatus(st);
             renderServerTradeNarrative(st);
         }
 

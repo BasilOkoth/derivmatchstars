@@ -78,3 +78,55 @@ class TradeLog(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     settled_at = Column(DateTime, nullable=True)
     raw_json = Column(Text, nullable=True)
+
+class TAEState(Base):
+    """
+    Persisted Target Attraction Engine state.
+
+    Stores only already-observed information. Pending forward samples are
+    intentionally NOT persisted because a server outage/restart breaks strict
+    tick continuity; they are discarded on restart rather than mislabeled.
+    """
+    __tablename__ = "tae_states"
+
+    id = Column(Integer, primary_key=True)
+    trading_session_id = Column(Integer, nullable=False, unique=True, index=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    symbol = Column(String(40), nullable=False)
+    target_digit = Column(Integer, nullable=True)
+    model_json = Column(Text, nullable=False, default="{}")
+    history_json = Column(Text, nullable=False, default="[]")
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class TAEObservation(Base):
+    """
+    One matured, strictly forward T0 -> T10 research observation.
+    """
+    __tablename__ = "tae_observations"
+
+    id = Column(Integer, primary_key=True)
+    trading_session_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    symbol = Column(String(40), nullable=False)
+    sample_index = Column(Integer, nullable=False)
+    target_digit = Column(Integer, nullable=False)
+    prediction_t0_probability = Column(Float, nullable=False)
+    selected = Column(Boolean, nullable=False, default=False)
+    arm_threshold = Column(Float, nullable=False)
+    label_return_by_t10 = Column(Integer, nullable=False)
+    stop10 = Column(Integer, nullable=False)
+    forward_gap = Column(Integer, nullable=True)
+    horizon = Column(Integer, nullable=False, default=10)
+    features_json = Column(Text, nullable=False)
+    model_trained_samples_at_t0 = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_session_id",
+            "sample_index",
+            name="uq_tae_session_sample",
+        ),
+    )

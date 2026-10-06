@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.1.8-target-attraction-export",
+    version="2.1.9-persistent-target-attraction",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.1.8-target-attraction-export",
+        "version": "2.1.9-persistent-target-attraction",
         "frontend_origin": frontend_origin,
     }
 
@@ -110,6 +110,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
+                    "tae": engine.target_attraction_status(s.id),
                 }
             )
 
