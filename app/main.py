@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,14 +15,57 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.2.4-tae-v2-shadow",
+    version="3.0.0-digit-score-recycle3",
 )
 
-frontend_origin = settings.frontend_url.rstrip("/")
+
+def _normalise_origin(value: str) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _cors_origins():
+    """
+    Allow the configured frontend plus the canonical DigitMatchStar domains.
+
+    This prevents a www/non-www deployment mismatch from surfacing in the
+    browser as the opaque JavaScript error: TypeError: Failed to fetch.
+    """
+    values = {
+        _normalise_origin(settings.frontend_url),
+        "https://digitmatchstar.com",
+        "https://www.digitmatchstar.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    }
+
+    configured = _normalise_origin(settings.frontend_url)
+
+    # If FRONTEND_URL is a custom HTTPS hostname, also tolerate the www/non-www
+    # spelling of that same hostname.
+    if configured:
+        try:
+            parsed = urlparse(configured)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                host = parsed.hostname
+                port = f":{parsed.port}" if parsed.port else ""
+
+                if host.startswith("www."):
+                    values.add(f"{parsed.scheme}://{host[4:]}{port}")
+                else:
+                    values.add(f"{parsed.scheme}://www.{host}{port}")
+        except Exception:
+            pass
+
+    return sorted(x for x in values if x)
+
+
+ALLOWED_ORIGINS = _cors_origins()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_origin],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
@@ -35,7 +79,7 @@ class SessionCreate(BaseModel):
     symbol: str = "R_10"
     base_stake: float = 1.0
     multiplier: float = 1.15
-    max_trades: int = 10
+    max_trades: int = 15
 
 
 class Candidate(BaseModel):
@@ -51,8 +95,15 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.2.4-tae-v2-shadow",
-        "frontend_origin": frontend_origin,
+        "version": "3.0.0-digit-score-recycle3",
+        "frontend_origin": _normalise_origin(settings.frontend_url),
+        "allowed_origins": ALLOWED_ORIGINS,
+        "strategy": {
+            "name": "DIGIT_SCORE_RECYCLE",
+            "recycle_after_losses": int(
+                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
+            ),
+        },
     }
 
 
@@ -66,6 +117,42 @@ def owns_session(db, user_id, sid):
         )
 
     return s
+
+
+def digit_score_for_session(session_id: int):
+    """
+    Compatibility wrapper around the new full engine.
+
+    The replacement engine exposes _score_all_digits internally. Keeping the
+    API adapter here avoids reintroducing old TAE methods into the engine.
+    """
+    scorer = getattr(engine, "_score_all_digits", None)
+
+    if not callable(scorer):
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "recycle_after": 3,
+            "error": "Digit score engine is not available",
+        }
+
+    try:
+        return scorer(int(session_id))
+    except Exception as exc:
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "recycle_after": int(
+                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
+            ),
+            "error": str(exc),
+        }
 
 
 @app.get("/sessions")
@@ -110,7 +197,14 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
-                    "tae": engine.target_attraction_status(s.id),
+                    "digit_score": digit_score_for_session(s.id),
+                    "recycle_after": int(
+                        getattr(
+                            getattr(engine, "digit_scorer", None),
+                            "recycle_after",
+                            3,
+                        )
+                    ),
                 }
             )
 
@@ -121,17 +215,31 @@ def sessions(user_id: str = Depends(current_user_id)):
 
 
 @app.get("/sessions/{sid}/tae/export")
-def export_tae_results(
+def removed_tae_export(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
+    """
+    Kept only so an old browser button does not crash the API.
+
+    TAE no longer controls execution in the unified Digit Score / Recycle-3
+    trading engine.
+    """
     db = SessionLocal()
     try:
         owns_session(db, user_id, sid)
     finally:
         db.close()
 
-    return engine.export_target_attraction(sid)
+    return {
+        "schema": "DIGITMATCHSTAR_DIGIT_SCORE_RECYCLE3",
+        "session_id": sid,
+        "message": (
+            "Target Attraction execution was retired. "
+            "The active system scores digits 0-9 and recycles after 3 losses."
+        ),
+        "digit_score": digit_score_for_session(sid),
+    }
 
 
 @app.post("/sessions")
@@ -139,6 +247,15 @@ def create_session(
     body: SessionCreate,
     user_id: str = Depends(current_user_id),
 ):
+    if body.base_stake <= 0:
+        raise HTTPException(status_code=400, detail="base_stake must be > 0")
+
+    if body.multiplier < 1:
+        raise HTTPException(status_code=400, detail="multiplier must be >= 1")
+
+    if body.max_trades < 1:
+        raise HTTPException(status_code=400, detail="max_trades must be >= 1")
+
     db = SessionLocal()
 
     try:
@@ -195,13 +312,12 @@ def create_session(
                 "phase": s.phase,
                 "reconcile_required": True,
                 "open_contract_id": s.open_contract_id,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
             }
 
         if s.running:
-            # Idempotent lifecycle behavior:
-            # a research/trading session may already be active because the
-            # browser created it earlier or START was pressed twice. Do not
-            # destroy or reconfigure a live session; simply return its state.
             return {
                 "id": s.id,
                 "account_id": s.account_id,
@@ -210,8 +326,8 @@ def create_session(
                 "phase": s.phase,
                 "running": True,
                 "already_running": True,
-                "reconcile_required": bool(s.open_contract_id),
-                "open_contract_id": s.open_contract_id,
+                "reconcile_required": False,
+                "open_contract_id": None,
                 "current_trade": s.current_trade,
                 "max_trades": s.max_trades,
                 "candidate_digit": s.candidate_digit,
@@ -219,10 +335,10 @@ def create_session(
 
         s.account_mode = mode
         s.symbol = body.symbol
-        s.base_stake = body.base_stake
-        s.current_stake = body.base_stake
-        s.multiplier = body.multiplier
-        s.max_trades = body.max_trades
+        s.base_stake = float(body.base_stake)
+        s.current_stake = float(body.base_stake)
+        s.multiplier = float(body.multiplier)
+        s.max_trades = int(body.max_trades)
 
         s.current_trade = 0
         s.pnl = 0.0
@@ -234,6 +350,8 @@ def create_session(
         s.phase = "CONFIGURED"
         s.updated_at = datetime.utcnow()
 
+        # Candidate may remain from a previous idle session, but Trade 1 will
+        # be rescored by the server engine from canonical history.
         db.commit()
         db.refresh(s)
 
@@ -244,6 +362,9 @@ def create_session(
             "symbol": s.symbol,
             "phase": s.phase,
             "reconcile_required": False,
+            "current_trade": s.current_trade,
+            "max_trades": s.max_trades,
+            "candidate_digit": s.candidate_digit,
         }
 
     finally:
@@ -267,8 +388,6 @@ def candidate(
     try:
         s = owns_session(db, user_id, sid)
 
-        # START is idempotent. Repeated clicks or a browser reconnect must not
-        # fail if the server worker is already active.
         if s.running:
             return {
                 "ok": True,
@@ -277,6 +396,7 @@ def candidate(
                 "already_running": True,
                 "reconciling": bool(s.open_contract_id),
                 "open_contract_id": s.open_contract_id,
+                "candidate_digit": s.candidate_digit,
             }
 
         if s.open_contract_id:
@@ -287,17 +407,11 @@ def candidate(
                 "reconcile_required": True,
             }
 
-        s.candidate_digit = body.digit
+        # This sets the initial/fallback digit only. Once the server has enough
+        # canonical history, the unified engine scores 0-9 and chooses Trade 1.
+        s.candidate_digit = int(body.digit)
         s.updated_at = datetime.utcnow()
-
         db.commit()
-
-        # Update TAE immediately. This does not start trading; it only changes
-        # the forward-research target used by the continuous server tick stream.
-        engine.set_target_digit(
-            s.id,
-            int(s.candidate_digit),
-        )
 
         return {
             "ok": True,
@@ -326,7 +440,6 @@ def start(
             s.phase = "RECONCILING"
             s.last_error = None
             s.updated_at = datetime.utcnow()
-
             db.commit()
 
             return {
@@ -337,18 +450,17 @@ def start(
                 "open_contract_id": s.open_contract_id,
             }
 
+        # A fallback digit is still accepted so START never fails merely because
+        # scoring history is warming. The engine replaces it with the ranked
+        # candidate as soon as scoring is ready.
         if s.candidate_digit is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Set a candidate digit before starting",
-            )
+            s.candidate_digit = 5
 
         s.running = True
         s.paused = False
         s.phase = "STARTING"
         s.last_error = None
         s.updated_at = datetime.utcnow()
-
         db.commit()
 
         return {
@@ -356,6 +468,11 @@ def start(
             "id": s.id,
             "phase": s.phase,
             "reconciling": False,
+            "candidate_digit": s.candidate_digit,
+            "max_trades": s.max_trades,
+            "recycle_after": int(
+                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
+            ),
         }
 
     finally:
@@ -371,11 +488,9 @@ def pause(
 
     try:
         s = owns_session(db, user_id, sid)
-
         s.paused = True
         s.phase = "PAUSED"
         s.updated_at = datetime.utcnow()
-
         db.commit()
 
         return {
@@ -406,7 +521,6 @@ def stop(
             s.phase = "STOPPED"
 
         s.updated_at = datetime.utcnow()
-
         db.commit()
 
         return {
@@ -432,8 +546,8 @@ async def confirm_real(
             "session_id": sid,
         }
 
-    except Exception as e:
+    except Exception as exc:
         raise HTTPException(
             status_code=409,
-            detail=str(e),
+            detail=str(exc),
         )
