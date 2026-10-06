@@ -47,7 +47,8 @@ class MultiUserEngine:
 
         # Settlement bookkeeping keyed per individual contract.
         self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
-        self.contract_poll_tasks = {}  # fallback only
+        self.contract_subscription_tasks = {}  # (sid, contract_id) -> task
+        self.contract_poll_tasks = {}  # low-frequency fallback only
 
         # One pre-armed recovery proposal per session.
         self.prefetched_recovery = {}  # sid -> payload
@@ -557,13 +558,24 @@ class MultiUserEngine:
                     existing_contract_sub = self.contract_subscriptions.get(
                         contract_key
                     )
+                    existing_contract_task = self.contract_subscription_tasks.get(
+                        contract_key
+                    )
+
                     if (
-                        not existing_contract_sub
-                        or not client.has_subscription(
-                            existing_contract_sub
+                        (
+                            not existing_contract_sub
+                            or not client.has_subscription(
+                                existing_contract_sub
+                            )
                         )
+                        and (
+                            not existing_contract_task
+                            or existing_contract_task.done()
+                        )
+                        and contract_key not in self.contract_poll_tasks
                     ):
-                        asyncio.create_task(
+                        task = asyncio.create_task(
                             self._subscribe_open_contract(
                                 sid=sid,
                                 user_id=s.user_id,
@@ -572,6 +584,9 @@ class MultiUserEngine:
                                 client=client,
                             )
                         )
+                        self.contract_subscription_tasks[
+                            contract_key
+                        ] = task
 
                     # PIPELINE watchdog:
                     # if no result tick has been consumed for >3.5 seconds,
@@ -853,15 +868,31 @@ class MultiUserEngine:
                 self.prefetch_tasks[s.id] = task
 
         # Official settlement is background accounting/reconciliation only.
-        asyncio.create_task(
-            self._subscribe_open_contract(
-                sid=s.id,
-                user_id=s.user_id,
-                account_id=s.account_id,
-                contract_id=contract_id,
-                client=client,
-            )
+        contract_key = (
+            s.id,
+            str(contract_id),
         )
+
+        existing_contract_task = self.contract_subscription_tasks.get(
+            contract_key
+        )
+
+        if (
+            not existing_contract_task
+            or existing_contract_task.done()
+        ):
+            task = asyncio.create_task(
+                self._subscribe_open_contract(
+                    sid=s.id,
+                    user_id=s.user_id,
+                    account_id=s.account_id,
+                    contract_id=contract_id,
+                    client=client,
+                )
+            )
+            self.contract_subscription_tasks[
+                contract_key
+            ] = task
 
     async def _prefetch_next_recovery(
         self,
@@ -963,12 +994,14 @@ class MultiUserEngine:
 
         if existing_sub_id:
             if client.has_subscription(existing_sub_id):
+                self.contract_subscription_tasks.pop(key, None)
                 return
 
             # Socket was reconnected and this id belongs to the dead socket.
             self.contract_subscriptions.pop(key, None)
 
         if key in self.contract_poll_tasks:
+            self.contract_subscription_tasks.pop(key, None)
             return
 
         async def on_contract_update(data: dict):
@@ -990,15 +1023,27 @@ class MultiUserEngine:
 
         if sub_id:
             self.contract_subscriptions[key] = sub_id
+            self.contract_subscription_tasks.pop(key, None)
             return
 
         # Fallback only if Deriv does not return a subscription id for the
-        # very short-lived 1-tick contract. This runs in the background and
-        # never gates strategy execution.
-        async def poll_until_sold():
+        # very short-lived 1-tick contract.
+        #
+        # CRITICAL RATE-LIMIT FIX:
+        # proposal_open_contract shares Deriv's trading-call request budget
+        # with proposal/buy/sell. The previous 0.20-second loop could consume
+        # hundreds of requests per minute and starve the actual trading path.
+        #
+        # Strategy does NOT depend on this reconciliation. Therefore perform
+        # only a few delayed checks, well outside the critical execution path.
+        async def reconcile_later():
             try:
-                for _ in range(150):
-                    await asyncio.sleep(0.20)
+                # R_10 is roughly a 2-second tick market. By 2.5 seconds a
+                # one-tick contract should normally have settled.
+                delays = (2.5, 3.0, 5.0)
+
+                for delay in delays:
+                    await asyncio.sleep(delay)
 
                     data = await client.contract_status(
                         str(contract_id)
@@ -1018,7 +1063,8 @@ class MultiUserEngine:
                 raise
 
             except Exception:
-                # The trade remains visible as OPEN for later reconciliation.
+                # Background reconciliation failure must never freeze or
+                # throttle the live tick-driven strategy.
                 return
 
             finally:
@@ -1028,8 +1074,9 @@ class MultiUserEngine:
                 )
 
         self.contract_poll_tasks[key] = asyncio.create_task(
-            poll_until_sold()
+            reconcile_later()
         )
+        self.contract_subscription_tasks.pop(key, None)
 
     async def _handle_contract_update(
         self,
