@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections import defaultdict
 from typing import Awaitable, Callable, Optional
 
@@ -29,6 +30,9 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
+        self._proposal_lock = asyncio.Lock()
+        self._last_proposal_at = 0.0
+        self._proposal_min_interval = 0.35
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -227,16 +231,41 @@ class DerivWS:
             "underlying_symbol": str(symbol),
         }
 
-        try:
-            return await self.request(payload)
-        except RuntimeError as exc:
-            if "timed out" not in str(exc).lower():
-                raise
+        # Serialize proposal requests on this Deriv connection. This prevents
+        # strategy prefetch + fallback paths from bursting the proposal API.
+        async with self._proposal_lock:
+            delay = self._proposal_min_interval - (
+                time.monotonic() - self._last_proposal_at
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
 
-            # A proposal request has no financial side effect. If the socket
-            # stopped delivering responses, reconnect once and retry it.
-            await self._reset_after_timeout()
-            return await self.request(payload)
+            for attempt in range(3):
+                try:
+                    self._last_proposal_at = time.monotonic()
+                    return await self.request(payload)
+                except RuntimeError as exc:
+                    text = str(exc).lower()
+
+                    if "timed out" in text and attempt == 0:
+                        # Proposal is read-only, so reconnecting and retrying
+                        # once after a dead socket is safe.
+                        await self._reset_after_timeout()
+                        continue
+
+                    if "ratelimit" in text or "rate limit" in text:
+                        if attempt >= 2:
+                            raise
+
+                        # Deriv is explicitly asking us to slow down. Proposal
+                        # has no financial side effect, so a bounded retry is
+                        # safe. Do not apply this behavior to BUY.
+                        await asyncio.sleep(0.75 * (attempt + 1))
+                        continue
+
+                    raise
+
+            raise RuntimeError("Proposal request failed after bounded retries")
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:

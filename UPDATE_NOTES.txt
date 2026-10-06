@@ -1,32 +1,26 @@
-TICK-DRIVEN DEMO STRATEGY FIX
+DERIV PROPOSAL RATE-LIMIT FIX
 
-This implements the requested behavior:
+Observed error:
+  RateLimit: You have reached the rate limit for proposal.
 
-Example target digit: 5
+Root cause:
+The tick-driven engine can have a recovery proposal prefetch in flight when a
+fast-loss tick arrives. The loss path previously did not wait for that prefetch;
+it could immediately issue a second proposal for the same next trade. Repeated
+through a recovery chain, that creates proposal bursts and Deriv rate-limits
+the connection.
 
-1. Buy a 1-tick DIGITMATCH contract for digit 5.
-2. Keep the next recovery proposal pre-armed.
-3. Watch the live tick stream.
-4. On the first eligible tick after the BUY:
-   - last digit == 5 -> FAST_WON, stop the strategy immediately.
-   - last digit != 5 -> FAST loss, advance immediately to the next recovery.
-5. Deriv proposal_open_contract settlement continues independently in the
-   background and updates authoritative P/L/accounting only.
-
-Important architecture changes:
-- Strategy progression no longer waits for proposal_open_contract.is_sold.
-- Settlement subscriptions are keyed by (session_id, contract_id), so an older
-  contract can reconcile in the background while the next strategy contract is
-  already active.
-- Official settlement never clears a newer open_contract_id.
-- Repeated sold events are accounted exactly once using TradeLog.status.
-- Recovery proposal is prefetched before settlement subscription setup.
-- The live WebSocket reader never awaits business callbacks.
-- A cached-tick replay handles the race where the settlement tick arrives while
-  the BUY response is still in flight; this prevents the classic one-tick-late
-  behavior.
-- A fast-result vs official-result disagreement stops the strategy with
-  RECONCILE_MISMATCH rather than cascading from an incorrectly correlated tick.
+Fixes:
+1. Exactly one tracked recovery-prefetch task per session.
+2. Fast-loss processing first consumes the ready prefetched proposal.
+3. If prefetch is still in flight, it waits up to 800 ms for that SAME request
+   instead of immediately issuing a duplicate.
+4. Proposal calls are serialized per Deriv WebSocket connection.
+5. Proposal calls are spaced by at least 350 ms.
+6. Explicit Deriv RateLimit responses back off and retry up to two times.
+7. BUY calls are NOT retried or throttled by this mechanism, so duplicate
+   contract purchases are not introduced.
+8. Tick-driven win/loss behavior and background settlement remain unchanged.
 
 Replace all four files:
   app/engine.py
@@ -34,6 +28,4 @@ Replace all four files:
   backend/app/engine.py
   backend/app/deriv_ws.py
 
-Then restart the backend service.
-
-This build remains DEMO-only for automated purchases.
+Then fully restart the backend service.

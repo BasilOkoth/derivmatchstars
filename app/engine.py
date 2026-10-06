@@ -42,6 +42,7 @@ class MultiUserEngine:
         self.session_tasks = {}
         self.session_locks = {}
         self.prefetched_recovery = {}  # sid -> payload
+        self.prefetch_tasks = {}  # sid -> exactly one in-flight proposal prefetch
 
     async def start(self):
         if not self.task or self.task.done():
@@ -346,6 +347,24 @@ class MultiUserEngine:
                 currency = await self._currency_for(db, s)
 
                 expected_trade_no = int(s.current_trade) + 1
+
+                # If the prefetch request is already in flight, do NOT create a
+                # duplicate proposal request for the same recovery. Give that
+                # existing request a short chance to finish first.
+                if not payload:
+                    prefetch_task = self.prefetch_tasks.get(sid)
+                    if prefetch_task and not prefetch_task.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(prefetch_task),
+                                timeout=0.8,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                        except Exception:
+                            pass
+                        payload = self.prefetched_recovery.pop(sid, None)
+
                 if (
                     not payload
                     or int(payload.get("trade_no") or 0) != expected_trade_no
@@ -607,19 +626,22 @@ class MultiUserEngine:
         # Pre-arm the NEXT recovery immediately. This is deliberately started
         # before the official settlement subscription round-trip.
         if s.current_trade < s.max_trades:
-            asyncio.create_task(
-                self._prefetch_next_recovery(
-                    sid=s.id,
-                    user_id=s.user_id,
-                    account_id=s.account_id,
-                    symbol=s.symbol,
-                    digit=int(s.candidate_digit),
-                    next_stake=round(
-                        float(s.current_stake) * float(s.multiplier), 2
-                    ),
-                    next_trade_no=int(s.current_trade) + 1,
+            existing_prefetch = self.prefetch_tasks.get(s.id)
+            if not existing_prefetch or existing_prefetch.done():
+                task = asyncio.create_task(
+                    self._prefetch_next_recovery(
+                        sid=s.id,
+                        user_id=s.user_id,
+                        account_id=s.account_id,
+                        symbol=s.symbol,
+                        digit=int(s.candidate_digit),
+                        next_stake=round(
+                            float(s.current_stake) * float(s.multiplier), 2
+                        ),
+                        next_trade_no=int(s.current_trade) + 1,
+                    )
                 )
-            )
+                self.prefetch_tasks[s.id] = task
 
         # Official settlement is bookkeeping/reconciliation only and runs
         # independently of the live-tick strategy path.
@@ -685,6 +707,10 @@ class MultiUserEngine:
         except Exception:
             # Prefetch is only an optimization. Fresh proposal remains fallback.
             self.prefetched_recovery.pop(sid, None)
+        finally:
+            current = self.prefetch_tasks.get(sid)
+            if current is asyncio.current_task():
+                self.prefetch_tasks.pop(sid, None)
 
     async def _subscribe_open_contract(
         self,
