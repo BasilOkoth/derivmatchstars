@@ -20,7 +20,7 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine + V33 Persistent Target Attraction Engine.
+    DigitMatchStar DEMO low-latency engine + V34 Continuous Persistent Target Attraction Engine.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -44,6 +44,11 @@ class MultiUserEngine:
 
         self.session_tasks = {}
         self.session_locks = {}
+
+        # Independent TAE research workers. These keep the server tick stream
+        # alive even while paid trading is IDLE / Trade 0.
+        self.research_tasks = {}
+        self._last_research_scan_at = 0.0
 
         # Live tick stream state.
         self.tick_subscriptions = {}  # sid -> {subscription_id, symbol}
@@ -156,14 +161,24 @@ class MultiUserEngine:
 
     async def run_forever(self):
         """
-        This loop starts sessions and handles recovery from process restarts.
+        Two independent loops share this lightweight scheduler:
 
-        It is NOT the settlement timing loop. Live tick callbacks drive strategy.
+        1. Trading loop:
+           only sessions with running=True call step() and can place DEMO buys.
+
+        2. TAE research loop:
+           DEMO sessions with a candidate digit maintain a live tick
+           subscription even when trading is idle. This lets forward T10
+           observations mature continuously without requiring START BOT.
+
+        Research never calls proposal() or buy().
         """
+        loop = asyncio.get_running_loop()
+
         while True:
             db = SessionLocal()
             try:
-                ids = [
+                running_ids = [
                     row.id
                     for row in (
                         db.query(TradingSession)
@@ -174,14 +189,89 @@ class MultiUserEngine:
             finally:
                 db.close()
 
-            for sid in ids:
+            for sid in running_ids:
                 task = self.session_tasks.get(sid)
                 if not task or task.done():
                     self.session_tasks[sid] = asyncio.create_task(
                         self._safe_step(sid)
                     )
 
+            now = loop.time()
+
+            # Research subscriptions do not need a 20 ms database scan.
+            # Refresh eligible research sessions twice per second.
+            if now - self._last_research_scan_at >= 0.50:
+                self._last_research_scan_at = now
+
+                db = SessionLocal()
+                try:
+                    research_ids = [
+                        row.id
+                        for row in (
+                            db.query(TradingSession)
+                            .filter(
+                                TradingSession.account_mode == "DEMO",
+                                TradingSession.candidate_digit.isnot(None),
+                            )
+                            .all()
+                        )
+                    ]
+                finally:
+                    db.close()
+
+                for sid in research_ids:
+                    task = self.research_tasks.get(sid)
+                    if not task or task.done():
+                        self.research_tasks[sid] = asyncio.create_task(
+                            self._ensure_research_stream(sid)
+                        )
+
             await asyncio.sleep(0.02)
+
+    async def _ensure_research_stream(self, sid: int):
+        """
+        Keep TAE tick research alive independently of trading.
+
+        No proposal/buy/settlement request is made here.
+        """
+        try:
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+
+                if (
+                    not s
+                    or str(s.account_mode).upper() != "DEMO"
+                    or s.candidate_digit is None
+                ):
+                    return
+
+                user_id = s.user_id
+                account_id = s.account_id
+                symbol = s.symbol
+                target = int(s.candidate_digit)
+            finally:
+                db.close()
+
+            self.set_target_digit(sid, target)
+
+            client = await self._client(
+                user_id,
+                account_id,
+            )
+
+            await self._ensure_tick_subscription(
+                sid=sid,
+                user_id=user_id,
+                account_id=account_id,
+                symbol=symbol,
+                client=client,
+            )
+
+        except Exception:
+            # Research-stream failure must never turn an idle session into a
+            # trading ERROR. The next research scan retries automatically.
+            return
 
     async def _safe_step(self, sid: int):
         try:
@@ -643,6 +733,12 @@ class MultiUserEngine:
         target = self.target_digit_by_sid.get(sid)
         if target is None:
             self._history(sid).append(int(digit))
+            self.tae_ticks_since_persist[sid] = (
+                int(self.tae_ticks_since_persist.get(sid) or 0) + 1
+            )
+            if self.tae_ticks_since_persist[sid] >= 10:
+                self.tae_ticks_since_persist[sid] = 0
+                self._persist_tae_state(sid)
             return
 
         pending = self.tae_pending.setdefault(sid, [])
@@ -756,6 +852,28 @@ class MultiUserEngine:
             }
         )
 
+    def set_target_digit(self, sid: int, digit: int):
+        """
+        Synchronize the current research target without starting a trade.
+        Safe to call from the candidate endpoint while Trade 0 is waiting.
+        """
+        digit = int(digit)
+        if digit < 0 or digit > 9:
+            raise ValueError("digit must be 0..9")
+
+        self._load_tae_state(sid)
+
+        previous = self.target_digit_by_sid.get(sid)
+        self.target_digit_by_sid[sid] = digit
+
+        model = self._tae_model(sid)
+        model["last_target"] = digit
+
+        if previous != digit:
+            self._persist_tae_state(sid)
+
+        return digit
+
     def target_attraction_status(self, sid: int):
         model = self._tae_model(sid)
         trained = int(model["trained"])
@@ -810,7 +928,10 @@ class MultiUserEngine:
                 (selected - model["selected_hits"]) / selected
                 if selected else None
             ),
-            "current_target": model["last_target"],
+            "current_target": self.target_digit_by_sid.get(
+                sid,
+                model["last_target"],
+            ),
             "current_probability_t10": model["last_probability"],
             "ready": trained >= self.tae_min_train_samples,
             "armed_now": bool(
@@ -1200,12 +1321,10 @@ class MultiUserEngine:
                     return
 
                 if s.candidate_digit is not None:
-                    previous_target = self.target_digit_by_sid.get(sid)
-                    current_target = int(s.candidate_digit)
-                    self.target_digit_by_sid[sid] = current_target
-
-                    if previous_target != current_target:
-                        self._persist_tae_state(sid)
+                    self.set_target_digit(
+                        sid,
+                        int(s.candidate_digit),
+                    )
 
                 if s.last_error:
                     # Clear ordinary stale errors once the worker is healthy.

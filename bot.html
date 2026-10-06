@@ -1035,7 +1035,7 @@
                             </div>
 
                             <div class="mt-2 text-[10px] text-gray-400">
-                                Matured observations and model state survive server redeploys when the configured database persists.
+                                TAE learns from the server tick stream even while Trade 0 is idle. Matured observations and model state survive redeploys when the configured database persists.
                             </div>
                         </div>
 
@@ -11488,6 +11488,9 @@ window.executionLock = true;
             ) || null,
             pollTimer: null,
             lastCandidateSent: null,
+            lastTaeCandidateSyncAt: 0,
+            taeCandidateSyncPending: false,
+            researchSessionCreatePending: false,
             continuousResearch: (
                 sessionStorage.getItem('dms_server_continuous_research') ??
                 localStorage.getItem('dms_server_continuous_research') ??
@@ -11518,6 +11521,9 @@ window.executionLock = true;
             };
 
             const pct = (value, digits = 1) => {
+                if (value === null || value === undefined || value === '') {
+                    return '—';
+                }
                 const n = Number(value);
                 return Number.isFinite(n)
                     ? `${(n * 100).toFixed(digits)}%`
@@ -11552,7 +11558,12 @@ window.executionLock = true;
             setText('tae-live-pending', String(pending));
             setText(
                 'tae-live-next',
-                Number.isFinite(Number(next))
+                (
+                    next !== null &&
+                    next !== undefined &&
+                    next !== '' &&
+                    Number.isFinite(Number(next))
+                )
                     ? `${Number(next)} tick${Number(next) === 1 ? '' : 's'}`
                     : '—'
             );
@@ -12365,16 +12376,207 @@ window.executionLock = true;
             }, 1200);
         }
 
+        function currentResearchTargetDigit() {
+            let digit = null;
+
+            if (
+                sessionState?.mode === 'ai' &&
+                window.digitIntelligenceEngine?.warmupDone &&
+                window.digitIntelligenceEngine?.currentRecommendation
+            ) {
+                digit = Number(
+                    window.digitIntelligenceEngine.currentRecommendation.digit
+                );
+            }
+
+            if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
+                digit = Number(
+                    sessionState?.sessionDigit ??
+                    document.getElementById('predictedDigit')?.value
+                );
+            }
+
+            return (
+                Number.isInteger(digit) && digit >= 0 && digit <= 9
+            ) ? digit : null;
+        }
+
+        async function ensureServerResearchSession() {
+            const s = window.SERVER_EXECUTION;
+
+            if (
+                !s?.enabled ||
+                !s.apiUrl ||
+                s.sessionId ||
+                s.researchSessionCreatePending
+            ) {
+                return;
+            }
+
+            const digit = currentResearchTargetDigit();
+            if (!Number.isInteger(digit)) return;
+
+            s.researchSessionCreatePending = true;
+
+            try {
+                const cfg = serverSessionConfigFromUi();
+                const accounts = await serverExecRequest('/auth/platform/me');
+                const account = (accounts.accounts || []).find(
+                    a => String(a.account_type || '').toLowerCase() === 'demo'
+                );
+
+                if (!account) return;
+
+                const created = await serverExecRequest('/sessions', {
+                    method: 'POST',
+                    body: {
+                        account_id: account.account_id,
+                        symbol: cfg.symbol,
+                        base_stake: cfg.base_stake,
+                        multiplier: cfg.multiplier,
+                        max_trades: cfg.max_trades
+                    }
+                });
+
+                s.sessionId = Number(created.id);
+                sessionStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+                try {
+                    localStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                } catch (_) {}
+
+                if (!created.reconcile_required) {
+                    await serverExecRequest(
+                        `/sessions/${s.sessionId}/candidate`,
+                        {
+                            method: 'POST',
+                            body: { digit }
+                        }
+                    );
+                    s.lastCandidateSent = digit;
+                }
+
+                // IMPORTANT: do NOT call /start here.
+                // This creates a research session only. The server TAE tick
+                // collector learns while Trade 0 remains idle.
+                log(
+                    `🧠 TAE research session ready · target ${digit} · no trade started`,
+                    'SYSTEM'
+                );
+
+            } catch (error) {
+                console.warn(
+                    'TAE research-session bootstrap failed:',
+                    error
+                );
+            } finally {
+                s.researchSessionCreatePending = false;
+            }
+        }
+
+        async function syncServerResearchCandidate() {
+            const s = window.SERVER_EXECUTION;
+            const st = s?.state || null;
+
+            if (
+                !s?.enabled ||
+                !s.sessionId ||
+                !st ||
+                String(st.account_mode || '').toUpperCase() !== 'DEMO' ||
+                st.open_contract_id ||
+                Number(st.current_trade || 0) > 0 ||
+                s.taeCandidateSyncPending
+            ) {
+                return;
+            }
+
+            const digit = currentResearchTargetDigit();
+            if (!Number.isInteger(digit)) return;
+
+            // Avoid hammering the API. A changed target syncs immediately;
+            // unchanged targets need no repeated POST.
+            if (
+                Number(st.candidate_digit) === digit &&
+                Number(s.lastCandidateSent) === digit
+            ) {
+                return;
+            }
+
+            const now = Date.now();
+            if (now - Number(s.lastTaeCandidateSyncAt || 0) < 750) {
+                return;
+            }
+
+            s.lastTaeCandidateSyncAt = now;
+            s.taeCandidateSyncPending = true;
+
+            try {
+                const result = await serverExecRequest(
+                    `/sessions/${s.sessionId}/candidate`,
+                    {
+                        method: 'POST',
+                        body: { digit }
+                    }
+                );
+
+                if (!result?.reconcile_required) {
+                    s.lastCandidateSent = digit;
+                    if (s.state) s.state.candidate_digit = digit;
+                }
+
+            } catch (error) {
+                console.warn('TAE target sync failed:', error);
+            } finally {
+                s.taeCandidateSyncPending = false;
+            }
+        }
+
+
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
+
             try {
                 const rows = await serverExecRequest('/sessions');
+
                 s.state = s.sessionId
-                    ? (rows.find(x => Number(x.id) === Number(s.sessionId)) || null)
+                    ? (
+                        rows.find(
+                            x => Number(x.id) === Number(s.sessionId)
+                        ) || rows[0] || null
+                    )
                     : (rows[0] || null);
+
+                // Adopt an already-persisted backend session after browser
+                // reload rather than waiting for START BOT.
+                if (!s.sessionId && s.state?.id) {
+                    s.sessionId = Number(s.state.id);
+                    sessionStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                    try {
+                        localStorage.setItem(
+                            'dms_server_session_id',
+                            String(s.sessionId)
+                        );
+                    } catch (_) {}
+                }
+
+                if (!s.state) {
+                    await ensureServerResearchSession();
+                } else {
+                    await syncServerResearchCandidate();
+                }
+
                 renderServerExecutionState();
                 maybeScheduleContinuousServerResearch();
+
             } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {

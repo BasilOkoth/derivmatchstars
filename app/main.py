@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.1.9-persistent-target-attraction",
+    version="2.2.0-continuous-target-attraction",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.1.9-persistent-target-attraction",
+        "version": "2.2.0-continuous-target-attraction",
         "frontend_origin": frontend_origin,
     }
 
@@ -265,6 +265,13 @@ def candidate(
         s.updated_at = datetime.utcnow()
 
         db.commit()
+
+        # Update TAE immediately. This does not start trading; it only changes
+        # the forward-research target used by the continuous server tick stream.
+        engine.set_target_digit(
+            s.id,
+            int(s.candidate_digit),
+        )
 
         return {
             "ok": True,
