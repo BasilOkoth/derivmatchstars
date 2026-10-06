@@ -27,6 +27,7 @@ class MultiUserEngine:
         self.task = None
         self.clients = {}
         self.contract_subscriptions = {}
+        self.contract_poll_tasks = {}
         self.session_tasks = {}
         self.session_locks = {}
         self.prefetched_recovery = {}  # sid -> payload
@@ -443,6 +444,10 @@ class MultiUserEngine:
             except Exception:
                 pass
 
+        old_poll = self.contract_poll_tasks.pop(sid, None)
+        if old_poll and not old_poll.done():
+            old_poll.cancel()
+
         async def on_contract_update(data: dict):
             await self._handle_contract_update(
                 sid=sid,
@@ -456,7 +461,74 @@ class MultiUserEngine:
             contract_id,
             on_contract_update,
         )
-        self.contract_subscriptions[sid] = sub_id
+
+        if sub_id:
+            self.contract_subscriptions[sid] = sub_id
+            return
+
+        # Deriv occasionally returns a valid proposal_open_contract response
+        # for a 1-tick contract without a subscription id. The websocket
+        # client has already delivered that first response to the callback.
+        # If it was not yet sold, poll the contract briefly instead of
+        # failing the entire trading session.
+        async def poll_until_sold():
+            try:
+                for _ in range(200):  # up to ~30 seconds
+                    await asyncio.sleep(0.15)
+
+                    data = await client.contract_status(contract_id)
+                    await on_contract_update(data)
+
+                    poc = data.get("proposal_open_contract") or {}
+                    if poc.get("is_sold"):
+                        return
+
+                    # Stop polling if this contract is no longer the active
+                    # one for the session.
+                    db = SessionLocal()
+                    try:
+                        session = db.get(TradingSession, sid)
+                        if (
+                            not session
+                            or str(session.open_contract_id or "")
+                            != str(contract_id)
+                        ):
+                            return
+                    finally:
+                        db.close()
+
+                raise RuntimeError(
+                    f"Contract {contract_id} did not settle within polling window"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Surface a real settlement-monitor failure through the normal
+                # session error path rather than silently losing the contract.
+                db = SessionLocal()
+                try:
+                    session = db.get(TradingSession, sid)
+                    if (
+                        session
+                        and str(session.open_contract_id or "")
+                        == str(contract_id)
+                    ):
+                        session.running = False
+                        session.paused = False
+                        session.phase = "ERROR"
+                        session.last_error = (
+                            f"Contract settlement monitor failed: {exc}"
+                        )
+                        session.updated_at = datetime.utcnow()
+                        db.commit()
+                finally:
+                    db.close()
+            finally:
+                self.contract_poll_tasks.pop(sid, None)
+
+        self.contract_poll_tasks[sid] = asyncio.create_task(
+            poll_until_sold()
+        )
 
     async def _handle_contract_update(
         self,

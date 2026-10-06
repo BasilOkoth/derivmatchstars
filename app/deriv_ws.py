@@ -102,10 +102,14 @@ class DerivWS:
                         future.set_result(data)
 
                 if req_id in self.pending_subscription_callbacks:
-                    callback = self.pending_subscription_callbacks.pop(req_id)
+                    # Deriv can answer a very short-lived contract request before
+                    # assigning/returning a subscription id. Do not throw the
+                    # callback away unless an id was actually returned.
+                    callback = self.pending_subscription_callbacks[req_id]
                     sub = data.get("subscription") or {}
                     sub_id = sub.get("id")
                     if sub_id:
+                        self.pending_subscription_callbacks.pop(req_id, None)
                         self.subscriptions[str(sub_id)].add(callback)
 
                 if data.get("subscription"):
@@ -210,7 +214,11 @@ class DerivWS:
             }
         )
 
-    async def subscribe_contract(self, contract_id: str, callback: MessageCallback) -> str:
+    async def subscribe_contract(
+        self,
+        contract_id: str,
+        callback: MessageCallback,
+    ) -> Optional[str]:
         data = await self.request(
             {
                 "proposal_open_contract": 1,
@@ -221,9 +229,23 @@ class DerivWS:
         )
 
         sub_id = (data.get("subscription") or {}).get("id")
-        if not sub_id:
-            raise RuntimeError("Deriv returned no contract subscription id")
-        return str(sub_id)
+        if sub_id:
+            return str(sub_id)
+
+        # A 1-tick contract can settle so quickly that Deriv returns the
+        # proposal_open_contract payload without a subscription id. That is
+        # still a valid contract response, not a fatal WebSocket error.
+        #
+        # Remove the pending registration because there is no id to route
+        # future subscription messages by, then process this response once.
+        req_id = data.get("req_id")
+        if req_id is not None:
+            self.pending_subscription_callbacks.pop(req_id, None)
+
+        await callback(data)
+
+        # None tells the engine to use the contract-status polling fallback.
+        return None
 
     async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:
         data = await self.request(
