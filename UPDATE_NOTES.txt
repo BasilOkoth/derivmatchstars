@@ -1,17 +1,32 @@
-Fix for: "Deriv returned no contract subscription id"
+RECONCILING deadlock fix
 
-Replace:
+Replace BOTH:
 - app/deriv_ws.py
 - app/engine.py
 
-What changed:
-1. A proposal_open_contract response without subscription.id is no longer
-   treated as a fatal error.
-2. The initial contract response is still processed.
-3. If no subscription id is returned and the contract is not yet sold,
-   engine.py polls proposal_open_contract every 150 ms until settlement.
-4. Pending subscription callbacks are no longer discarded before a real
-   subscription id exists.
-5. Normal Deriv subscription behavior is unchanged when an id is returned.
+Root cause:
+The previous no-subscription fallback called the settlement callback with
+`await callback(data)` from inside subscribe_contract(). The engine calls
+subscribe_contract() while holding the per-session asyncio.Lock, and the
+settlement callback tries to acquire that same lock. asyncio.Lock is not
+re-entrant, so the session could stay forever on:
+
+  RECONCILING
+  Checking unresolved contract <id>
+
+Fix:
+- Initial proposal_open_contract responses without subscription.id are now
+  delivered with asyncio.create_task(callback(data)), never awaited inline.
+- subscribe_contract() returns immediately.
+- engine.step() can release its session lock.
+- The callback can then acquire the lock and settle the contract.
+- If the first response is still open, engine.py's 150 ms polling fallback
+  continues until Deriv reports is_sold.
+
+After deployment:
+Restart the backend process. Existing sessions with open_contract_id will be
+picked up by the engine and reconciled automatically when they are running.
+If a session was automatically stopped by an earlier ERROR, press START BOT
+once so the worker re-enters reconciliation.
 
 Both Python files were syntax-compiled successfully.

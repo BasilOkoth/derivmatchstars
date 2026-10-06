@@ -242,7 +242,16 @@ class DerivWS:
         if req_id is not None:
             self.pending_subscription_callbacks.pop(req_id, None)
 
-        await callback(data)
+        # IMPORTANT: do not await this callback here.
+        #
+        # engine.step() calls subscribe_contract() while it already owns the
+        # per-session asyncio.Lock. The settlement callback also acquires that
+        # same lock. Awaiting it here therefore deadlocks reconciliation.
+        #
+        # Schedule delivery instead. subscribe_contract() returns immediately,
+        # the caller releases its session lock, and the callback can then
+        # reconcile the contract safely.
+        asyncio.create_task(callback(data))
 
         # None tells the engine to use the contract-status polling fallback.
         return None

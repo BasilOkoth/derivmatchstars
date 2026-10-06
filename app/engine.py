@@ -27,6 +27,7 @@ class MultiUserEngine:
         self.task = None
         self.clients = {}
         self.contract_subscriptions = {}
+        # Fallback settlement monitors used when Deriv returns no subscription id.
         self.contract_poll_tasks = {}
         self.session_tasks = {}
         self.session_locks = {}
