@@ -1,34 +1,39 @@
-DERIV PROPOSAL TIMEOUT FIX
+TICK-DRIVEN DEMO STRATEGY FIX
 
-Observed error:
-  PROPOSAL [R_10/USD/digit 3]:
-  Deriv WebSocket request timed out after 15s
+This implements the requested behavior:
 
-Root cause in the modern /app client:
-The same WebSocket reader that receives req_id responses also awaited
-subscription settlement callbacks. A settlement callback can immediately
-request the next proposal. It then waits for a proposal response that only
-the blocked reader can consume, causing the exact 15 second timeout.
+Example target digit: 5
 
-Fixes:
-1. Subscription callbacks are now scheduled as independent asyncio tasks.
-   The WebSocket reader never waits for strategy/settlement work.
-2. Added a connection lock so concurrent callers cannot open competing socket
-   connections/readers.
-3. Proposal requests safely reconnect and retry ONCE after a timeout.
-   Proposal is read-only and does not purchase a contract.
-4. BUY requests are NOT automatically retried. Retrying BUY blindly could
-   duplicate a purchase.
-5. The legacy /backend/app WebSocket client also gets connection/send locking,
-   timeout cleanup and one safe proposal retry.
+1. Buy a 1-tick DIGITMATCH contract for digit 5.
+2. Keep the next recovery proposal pre-armed.
+3. Watch the live tick stream.
+4. On the first eligible tick after the BUY:
+   - last digit == 5 -> FAST_WON, stop the strategy immediately.
+   - last digit != 5 -> FAST loss, advance immediately to the next recovery.
+5. Deriv proposal_open_contract settlement continues independently in the
+   background and updates authoritative P/L/accounting only.
 
-Replace:
+Important architecture changes:
+- Strategy progression no longer waits for proposal_open_contract.is_sold.
+- Settlement subscriptions are keyed by (session_id, contract_id), so an older
+  contract can reconcile in the background while the next strategy contract is
+  already active.
+- Official settlement never clears a newer open_contract_id.
+- Repeated sold events are accounted exactly once using TradeLog.status.
+- Recovery proposal is prefetched before settlement subscription setup.
+- The live WebSocket reader never awaits business callbacks.
+- A cached-tick replay handles the race where the settlement tick arrives while
+  the BUY response is still in flight; this prevents the classic one-tick-late
+  behavior.
+- A fast-result vs official-result disagreement stops the strategy with
+  RECONCILE_MISMATCH rather than cascading from an incorrectly correlated tick.
+
+Replace all four files:
+  app/engine.py
   app/deriv_ws.py
+  backend/app/engine.py
   backend/app/deriv_ws.py
 
-engine.py copies are included for reference but are unchanged from the uploaded
-repository. If you already applied the low-latency engine.py patch from the
-previous package, KEEP those low-latency engine.py files; do not overwrite them
-with the reference copies in this package.
+Then restart the backend service.
 
-After replacing deriv_ws.py, restart the backend service.
+This build remains DEMO-only for automated purchases.
