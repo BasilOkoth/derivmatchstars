@@ -1,32 +1,19 @@
 import asyncio
 import json
-import math
-from collections import deque
 from datetime import datetime
-from pathlib import Path
+from collections import deque
 
 from .db import SessionLocal
-from .models import (
-    TradingSession,
-    DerivCredential,
-    DerivAccount,
-    TradeLog,
-    TAEState,
-    TAEObservation,
-)
+from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
 from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
-
-try:
-    from target_attraction_v2 import TargetAttractionV2Shadow
-except Exception:
-    TargetAttractionV2Shadow = None
+from .digit_score import DigitScoreEngine
 
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine + V37 TAE Pending/Maturation Fix.
+    DigitMatchStar DEMO low-latency engine.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -51,15 +38,6 @@ class MultiUserEngine:
         self.session_tasks = {}
         self.session_locks = {}
 
-        # Independent TAE research workers. These keep the server tick stream
-        # alive even while paid trading is IDLE / Trade 0.
-        self.research_tasks = {}
-        self.research_clients = {}          # sid -> dedicated DerivWS
-        self.research_subscriptions = {}    # sid -> subscription id
-        self.research_diag = {}             # sid -> live stream diagnostics
-        self.tae_last_epoch = {}            # sid -> strict tick dedupe
-        self._last_research_scan_at = 0.0
-
         # Live tick stream state.
         self.tick_subscriptions = {}  # sid -> {subscription_id, symbol}
         self.latest_tick_epoch = {}
@@ -71,63 +49,16 @@ class MultiUserEngine:
 
         # Settlement bookkeeping keyed per individual contract.
         self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
-        self.contract_subscription_tasks = {}  # (sid, contract_id) -> task
-        self.contract_poll_tasks = {}  # low-frequency fallback only
+        self.contract_poll_tasks = {}  # fallback only
 
         # One pre-armed recovery proposal per session.
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
 
-        # TARGET ATTRACTION ENGINE V1 — FORWARD-ONLY T10 RESEARCH
-        #
-        # This model does NOT alter or "pull" Deriv's RNG. It learns, from
-        # already-matured live observations only, which pre-entry contexts are
-        # associated with the selected target digit recurring within 10 future
-        # ticks. Trade 1 is armed only when the model is sufficiently trained
-        # and the current forward-only score exceeds the frozen threshold.
-        self.tick_digit_history = {}      # sid -> deque(maxlen=100)
-        self.tae_pending = {}             # sid -> list of unresolved samples
-        self.tae_models = {}              # sid -> model state
-        self.tae_records = {}             # sid -> recent matured observations
-        self.target_digit_by_sid = {}     # sid -> currently selected digit
-        self.tae_loaded = set()           # sessions restored from DB
-        self.tae_ticks_since_persist = {} # lightweight history persistence cadence
-
-        self.tae_horizon = 10
-        self.tae_min_history = 100
-        self.tae_min_train_samples = 250
-        self.tae_arm_probability = 0.80
-        self.tae_learning_rate = 0.035
-        self.tae_l2 = 0.001
-
-        # Frozen SAFE-TICK V1 is retained as ONE INPUT FEATURE, not as a hard
-        # gate, so the new model can be tested independently.
-        self.safe_v1_freq25_max = 0.08
-        self.safe_v1_entropy10_max = 2.5219280948873625
-
-        # TARGET ATTRACTION V2 — STOP10 TAIL-RISK SHADOW
-        #
-        # V2 receives the exact same frozen T0 feature vector as V1. It is
-        # deliberately observational only: it cannot arm, block, size, or
-        # place any trade. V1 remains the execution/entry research engine.
-        self.tae_v2_shadow_scores = {}
-        self.tae_v2_model = None
-        self.tae_v2_load_error = None
-
-        if TargetAttractionV2Shadow is None:
-            self.tae_v2_load_error = (
-                "TargetAttractionV2Shadow module could not be imported"
-            )
-        else:
-            try:
-                repo_root = Path(__file__).resolve().parents[1]
-                self.tae_v2_model = TargetAttractionV2Shadow(
-                    repo_root / "tail_risk_shadow_v2.joblib",
-                    repo_root / "v2_metrics.json",
-                )
-            except Exception as exc:
-                # V2 is shadow-only and must never take down V1/server execution.
-                self.tae_v2_load_error = str(exc)
+        # Unified 0-9 scoring + target recycling.
+        self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+        self.digit_history = {}          # sid -> deque(maxlen=100)
+        self.digit_score_snapshots = {}  # sid -> latest ranking
 
     async def start(self):
         if not self.task or self.task.done():
@@ -195,19 +126,14 @@ class MultiUserEngine:
 
     async def run_forever(self):
         """
-        Trading and TAE research are deliberately independent.
+        This loop starts sessions and handles recovery from process restarts.
 
-        - Trading uses the account execution socket.
-        - TAE research uses a dedicated read-only tick WebSocket per session.
-        - TAE therefore continues at Trade 0 and is not disrupted by proposal,
-          buy, settlement, or execution-socket reconnects.
+        It is NOT the settlement timing loop. Live tick callbacks drive strategy.
         """
-        loop = asyncio.get_running_loop()
-
         while True:
             db = SessionLocal()
             try:
-                running_ids = [
+                ids = [
                     row.id
                     for row in (
                         db.query(TradingSession)
@@ -218,245 +144,14 @@ class MultiUserEngine:
             finally:
                 db.close()
 
-            for sid in running_ids:
+            for sid in ids:
                 task = self.session_tasks.get(sid)
                 if not task or task.done():
                     self.session_tasks[sid] = asyncio.create_task(
                         self._safe_step(sid)
                     )
 
-            now = loop.time()
-
-            if now - self._last_research_scan_at >= 0.50:
-                self._last_research_scan_at = now
-
-                db = SessionLocal()
-                try:
-                    research_ids = [
-                        row.id
-                        for row in (
-                            db.query(TradingSession)
-                            .filter(
-                                TradingSession.account_mode == "DEMO",
-                                TradingSession.candidate_digit.isnot(None),
-                            )
-                            .all()
-                        )
-                    ]
-                finally:
-                    db.close()
-
-                eligible = set(research_ids)
-
-                for sid in research_ids:
-                    task = self.research_tasks.get(sid)
-                    if not task or task.done():
-                        self.research_tasks[sid] = asyncio.create_task(
-                            self._research_stream_loop(sid)
-                        )
-
-                # Stop orphaned dedicated research sockets.
-                for sid in list(self.research_tasks.keys()):
-                    if sid not in eligible:
-                        task = self.research_tasks.pop(sid, None)
-                        if task and not task.done():
-                            task.cancel()
-                        await self._drop_research_client(sid)
-
             await asyncio.sleep(0.02)
-
-    async def _research_credentials(self, sid: int):
-        db = SessionLocal()
-        try:
-            s = db.get(TradingSession, sid)
-            if (
-                not s
-                or str(s.account_mode).upper() != "DEMO"
-                or s.candidate_digit is None
-            ):
-                return None
-
-            cred = (
-                db.query(DerivCredential)
-                .filter(DerivCredential.user_id == s.user_id)
-                .first()
-            )
-
-            if not cred:
-                raise RuntimeError("TAE AUTH: Deriv account is not connected")
-
-            if cred.expires_at and cred.expires_at <= datetime.utcnow():
-                raise RuntimeError(
-                    "TAE AUTH: Deriv OAuth token expired"
-                )
-
-            return {
-                "user_id": s.user_id,
-                "account_id": s.account_id,
-                "symbol": s.symbol,
-                "target": int(s.candidate_digit),
-                "token": decrypt_token(cred.encrypted_access_token),
-            }
-        finally:
-            db.close()
-
-    async def _drop_research_client(self, sid: int):
-        self.research_subscriptions.pop(sid, None)
-        client = self.research_clients.pop(sid, None)
-        if client:
-            try:
-                await client.close()
-            except Exception:
-                pass
-
-    def _research_diag_for(self, sid: int):
-        diag = self.research_diag.get(sid)
-        if diag is None:
-            diag = {
-                "connected": False,
-                "ticks_seen": 0,
-                "last_epoch": None,
-                "last_digit": None,
-                "last_tick_at": None,
-                "last_error": None,
-                "reconnects": 0,
-            }
-            self.research_diag[sid] = diag
-        return diag
-
-    def _observe_tae_tick_once(self, sid: int, digit: int, epoch: int = 0):
-        """
-        Strictly deduplicate TAE input by Deriv epoch.
-
-        Both the dedicated research socket and the trading socket may see the
-        same market tick. Exactly one copy is allowed into the TAE.
-        """
-        if epoch:
-            previous = int(self.tae_last_epoch.get(sid) or 0)
-            if epoch <= previous:
-                return False
-            self.tae_last_epoch[sid] = epoch
-
-        self._tae_observe_tick(sid, int(digit))
-        return True
-
-    async def _research_stream_loop(self, sid: int):
-        """
-        Long-lived dedicated read-only TAE stream.
-
-        It never requests proposals and never buys contracts.
-        """
-        diag = self._research_diag_for(sid)
-
-        while True:
-            try:
-                info = await self._research_credentials(sid)
-                if not info:
-                    await self._drop_research_client(sid)
-                    diag["connected"] = False
-                    return
-
-                self.set_target_digit(sid, info["target"])
-
-                client = self.research_clients.get(sid)
-
-                if not client or not client.is_open():
-                    if client:
-                        await self._drop_research_client(sid)
-
-                    url = await get_ws_url(
-                        info["token"],
-                        info["account_id"],
-                    )
-                    client = DerivWS(url)
-                    await client.connect()
-                    self.research_clients[sid] = client
-                    diag["reconnects"] = int(diag["reconnects"] or 0) + 1
-
-                async def on_research_tick(data: dict):
-                    try:
-                        tick = data.get("tick") or {}
-                        epoch = int(tick.get("epoch") or 0)
-                        digit = self._tick_last_digit(tick)
-                        if digit is None:
-                            return
-
-                        accepted = self._observe_tae_tick_once(
-                            sid,
-                            int(digit),
-                            epoch,
-                        )
-
-                        if accepted:
-                            diag["ticks_seen"] = int(diag["ticks_seen"] or 0) + 1
-                            diag["last_epoch"] = epoch or None
-                            diag["last_digit"] = int(digit)
-                            diag["last_tick_at"] = datetime.utcnow().isoformat()
-                            diag["last_error"] = None
-                            diag["connected"] = True
-
-                    except Exception as exc:
-                        # Unlike the generic WebSocket callback wrapper, retain
-                        # the actual research error so the dashboard can show it.
-                        diag["last_error"] = str(exc)
-
-                sub_id = self.research_subscriptions.get(sid)
-
-                if (
-                    not sub_id
-                    or not client.has_subscription(sub_id)
-                ):
-                    sub_id = await client.subscribe_ticks(
-                        str(info["symbol"]),
-                        on_research_tick,
-                    )
-                    self.research_subscriptions[sid] = sub_id
-                    diag["connected"] = True
-                    diag["last_error"] = None
-
-                # Health-check the dedicated stream. R_10 normally ticks around
-                # every 2 seconds, so 8 seconds with no new epoch is unhealthy.
-                previous_epoch = diag.get("last_epoch")
-                await asyncio.sleep(8.0)
-
-                current_info = await self._research_credentials(sid)
-                if not current_info:
-                    await self._drop_research_client(sid)
-                    diag["connected"] = False
-                    return
-
-                self.set_target_digit(
-                    sid,
-                    int(current_info["target"]),
-                )
-
-                if not client.is_open():
-                    raise RuntimeError("TAE research WebSocket closed")
-
-                if not client.has_subscription(
-                    self.research_subscriptions.get(sid)
-                ):
-                    raise RuntimeError("TAE tick subscription lost")
-
-                # If no tick arrived during a whole 8-second health window,
-                # reconnect rather than silently remaining at 0 pending.
-                if (
-                    previous_epoch is not None
-                    and diag.get("last_epoch") == previous_epoch
-                ):
-                    raise RuntimeError(
-                        "TAE tick stream stalled for >8 seconds"
-                    )
-
-            except asyncio.CancelledError:
-                await self._drop_research_client(sid)
-                raise
-
-            except Exception as exc:
-                diag["connected"] = False
-                diag["last_error"] = str(exc)
-                await self._drop_research_client(sid)
-                await asyncio.sleep(1.5)
 
     async def _safe_step(self, sid: int):
         try:
@@ -481,9 +176,6 @@ class MultiUserEngine:
                     s.phase = "RATE_LIMIT_BACKOFF"
                     s.updated_at = datetime.utcnow()
                     db.commit()
-
-                    # Return control after a short pause. The orchestration loop
-                    # can retry later; this task never remains stuck forever.
                     await asyncio.sleep(2.0)
                     return
 
@@ -569,779 +261,25 @@ class MultiUserEngine:
         digits = [ch for ch in text if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
-    def _history(self, sid: int):
-        if sid not in self.tae_loaded:
-            self._load_tae_state(sid)
-
-        history = self.tick_digit_history.get(sid)
+    def _digit_history(self, sid: int):
+        history = self.digit_history.get(sid)
         if history is None:
             history = deque(maxlen=100)
-            self.tick_digit_history[sid] = history
+            self.digit_history[sid] = history
         return history
 
-    @staticmethod
-    def _entropy(values):
-        n = len(values)
-        if n <= 0:
-            return 0.0
-
-        counts = {}
-        for value in values:
-            counts[value] = counts.get(value, 0) + 1
-
-        result = 0.0
-        for count in counts.values():
-            p = count / n
-            result -= p * math.log2(p)
-
-        return result
-
-    @staticmethod
-    def _sigmoid(value):
-        if value >= 0:
-            z = math.exp(-value)
-            return 1.0 / (1.0 + z)
-        z = math.exp(value)
-        return z / (1.0 + z)
-
-    def _default_tae_model(self):
-        baseline = 1.0 - (0.9 ** self.tae_horizon)
-        bias = math.log(baseline / (1.0 - baseline))
-
-        return {
-            "weights": [0.0] * 12,
-            "bias": bias,
-            "trained": 0,
-            "positives": 0,
-            "brier_sum": 0.0,
-            "forward_predictions": 0,
-            "forward_hits": 0,
-            "selected_predictions": 0,
-            "selected_hits": 0,
-            "last_probability": None,
-            "last_features": None,
-            "last_target": None,
-        }
-
-    def _load_tae_state(self, sid: int):
-        if sid in self.tae_loaded:
-            return
-
-        db = SessionLocal()
-        try:
-            row = (
-                db.query(TAEState)
-                .filter(TAEState.trading_session_id == sid)
-                .first()
-            )
-
-            if row:
-                try:
-                    model = json.loads(row.model_json or "{}")
-                except Exception:
-                    model = {}
-
-                default = self._default_tae_model()
-                default.update(
-                    {
-                        k: v
-                        for k, v in model.items()
-                        if k in default
-                    }
-                )
-
-                weights = default.get("weights")
-                if not isinstance(weights, list) or len(weights) != 12:
-                    default["weights"] = [0.0] * 12
-
-                self.tae_models[sid] = default
-
-                try:
-                    history = json.loads(row.history_json or "[]")
-                except Exception:
-                    history = []
-
-                cleaned = []
-                for value in history[-100:]:
-                    try:
-                        digit = int(value)
-                    except Exception:
-                        continue
-                    if 0 <= digit <= 9:
-                        cleaned.append(digit)
-
-                self.tick_digit_history[sid] = deque(
-                    cleaned,
-                    maxlen=100,
-                )
-
-                if row.target_digit is not None:
-                    self.target_digit_by_sid[sid] = int(row.target_digit)
-
-            else:
-                self.tae_models[sid] = self._default_tae_model()
-                self.tick_digit_history.setdefault(
-                    sid,
-                    deque(maxlen=100),
-                )
-
-            # Never restore pending forward labels after process downtime.
-            # Missing ticks would make them non-contiguous and scientifically
-            # invalid, so restart with a clean pending queue.
-            self.tae_pending[sid] = []
-            self.tae_loaded.add(sid)
-
-        finally:
-            db.close()
-
-    def _persist_tae_state(self, sid: int):
-        self._load_tae_state(sid)
-
-        db = SessionLocal()
-        try:
-            session = db.get(TradingSession, sid)
-            if not session:
-                return
-
-            row = (
-                db.query(TAEState)
-                .filter(TAEState.trading_session_id == sid)
-                .first()
-            )
-
-            if row is None:
-                row = TAEState(
-                    trading_session_id=sid,
-                    user_id=session.user_id,
-                    account_id=session.account_id,
-                    symbol=session.symbol,
-                )
-                db.add(row)
-
-            row.user_id = session.user_id
-            row.account_id = session.account_id
-            row.symbol = session.symbol
-            row.target_digit = self.target_digit_by_sid.get(sid)
-            row.model_json = json.dumps(
-                self._tae_model(sid),
-                separators=(",", ":"),
-            )
-            row.history_json = json.dumps(
-                list(self._history(sid)),
-                separators=(",", ":"),
-            )
-            row.updated_at = datetime.utcnow()
-
-            db.commit()
-        finally:
-            db.close()
-
-    def _persist_tae_observation(self, sid: int, record: dict):
-        db = SessionLocal()
-        try:
-            session = db.get(TradingSession, sid)
-            if not session:
-                return
-
-            existing = (
-                db.query(TAEObservation)
-                .filter(
-                    TAEObservation.trading_session_id == sid,
-                    TAEObservation.sample_index
-                    == int(record["sample_index"]),
-                )
-                .first()
-            )
-
-            if existing is None:
-                db.add(
-                    TAEObservation(
-                        trading_session_id=sid,
-                        user_id=session.user_id,
-                        account_id=session.account_id,
-                        symbol=session.symbol,
-                        sample_index=int(record["sample_index"]),
-                        target_digit=int(record["target_digit"]),
-                        prediction_t0_probability=float(
-                            record["prediction_t0_probability"]
-                        ),
-                        selected=bool(record["selected"]),
-                        arm_threshold=float(record["arm_threshold"]),
-                        label_return_by_t10=int(
-                            record["label_return_by_t10"]
-                        ),
-                        stop10=int(record["stop10"]),
-                        forward_gap=(
-                            int(record["forward_gap"])
-                            if record.get("forward_gap") is not None
-                            else None
-                        ),
-                        horizon=int(record["horizon"]),
-                        features_json=json.dumps(
-                            list(record["features"]),
-                            separators=(",", ":"),
-                        ),
-                        model_trained_samples_at_t0=int(
-                            record["model_trained_samples_at_t0"]
-                        ),
-                    )
-                )
-
-            db.commit()
-        finally:
-            db.close()
-
-    def _tae_model(self, sid: int):
-        self._load_tae_state(sid)
-
-        model = self.tae_models.get(sid)
-        if model is None:
-            model = self._default_tae_model()
-            self.tae_models[sid] = model
-
-        return model
-
-    def _tae_features(self, sid: int, target_digit: int):
-        history = list(self._history(sid))
-        if len(history) < self.tae_min_history:
-            return None
-
-        target_digit = int(target_digit)
-
-        def freq(window):
-            values = history[-window:]
-            if not values:
-                return 0.0
-            return sum(1 for d in values if d == target_digit) / len(values)
-
-        # Gap since most recent target, capped at 50 and scaled to [0,1].
-        gap = 50
-        for i, digit in enumerate(reversed(history), start=0):
-            if digit == target_digit:
-                gap = min(i, 50)
-                break
-
-        last10 = history[-10:]
-        last25 = history[-25:]
-        last50 = history[-50:]
-        last100 = history[-100:]
-
-        entropy10 = self._entropy(last10) / math.log2(10)
-        entropy25 = self._entropy(last25) / math.log2(10)
-
-        adjacent_repeats = 0.0
-        if len(last10) > 1:
-            adjacent_repeats = (
-                sum(
-                    1
-                    for a, b in zip(last10[:-1], last10[1:])
-                    if a == b
-                )
-                / (len(last10) - 1)
-            )
-
-        # Empirical transition P(next == target | current digit), calculated
-        # only from history that already existed before the future label.
-        current_digit = history[-1]
-        transition_total = 0
-        transition_hits = 0
-        for a, b in zip(last100[:-1], last100[1:]):
-            if a == current_digit:
-                transition_total += 1
-                if b == target_digit:
-                    transition_hits += 1
-
-        transition_to_target = (
-            transition_hits / transition_total
-            if transition_total
-            else 0.10
+    def _score_all_digits(self, sid: int, exclude_digit=None):
+        snapshot = self.digit_scorer.rank(
+            list(self._digit_history(sid)),
+            exclude_digit=exclude_digit,
         )
+        self.digit_score_snapshots[sid] = snapshot
+        return snapshot
 
-        freq25 = freq(25)
-        safe_v1 = 1.0 if (
-            freq25 <= self.safe_v1_freq25_max
-            and self._entropy(last10) <= self.safe_v1_entropy10_max
-        ) else 0.0
-
-        return [
-            gap / 50.0,
-            freq(5),
-            freq(10),
-            freq25,
-            freq(50),
-            freq(100),
-            entropy10,
-            entropy25,
-            adjacent_repeats,
-            transition_to_target,
-            1.0 if current_digit == target_digit else 0.0,
-            safe_v1,
-        ]
-
-    def _tae_predict_from_features(self, sid: int, features):
-        model = self._tae_model(sid)
-        score = model["bias"]
-        for weight, value in zip(model["weights"], features):
-            score += weight * value
-        return self._sigmoid(score)
-
-    def _tae_v2_score_from_features(self, sid: int, features):
-        """
-        Score the current frozen T0 context with V2.
-
-        This method is strictly shadow-only. Its result is exposed to the
-        dashboard for research but is not consulted anywhere in the execution
-        path.
-        """
-        if self.tae_v2_model is None:
-            payload = {
-                "available": False,
-                "mode": "SHADOW_ONLY",
-                "target": "STOP10",
-                "stop10_probability": None,
-                "return_by_t10_probability": None,
-                "risk_band": "UNAVAILABLE",
-                "execution_eligible": False,
-                "validation_gate_passed": False,
-                "error": self.tae_v2_load_error,
-            }
-            self.tae_v2_shadow_scores[sid] = payload
-            return payload
-
-        try:
-            score = self.tae_v2_model.score(features)
-            metrics = self.tae_v2_model.metrics or {}
-            selected_name = metrics.get("selected_shadow_model")
-            selected_metrics = (
-                (metrics.get("models") or {}).get(selected_name) or {}
-            )
-            gate = metrics.get("execution_gate") or {}
-
-            payload = {
-                "available": True,
-                "mode": "SHADOW_ONLY",
-                "target": "STOP10",
-                "stop10_probability": float(score.stop10_probability),
-                "return_by_t10_probability": float(
-                    score.return_by_t10_probability
-                ),
-                "risk_band": str(score.risk_band),
-                # Hard shadow guard. Even if a later metrics file changes,
-                # this integration still cannot authorize execution.
-                "execution_eligible": False,
-                "validation_gate_passed": bool(gate.get("passed", False)),
-                "validation_reason": str(score.reason),
-                "selected_shadow_model": selected_name,
-                "oof_auc": selected_metrics.get("roc_auc"),
-                "mean_forward_auc": selected_metrics.get("mean_fold_auc"),
-                "brier_skill_vs_constant": selected_metrics.get(
-                    "brier_skill_vs_constant"
-                ),
-                "note": (
-                    "Research-only STOP10 score. V2 does not influence "
-                    "trade entry, recovery, stake sizing, or execution."
-                ),
-            }
-            self.tae_v2_shadow_scores[sid] = payload
-            return payload
-
-        except Exception as exc:
-            payload = {
-                "available": False,
-                "mode": "SHADOW_ONLY",
-                "target": "STOP10",
-                "stop10_probability": None,
-                "return_by_t10_probability": None,
-                "risk_band": "ERROR",
-                "execution_eligible": False,
-                "validation_gate_passed": False,
-                "error": str(exc),
-            }
-            self.tae_v2_shadow_scores[sid] = payload
-            return payload
-
-    def _tae_v2_status(self, sid: int):
-        current = self.tae_v2_shadow_scores.get(sid)
-        if current is not None:
-            return dict(current)
-
-        return {
-            "available": self.tae_v2_model is not None,
-            "mode": "SHADOW_ONLY",
-            "target": "STOP10",
-            "stop10_probability": None,
-            "return_by_t10_probability": None,
-            "risk_band": "WAITING",
-            "execution_eligible": False,
-            "validation_gate_passed": bool(
-                self.tae_v2_model and self.tae_v2_model.gate_passed
-            ),
-            "error": self.tae_v2_load_error,
-            "note": (
-                "Waiting for a complete T0 feature vector."
-                if self.tae_v2_model is not None
-                else "V2 model unavailable; V1 continues independently."
-            ),
-        }
-
-    def _tae_train_one(self, sid: int, features, label: int, predicted: float):
-        model = self._tae_model(sid)
-        n = model["trained"] + 1
-
-        # Gentle decay avoids increasingly large late updates while keeping the
-        # model adaptive to newly observed forward data.
-        lr = self.tae_learning_rate / math.sqrt(1.0 + n / 250.0)
-        error = float(label) - float(predicted)
-
-        model["bias"] += lr * error
-
-        new_weights = []
-        for weight, value in zip(model["weights"], features):
-            gradient = error * value - self.tae_l2 * weight
-            new_weights.append(weight + lr * gradient)
-
-        model["weights"] = new_weights
-        model["trained"] = n
-        model["positives"] += int(label)
-        model["brier_sum"] += (float(predicted) - float(label)) ** 2
-
-    def _tae_observe_tick(self, sid: int, digit: int):
-        """
-        Advance old samples with this NEW tick, mature labels at exactly T10,
-        train only on those matured labels, then append this tick to history
-        and create a new strictly-forward sample.
-
-        There is no future leakage: each prediction is made before its next
-        ten ticks exist.
-        """
-        target = self.target_digit_by_sid.get(sid)
-        if target is None:
-            self._history(sid).append(int(digit))
-            self.tae_ticks_since_persist[sid] = (
-                int(self.tae_ticks_since_persist.get(sid) or 0) + 1
-            )
-            if self.tae_ticks_since_persist[sid] >= 10:
-                self.tae_ticks_since_persist[sid] = 0
-                self._persist_tae_state(sid)
-            return
-
-        pending = self.tae_pending.setdefault(sid, [])
-        still_pending = []
-
-        for sample in pending:
-            sample["ticks_observed"] = int(sample.get("ticks_observed") or 0) + 1
-
-            if (
-                not sample.get("hit")
-                and int(digit) == int(sample["target"])
-            ):
-                sample["hit"] = True
-                sample["forward_gap"] = int(sample["ticks_observed"])
-
-            sample["remaining"] -= 1
-
-            if sample["remaining"] <= 0:
-                label = 1 if sample["hit"] else 0
-                predicted = float(sample["predicted"])
-
-                self._tae_train_one(
-                    sid,
-                    sample["features"],
-                    label,
-                    predicted,
-                )
-
-                model = self._tae_model(sid)
-                model["forward_predictions"] += 1
-                model["forward_hits"] += label
-
-                if sample["selected"]:
-                    model["selected_predictions"] += 1
-                    model["selected_hits"] += label
-
-                records = self.tae_records.setdefault(sid, [])
-
-                record = {
-                    # forward_predictions is incremented immediately above and
-                    # is persisted, so this remains unique across redeploys.
-                    "sample_index": int(model["forward_predictions"]),
-                    "target_digit": int(sample["target"]),
-                    "prediction_t0_probability": predicted,
-                    "selected": bool(sample["selected"]),
-                    "arm_threshold": float(self.tae_arm_probability),
-                    "label_return_by_t10": int(label),
-                    "stop10": int(not bool(label)),
-                    "forward_gap": (
-                        int(sample["forward_gap"])
-                        if sample.get("forward_gap") is not None
-                        else None
-                    ),
-                    "horizon": int(self.tae_horizon),
-                    "features": list(sample["features"]),
-                    "model_trained_samples_at_t0": int(
-                        sample.get("trained_at_t0") or 0
-                    ),
-                }
-
-                records.append(record)
-                if len(records) > 1000:
-                    del records[:-1000]
-
-                # Persist every matured observation AND the updated model.
-                # This is the research checkpoint that survives Render
-                # redeploys/restarts when the configured database persists.
-                self._persist_tae_observation(sid, record)
-                self._persist_tae_state(sid)
-            else:
-                still_pending.append(sample)
-
-        # IMPORTANT:
-        # still_pending is now the authoritative unresolved-sample list.
-        # The previous build assigned self.tae_pending[sid] = still_pending
-        # and then appended the new T0 sample to the OLD detached `pending`
-        # list. That made every new sample disappear immediately, leaving
-        # Pending=0 and Matured=0 forever even while server ticks increased.
-        self.tae_pending[sid] = still_pending
-
-        self._history(sid).append(int(digit))
-
-        self.tae_ticks_since_persist[sid] = (
-            int(self.tae_ticks_since_persist.get(sid) or 0) + 1
-        )
-        if self.tae_ticks_since_persist[sid] >= 10:
-            self.tae_ticks_since_persist[sid] = 0
-            self._persist_tae_state(sid)
-
-        features = self._tae_features(sid, int(target))
-        if features is None:
-            return
-
-        model = self._tae_model(sid)
-        predicted = self._tae_predict_from_features(sid, features)
-
-        selected = (
-            model["trained"] >= self.tae_min_train_samples
-            and predicted >= self.tae_arm_probability
-        )
-
-        model["last_probability"] = predicted
-        model["last_features"] = list(features)
-        model["last_target"] = int(target)
-
-        # Score V2 beside V1 on exactly the same T0 feature vector.
-        # V2 remains research-only and does not alter `selected`.
-        self._tae_v2_score_from_features(sid, features)
-
-        new_sample = {
-            "target": int(target),
-            "features": list(features),
-            "predicted": predicted,
-            "remaining": self.tae_horizon,
-            "ticks_observed": 0,
-            "hit": False,
-            "forward_gap": None,
-            "selected": bool(selected),
-            "trained_at_t0": int(model["trained"]),
-        }
-
-        # Append to the authoritative list.
-        self.tae_pending[sid].append(new_sample)
-
-    def set_target_digit(self, sid: int, digit: int):
-        """
-        Synchronize the current research target without starting a trade.
-        Safe to call from the candidate endpoint while Trade 0 is waiting.
-        """
-        digit = int(digit)
-        if digit < 0 or digit > 9:
-            raise ValueError("digit must be 0..9")
-
-        self._load_tae_state(sid)
-
-        previous = self.target_digit_by_sid.get(sid)
-        self.target_digit_by_sid[sid] = digit
-
-        model = self._tae_model(sid)
-        model["last_target"] = digit
-
-        if previous != digit:
-            self._persist_tae_state(sid)
-
-        return digit
-
-    def target_attraction_status(self, sid: int):
-        model = self._tae_model(sid)
-        trained = int(model["trained"])
-        selected = int(model["selected_predictions"])
-        forward_n = int(model["forward_predictions"])
-        history_n = len(self._history(sid))
-        pending = list(self.tae_pending.get(sid, []))
-
-        next_maturity = None
-        if pending:
-            next_maturity = min(
-                int(sample.get("remaining") or self.tae_horizon)
-                for sample in pending
-            )
-
-        return {
-            "name": "TARGET_ATTRACTION_ENGINE_V1",
-            "version": "V37-PENDING-FIX",
-            "horizon": self.tae_horizon,
-            "minimum_history": self.tae_min_history,
-            "history_count": history_n,
-            "history_ready": history_n >= self.tae_min_history,
-            "pending_observations": len(pending),
-            "next_sample_matures_in_ticks": next_maturity,
-            "min_train_samples": self.tae_min_train_samples,
-            "arm_probability": self.tae_arm_probability,
-            "trained_samples": trained,
-            "training_progress": min(
-                1.0,
-                trained / self.tae_min_train_samples
-                if self.tae_min_train_samples else 1.0,
-            ),
-            "positive_rate": (
-                model["positives"] / trained
-                if trained else None
-            ),
-            "brier_score": (
-                model["brier_sum"] / trained
-                if trained else None
-            ),
-            "forward_predictions": forward_n,
-            "forward_hit_rate": (
-                model["forward_hits"] / forward_n
-                if forward_n else None
-            ),
-            "selected_predictions": selected,
-            "selected_hit_rate": (
-                model["selected_hits"] / selected
-                if selected else None
-            ),
-            "selected_stop10_rate": (
-                (selected - model["selected_hits"]) / selected
-                if selected else None
-            ),
-            "current_target": self.target_digit_by_sid.get(
-                sid,
-                model["last_target"],
-            ),
-            "current_probability_t10": model["last_probability"],
-            "ready": trained >= self.tae_min_train_samples,
-            "armed_now": bool(
-                trained >= self.tae_min_train_samples
-                and model["last_probability"] is not None
-                and model["last_probability"] >= self.tae_arm_probability
-            ),
-            "research_stream": dict(self._research_diag_for(sid)),
-            "v2_shadow": self._tae_v2_status(sid),
-            "persistent": True,
-            "persistence_note": (
-                "Matured observations and model state are stored in the "
-                "configured database. Unresolved T10 samples are discarded "
-                "after a process restart because continuity was interrupted."
-            ),
-            "note": (
-                "Forward-only research score. It estimates recurrence within "
-                "10 ticks; it does not control or alter Deriv's RNG."
-            ),
-        }
-
-    def export_target_attraction(self, sid: int):
-        """
-        Export persisted matured forward observations plus live model status.
-        """
-        status = self.target_attraction_status(sid)
-
-        db = SessionLocal()
-        try:
-            rows = (
-                db.query(TAEObservation)
-                .filter(TAEObservation.trading_session_id == sid)
-                .order_by(TAEObservation.sample_index.asc())
-                .all()
-            )
-
-            records = []
-            for row in rows:
-                try:
-                    features = json.loads(row.features_json or "[]")
-                except Exception:
-                    features = []
-
-                records.append(
-                    {
-                        "sample_index": int(row.sample_index),
-                        "target_digit": int(row.target_digit),
-                        "prediction_t0_probability": float(
-                            row.prediction_t0_probability
-                        ),
-                        "selected": bool(row.selected),
-                        "arm_threshold": float(row.arm_threshold),
-                        "label_return_by_t10": int(
-                            row.label_return_by_t10
-                        ),
-                        "stop10": int(row.stop10),
-                        "forward_gap": (
-                            int(row.forward_gap)
-                            if row.forward_gap is not None
-                            else None
-                        ),
-                        "horizon": int(row.horizon),
-                        "features": features,
-                        "model_trained_samples_at_t0": int(
-                            row.model_trained_samples_at_t0
-                        ),
-                        "created_at": (
-                            row.created_at.isoformat()
-                            if row.created_at
-                            else None
-                        ),
-                    }
-                )
-        finally:
-            db.close()
-
-        feature_names = [
-            "gap_since_target_scaled",
-            "target_freq5",
-            "target_freq10",
-            "target_freq25",
-            "target_freq50",
-            "target_freq100",
-            "entropy10_normalized",
-            "entropy25_normalized",
-            "adjacent_repeat_rate10",
-            "transition_current_to_target",
-            "current_digit_equals_target",
-            "safe_tick_v1_accept_flag",
-        ]
-
-        return {
-            "schema": "DIGITMATCHSTAR_TARGET_ATTRACTION_ENGINE_V1_EXPORT",
-            "version": "V37-TAE-PENDING-FIX-2026-10-06",
-            "forward_only": True,
-            "persistent_database": True,
-            "horizon_ticks": int(self.tae_horizon),
-            "feature_names": feature_names,
-            "entry_policy": {
-                "minimum_history": int(self.tae_min_history),
-                "minimum_matured_training_samples": int(
-                    self.tae_min_train_samples
-                ),
-                "arm_probability": float(self.tae_arm_probability),
-            },
-            "status": status,
-            "records_count": len(records),
-            "pending_count": len(self.tae_pending.get(sid, [])),
-            "records": records,
-            "note": (
-                "Matured observations are persisted in the configured database. "
-                "Pending observations are intentionally not restored after a "
-                "server restart because strict tick continuity was interrupted."
-            ),
-        }
+    def _choose_scored_digit(self, sid: int, exclude_digit=None):
+        snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
+        digit = snapshot.get("selected_digit")
+        return (int(digit) if digit is not None else None), snapshot
 
     async def _ensure_tick_subscription(
         self,
@@ -1355,26 +293,11 @@ class MultiUserEngine:
         existing = self.tick_subscriptions.get(sid)
 
         if existing and existing.get("symbol") == str(symbol):
-            existing_id = existing.get("subscription_id")
-
-            # IMPORTANT: engine memory can outlive a WebSocket reconnect.
-            # If DerivWS reconnects (for example after a proposal timeout),
-            # the old subscription id no longer exists on the new socket.
-            # Do not trust the engine-side id unless the CURRENT socket still
-            # owns it.
-            if (
-                existing_id
-                and client.has_subscription(existing_id)
-            ):
-                return
-
-            # Stale subscription marker: remove it and subscribe again now.
-            self.tick_subscriptions.pop(sid, None)
-            existing = None
+            return
 
         if existing:
             old_id = existing.get("subscription_id")
-            if old_id and client.has_subscription(old_id):
+            if old_id:
                 asyncio.create_task(
                     self._forget_quietly(client, old_id)
                 )
@@ -1412,31 +335,23 @@ class MultiUserEngine:
             self.latest_ticks[sid] = dict(tick)
 
         if epoch:
-            self.latest_tick_epoch[sid] = max(
-                int(self.latest_tick_epoch.get(sid) or 0),
-                epoch,
-            )
+            previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
+            self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
 
-        # Trading socket is a fallback TAE source. Dedicated research stream is
-        # primary; strict epoch dedupe prevents double-counting.
         digit = self._tick_last_digit(tick)
         if digit is not None:
-            try:
-                self._observe_tae_tick_once(
-                    sid,
-                    int(digit),
-                    epoch,
-                )
-            except Exception as exc:
-                self._research_diag_for(sid)["last_error"] = str(exc)
+            history = self._digit_history(sid)
+            # Only append a new canonical market epoch once.
+            if not epoch or int(epoch) >= int(self.latest_tick_epoch.get(sid) or 0):
+                if not history or not epoch or int(epoch) > int(getattr(self, '_last_scored_epoch', {}).get(sid, 0)):
+                    if not hasattr(self, '_last_scored_epoch'):
+                        self._last_scored_epoch = {}
+                    history.append(int(digit))
+                    if epoch:
+                        self._last_scored_epoch[sid] = int(epoch)
+                    self._score_all_digits(sid)
 
         active = self.fast_contracts.get(sid)
-
-        if active:
-            # Any live tick proves that the tick stream itself is healthy.
-            active["last_tick_seen_loop_time"] = (
-                asyncio.get_running_loop().time()
-            )
 
         if not active:
             return
@@ -1523,6 +438,36 @@ class MultiUserEngine:
                     db.commit()
                     return
 
+                # After 3 losses on the same target, force a fresh 0-9
+                # score and exclude the failed digit for this immediate recycle.
+                recycle_due = (
+                    int(s.current_trade) > 0
+                    and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
+                )
+
+                if recycle_due:
+                    failed_digit = int(s.candidate_digit)
+                    prefetched = self.prefetched_recovery.get(sid)
+                    prefetched_digit = (
+                        int(prefetched.get("digit"))
+                        if prefetched and prefetched.get("digit") is not None
+                        else None
+                    )
+
+                    if prefetched_digit is not None and prefetched_digit != failed_digit:
+                        s.candidate_digit = prefetched_digit
+                        self._score_all_digits(sid, exclude_digit=failed_digit)
+                    else:
+                        new_digit, _ = self._choose_scored_digit(
+                            sid, exclude_digit=failed_digit
+                        )
+                        if new_digit is not None:
+                            s.candidate_digit = int(new_digit)
+
+                    s.phase = f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                 s.current_stake = round(
                     float(s.current_stake) * float(s.multiplier),
                     2,
@@ -1534,28 +479,16 @@ class MultiUserEngine:
                 expected_trade_no = int(s.current_trade) + 1
                 payload = self.prefetched_recovery.pop(sid, None)
 
-                # Wait briefly for the ONE prefetch already in flight.
-                #
-                # Never wait forever: if Deriv has stalled the proposal request,
-                # cancel that prefetch cleanly before making one fresh fallback.
-                # This avoids both UI hangs and duplicate simultaneous proposals.
+                # CRITICAL RATE-LIMIT RULE:
+                # if the proposal for this exact recovery is already being
+                # prepared, wait for that ONE request. Do NOT start a second
+                # fallback proposal after an arbitrary timeout.
                 if not payload:
                     prefetch_task = self.prefetch_tasks.get(sid)
 
                     if prefetch_task and not prefetch_task.done():
                         try:
-                            await asyncio.wait_for(
-                                asyncio.shield(prefetch_task),
-                                timeout=1.25,
-                            )
-                        except asyncio.TimeoutError:
-                            prefetch_task.cancel()
-                            try:
-                                await prefetch_task
-                            except asyncio.CancelledError:
-                                pass
-                            except Exception:
-                                pass
+                            await asyncio.shield(prefetch_task)
                         except Exception:
                             pass
 
@@ -1576,10 +509,6 @@ class MultiUserEngine:
                 if not valid_prefetch:
                     # Only one fresh fallback proposal is allowed, and
                     # DerivWS serializes/rate-limits it globally per socket.
-                    s.phase = "RECOVERY_PROPOSAL_FALLBACK"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
                     currency = await self._currency_for(db, s)
                     client = await self._client(user_id, account_id)
 
@@ -1624,12 +553,6 @@ class MultiUserEngine:
                 if not s or not s.running or s.paused:
                     return
 
-                if s.candidate_digit is not None:
-                    self.set_target_digit(
-                        sid,
-                        int(s.candidate_digit),
-                    )
-
                 if s.last_error:
                     # Clear ordinary stale errors once the worker is healthy.
                     # Keep reconciliation mismatches visible.
@@ -1658,27 +581,8 @@ class MultiUserEngine:
                         str(s.open_contract_id),
                     )
 
-                    existing_contract_sub = self.contract_subscriptions.get(
-                        contract_key
-                    )
-                    existing_contract_task = self.contract_subscription_tasks.get(
-                        contract_key
-                    )
-
-                    if (
-                        (
-                            not existing_contract_sub
-                            or not client.has_subscription(
-                                existing_contract_sub
-                            )
-                        )
-                        and (
-                            not existing_contract_task
-                            or existing_contract_task.done()
-                        )
-                        and contract_key not in self.contract_poll_tasks
-                    ):
-                        task = asyncio.create_task(
+                    if contract_key not in self.contract_subscriptions:
+                        asyncio.create_task(
                             self._subscribe_open_contract(
                                 sid=sid,
                                 user_id=s.user_id,
@@ -1687,64 +591,6 @@ class MultiUserEngine:
                                 client=client,
                             )
                         )
-                        self.contract_subscription_tasks[
-                            contract_key
-                        ] = task
-
-                    # PIPELINE watchdog:
-                    # if no result tick has been consumed for >3.5 seconds,
-                    # the most likely cause is a stale/lost tick subscription
-                    # after a WebSocket reconnect. Force a clean re-subscribe.
-                    fast = self.fast_contracts.get(sid)
-                    if fast and not fast.get("decided"):
-                        armed_at = float(
-                            fast.get("armed_at_loop_time") or 0.0
-                        )
-                        age = (
-                            asyncio.get_running_loop().time() - armed_at
-                            if armed_at
-                            else 0.0
-                        )
-
-                        if age > 3.5:
-                            stale = self.tick_subscriptions.pop(
-                                sid,
-                                None,
-                            )
-                            stale_id = (
-                                stale.get("subscription_id")
-                                if stale
-                                else None
-                            )
-
-                            if (
-                                stale_id
-                                and client.has_subscription(stale_id)
-                            ):
-                                asyncio.create_task(
-                                    self._forget_quietly(
-                                        client,
-                                        stale_id,
-                                    )
-                                )
-
-                            await self._ensure_tick_subscription(
-                                sid=s.id,
-                                user_id=s.user_id,
-                                account_id=s.account_id,
-                                symbol=s.symbol,
-                                client=client,
-                            )
-
-                            # Reset watchdog only after a real resubscribe.
-                            fast["armed_at_loop_time"] = (
-                                asyncio.get_running_loop().time()
-                            )
-
-                            s.phase = "PIPELINE_RESUBSCRIBED"
-                            s.updated_at = datetime.utcnow()
-                            db.commit()
-                            return
 
                     s.phase = (
                         "RECOVERY_PREARMED"
@@ -1766,6 +612,24 @@ class MultiUserEngine:
                     db.commit()
                     return
 
+                if int(s.current_trade) == 0:
+                    scored_digit, snapshot = self._choose_scored_digit(s.id)
+                    if scored_digit is None:
+                        s.phase = "DIGIT_SCORE_WARMING"
+                        s.last_error = (
+                            "Scoring digits 0-9 from canonical ticks "
+                            f"({snapshot.get('history_count', 0)}/"
+                            f"{snapshot.get('minimum_history', 10)})"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    s.candidate_digit = int(scored_digit)
+                    s.last_error = None
+                    s.phase = "DIGIT_SCORE_READY"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                 if s.candidate_digit is None:
                     s.phase = "WAITING_CANDIDATE"
                     db.commit()
@@ -1781,61 +645,6 @@ class MultiUserEngine:
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
-
-                # TARGET ATTRACTION ENGINE — TRADE 1 GATE
-                #
-                # Once a cycle starts, recovery remains immediate. This gate
-                # never delays Trade 2+ and settlement stays background-only.
-                if int(s.current_trade) == 0:
-                    model = self._tae_model(s.id)
-                    trained = int(model["trained"])
-                    probability = model["last_probability"]
-
-                    if len(self._history(s.id)) < self.tae_min_history:
-                        s.phase = "TAE_HISTORY_WARMING"
-                        s.last_error = (
-                            "Target Attraction collecting live history "
-                            f"({len(self._history(s.id))}/{self.tae_min_history})"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-
-                    if trained < self.tae_min_train_samples:
-                        s.phase = "TAE_MODEL_WARMING"
-                        s.last_error = (
-                            "Target Attraction forward-training "
-                            f"({trained}/{self.tae_min_train_samples})"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-
-                    if probability is None:
-                        s.phase = "TAE_SCORING"
-                        s.last_error = "Target Attraction waiting for live score"
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-
-                    if probability < self.tae_arm_probability:
-                        s.phase = "TAE_WAITING"
-                        s.last_error = (
-                            f"Target {int(s.candidate_digit)} · "
-                            f"P(return<=T10)={probability:.1%} · "
-                            f"arm at {self.tae_arm_probability:.0%}"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-
-                    s.phase = "TAE_ARMED"
-                    s.last_error = (
-                        f"Target {int(s.candidate_digit)} · "
-                        f"P(return<=T10)={probability:.1%} · ARMED"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
 
                 currency = await self._currency_for(db, s)
 
@@ -1965,7 +774,6 @@ class MultiUserEngine:
             "symbol": str(s.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
-            "armed_at_loop_time": asyncio.get_running_loop().time(),
             "decided": False,
         }
 
@@ -2013,7 +821,21 @@ class MultiUserEngine:
                         user_id=s.user_id,
                         account_id=s.account_id,
                         symbol=s.symbol,
-                        digit=int(s.candidate_digit),
+                        digit=int(
+                            (self._choose_scored_digit(
+                                s.id,
+                                exclude_digit=int(s.candidate_digit),
+                            )[0])
+                            if (
+                                int(s.current_trade) > 0
+                                and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
+                                and self._choose_scored_digit(
+                                    s.id,
+                                    exclude_digit=int(s.candidate_digit),
+                                )[0] is not None
+                            )
+                            else int(s.candidate_digit)
+                        ),
                         next_stake=round(
                             float(s.current_stake)
                             * float(s.multiplier),
@@ -2026,31 +848,15 @@ class MultiUserEngine:
                 self.prefetch_tasks[s.id] = task
 
         # Official settlement is background accounting/reconciliation only.
-        contract_key = (
-            s.id,
-            str(contract_id),
-        )
-
-        existing_contract_task = self.contract_subscription_tasks.get(
-            contract_key
-        )
-
-        if (
-            not existing_contract_task
-            or existing_contract_task.done()
-        ):
-            task = asyncio.create_task(
-                self._subscribe_open_contract(
-                    sid=s.id,
-                    user_id=s.user_id,
-                    account_id=s.account_id,
-                    contract_id=contract_id,
-                    client=client,
-                )
+        asyncio.create_task(
+            self._subscribe_open_contract(
+                sid=s.id,
+                user_id=s.user_id,
+                account_id=s.account_id,
+                contract_id=contract_id,
+                client=client,
             )
-            self.contract_subscription_tasks[
-                contract_key
-            ] = task
+        )
 
     async def _prefetch_next_recovery(
         self,
@@ -2148,18 +954,10 @@ class MultiUserEngine:
             str(contract_id),
         )
 
-        existing_sub_id = self.contract_subscriptions.get(key)
-
-        if existing_sub_id:
-            if client.has_subscription(existing_sub_id):
-                self.contract_subscription_tasks.pop(key, None)
-                return
-
-            # Socket was reconnected and this id belongs to the dead socket.
-            self.contract_subscriptions.pop(key, None)
+        if key in self.contract_subscriptions:
+            return
 
         if key in self.contract_poll_tasks:
-            self.contract_subscription_tasks.pop(key, None)
             return
 
         async def on_contract_update(data: dict):
@@ -2181,27 +979,15 @@ class MultiUserEngine:
 
         if sub_id:
             self.contract_subscriptions[key] = sub_id
-            self.contract_subscription_tasks.pop(key, None)
             return
 
         # Fallback only if Deriv does not return a subscription id for the
-        # very short-lived 1-tick contract.
-        #
-        # CRITICAL RATE-LIMIT FIX:
-        # proposal_open_contract shares Deriv's trading-call request budget
-        # with proposal/buy/sell. The previous 0.20-second loop could consume
-        # hundreds of requests per minute and starve the actual trading path.
-        #
-        # Strategy does NOT depend on this reconciliation. Therefore perform
-        # only a few delayed checks, well outside the critical execution path.
-        async def reconcile_later():
+        # very short-lived 1-tick contract. This runs in the background and
+        # never gates strategy execution.
+        async def poll_until_sold():
             try:
-                # R_10 is roughly a 2-second tick market. By 2.5 seconds a
-                # one-tick contract should normally have settled.
-                delays = (2.5, 3.0, 5.0)
-
-                for delay in delays:
-                    await asyncio.sleep(delay)
+                for _ in range(150):
+                    await asyncio.sleep(0.20)
 
                     data = await client.contract_status(
                         str(contract_id)
@@ -2221,8 +1007,7 @@ class MultiUserEngine:
                 raise
 
             except Exception:
-                # Background reconciliation failure must never freeze or
-                # throttle the live tick-driven strategy.
+                # The trade remains visible as OPEN for later reconciliation.
                 return
 
             finally:
@@ -2232,9 +1017,8 @@ class MultiUserEngine:
                 )
 
         self.contract_poll_tasks[key] = asyncio.create_task(
-            reconcile_later()
+            poll_until_sold()
         )
-        self.contract_subscription_tasks.pop(key, None)
 
     async def _handle_contract_update(
         self,

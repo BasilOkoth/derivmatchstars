@@ -916,19 +916,19 @@
                     <!-- Max Trades -->
                     <div>
                         <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="20" min="20" step="1" inputmode="numeric" 
+                        <input type="number" id="maxTrades" value="15" min="1" step="1" inputmode="numeric" 
                             class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. Target Attraction research evaluates recurrence within T10 independently of the cycle cap.</p>
+                        <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
                     </div>
 
                     <!-- Max Trades is now the single user-defined cycle cap -->
                     <div class="flex items-end">
                         <p class="text-[11px] leading-relaxed text-gray-400">
-                            Max Trades controls the full cycle. The app uses the positive whole number you choose.
+                            Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
                         </p>
                     </div>
                     
-                    <!-- Mode Toggle - ONLY INSTANT AND AI AUTO -->
+                    <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
                     <div class="col-span-2 lg:col-span-3">
                         <label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
                         <div class="grid grid-cols-2 gap-2">
@@ -938,7 +938,7 @@
                             </button>
                             <button id="mode_ai" onclick="switchMode('ai')" 
                                 class="px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition">
-                                🤖 AI AUTO
+                                🧠 SCORE AUTO
                             </button>
                         </div>
                         <p id="mode_description" class="text-xs text-gray-400 mt-1">
@@ -991,10 +991,10 @@
                             <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Start bot to begin</p>
                         </div>
                         <div id="tae-live-panel"
-                             class="mt-3 p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-xs">
+                             class="hidden mt-3 p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-xs">
                             <div class="flex items-center justify-between gap-2 mb-2">
-                                <div class="font-black text-emerald-300">🎯 TARGET ATTRACTION ENGINE</div>
-                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">V1 ENTRY · V2 SHADOW</div>
+                                <div class="font-black text-emerald-300">🎯 LEGACY RESEARCH (HIDDEN)</div>
+                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">PERSISTENT · FORWARD-ONLY</div>
                             </div>
                             <div class="grid grid-cols-2 gap-x-3 gap-y-1">
                                 <span class="text-gray-400">Target:</span>
@@ -1021,26 +1021,8 @@
                                 <span class="text-gray-400">Selected STOP10:</span>
                                 <span id="tae-live-stop10" class="font-bold text-white">—</span>
 
-                                <span class="text-gray-400">V1 P(return ≤ T10):</span>
+                                <span class="text-gray-400">Current P(return ≤ T10):</span>
                                 <span id="tae-live-prob" class="font-bold text-yellow-300">—</span>
-
-                                <span class="text-gray-400">V2 P(STOP10):</span>
-                                <span id="tae-v2-stop10-risk" class="font-black text-orange-300">—</span>
-
-                                <span class="text-gray-400">V2 P(return ≤ T10):</span>
-                                <span id="tae-v2-return-prob" class="font-bold text-cyan-300">—</span>
-
-                                <span class="text-gray-400">V2 risk band:</span>
-                                <span id="tae-v2-risk-band" class="font-bold text-white">WAITING</span>
-
-                                <span class="text-gray-400">V2 validation gate:</span>
-                                <span id="tae-v2-gate" class="font-black text-rose-300">FAILED</span>
-
-                                <span class="text-gray-400">V2 mode:</span>
-                                <span id="tae-v2-mode" class="font-bold text-cyan-300">SHADOW ONLY</span>
-
-                                <span class="text-gray-400">V2 model:</span>
-                                <span id="tae-v2-model" class="font-bold text-gray-300">—</span>
 
                                 <span class="text-gray-400">Model state:</span>
                                 <span id="tae-live-state" class="font-black text-yellow-300">WARMING</span>
@@ -2281,7 +2263,7 @@
         //   • lag-1 mutual information
         //   • tick interval, price direction and short volatility context
         //
-        // This engine is a ranking feature source for AI AUTO only.
+        // This engine is a ranking feature source for SCORE AUTO only.
         // It does not change INSTANT execution and does not claim these features
         // are predictive until forward evidence demonstrates that.
         // ============================================================================
@@ -2562,7 +2544,7 @@
                 panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-emerald-500/30 text-xs';
                 panel.innerHTML=`
                   <div class="flex items-center justify-between mb-2">
-                    <div class="font-bold text-emerald-300">🧬 DIGIT FEATURE ENGINE · AI AUTO</div>
+                    <div class="font-bold text-emerald-300">🧬 DIGIT FEATURE ENGINE · SCORE AUTO</div>
                     <button id="dfe-min-btn" type="button"
                             onclick="toggleResearchPanel('dfe-min-body','dfe-min-btn','digit-feature')"
                             class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
@@ -2621,7 +2603,7 @@
 
         // ============================================================================
         // DIGITMATCHSTAR V52 — CRYPTANALYSIS-STYLE RANDOMNESS AUDITOR
-        // AI AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
+        // SCORE AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
         //
         // This does NOT attempt to recover a secret RNG seed. It tests observable
         // output structure: entropy, lag-1 mutual information, transition bias and
@@ -2866,7 +2848,7 @@
                 panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
                 panel.innerHTML=`
                     <div class="flex items-center justify-between mb-2">
-                      <div class="font-bold text-fuchsia-300">🔐 RANDOMNESS AUDITOR · AI AUTO</div>
+                      <div class="font-bold text-fuchsia-300">🔐 RANDOMNESS AUDITOR · SCORE AUTO</div>
                       <button id="ra-min-btn" type="button"
                               onclick="toggleResearchPanel('ra-min-body','ra-min-btn','randomness-auditor')"
                               class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
@@ -3334,7 +3316,7 @@ expectedAdditionalTicks: function(gaps, g) {
                 const regimeStatus = this.computeRegimeStatus();
 
                 // V52: regime is now a ranking/context signal, not a blanket AI veto.
-                // This keeps AI AUTO active in more market states.
+                // This keeps SCORE AUTO active in more market states.
                 let best = this.selectBestDigit();
 
                 let auditor = null;
@@ -3575,7 +3557,7 @@ survivalTop = survivalTop3[0] || null;
                     }
                 }
 
-                // Cryptanalysis-style auditor overlay for AI AUTO.
+                // Cryptanalysis-style auditor overlay for SCORE AUTO.
                 // The auditor may supply a candidate even when legacy ranking is weak.
                 if (auditor?.ready && Number.isInteger(Number(auditor.topDigit))) {
                     const ar = auditor.rows?.find?.(x => Number(x.digit) === Number(auditor.topDigit)) || null;
@@ -4016,10 +3998,10 @@ function canTradeDigit(d, regime, tradeCount) {
 window.EV_GATE_CONFIG = {
     enabled: true,
 
-    // AI AUTO only. INSTANT remains a manual execution mode.
+    // SCORE AUTO only. INSTANT remains a manual execution mode.
     applyToInstant: false,
 
-    // AI AUTO thresholds.
+    // SCORE AUTO thresholds.
     // Entry: +0.001 = +0.10 percentage points above live break-even.
     // Recovery: 0.000 = break-even-or-better only.
     // Recovery re-ranks all 10 digits on each attempt and may switch digits without resetting the cycle.
@@ -6977,7 +6959,7 @@ window.cyclePerformance = {
                         ${regimeStatus.label} | Entropy: ${regimeStatus.entropy} | Dominance: ${regimeStatus.dominance}
                     </div>
                     <div class="text-[11px] text-gray-500 mt-1">
-                        V53 AI AUTO uses adaptive entry rules: ordinary AI candidates need support≥14; an auditor-supported candidate may proceed from support≥10. Regime, Gap/P90, Extend, Persistence, H5/P10 and survival remain diagnostics/ranking inputs; only severe tail/structure conditions are hard vetoes.
+                        V53 SCORE AUTO uses adaptive entry rules: ordinary AI candidates need support≥14; an auditor-supported candidate may proceed from support≥10. Regime, Gap/P90, Extend, Persistence, H5/P10 and survival remain diagnostics/ranking inputs; only severe tail/structure conditions are hard vetoes.
                     </div>
                 </div>
                 ${survivalTop3.length ? `
@@ -8417,7 +8399,7 @@ function rotateHybridDigit(reason = '') {
             document.getElementById('current_tick_rate').textContent = tickRate.toFixed(1) + '/s';
         }
         
-        // MODE MANAGEMENT - ONLY INSTANT AND AI AUTO
+        // MODE MANAGEMENT - ONLY INSTANT AND SCORE AUTO
         function switchMode(mode) {
             sessionState.mode = mode;
             
@@ -8445,8 +8427,8 @@ function rotateHybridDigit(reason = '') {
             } else if (mode === 'ai') {
                 document.getElementById('mode_ai').classList.add('bg-green-600');
                 document.getElementById('mode_instant').classList.add('bg-purple-600');
-                document.getElementById('mode_description').textContent = '🤖 AI AUTO: Let AI select and lock the current prediction when started';
-                log('🔄 Switched to AI AUTO mode', 'SYSTEM');
+                document.getElementById('mode_description').textContent = '🧠 SCORE AUTO: Let AI select and lock the current prediction when started';
+                log('🔄 Switched to SCORE AUTO mode', 'SYSTEM');
 
                 // In AI mode we PREVIEW digits while stopped, and LOCK only when the bot is running.
                 if (window.digitIntelligenceEngine.warmupDone && window.digitIntelligenceEngine.currentRecommendation) {
@@ -8454,15 +8436,15 @@ function rotateHybridDigit(reason = '') {
                     document.getElementById('predictedDigit').value = recommendedDigit;
 
                     if (window.isBotRunning) {
-                        lockSessionDigit(recommendedDigit, true, 'AI AUTO (running)');
+                        lockSessionDigit(recommendedDigit, true, 'SCORE AUTO (running)');
                         log(`🤖 AI mode active - Locked digit for trading: ${recommendedDigit}`, 'ENGINE');
                     } else {
-                        clearSessionDigitLock('AI AUTO (preview)');
+                        clearSessionDigitLock('SCORE AUTO (preview)');
                         log(`🤖 AI mode active - Preview digit: ${recommendedDigit} (will lock on START)`, 'ENGINE');
                         updateTradeStatus('READY', `AI digit ${recommendedDigit} ready`, 'Will lock on Start', 'normal');
                     }
                 } else {
-                    clearSessionDigitLock('AI AUTO (waiting)');
+                    clearSessionDigitLock('SCORE AUTO (waiting)');
                     log('🤖 AI mode active - Waiting for engine recommendation...', 'ENGINE');
                     updateTradeStatus('WAITING', 'AI engine analyzing...', 'Waiting for AI recommendation', 'normal');
                 }
@@ -10628,9 +10610,9 @@ function rotateHybridDigit(reason = '') {
             
             // In AI mode, wait for engine recommendation
             if (sessionState.mode === 'ai' && (!window.digitIntelligenceEngine.warmupDone || !window.digitIntelligenceEngine.currentRecommendation)) {
-                log('🤖 AI AUTO armed · Evaluating safe entries', 'ENGINE');
+                log('🧠 SCORE AUTO armed · Evaluating safe entries', 'ENGINE');
                 updateTradeStatus(
-                    'AI AUTO ARMED',
+                    'SCORE AUTO ARMED',
                     'Evaluating safe entries',
                     'Waiting for an approved digit',
                     'normal'
@@ -10638,12 +10620,12 @@ function rotateHybridDigit(reason = '') {
                 return;
             }
             
-            // AI AUTO: lock the CURRENT prediction for trading when the bot is running (once per START)
+            // SCORE AUTO: lock the CURRENT prediction for trading when the bot is running (once per START)
             if (sessionState.mode === 'ai' && window.isBotRunning && (!sessionState.sessionStarted || sessionState.sessionDigit === null)) {
                 const d = window.digitIntelligenceEngine.currentRecommendation.digit;
                 lockSessionDigit(d, true, 'AUTO start lock');
                 updateTradeStatus(
-                    'AI AUTO ACTIVE',
+                    'SCORE AUTO ACTIVE',
                     `Digit ${d} locked`,
                     'Evaluating execution safety gates',
                     'trade'
@@ -10694,7 +10676,7 @@ function rotateHybridDigit(reason = '') {
 
                 if (!verdict.ok) {
                     log(`🧱 Trade veto (${verdict.reason}) — no trade`, 'ENGINE');
-                    updateTradeStatus('AI AUTO ARMED', verdict.reason, 'Re-picking safer entry digit', 'normal');
+                    updateTradeStatus('SCORE AUTO ARMED', verdict.reason, 'Re-picking safer entry digit', 'normal');
 
                     if (typeof rotateHybridDigit === 'function') {
                         rotateHybridDigit(`VETO:${verdict.reason}`);
@@ -11617,53 +11599,6 @@ window.executionLock = true;
             setText('tae-live-stop10', pct(tae.selected_stop10_rate));
             setText('tae-live-prob', pct(tae.current_probability_t10));
 
-            const v2 = tae.v2_shadow || {};
-            setText(
-                'tae-v2-stop10-risk',
-                v2.available ? pct(v2.stop10_probability) : '—'
-            );
-            setText(
-                'tae-v2-return-prob',
-                v2.available ? pct(v2.return_by_t10_probability) : '—'
-            );
-            setText(
-                'tae-v2-risk-band',
-                v2.risk_band || (v2.available ? 'WAITING' : 'UNAVAILABLE')
-            );
-            setText(
-                'tae-v2-gate',
-                v2.validation_gate_passed ? 'PASSED' : 'FAILED'
-            );
-            setText(
-                'tae-v2-mode',
-                String(v2.mode || 'SHADOW_ONLY').replaceAll('_', ' ')
-            );
-            setText(
-                'tae-v2-model',
-                v2.selected_shadow_model || (v2.available ? 'LOADED' : '—')
-            );
-
-            const v2RiskEl = document.getElementById('tae-v2-stop10-risk');
-            if (v2RiskEl) {
-                const risk = Number(v2.stop10_probability);
-                v2RiskEl.className = Number.isFinite(risk)
-                    ? (
-                        risk < 0.30
-                            ? 'font-black text-emerald-300'
-                            : risk < 0.40
-                                ? 'font-black text-yellow-300'
-                                : 'font-black text-orange-300'
-                    )
-                    : 'font-black text-gray-400';
-            }
-
-            const v2GateEl = document.getElementById('tae-v2-gate');
-            if (v2GateEl) {
-                v2GateEl.className = v2.validation_gate_passed
-                    ? 'font-black text-emerald-300'
-                    : 'font-black text-rose-300';
-            }
-
             let state = 'WARMING';
             if (tae.armed_now) state = 'ARMED';
             else if (tae.ready) state = 'SCORING / WAITING';
@@ -11927,9 +11862,85 @@ window.executionLock = true;
             actionEl.textContent = action;
         }
 
+
+        function ensureRecycleRuntimePanel() {
+            if (document.getElementById('recycle-runtime-panel')) return;
+            const host = document.getElementById('trade-result-container');
+            if (!host) return;
+            const el = document.createElement('div');
+            el.id = 'recycle-runtime-panel';
+            el.className = 'mt-3 grid grid-cols-3 gap-2 text-xs';
+            el.innerHTML = `
+                <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/30 p-2">
+                    <div class="text-[10px] uppercase text-cyan-400 font-bold">Target</div>
+                    <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
+                </div>
+                <div class="rounded-lg bg-amber-950/30 border border-amber-500/30 p-2">
+                    <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle</div>
+                    <div id="recycle-attempt" class="text-lg font-black text-white">3 losses</div>
+                </div>
+                <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/30 p-2">
+                    <div class="text-[10px] uppercase text-emerald-400 font-bold">Max Trades</div>
+                    <div id="recycle-max-trades" class="text-lg font-black text-white">—</div>
+                </div>`;
+            host.appendChild(el);
+        }
+
+        function renderRecycleRuntimePanel(st) {
+            ensureRecycleRuntimePanel();
+            const t = document.getElementById('recycle-current-target');
+            const m = document.getElementById('recycle-max-trades');
+            if (t) t.textContent = Number.isInteger(Number(st?.candidate_digit)) ? String(st.candidate_digit) : '—';
+            if (m) m.textContent = Number.isFinite(Number(st?.max_trades)) ? String(st.max_trades) : '—';
+        }
+
+        window.__dmsFastWinTelegram = window.__dmsFastWinTelegram || new Set();
+        function publishFastWinToTelegram(st) {
+            try {
+                const phase = String(st?.phase || '').toUpperCase();
+                if (!['FAST_WON','WON'].includes(phase)) return;
+                const key = String(st?.open_contract_id || `${st?.id || 's'}-${st?.current_trade || 0}`);
+                if (window.__dmsFastWinTelegram.has(key)) return;
+                window.__dmsFastWinTelegram.add(key);
+
+                const tradeNo = Number(st?.current_trade || 1);
+                const digit = Number(st?.candidate_digit);
+                const stake = Number(st?.current_stake || 0);
+                const pnl = Number(st?.pnl || 0);
+
+                window.matchstarPublisher?.publishCycle?.({
+                    id: `server-win-${key}`,
+                    symbol: st?.symbol || document.getElementById('symbol')?.value || 'R_10',
+                    digit,
+                    startedAt: Date.now(),
+                    endedAt: Date.now(),
+                    status: 'WIN',
+                    finalReason: 'Exact strategy tick matched selected digit',
+                    winningTradeNumber: tradeNo,
+                    totalInvestment: Math.max(stake, 0.01),
+                    totalPayout: Math.max(stake + Math.max(pnl, 0), 0.01),
+                    netPnL: pnl,
+                    maxStake: stake,
+                    trades: [{
+                        tradeNumber: tradeNo,
+                        digit,
+                        stake: Math.max(stake, 0.01),
+                        result: 'WIN',
+                        finalDigit: digit,
+                        payout: Math.max(stake + Math.max(pnl, 0), 0.01),
+                        profit: pnl
+                    }]
+                });
+            } catch (err) {
+                console.warn('Telegram FAST_WON publish failed:', err);
+            }
+        }
+
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
+            try { renderRecycleRuntimePanel(st); } catch (_) {}
+            try { publishFastWinToTelegram(st); } catch (_) {}
 
             // V1.6 deterministic server audio.
             // Compare the newly received server state with the previous state;
@@ -11960,7 +11971,7 @@ window.executionLock = true;
 
                 // Settlement outcomes are inferred from authoritative server transitions,
                 // not from transient UI polling labels.
-                if (phase === 'WON' && prev.phase !== 'WON') {
+                if ((phase === 'WON' || phase === 'FAST_WON') && !['WON','FAST_WON'].includes(prev.phase)) {
                     playAudioFeedback('WIN');
                 } else if (
                     phase === 'RECOVERING' &&
@@ -12495,7 +12506,7 @@ window.executionLock = true;
         }
 
         function currentResearchTargetDigit() {
-            // AI AUTO research follows the current AI recommendation directly.
+            // SCORE AUTO research follows the current AI recommendation directly.
             // Do not depend on stale sessionState.mode flags.
             const aiDigit = Number(
                 window.digitIntelligenceEngine
@@ -13193,8 +13204,8 @@ window.isBotRunning = true;
             log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
             log('🧬 Digit DNA Engine: learns the precursor fingerprint BEFORE each digit 0–9 and forward-tests the closest current DNA', 'ENGINE');
-            log('🧬 Digit Feature Engine: AI AUTO ranking · frequencies + transitions + 2/3/4-grams + entropy trend + market context', 'ENGINE');
-            log('🔐 Randomness Auditor: AI AUTO only · entropy + mutual information + transition + 2-gram analysis', 'ENGINE');
+            log('🧬 Digit Feature Engine: SCORE AUTO ranking · frequencies + transitions + 2/3/4-grams + entropy trend + market context', 'ENGINE');
+            log('🔐 Randomness Auditor: SCORE AUTO only · entropy + mutual information + transition + 2-gram analysis', 'ENGINE');
             log('⚡ INSTANT mode remains unchanged by the Randomness Auditor', 'SYSTEM');
             
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
@@ -13843,7 +13854,7 @@ window.isBotRunning = true;
                 );
 
                 updateTradeStatus(
-                    isRecovery ? 'RECOVERY WAIT' : 'AI AUTO ARMED',
+                    isRecovery ? 'RECOVERY WAIT' : 'SCORE AUTO ARMED',
                     isRecovery
                         ? `Waiting for recovery edge ≥ ${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp`
                         : `Preferred +0.10 pp · smart override available after 2 persistent evaluations`,
@@ -14950,7 +14961,7 @@ window.isBotRunning = true;
 
         // Override START behavior by execution mode.
         // INSTANT starts immediately.
-        // AI AUTO is armed immediately and waits for the Digit Intelligence Engine;
+        // SCORE AUTO is armed immediately and waits for the Digit Intelligence Engine;
         // the legacy Precision Matcher no longer controls trading eligibility.
         const originalStartBot = startBot;
 
@@ -14963,7 +14974,7 @@ window.isBotRunning = true;
                 return originalStartBot();
             }
 
-            log('🤖 AI AUTO armed · Evaluating safe entries', 'ENGINE');
+            log('🧠 SCORE AUTO armed · Evaluating safe entries', 'ENGINE');
             return originalStartBot();
         };
 
@@ -15278,7 +15289,7 @@ window.isBotRunning = true;
             }
 
             const desc = String(document.getElementById('mode_description')?.textContent || '').toUpperCase();
-            if (desc.includes('AI AUTO')) return 'AI_AUTO';
+            if (desc.includes('SCORE AUTO')) return 'AI_AUTO';
             if (desc.includes('INSTANT')) return 'INSTANT';
 
             return 'UNKNOWN';
@@ -15705,7 +15716,7 @@ window.isBotRunning = true;
                 statusEl.textContent = `Added 5 research cycles — target is now ${todayCycleTarget(s)} today`;
                 statusEl.style.color = '#4ade80';
 
-                // Let the normal loop re-confirm DEMO + AI AUTO before starting.
+                // Let the normal loop re-confirm DEMO + SCORE AUTO before starting.
                 setTimeout(() => { tick().catch(() => {}); }, 100);
             });
 
