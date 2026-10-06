@@ -27,6 +27,8 @@ class DerivWS:
         self.subscriptions = defaultdict(set)
         self.pending_subscription_callbacks = {}
         self._send_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
+        self._callback_tasks = set()
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -42,15 +44,20 @@ class DerivWS:
     async def connect(self):
         if self.is_open():
             return
-        self.ws = await websockets.connect(
-            self.url,
-            ping_interval=20,
-            ping_timeout=20,
-            close_timeout=5,
-            open_timeout=15,
-            max_queue=None,
-        )
-        self.reader_task = asyncio.create_task(self._reader())
+
+        async with self._connect_lock:
+            if self.is_open():
+                return
+
+            self.ws = await websockets.connect(
+                self.url,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+                open_timeout=15,
+                max_queue=None,
+            )
+            self.reader_task = asyncio.create_task(self._reader())
 
     async def close(self):
         if self.reader_task and not self.reader_task.done():
@@ -78,17 +85,38 @@ class DerivWS:
         self.pending_subscription_callbacks.clear()
         self.subscriptions.clear()
 
-    async def _dispatch_subscription(self, data: dict):
+        for task in list(self._callback_tasks):
+            if not task.done():
+                task.cancel()
+        self._callback_tasks.clear()
+
+    async def _run_subscription_callback(self, callback, data: dict):
+        try:
+            await callback(data)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # One subscriber must never kill the shared WebSocket reader.
+            pass
+
+    def _schedule_subscription_callback(self, callback, data: dict):
+        task = asyncio.create_task(
+            self._run_subscription_callback(callback, data)
+        )
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._callback_tasks.discard)
+
+    def _dispatch_subscription(self, data: dict):
         sub = data.get("subscription") or {}
         sub_id = sub.get("id")
         if not sub_id:
             return
+
+        # CRITICAL: never await strategy/settlement callbacks in _reader().
+        # Those callbacks can immediately request the next proposal/buy, whose
+        # response must be consumed by this same reader task.
         for callback in list(self.subscriptions.get(str(sub_id), ())):
-            try:
-                await callback(data)
-            except Exception:
-                # One subscriber must never kill the shared reader.
-                pass
+            self._schedule_subscription_callback(callback, data)
 
     async def _reader(self):
         try:
@@ -113,7 +141,7 @@ class DerivWS:
                         self.subscriptions[str(sub_id)].add(callback)
 
                 if data.get("subscription"):
-                    await self._dispatch_subscription(data)
+                    self._dispatch_subscription(data)
 
         except asyncio.CancelledError:
             raise
@@ -170,6 +198,15 @@ class DerivWS:
 
         return data
 
+    async def _reset_after_timeout(self):
+        # Only used by idempotent/read-only requests such as proposal.
+        # BUY is intentionally never auto-retried.
+        try:
+            await self.close()
+        except Exception:
+            self.ws = None
+        await self.connect()
+
     async def proposal_digitmatch(
         self,
         symbol: str,
@@ -178,19 +215,28 @@ class DerivWS:
         duration: int = 1,
         currency: str = "USD",
     ):
-        return await self.request(
-            {
-                "proposal": 1,
-                "amount": round(float(amount), 2),
-                "basis": "stake",
-                "contract_type": "DIGITMATCH",
-                "currency": str(currency or "USD").upper(),
-                "duration": int(duration),
-                "duration_unit": "t",
-                "barrier": str(int(digit)),
-                "underlying_symbol": str(symbol),
-            }
-        )
+        payload = {
+            "proposal": 1,
+            "amount": round(float(amount), 2),
+            "basis": "stake",
+            "contract_type": "DIGITMATCH",
+            "currency": str(currency or "USD").upper(),
+            "duration": int(duration),
+            "duration_unit": "t",
+            "barrier": str(int(digit)),
+            "underlying_symbol": str(symbol),
+        }
+
+        try:
+            return await self.request(payload)
+        except RuntimeError as exc:
+            if "timed out" not in str(exc).lower():
+                raise
+
+            # A proposal request has no financial side effect. If the socket
+            # stopped delivering responses, reconnect once and retry it.
+            await self._reset_after_timeout()
+            return await self.request(payload)
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:

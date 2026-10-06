@@ -1,33 +1,34 @@
-LOW-LATENCY EXECUTION FIX
+DERIV PROPOSAL TIMEOUT FIX
 
-Replace all four files:
-  app/engine.py
+Observed error:
+  PROPOSAL [R_10/USD/digit 3]:
+  Deriv WebSocket request timed out after 15s
+
+Root cause in the modern /app client:
+The same WebSocket reader that receives req_id responses also awaited
+subscription settlement callbacks. A settlement callback can immediately
+request the next proposal. It then waits for a proposal response that only
+the blocked reader can consume, causing the exact 15 second timeout.
+
+Fixes:
+1. Subscription callbacks are now scheduled as independent asyncio tasks.
+   The WebSocket reader never waits for strategy/settlement work.
+2. Added a connection lock so concurrent callers cannot open competing socket
+   connections/readers.
+3. Proposal requests safely reconnect and retry ONCE after a timeout.
+   Proposal is read-only and does not purchase a contract.
+4. BUY requests are NOT automatically retried. Retrying BUY blindly could
+   duplicate a purchase.
+5. The legacy /backend/app WebSocket client also gets connection/send locking,
+   timeout cleanup and one safe proposal retry.
+
+Replace:
   app/deriv_ws.py
-  backend/app/engine.py
   backend/app/deriv_ws.py
 
-Why the bot was still delayed:
-1. The repository contains two backend engines. backend/app was an older engine
-   that sleeps 500 ms and polls settlement serially.
-2. Even the newer app engine waited for a Deriv `forget` response after a loss
-   before starting the next recovery.
-3. Recovery proposal prefetch started only after the contract-subscription
-   request completed, wasting a WebSocket round trip.
-4. When Deriv supplies no subscription id, fallback polling was every 150 ms.
+engine.py copies are included for reference but are unchanged from the uploaded
+repository. If you already applied the low-latency engine.py patch from the
+previous package, KEEP those low-latency engine.py files; do not overwrite them
+with the reference copies in this package.
 
-Changes:
-- Both /app and /backend/app now use the same event-driven engine.
-- Recovery proposal prefetch starts immediately after BUY confirmation.
-- Old subscription cleanup is fire-and-forget.
-- On a confirmed loss, recovery execution continues immediately in the same
-  settlement task after the session lock is released.
-- No-subscription fallback poll interval reduced from 150 ms to 50 ms.
-- Existing duplicate/open-contract protections remain intact.
-
-Important:
-A Deriv order cannot be guaranteed to BUY on the exact same public tick that
-triggered it: proposal/buy are network requests and Deriv controls processing.
-This patch removes avoidable application-side waits so a PREARMED recovery buy
-is sent as soon as settlement is authoritative.
-
-After replacing files, restart the Render service/backend process.
+After replacing deriv_ws.py, restart the backend service.
