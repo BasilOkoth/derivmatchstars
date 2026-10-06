@@ -30,9 +30,20 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
+
+        # Proposal flow control.
+        # Every proposal request on this account/socket is serialized here.
         self._proposal_lock = asyncio.Lock()
         self._last_proposal_at = 0.0
-        self._proposal_min_interval = 0.35
+
+        # 350 ms was too aggressive once prefetch + fallback were both active.
+        # 900 ms still allows a proposal to be prepared inside an R_10 2-second
+        # tick window, while greatly reducing Deriv proposal bursts.
+        self._proposal_min_interval = 0.90
+
+        # Global cooldown shared by every proposal caller on this socket.
+        self._proposal_cooldown_until = 0.0
+        self._rate_limit_streak = 0
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -231,41 +242,74 @@ class DerivWS:
             "underlying_symbol": str(symbol),
         }
 
-        # Serialize proposal requests on this Deriv connection. This prevents
-        # strategy prefetch + fallback paths from bursting the proposal API.
+        # ONE proposal lane per account/socket.
+        #
+        # The previous build allowed a prefetch request to remain in-flight and,
+        # after 800 ms, the engine could start a fallback proposal for the same
+        # recovery. Even though requests were serialized, that still generated
+        # too many proposal calls in a short period and triggered Deriv RateLimit.
+        #
+        # This client therefore:
+        #   1) serializes every proposal request,
+        #   2) enforces minimum spacing,
+        #   3) applies a shared adaptive cooldown after RateLimit,
+        #   4) treats RateLimit as recoverable instead of immediately failing.
         async with self._proposal_lock:
-            delay = self._proposal_min_interval - (
-                time.monotonic() - self._last_proposal_at
-            )
-            if delay > 0:
-                await asyncio.sleep(delay)
+            timeout_retry_used = False
 
-            for attempt in range(3):
+            while True:
+                now = time.monotonic()
+
+                spacing_wait = self._proposal_min_interval - (
+                    now - self._last_proposal_at
+                )
+                cooldown_wait = self._proposal_cooldown_until - now
+                delay = max(0.0, spacing_wait, cooldown_wait)
+
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
                 try:
                     self._last_proposal_at = time.monotonic()
-                    return await self.request(payload)
+                    data = await self.request(payload)
+
+                    # Success: reset throttling state.
+                    self._rate_limit_streak = 0
+                    self._proposal_cooldown_until = 0.0
+                    return data
+
                 except RuntimeError as exc:
                     text = str(exc).lower()
 
-                    if "timed out" in text and attempt == 0:
-                        # Proposal is read-only, so reconnecting and retrying
-                        # once after a dead socket is safe.
+                    if "timed out" in text and not timeout_retry_used:
+                        # Proposal is read-only, so reconnecting once is safe.
+                        timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
-                        if attempt >= 2:
-                            raise
+                        # Recoverable back-pressure from Deriv.
+                        self._rate_limit_streak = min(
+                            self._rate_limit_streak + 1,
+                            6,
+                        )
 
-                        # Deriv is explicitly asking us to slow down. Proposal
-                        # has no financial side effect, so a bounded retry is
-                        # safe. Do not apply this behavior to BUY.
-                        await asyncio.sleep(0.75 * (attempt + 1))
+                        backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)
+                        backoff = backoff_table[
+                            self._rate_limit_streak - 1
+                        ]
+
+                        self._proposal_cooldown_until = (
+                            time.monotonic() + backoff
+                        )
+
+                        # Hold the proposal lock during backoff. This is
+                        # intentional: no other prefetch/fallback should send
+                        # another proposal while Deriv is throttling us.
+                        await asyncio.sleep(backoff)
                         continue
 
                     raise
-
-            raise RuntimeError("Proposal request failed after bounded retries")
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
@@ -310,22 +354,12 @@ class DerivWS:
         # A 1-tick contract can settle so quickly that Deriv returns the
         # proposal_open_contract payload without a subscription id. That is
         # still a valid contract response, not a fatal WebSocket error.
-        #
-        # Remove the pending registration because there is no id to route
-        # future subscription messages by, then process this response once.
         req_id = data.get("req_id")
         if req_id is not None:
             self.pending_subscription_callbacks.pop(req_id, None)
 
-        # IMPORTANT: do not await this callback here.
-        #
-        # engine.step() calls subscribe_contract() while it already owns the
-        # per-session asyncio.Lock. The settlement callback also acquires that
-        # same lock. Awaiting it here therefore deadlocks reconciliation.
-        #
-        # Schedule delivery instead. subscribe_contract() returns immediately,
-        # the caller releases its session lock, and the callback can then
-        # reconcile the contract safely.
+        # Do not await this callback here. engine.step() can already own the
+        # per-session lock, while the settlement callback also needs it.
         asyncio.create_task(callback(data))
 
         # None tells the engine to use the contract-status polling fallback.
@@ -342,7 +376,9 @@ class DerivWS:
 
         sub_id = (data.get("subscription") or {}).get("id")
         if not sub_id:
-            raise RuntimeError(f"Deriv returned no tick subscription id for {symbol}")
+            raise RuntimeError(
+                f"Deriv returned no tick subscription id for {symbol}"
+            )
         return str(sub_id)
 
     async def forget(self, subscription_id: str):
