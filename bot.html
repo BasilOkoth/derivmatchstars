@@ -11809,45 +11809,108 @@ window.executionLock = true;
             }
         }
 
-        window.__dmsFastWinTelegram = window.__dmsFastWinTelegram || new Set();
+        // Telegram settlement-safe publisher.
+        // FAST_WON is used for immediate sound/strategy stop only.
+        // A Telegram WIN is sent only after the exact winning contract has
+        // an authoritative Deriv settlement in st.last_settlement.
+        window.__dmsPendingTelegramWins = window.__dmsPendingTelegramWins || new Map();
+        window.__dmsPublishedSettlementWins = window.__dmsPublishedSettlementWins || new Set();
+
         function publishFastWinToTelegram(st) {
             try {
                 const phase = String(st?.phase || '').toUpperCase();
-                if (!['FAST_WON','WON'].includes(phase)) return;
-                const key = String(st?.open_contract_id || `${st?.id || 's'}-${st?.current_trade || 0}`);
-                if (window.__dmsFastWinTelegram.has(key)) return;
-                window.__dmsFastWinTelegram.add(key);
-
+                const contractId = st?.open_contract_id ? String(st.open_contract_id) : '';
                 const tradeNo = Number(st?.current_trade || 1);
-                const digit = Number(st?.candidate_digit);
-                const stake = Number(st?.current_stake || 0);
-                const pnl = Number(st?.pnl || 0);
+
+                // 1) Capture the winning contract immediately at FAST_WON,
+                // but DO NOT publish yet because its profit is not settled.
+                if (phase === 'FAST_WON' && contractId) {
+                    if (!window.__dmsPendingTelegramWins.has(contractId)) {
+                        window.__dmsPendingTelegramWins.set(contractId, {
+                            contractId,
+                            sessionId: Number(st?.id || 0),
+                            symbol: st?.symbol || document.getElementById('symbol')?.value || 'R_10',
+                            digit: Number(st?.candidate_digit),
+                            tradeNo,
+                            stakeAtWin: Number(st?.current_stake || 0),
+                            capturedAt: Date.now()
+                        });
+                    }
+                    return;
+                }
+
+                // 2) Wait for the server to expose the authoritative settlement
+                // generated from Deriv proposal_open_contract.
+                const settlement = st?.last_settlement || null;
+                const settledContractId = settlement?.contract_id
+                    ? String(settlement.contract_id)
+                    : '';
+
+                if (!settledContractId) return;
+                if (String(settlement?.result || '').toUpperCase() !== 'WIN') return;
+                if (window.__dmsPublishedSettlementWins.has(settledContractId)) return;
+
+                const pending = window.__dmsPendingTelegramWins.get(settledContractId);
+                if (!pending) {
+                    // Do not publish a historical/other settlement just because
+                    // it happens to be the latest server settlement.
+                    return;
+                }
+
+                const winningProfit = Number(settlement?.profit);
+                if (!Number.isFinite(winningProfit) || winningProfit <= 0) {
+                    // A WIN notification requires a positive authoritative
+                    // winning-contract settlement.
+                    return;
+                }
+
+                const stake = Number(
+                    settlement?.stake ??
+                    settlement?.buy_price ??
+                    pending.stakeAtWin ??
+                    0
+                );
+                const payout = Number(
+                    settlement?.payout ??
+                    (Math.max(stake, 0) + winningProfit)
+                );
+
+                // At this point the notification is safe to publish.
+                window.__dmsPublishedSettlementWins.add(settledContractId);
+                window.__dmsPendingTelegramWins.delete(settledContractId);
 
                 window.matchstarPublisher?.publishCycle?.({
-                    id: `server-win-${key}`,
-                    symbol: st?.symbol || document.getElementById('symbol')?.value || 'R_10',
-                    digit,
-                    startedAt: Date.now(),
+                    id: `settled-win-${settledContractId}`,
+                    symbol: pending.symbol,
+                    digit: Number(settlement?.digit ?? pending.digit),
+                    startedAt: pending.capturedAt,
                     endedAt: Date.now(),
                     status: 'WIN',
-                    finalReason: 'Exact strategy tick matched selected digit',
-                    winningTradeNumber: tradeNo,
+                    finalReason: 'Official Deriv settlement confirmed WIN',
+                    winningTradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
                     totalInvestment: Math.max(stake, 0.01),
-                    totalPayout: Math.max(stake + Math.max(pnl, 0), 0.01),
-                    netPnL: pnl,
-                    maxStake: stake,
+                    totalPayout: Math.max(payout, stake + winningProfit),
+                    // Retained for API compatibility; publisher no longer calls
+                    // this the winning-trade profit.
+                    netPnL: Number(st?.pnl || 0),
+                    cyclePnlAuthoritative: false,
+                    maxStake: Math.max(stake, 0.01),
+                    settlementConfirmed: true,
+                    settlementContractId: settledContractId,
                     trades: [{
-                        tradeNumber: tradeNo,
-                        digit,
+                        tradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
+                        digit: Number(settlement?.digit ?? pending.digit),
                         stake: Math.max(stake, 0.01),
                         result: 'WIN',
-                        finalDigit: digit,
-                        payout: Math.max(stake + Math.max(pnl, 0), 0.01),
-                        profit: pnl
+                        finalDigit: Number(settlement?.digit ?? pending.digit),
+                        payout: Math.max(payout, stake + winningProfit),
+                        profit: winningProfit,
+                        contractId: settledContractId,
+                        settled: true
                     }]
                 });
             } catch (err) {
-                console.warn('Telegram FAST_WON publish failed:', err);
+                console.warn('Settlement-confirmed Telegram WIN publish failed:', err);
             }
         }
 

@@ -205,6 +205,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                             3,
                         )
                     ),
+                    "last_settlement": engine.last_settlement_status(s.id),
                 }
             )
 

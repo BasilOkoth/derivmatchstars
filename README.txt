@@ -1,35 +1,34 @@
-DigitMatchStar CLEAN bot.html
+DigitMatchStar — Telegram Result Accuracy Fix
 
-This is a FULL replacement bot.html, not a patch.
+ROOT CAUSE
+Telegram was publishing on FAST_WON before the winning Deriv contract had
+officially settled. At that moment st.pnl could still contain the previous
+negative running P/L, so the message could say WIN but show a negative "PROFIT".
 
-Removed from the active UI:
-- Target Attraction / TAE panel and export buttons
-- old Next-Tick research panel initialization
-- old Cycle Performance research panel initialization
-- Digit DNA panel initialization
-- Digit Feature research panel initialization
-- Randomness Auditor panel initialization
-- overnight research button/banner
-- S20 tail-research control
-- continuous-research auto-restart calls
+FIX
+1. FAST_WON still stops the strategy immediately and plays the win sound.
+2. Telegram does NOT publish at FAST_WON anymore.
+3. The browser remembers the exact winning contract_id.
+4. app/engine.py records the authoritative Deriv settlement for each session.
+5. app/main.py exposes last_settlement in /sessions.
+6. bot.html waits until last_settlement.contract_id matches the FAST_WON
+   contract and last_settlement.result == WIN.
+7. Telegram uses last_settlement.profit for "Winning trade P/L".
+8. api/publish-cycle.js no longer labels raw cycle P/L as the winning-trade
+   profit. It only prints final cycle P/L when explicitly marked authoritative.
 
-Preserved:
-- START/STOP trading
-- server execution API
-- user-set Max Trades
-- 1.15x multiplier control
-- exact FAST_WON handling
-- sound
-- Telegram WIN publication
-- current trade / stake / P&L status
+IMPORTANT
+A contract can WIN while the entire cycle is still negative because earlier
+losses are part of cycle P/L. The Telegram message now distinguishes those
+concepts instead of calling a stale/negative cycle number the winning profit.
 
-Added:
-- live server 0-9 score ranking
-- selected target
-- attempt 1/3, 2/3, 3/3
-- overall trade/max-trades
-- current stake
-- rank order and score for every digit
+FULL FILES INCLUDED
+- bot.html
+- app/engine.py
+- app/main.py
+- app/digit_score.py
+- app/deriv_ws.py
+- api/publish-cycle.js
 
-Upload this complete file as:
-    /bot.html
+Upload these complete files to the same paths and redeploy both the backend
+(Render) and frontend/serverless publisher deployment.

@@ -59,6 +59,7 @@ class MultiUserEngine:
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
+        self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
 
     async def start(self):
         if not self.task or self.task.done():
@@ -1120,6 +1121,21 @@ class MultiUserEngine:
 
                     fast["official_result"] = official
 
+                    # Expose the exact authoritative settlement used for
+                    # notifications. Telegram must never infer winning profit
+                    # from the pre-settlement session P/L.
+                    self.last_settlement_by_sid[sid] = {
+                        "contract_id": str(contract_id),
+                        "trade_no": int(log.trade_no) if log else None,
+                        "digit": int(log.digit) if log else int(fast.get("target_digit")),
+                        "stake": float(log.stake) if log and log.stake is not None else None,
+                        "buy_price": float(log.buy_price) if log and log.buy_price is not None else None,
+                        "payout": float(log.payout) if log and log.payout is not None else None,
+                        "profit": float(profit),
+                        "result": official,
+                        "settled_at": datetime.utcnow().isoformat(),
+                    }
+
                     if (
                         fast.get("fast_result")
                         and fast["fast_result"]
@@ -1169,6 +1185,11 @@ class MultiUserEngine:
             and not poll.done()
         ):
             poll.cancel()
+
+    def last_settlement_status(self, sid: int):
+        """Return the latest authoritative Deriv settlement for this session."""
+        value = self.last_settlement_by_sid.get(int(sid))
+        return dict(value) if isinstance(value, dict) else None
 
     async def confirm_real(self, user_id: str, session_id: int):
         raise RuntimeError(

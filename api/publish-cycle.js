@@ -1,9 +1,7 @@
 // /api/publish-cycle.js
-// DigitMatchStar Telegram publisher V2.0
-// Supports:
-//  1) DigitMatchStar platform JWT (secure OAuth)
-//  2) Verified Deriv bearer token (legacy/manual browser mode)
-// Telegram bot token remains server-side only.
+// DigitMatchStar Telegram publisher V3.0
+// Settlement-safe: a WIN message distinguishes the authoritative winning
+// contract profit from cycle P/L.
 
 const WEBSITE = process.env.DIGITMATCHSTAR_URL || 'https://www.digitmatchstar.com';
 const DMS_API = (process.env.DMS_API_URL || 'https://digitmatchstar-api.onrender.com').replace(/\/+$/, '');
@@ -12,7 +10,7 @@ function clean(v, n = 180) {
   return String(v ?? '').replace(/[<>&]/g, '').trim().slice(0, n);
 }
 
-function cash(v) {
+function money(v) {
   const n = Number(v || 0);
   return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 }
@@ -47,35 +45,26 @@ function allowed(id) {
 async function verifyPlatformSession(token, accountId) {
   const r = await fetch(`${DMS_API}/sessions`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json'
-    }
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
   });
-
   const d = await r.json().catch(() => null);
-
   if (!r.ok) {
     const detail = d?.detail || d?.error || `HTTP ${r.status}`;
     const e = new Error(`DigitMatchStar session verification failed: ${detail}`);
     e.status = r.status === 401 ? 401 : 502;
     throw e;
   }
-
   if (!Array.isArray(d)) {
     const e = new Error('DigitMatchStar backend returned an invalid session response');
     e.status = 502;
     throw e;
   }
-
   const session = d.find(x => String(x?.account_id || '') === String(accountId));
-
   if (!session) {
     const e = new Error('Selected Deriv account was not verified for this DigitMatchStar user');
     e.status = 403;
     throw e;
   }
-
   return {
     accountMode: String(session?.account_mode || session?.account_type || '').toUpperCase() === 'REAL'
       ? 'REAL'
@@ -86,14 +75,9 @@ async function verifyPlatformSession(token, accountId) {
 async function verifyDerivToken(token, accountId) {
   const r = await fetch('https://api.derivws.com/trading/v1/options/accounts', {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json'
-    }
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
   });
-
   const d = await r.json().catch(() => null);
-
   if (!r.ok) {
     const detail = d?.error?.message || d?.message || d?.error || `HTTP ${r.status}`;
     const e = new Error(`Deriv account verification failed: ${detail}`);
@@ -103,7 +87,6 @@ async function verifyDerivToken(token, accountId) {
 
   const rows = Array.isArray(d?.data) ? d.data : (d?.data ? [d.data] : []);
   const account = rows.find(x => String(x?.account_id || '') === String(accountId));
-
   if (!account) {
     const e = new Error('Selected Deriv account was not verified by this token');
     e.status = 403;
@@ -146,32 +129,64 @@ function normalise(c) {
     totalInvestment: Number(c.totalInvestment || 0),
     totalPayout: Number(c.totalPayout || 0),
     netPnL: Number(c.netPnL || 0),
+    cyclePnlAuthoritative: c.cyclePnlAuthoritative === true,
+    settlementConfirmed: c.settlementConfirmed === true,
+    settlementContractId: clean(c.settlementContractId, 120),
     maxStake: Number(c.maxStake || 0),
     trades
   };
+}
+
+function lastWinningTrade(c) {
+  const rows = Array.isArray(c.trades) ? c.trades : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const t = rows[i] || {};
+    if (String(t.result || '').toUpperCase() === 'WIN') return t;
+  }
+  return rows.length ? rows[rows.length - 1] : null;
 }
 
 function caption(c, type) {
   const win = c.status === 'WIN';
   const n = c.trades.length;
   const account = type === 'REAL' ? 'REAL ACCOUNT' : 'DEMO ACCOUNT';
-  const pnl = cash(c.netPnL);
 
   if (win) {
-    return [
+    const winningTrade = lastWinningTrade(c);
+    const winningProfit = Number(winningTrade?.profit);
+    const lines = [
       `⭐ <b>DIGITMATCHSTAR — ${account}</b>`, '',
       `📈 <b>${market(c.symbol)}</b>`,
       `🎯 Target digit: <b>${Number.isFinite(c.digit) ? c.digit : '-'}</b>`,
-      `✅ <b>MATCHED AT TRADE ${c.winningTradeNumber || n}</b>`,
-      `🟢 <b>PROFIT: ${pnl}</b>`,
-      `💵 Total stake: <b>$${c.totalInvestment.toFixed(2)}</b>`, '',
+      `✅ <b>MATCHED AT TRADE ${c.winningTradeNumber || n}</b>`
+    ];
+
+    if (c.settlementConfirmed && Number.isFinite(winningProfit)) {
+      lines.push(`💰 <b>Winning trade P/L: ${money(winningProfit)}</b>`);
+      lines.push('🔒 Deriv settlement: <b>CONFIRMED</b>');
+    } else {
+      lines.push('⏳ Settlement confirmation unavailable');
+    }
+
+    // Only show cycle P/L when the sender explicitly says the whole cycle is
+    // fully reconciled. This prevents stale/pending losses from being presented
+    // as the final cycle result.
+    if (c.cyclePnlAuthoritative) {
+      lines.push(`📊 <b>Final cycle P/L: ${money(c.netPnL)}</b>`);
+    }
+
+    lines.push('');
+    lines.push(
       type === 'REAL'
         ? 'Real-money result. Trading involves risk.'
-        : 'Demo result using virtual funds.',
-      'Trading involves risk, and past results do not guarantee future performance.', '',
-      '🚀 <b>Experience DigitMatchStar</b>',
-      WEBSITE
-    ].join('\n');
+        : 'Demo result using virtual funds.'
+    );
+    lines.push('Trading involves risk, and past results do not guarantee future performance.');
+    lines.push('');
+    lines.push('🚀 <b>Experience DigitMatchStar</b>');
+    lines.push(WEBSITE);
+
+    return lines.join('\n');
   }
 
   return [
@@ -179,8 +194,7 @@ function caption(c, type) {
     `📈 <b>${market(c.symbol)}</b>`,
     `🎯 Target digit: <b>${Number.isFinite(c.digit) ? c.digit : '-'}</b>`,
     `🛑 <b>CYCLE STOPPED AFTER ${n} TRADE${n === 1 ? '' : 'S'}</b>`,
-    `🔴 <b>Cycle P/L: ${pnl}</b>`,
-    `💵 Total stake: <b>$${c.totalInvestment.toFixed(2)}</b>`, '',
+    `📊 <b>Cycle P/L: ${money(c.netPnL)}</b>`, '',
     'The selected digit did not match within the configured trade limit.', '',
     'Trading involves risk, and past results do not guarantee future performance.', '',
     '🚀 <b>Experience DigitMatchStar</b>',
@@ -208,7 +222,6 @@ function approvalRequired() {
 
 async function telegramSend(payload) {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-
   if (!token) {
     const e = new Error('TELEGRAM_BOT_TOKEN is missing in this deployment');
     e.status = 500;
@@ -220,7 +233,6 @@ async function telegramSend(payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-
   const d = await r.json().catch(() => ({}));
 
   if (!r.ok || !d?.ok) {
@@ -234,7 +246,6 @@ async function telegramSend(payload) {
 
 async function sendApprovalPreview(text) {
   const adminChat = String(process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim();
-
   if (!adminChat) {
     const e = new Error('TELEGRAM_ADMIN_CHAT_ID is missing in this deployment');
     e.status = 500;
@@ -284,9 +295,7 @@ async function sendPublicPost(text) {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     reply_markup: {
-      inline_keyboard: [
-        [{ text: '🚀 Open DigitMatchStar', url: WEBSITE }]
-      ]
+      inline_keyboard: [[{ text: '🚀 Open DigitMatchStar', url: WEBSITE }]]
     }
   });
 }
@@ -295,7 +304,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'telegram-dual-auth-v2.0',
+      version: 'telegram-settlement-safe-v3.0',
       environment: envStatus()
     });
   }
@@ -308,7 +317,6 @@ module.exports = async function handler(req, res) {
   try {
     const auth = String(req.headers.authorization || '');
     const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-
     if (!bearer) {
       return res.status(401).json({ error: 'Missing publisher bearer token' });
     }
@@ -348,7 +356,6 @@ module.exports = async function handler(req, res) {
 
     if (approvalRequired()) {
       const preview = await sendApprovalPreview(text);
-
       return res.status(200).json({
         ok: true,
         published: false,
@@ -362,7 +369,6 @@ module.exports = async function handler(req, res) {
     }
 
     const published = await sendPublicPost(text);
-
     return res.status(200).json({
       ok: true,
       published: true,
