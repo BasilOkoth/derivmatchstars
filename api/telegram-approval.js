@@ -10,6 +10,15 @@ function parseAllowedApprovers(){
     .filter(Boolean);
 }
 
+function envStatus(){
+  return {
+    TELEGRAM_BOT_TOKEN:Boolean(String(process.env.TELEGRAM_BOT_TOKEN || '').trim()),
+    TELEGRAM_CHAT_ID:Boolean(String(process.env.TELEGRAM_CHAT_ID || process.env.MAIN_CHANNEL_CHAT_ID || '').trim()),
+    TELEGRAM_APPROVER_USER_IDS:Boolean(String(process.env.TELEGRAM_APPROVER_USER_IDS || '').trim()),
+    TELEGRAM_WEBHOOK_SECRET:Boolean(String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim())
+  };
+}
+
 async function tg(method, payload){
   const token=process.env.TELEGRAM_BOT_TOKEN;
 
@@ -38,8 +47,16 @@ async function tg(method, payload){
 }
 
 module.exports=async function handler(req,res){
+  if(req.method==='GET'){
+    return res.status(200).json({
+      ok:true,
+      version:'telegram-approval-v2.0',
+      environment:envStatus()
+    });
+  }
+
   if(req.method!=='POST'){
-    res.setHeader('Allow','POST');
+    res.setHeader('Allow','GET, POST');
     return res.status(405).json({
       error:'method_not_allowed'
     });
@@ -191,10 +208,12 @@ module.exports=async function handler(req,res){
     });
 
   }catch(e){
+    console.error('[telegram-approval]',e);
     return res.status(500).json({
       error:
         e?.message ||
-        'Telegram approval error'
+        'Telegram approval error',
+      environment:envStatus()
     });
   }
 };

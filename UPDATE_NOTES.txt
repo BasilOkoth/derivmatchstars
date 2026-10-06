@@ -1,0 +1,36 @@
+DigitMatchStar update files
+
+Replace these files in your project:
+1. /bot.html
+2. /api/publish-cycle.js
+3. /api/telegram-approval.js
+
+Trading changes
+- Fixes recovery orders blocking themselves via recoverySubmissionState.inFlight.
+- Live eligible ticks now call processTickImmediately() directly instead of first entering the 50 ms queue.
+- Duplicate proposal/buy protection remains enabled.
+- Telegram async publisher errors are now logged instead of being silently lost.
+
+Telegram deployment settings
+Required for both modes:
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_CHAT_ID=<public channel/group chat id>
+TELEGRAM_PUBLISH_ACCOUNT_IDS=<comma-separated allowed Deriv account ids>
+
+Approval mode (default):
+TELEGRAM_REQUIRE_APPROVAL=true
+TELEGRAM_ADMIN_CHAT_ID=<admin private chat id>
+TELEGRAM_APPROVER_USER_IDS=<comma-separated Telegram user ids>
+TELEGRAM_WEBHOOK_SECRET=<secret used when registering the webhook>
+
+Direct public posting:
+TELEGRAM_REQUIRE_APPROVAL=false
+
+Useful diagnostics after deployment:
+GET /api/publish-cycle
+GET /api/telegram-approval
+
+Both endpoints now return boolean environment-status fields without exposing secret values.
+
+Important:
+A one-tick contract still cannot be synchronously purchased and settled at the exact instant a streamed tick arrives. The update makes each eligible entry/recovery decision react directly to its source tick, while retaining the existing safeguards against overlapping/duplicate orders.

@@ -5994,8 +5994,25 @@ window.cyclePerformance = {
 
         window.tailPrecursorLab.render();
 
-        // Fire-and-forget publisher; never blocks trading.
-        try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
+        // Fire-and-forget publisher; never blocks trading, but do not hide async errors.
+        try {
+            const publishPromise = window.matchstarPublisher?.publishCycle(c);
+            if (publishPromise && typeof publishPromise.catch === 'function') {
+                publishPromise.catch(err => {
+                    const message = err?.message || String(err || 'unknown publisher error');
+                    console.error('[MatchStar Publisher] unhandled failure:', err);
+                    if (typeof log === 'function') {
+                        log(`📣 Telegram publisher failed: ${message}`, 'ERROR');
+                    }
+                });
+            }
+        } catch (err) {
+            const message = err?.message || String(err || 'unknown publisher error');
+            console.error('[MatchStar Publisher] synchronous failure:', err);
+            if (typeof log === 'function') {
+                log(`📣 Telegram publisher failed: ${message}`, 'ERROR');
+            }
+        }
 
         const sessionLedgerPnL =
             Number(window.pnlTracker?.totalPayout || 0) -
@@ -7180,7 +7197,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             );
         }
 
-        function mayPlaceNextTrade() {
+        function mayPlaceNextTrade({ allowRecoveryInFlight = false } = {}) {
             const hasPendingOrder = !!(
                 window.pendingProposals &&
                 window.pendingProposals.size > 0
@@ -7193,7 +7210,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 !window.executionLock &&
                 !hasOpenContract() &&
                 !hasPendingOrder &&
-                !recoveryInFlight &&
+                (allowRecoveryInFlight || !recoveryInFlight) &&
                 window.nextTradeAllowed
             );
         }
@@ -9682,7 +9699,9 @@ function rotateHybridDigit(reason = '') {
                 !hasOpenContract() &&
                 !window.stopAfterWin
             ) {
-                addTickToQueue(tickData);
+                // Live entry is driven directly by the public market tick.
+                // Do not add an avoidable 0-50 ms queue delay before proposal creation.
+                processTickImmediately(tickData);
             }
 
             // Update connection status UI
@@ -10469,7 +10488,7 @@ function rotateHybridDigit(reason = '') {
                 origin
             };
 
-            processTickImmediately(tick);
+            processTickImmediately(tick, { allowRecoveryInFlight: true });
 
             const afterPending = Number(window.pendingProposals?.size || 0);
             const submitted =
@@ -10500,15 +10519,18 @@ function rotateHybridDigit(reason = '') {
             return false;
         }
 
-        function processTickImmediately(tick) {
-            if (window.SERVER_EXECUTION?.enabled) return;
-            if (window.stopAfterWin) return;
+        function processTickImmediately(tick, { allowRecoveryInFlight = false } = {}) {
+            if (window.SERVER_EXECUTION?.enabled) return false;
+            if (window.stopAfterWin) return false;
 
             // Never allow a second order while a proposal/buy is still awaiting
             // an API response. This closes the FAST LOSS vs reconciliation race.
-            if (window.pendingProposals && window.pendingProposals.size > 0) return;
+            if (window.pendingProposals && window.pendingProposals.size > 0) return false;
 
-            if (!mayPlaceNextTrade()) return;
+            // Recovery submission marks itself in-flight before it enters this function.
+            // Permit only that owning recovery path to bypass the recovery flag; every
+            // other proposal/buy guard remains active.
+            if (!mayPlaceNextTrade({ allowRecoveryInFlight })) return false;
 
             // V21: INSTANT may attempt at most ONE order from any market epoch.
             // This prevents duplicate proposals if the same tick is seen through

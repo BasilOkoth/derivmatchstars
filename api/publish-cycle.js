@@ -1,5 +1,5 @@
 // /api/publish-cycle.js
-// DigitMatchStar Telegram publisher V1.9
+// DigitMatchStar Telegram publisher V2.0
 // Supports:
 //  1) DigitMatchStar platform JWT (secure OAuth)
 //  2) Verified Deriv bearer token (legacy/manual browser mode)
@@ -194,9 +194,16 @@ function envStatus() {
     TELEGRAM_ADMIN_CHAT_ID: Boolean(String(process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim()),
     TELEGRAM_CHAT_ID: Boolean(String(process.env.TELEGRAM_CHAT_ID || '').trim()),
     TELEGRAM_PUBLISH_ACCOUNT_IDS: Boolean(String(process.env.TELEGRAM_PUBLISH_ACCOUNT_IDS || '').trim()),
+    TELEGRAM_APPROVER_USER_IDS: Boolean(String(process.env.TELEGRAM_APPROVER_USER_IDS || '').trim()),
+    TELEGRAM_WEBHOOK_SECRET: Boolean(String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim()),
     DMS_API_URL: Boolean(String(process.env.DMS_API_URL || '').trim()),
+    approvalRequired: String(process.env.TELEGRAM_REQUIRE_APPROVAL || 'true').toLowerCase() !== 'false',
     dualAuth: true
   };
+}
+
+function approvalRequired() {
+  return String(process.env.TELEGRAM_REQUIRE_APPROVAL || 'true').toLowerCase() !== 'false';
 }
 
 async function telegramSend(payload) {
@@ -258,11 +265,37 @@ async function sendApprovalPreview(text) {
   });
 }
 
+async function sendPublicPost(text) {
+  const publicChat = String(
+    process.env.TELEGRAM_CHAT_ID ||
+    process.env.MAIN_CHANNEL_CHAT_ID ||
+    ''
+  ).trim();
+
+  if (!publicChat) {
+    const e = new Error('TELEGRAM_CHAT_ID / MAIN_CHANNEL_CHAT_ID is missing in this deployment');
+    e.status = 500;
+    throw e;
+  }
+
+  return telegramSend({
+    chat_id: publicChat,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🚀 Open DigitMatchStar', url: WEBSITE }]
+      ]
+    }
+  });
+}
+
 module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'telegram-dual-auth-v1.9',
+      version: 'telegram-dual-auth-v2.0',
       environment: envStatus()
     });
   }
@@ -312,17 +345,33 @@ module.exports = async function handler(req, res) {
     }
 
     const text = caption(c, verified.accountMode);
-    const preview = await sendApprovalPreview(text);
+
+    if (approvalRequired()) {
+      const preview = await sendApprovalPreview(text);
+
+      return res.status(200).json({
+        ok: true,
+        published: false,
+        pendingApproval: true,
+        format: 'text',
+        accountType: verified.accountMode,
+        authMode,
+        cycleId: c.id,
+        approvalMessageId: preview?.message_id || null
+      });
+    }
+
+    const published = await sendPublicPost(text);
 
     return res.status(200).json({
       ok: true,
-      published: false,
-      pendingApproval: true,
+      published: true,
+      pendingApproval: false,
       format: 'text',
       accountType: verified.accountMode,
       authMode,
       cycleId: c.id,
-      approvalMessageId: preview?.message_id || null
+      publicMessageId: published?.message_id || null
     });
 
   } catch (e) {
