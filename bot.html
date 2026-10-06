@@ -5520,6 +5520,20 @@ window.matchstarPublisher = {
     async publishCycle(cycle) {
         if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
 
+        // WIN notifications are settlement-safe only.
+        // Legacy/browser cycle recorders may still call publishCycle(), but
+        // they are not allowed to publish a WIN unless the exact Deriv
+        // settlement has been attached to the payload.
+        if (
+            String(cycle?.status || '').toUpperCase() === 'WIN' &&
+            cycle?.settlementConfirmed !== true
+        ) {
+            console.info(
+                '[MatchStar Publisher] skipped unconfirmed WIN; waiting for authoritative settlement'
+            );
+            return null;
+        }
+
         const accountId = this.accountId();
         const auths = this.authCandidates();
 
@@ -5545,6 +5559,9 @@ window.matchstarPublisher = {
                 totalInvestment: cycle.totalInvestment,
                 totalPayout: cycle.totalPayout,
                 netPnL: cycle.netPnL,
+                cyclePnlAuthoritative: cycle.cyclePnlAuthoritative === true,
+                settlementConfirmed: cycle.settlementConfirmed === true,
+                settlementContractId: cycle.settlementContractId || '',
                 maxStake: cycle.maxStake,
                 trades: Array.isArray(cycle.trades)
                     ? cycle.trades.map(t => ({
@@ -5554,7 +5571,9 @@ window.matchstarPublisher = {
                         result: t.result,
                         finalDigit: t.finalDigit,
                         payout: t.payout,
-                        profit: t.profit
+                        profit: t.profit,
+                        contractId: t.contractId || '',
+                        settled: t.settled === true
                     }))
                     : []
             }
@@ -5916,8 +5935,12 @@ window.cyclePerformance = {
 
         window.tailPrecursorLab.render();
 
-        // Fire-and-forget publisher; never blocks trading.
-        try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
+        // Legacy cycle recorder is NOT authoritative for WIN publication.
+        // Settlement-confirmed WINs are published only by
+        // publishFastWinToTelegram() after the exact Deriv contract settles.
+        if (String(status || '').toUpperCase() !== 'WIN') {
+            try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
+        }
 
         const sessionLedgerPnL =
             Number(window.pnlTracker?.totalPayout || 0) -

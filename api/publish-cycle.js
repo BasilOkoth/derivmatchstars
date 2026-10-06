@@ -164,8 +164,6 @@ function caption(c, type) {
     if (c.settlementConfirmed && Number.isFinite(winningProfit)) {
       lines.push(`💰 <b>Winning trade P/L: ${money(winningProfit)}</b>`);
       lines.push('🔒 Deriv settlement: <b>CONFIRMED</b>');
-    } else {
-      lines.push('⏳ Settlement confirmation unavailable');
     }
 
     // Only show cycle P/L when the sender explicitly says the whole cycle is
@@ -304,7 +302,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'telegram-settlement-safe-v3.0',
+      version: 'telegram-settlement-confirmed-v3.1',
       environment: envStatus()
     });
   }
@@ -350,6 +348,18 @@ module.exports = async function handler(req, res) {
     const c = normalise(req.body?.cycle);
     if (!c.id || !c.trades.length) {
       return res.status(400).json({ error: 'Invalid or empty cycle' });
+    }
+
+    // Never publish a WIN without the exact Deriv settlement. This turns any
+    // stale legacy caller into a harmless skip instead of a misleading post.
+    if (c.status === 'WIN' && c.settlementConfirmed !== true) {
+      return res.status(202).json({
+        ok: true,
+        published: false,
+        pendingSettlement: true,
+        cycleId: c.id,
+        message: 'WIN held until authoritative Deriv settlement is available'
+      });
     }
 
     const text = caption(c, verified.accountMode);
