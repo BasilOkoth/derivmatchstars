@@ -5349,6 +5349,11 @@ window.tailPrecursorLab = {
                         class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded">
                     ⬇ DOWNLOAD FULL OBSERVABILITY REPORT
                 </button>
+                <button id="downloadTaeResultsBtn"
+                        onclick="downloadTargetAttractionResults()"
+                        class="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded">
+                    📊 EXPORT TAE RESULTS
+                </button>
             </div>
 
             <div class="mt-2 text-gray-400" id="tpl-action">
@@ -5994,25 +5999,8 @@ window.cyclePerformance = {
 
         window.tailPrecursorLab.render();
 
-        // Fire-and-forget publisher; never blocks trading, but do not hide async errors.
-        try {
-            const publishPromise = window.matchstarPublisher?.publishCycle(c);
-            if (publishPromise && typeof publishPromise.catch === 'function') {
-                publishPromise.catch(err => {
-                    const message = err?.message || String(err || 'unknown publisher error');
-                    console.error('[MatchStar Publisher] unhandled failure:', err);
-                    if (typeof log === 'function') {
-                        log(`📣 Telegram publisher failed: ${message}`, 'ERROR');
-                    }
-                });
-            }
-        } catch (err) {
-            const message = err?.message || String(err || 'unknown publisher error');
-            console.error('[MatchStar Publisher] synchronous failure:', err);
-            if (typeof log === 'function') {
-                log(`📣 Telegram publisher failed: ${message}`, 'ERROR');
-            }
-        }
+        // Fire-and-forget publisher; never blocks trading.
+        try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
 
         const sessionLedgerPnL =
             Number(window.pnlTracker?.totalPayout || 0) -
@@ -7197,7 +7185,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             );
         }
 
-        function mayPlaceNextTrade({ allowRecoveryInFlight = false } = {}) {
+        function mayPlaceNextTrade() {
             const hasPendingOrder = !!(
                 window.pendingProposals &&
                 window.pendingProposals.size > 0
@@ -7210,7 +7198,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
                 !window.executionLock &&
                 !hasOpenContract() &&
                 !hasPendingOrder &&
-                (allowRecoveryInFlight || !recoveryInFlight) &&
+                !recoveryInFlight &&
                 window.nextTradeAllowed
             );
         }
@@ -9699,9 +9687,7 @@ function rotateHybridDigit(reason = '') {
                 !hasOpenContract() &&
                 !window.stopAfterWin
             ) {
-                // Live entry is driven directly by the public market tick.
-                // Do not add an avoidable 0-50 ms queue delay before proposal creation.
-                processTickImmediately(tickData);
+                addTickToQueue(tickData);
             }
 
             // Update connection status UI
@@ -10488,7 +10474,7 @@ function rotateHybridDigit(reason = '') {
                 origin
             };
 
-            processTickImmediately(tick, { allowRecoveryInFlight: true });
+            processTickImmediately(tick);
 
             const afterPending = Number(window.pendingProposals?.size || 0);
             const submitted =
@@ -10519,18 +10505,15 @@ function rotateHybridDigit(reason = '') {
             return false;
         }
 
-        function processTickImmediately(tick, { allowRecoveryInFlight = false } = {}) {
-            if (window.SERVER_EXECUTION?.enabled) return false;
-            if (window.stopAfterWin) return false;
+        function processTickImmediately(tick) {
+            if (window.SERVER_EXECUTION?.enabled) return;
+            if (window.stopAfterWin) return;
 
             // Never allow a second order while a proposal/buy is still awaiting
             // an API response. This closes the FAST LOSS vs reconciliation race.
-            if (window.pendingProposals && window.pendingProposals.size > 0) return false;
+            if (window.pendingProposals && window.pendingProposals.size > 0) return;
 
-            // Recovery submission marks itself in-flight before it enters this function.
-            // Permit only that owning recovery path to bypass the recovery flag; every
-            // other proposal/buy guard remains active.
-            if (!mayPlaceNextTrade({ allowRecoveryInFlight })) return false;
+            if (!mayPlaceNextTrade()) return;
 
             // V21: INSTANT may attempt at most ONE order from any market epoch.
             // This prevents duplicate proposals if the same tick is seen through
@@ -11876,6 +11859,83 @@ window.executionLock = true;
             }
             return data;
         }
+
+
+
+        async function downloadTargetAttractionResults() {
+            try {
+                const s = window.SERVER_EXECUTION;
+                const sid = Number(s?.sessionId || 0);
+
+                if (!sid) {
+                    throw new Error(
+                        'No server trading session exists yet. Start/configure the bot first.'
+                    );
+                }
+
+                const data = await serverExecRequest(
+                    `/sessions/${sid}/tae/export`,
+                    { method: 'GET' }
+                );
+
+                const now = new Date();
+                const stamp = now.toISOString().replace(/[:.]/g, '-');
+                const symbol = String(
+                    s?.state?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    'R_10'
+                ).replace(/[^A-Za-z0-9_-]/g, '_');
+
+                const filename =
+                    `target-attraction-v1-${symbol}-${stamp}.json`;
+
+                const blob = new Blob(
+                    [JSON.stringify(data, null, 2)],
+                    { type: 'application/json;charset=utf-8' }
+                );
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+
+                setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+                const n = Number(data?.records_count || 0);
+                const selected = Number(
+                    data?.status?.selected_predictions || 0
+                );
+                const stop10 = data?.status?.selected_stop10_rate;
+
+                const tailText = Number.isFinite(Number(stop10))
+                    ? `${(Number(stop10) * 100).toFixed(1)}%`
+                    : '—';
+
+                try {
+                    log(
+                        `📊 TAE EXPORT | ${n} matured samples · ` +
+                        `${selected} selected · selected STOP10 ${tailText}`,
+                        'SYSTEM'
+                    );
+                } catch (_) {}
+
+                return data;
+
+            } catch (error) {
+                console.error('TAE export failed:', error);
+                try {
+                    log(`❌ TAE EXPORT FAILED | ${error.message}`, 'ERROR');
+                } catch (_) {}
+                alert(`TAE export failed: ${error.message}`);
+                throw error;
+            }
+        }
+
+        window.downloadTargetAttractionResults =
+            downloadTargetAttractionResults;
 
 
         function toggleServerContinuousResearch() {
@@ -14951,6 +15011,10 @@ window.isBotRunning = true;
                             style="width:100%;border:1px solid #15803d;background:#166534;color:#dcfce7;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
                             ▶ Run 5 more
                         </button>
+                        <button id="tg-ap-tae-export" type="button"
+                            style="grid-column:1 / -1;width:100%;border:1px solid #047857;background:#065f46;color:#d1fae5;padding:7px;border-radius:8px;cursor:pointer;font-weight:900">
+                            📊 Export Target Attraction Results
+                        </button>
                         <button id="tg-ap-pause" type="button"
                             style="grid-column:1 / -1;width:100%;border:1px solid #334155;background:#0f172a;color:#e2e8f0;padding:7px;border-radius:8px;cursor:pointer;font-weight:800">
                             Pause autopilot
@@ -14967,6 +15031,7 @@ window.isBotRunning = true;
             pauseBtn = panel.querySelector('#tg-ap-pause');
             exportBtn = panel.querySelector('#tg-ap-export');
             moreBtn = panel.querySelector('#tg-ap-more');
+            const taeExportBtn = panel.querySelector('#tg-ap-tae-export');
 
             minimizeBtn.addEventListener('click', () => {
                 setMinimized(body.style.display !== 'none');
@@ -14985,6 +15050,17 @@ window.isBotRunning = true;
                 } catch (error) {
                     console.error('TailGuard report export failed:', error);
                     statusEl.textContent = 'Report export failed';
+                    statusEl.style.color = '#f87171';
+                }
+            });
+
+            taeExportBtn?.addEventListener('click', async () => {
+                try {
+                    await downloadTargetAttractionResults();
+                    statusEl.textContent = 'Target Attraction results downloaded';
+                    statusEl.style.color = '#4ade80';
+                } catch (_) {
+                    statusEl.textContent = 'Target Attraction export failed';
                     statusEl.style.color = '#f87171';
                 }
             });

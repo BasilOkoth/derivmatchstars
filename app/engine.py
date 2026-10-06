@@ -1,5 +1,7 @@
 import asyncio
 import json
+import math
+from collections import deque
 from datetime import datetime
 
 from .db import SessionLocal
@@ -11,7 +13,7 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine.
+    DigitMatchStar DEMO low-latency engine + V31 Target Attraction Engine.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -53,6 +55,31 @@ class MultiUserEngine:
         # One pre-armed recovery proposal per session.
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
+
+        # TARGET ATTRACTION ENGINE V1 — FORWARD-ONLY T10 RESEARCH
+        #
+        # This model does NOT alter or "pull" Deriv's RNG. It learns, from
+        # already-matured live observations only, which pre-entry contexts are
+        # associated with the selected target digit recurring within 10 future
+        # ticks. Trade 1 is armed only when the model is sufficiently trained
+        # and the current forward-only score exceeds the frozen threshold.
+        self.tick_digit_history = {}      # sid -> deque(maxlen=100)
+        self.tae_pending = {}             # sid -> list of unresolved samples
+        self.tae_models = {}              # sid -> model state
+        self.tae_records = {}             # sid -> matured forward-only observations
+        self.target_digit_by_sid = {}     # sid -> currently selected digit
+
+        self.tae_horizon = 10
+        self.tae_min_history = 100
+        self.tae_min_train_samples = 250
+        self.tae_arm_probability = 0.80
+        self.tae_learning_rate = 0.035
+        self.tae_l2 = 0.001
+
+        # Frozen SAFE-TICK V1 is retained as ONE INPUT FEATURE, not as a hard
+        # gate, so the new model can be tested independently.
+        self.safe_v1_freq25_max = 0.08
+        self.safe_v1_entropy10_max = 2.5219280948873625
 
     async def start(self):
         if not self.task or self.task.done():
@@ -258,6 +285,375 @@ class MultiUserEngine:
         digits = [ch for ch in text if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
+    def _history(self, sid: int):
+        history = self.tick_digit_history.get(sid)
+        if history is None:
+            history = deque(maxlen=100)
+            self.tick_digit_history[sid] = history
+        return history
+
+    @staticmethod
+    def _entropy(values):
+        n = len(values)
+        if n <= 0:
+            return 0.0
+
+        counts = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+
+        result = 0.0
+        for count in counts.values():
+            p = count / n
+            result -= p * math.log2(p)
+
+        return result
+
+    @staticmethod
+    def _sigmoid(value):
+        if value >= 0:
+            z = math.exp(-value)
+            return 1.0 / (1.0 + z)
+        z = math.exp(value)
+        return z / (1.0 + z)
+
+    def _tae_model(self, sid: int):
+        model = self.tae_models.get(sid)
+        if model is None:
+            # Independent-random baseline for at least one hit in 10 draws:
+            # 1 - 0.9**10 ~= 0.6513. This is only the starting intercept.
+            baseline = 1.0 - (0.9 ** self.tae_horizon)
+            bias = math.log(baseline / (1.0 - baseline))
+
+            model = {
+                "weights": [0.0] * 12,
+                "bias": bias,
+                "trained": 0,
+                "positives": 0,
+                "brier_sum": 0.0,
+                "forward_predictions": 0,
+                "forward_hits": 0,
+                "selected_predictions": 0,
+                "selected_hits": 0,
+                "last_probability": None,
+                "last_features": None,
+                "last_target": None,
+            }
+            self.tae_models[sid] = model
+        return model
+
+    def _tae_features(self, sid: int, target_digit: int):
+        history = list(self._history(sid))
+        if len(history) < self.tae_min_history:
+            return None
+
+        target_digit = int(target_digit)
+
+        def freq(window):
+            values = history[-window:]
+            if not values:
+                return 0.0
+            return sum(1 for d in values if d == target_digit) / len(values)
+
+        # Gap since most recent target, capped at 50 and scaled to [0,1].
+        gap = 50
+        for i, digit in enumerate(reversed(history), start=0):
+            if digit == target_digit:
+                gap = min(i, 50)
+                break
+
+        last10 = history[-10:]
+        last25 = history[-25:]
+        last50 = history[-50:]
+        last100 = history[-100:]
+
+        entropy10 = self._entropy(last10) / math.log2(10)
+        entropy25 = self._entropy(last25) / math.log2(10)
+
+        adjacent_repeats = 0.0
+        if len(last10) > 1:
+            adjacent_repeats = (
+                sum(
+                    1
+                    for a, b in zip(last10[:-1], last10[1:])
+                    if a == b
+                )
+                / (len(last10) - 1)
+            )
+
+        # Empirical transition P(next == target | current digit), calculated
+        # only from history that already existed before the future label.
+        current_digit = history[-1]
+        transition_total = 0
+        transition_hits = 0
+        for a, b in zip(last100[:-1], last100[1:]):
+            if a == current_digit:
+                transition_total += 1
+                if b == target_digit:
+                    transition_hits += 1
+
+        transition_to_target = (
+            transition_hits / transition_total
+            if transition_total
+            else 0.10
+        )
+
+        freq25 = freq(25)
+        safe_v1 = 1.0 if (
+            freq25 <= self.safe_v1_freq25_max
+            and self._entropy(last10) <= self.safe_v1_entropy10_max
+        ) else 0.0
+
+        return [
+            gap / 50.0,
+            freq(5),
+            freq(10),
+            freq25,
+            freq(50),
+            freq(100),
+            entropy10,
+            entropy25,
+            adjacent_repeats,
+            transition_to_target,
+            1.0 if current_digit == target_digit else 0.0,
+            safe_v1,
+        ]
+
+    def _tae_predict_from_features(self, sid: int, features):
+        model = self._tae_model(sid)
+        score = model["bias"]
+        for weight, value in zip(model["weights"], features):
+            score += weight * value
+        return self._sigmoid(score)
+
+    def _tae_train_one(self, sid: int, features, label: int, predicted: float):
+        model = self._tae_model(sid)
+        n = model["trained"] + 1
+
+        # Gentle decay avoids increasingly large late updates while keeping the
+        # model adaptive to newly observed forward data.
+        lr = self.tae_learning_rate / math.sqrt(1.0 + n / 250.0)
+        error = float(label) - float(predicted)
+
+        model["bias"] += lr * error
+
+        new_weights = []
+        for weight, value in zip(model["weights"], features):
+            gradient = error * value - self.tae_l2 * weight
+            new_weights.append(weight + lr * gradient)
+
+        model["weights"] = new_weights
+        model["trained"] = n
+        model["positives"] += int(label)
+        model["brier_sum"] += (float(predicted) - float(label)) ** 2
+
+    def _tae_observe_tick(self, sid: int, digit: int):
+        """
+        Advance old samples with this NEW tick, mature labels at exactly T10,
+        train only on those matured labels, then append this tick to history
+        and create a new strictly-forward sample.
+
+        There is no future leakage: each prediction is made before its next
+        ten ticks exist.
+        """
+        target = self.target_digit_by_sid.get(sid)
+        if target is None:
+            self._history(sid).append(int(digit))
+            return
+
+        pending = self.tae_pending.setdefault(sid, [])
+        still_pending = []
+
+        for sample in pending:
+            sample["ticks_observed"] = int(sample.get("ticks_observed") or 0) + 1
+
+            if (
+                not sample.get("hit")
+                and int(digit) == int(sample["target"])
+            ):
+                sample["hit"] = True
+                sample["forward_gap"] = int(sample["ticks_observed"])
+
+            sample["remaining"] -= 1
+
+            if sample["remaining"] <= 0:
+                label = 1 if sample["hit"] else 0
+                predicted = float(sample["predicted"])
+
+                self._tae_train_one(
+                    sid,
+                    sample["features"],
+                    label,
+                    predicted,
+                )
+
+                model = self._tae_model(sid)
+                model["forward_predictions"] += 1
+                model["forward_hits"] += label
+
+                if sample["selected"]:
+                    model["selected_predictions"] += 1
+                    model["selected_hits"] += label
+
+                records = self.tae_records.setdefault(sid, [])
+                records.append(
+                    {
+                        "sample_index": len(records) + 1,
+                        "target_digit": int(sample["target"]),
+                        "prediction_t0_probability": predicted,
+                        "selected": bool(sample["selected"]),
+                        "arm_threshold": float(self.tae_arm_probability),
+                        "label_return_by_t10": int(label),
+                        "stop10": int(not bool(label)),
+                        "forward_gap": (
+                            int(sample["forward_gap"])
+                            if sample.get("forward_gap") is not None
+                            else None
+                        ),
+                        "horizon": int(self.tae_horizon),
+                        "features": list(sample["features"]),
+                        "model_trained_samples_at_t0": int(
+                            sample.get("trained_at_t0") or 0
+                        ),
+                    }
+                )
+
+                # Keep a substantial in-memory research window without
+                # unbounded growth.
+                if len(records) > 10000:
+                    del records[:-10000]
+            else:
+                still_pending.append(sample)
+
+        self.tae_pending[sid] = still_pending
+
+        self._history(sid).append(int(digit))
+
+        features = self._tae_features(sid, int(target))
+        if features is None:
+            return
+
+        model = self._tae_model(sid)
+        predicted = self._tae_predict_from_features(sid, features)
+
+        selected = (
+            model["trained"] >= self.tae_min_train_samples
+            and predicted >= self.tae_arm_probability
+        )
+
+        model["last_probability"] = predicted
+        model["last_features"] = list(features)
+        model["last_target"] = int(target)
+
+        pending.append(
+            {
+                "target": int(target),
+                "features": list(features),
+                "predicted": predicted,
+                "remaining": self.tae_horizon,
+                "ticks_observed": 0,
+                "hit": False,
+                "forward_gap": None,
+                "selected": bool(selected),
+                "trained_at_t0": int(model["trained"]),
+            }
+        )
+
+    def target_attraction_status(self, sid: int):
+        model = self._tae_model(sid)
+        trained = int(model["trained"])
+        selected = int(model["selected_predictions"])
+        forward_n = int(model["forward_predictions"])
+
+        return {
+            "name": "TARGET_ATTRACTION_ENGINE_V1",
+            "horizon": self.tae_horizon,
+            "min_train_samples": self.tae_min_train_samples,
+            "arm_probability": self.tae_arm_probability,
+            "trained_samples": trained,
+            "positive_rate": (
+                model["positives"] / trained
+                if trained else None
+            ),
+            "brier_score": (
+                model["brier_sum"] / trained
+                if trained else None
+            ),
+            "forward_predictions": forward_n,
+            "forward_hit_rate": (
+                model["forward_hits"] / forward_n
+                if forward_n else None
+            ),
+            "selected_predictions": selected,
+            "selected_hit_rate": (
+                model["selected_hits"] / selected
+                if selected else None
+            ),
+            "selected_stop10_rate": (
+                (selected - model["selected_hits"]) / selected
+                if selected else None
+            ),
+            "current_target": model["last_target"],
+            "current_probability_t10": model["last_probability"],
+            "ready": trained >= self.tae_min_train_samples,
+            "armed_now": bool(
+                trained >= self.tae_min_train_samples
+                and model["last_probability"] is not None
+                and model["last_probability"] >= self.tae_arm_probability
+            ),
+            "note": (
+                "Forward-only research score. It estimates recurrence within "
+                "10 ticks; it does not control or alter Deriv's RNG."
+            ),
+        }
+
+    def export_target_attraction(self, sid: int):
+        """
+        Return a complete research export for the current in-process TAE run.
+        Only matured forward observations are included in records.
+        """
+        status = self.target_attraction_status(sid)
+        records = list(self.tae_records.get(sid, []))
+        pending = list(self.tae_pending.get(sid, []))
+
+        feature_names = [
+            "gap_since_target_scaled",
+            "target_freq5",
+            "target_freq10",
+            "target_freq25",
+            "target_freq50",
+            "target_freq100",
+            "entropy10_normalized",
+            "entropy25_normalized",
+            "adjacent_repeat_rate10",
+            "transition_current_to_target",
+            "current_digit_equals_target",
+            "safe_tick_v1_accept_flag",
+        ]
+
+        return {
+            "schema": "DIGITMATCHSTAR_TARGET_ATTRACTION_ENGINE_V1_EXPORT",
+            "version": "V32-TAE-EXPORT-2026-10-06",
+            "forward_only": True,
+            "horizon_ticks": int(self.tae_horizon),
+            "feature_names": feature_names,
+            "entry_policy": {
+                "minimum_history": int(self.tae_min_history),
+                "minimum_matured_training_samples": int(
+                    self.tae_min_train_samples
+                ),
+                "arm_probability": float(self.tae_arm_probability),
+            },
+            "status": status,
+            "records_count": len(records),
+            "pending_count": len(pending),
+            "records": records,
+            "note": (
+                "Records are matured forward-only observations. The model "
+                "estimates recurrence within T10 and does not control Deriv RNG."
+            ),
+        }
+
     async def _ensure_tick_subscription(
         self,
         *,
@@ -332,6 +728,12 @@ class MultiUserEngine:
                 epoch,
             )
 
+        # Feed every live tick into the forward-only Target Attraction Engine,
+        # including periods when no paid contract is active.
+        digit = self._tick_last_digit(tick)
+        if digit is not None:
+            self._tae_observe_tick(sid, int(digit))
+
         active = self.fast_contracts.get(sid)
 
         if active:
@@ -356,7 +758,6 @@ class MultiUserEngine:
         if epoch and armed_after_epoch and epoch <= armed_after_epoch:
             return
 
-        digit = self._tick_last_digit(tick)
         if digit is None:
             return
 
@@ -527,6 +928,9 @@ class MultiUserEngine:
                 if not s or not s.running or s.paused:
                     return
 
+                if s.candidate_digit is not None:
+                    self.target_digit_by_sid[sid] = int(s.candidate_digit)
+
                 if s.last_error:
                     # Clear ordinary stale errors once the worker is healthy.
                     # Keep reconciliation mismatches visible.
@@ -678,6 +1082,61 @@ class MultiUserEngine:
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
+
+                # TARGET ATTRACTION ENGINE — TRADE 1 GATE
+                #
+                # Once a cycle starts, recovery remains immediate. This gate
+                # never delays Trade 2+ and settlement stays background-only.
+                if int(s.current_trade) == 0:
+                    model = self._tae_model(s.id)
+                    trained = int(model["trained"])
+                    probability = model["last_probability"]
+
+                    if len(self._history(s.id)) < self.tae_min_history:
+                        s.phase = "TAE_HISTORY_WARMING"
+                        s.last_error = (
+                            "Target Attraction collecting live history "
+                            f"({len(self._history(s.id))}/{self.tae_min_history})"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    if trained < self.tae_min_train_samples:
+                        s.phase = "TAE_MODEL_WARMING"
+                        s.last_error = (
+                            "Target Attraction forward-training "
+                            f"({trained}/{self.tae_min_train_samples})"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    if probability is None:
+                        s.phase = "TAE_SCORING"
+                        s.last_error = "Target Attraction waiting for live score"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    if probability < self.tae_arm_probability:
+                        s.phase = "TAE_WAITING"
+                        s.last_error = (
+                            f"Target {int(s.candidate_digit)} · "
+                            f"P(return<=T10)={probability:.1%} · "
+                            f"arm at {self.tae_arm_probability:.0%}"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    s.phase = "TAE_ARMED"
+                    s.last_error = (
+                        f"Target {int(s.candidate_digit)} · "
+                        f"P(return<=T10)={probability:.1%} · ARMED"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
 
                 currency = await self._currency_for(db, s)
 

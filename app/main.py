@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.1.7-server-research-balance",
+    version="2.1.8-target-attraction-export",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.1.7-server-research-balance",
+        "version": "2.1.8-target-attraction-export",
         "frontend_origin": frontend_origin,
     }
 
@@ -119,6 +119,20 @@ def sessions(user_id: str = Depends(current_user_id)):
         db.close()
 
 
+@app.get("/sessions/{sid}/tae/export")
+def export_tae_results(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+    try:
+        owns_session(db, user_id, sid)
+    finally:
+        db.close()
+
+    return engine.export_target_attraction(sid)
+
+
 @app.post("/sessions")
 def create_session(
     body: SessionCreate,
@@ -163,9 +177,6 @@ def create_session(
             db.add(s)
             db.flush()
 
-        # IMPORTANT:
-        # If a previous trade has an unresolved/open contract, do NOT wipe it.
-        # Return the existing session so /start can resume reconciliation safely.
         if s.open_contract_id:
             s.running = False
             s.paused = False
@@ -241,7 +252,6 @@ def candidate(
     try:
         s = owns_session(db, user_id, sid)
 
-        # Never change the frozen candidate while a contract is unresolved.
         if s.open_contract_id:
             return {
                 "ok": True,
@@ -276,8 +286,6 @@ def start(
     try:
         s = owns_session(db, user_id, sid)
 
-        # An unresolved contract must be reconciled before any fresh proposal.
-        # Starting the worker is exactly how reconciliation happens.
         if s.open_contract_id:
             s.running = True
             s.paused = False
