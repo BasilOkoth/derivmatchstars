@@ -3,6 +3,7 @@ import json
 import math
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 from .db import SessionLocal
 from .models import (
@@ -16,6 +17,11 @@ from .models import (
 from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
+
+try:
+    from target_attraction_v2 import TargetAttractionV2Shadow
+except Exception:
+    TargetAttractionV2Shadow = None
 
 
 class MultiUserEngine:
@@ -98,6 +104,30 @@ class MultiUserEngine:
         # gate, so the new model can be tested independently.
         self.safe_v1_freq25_max = 0.08
         self.safe_v1_entropy10_max = 2.5219280948873625
+
+        # TARGET ATTRACTION V2 — STOP10 TAIL-RISK SHADOW
+        #
+        # V2 receives the exact same frozen T0 feature vector as V1. It is
+        # deliberately observational only: it cannot arm, block, size, or
+        # place any trade. V1 remains the execution/entry research engine.
+        self.tae_v2_shadow_scores = {}
+        self.tae_v2_model = None
+        self.tae_v2_load_error = None
+
+        if TargetAttractionV2Shadow is None:
+            self.tae_v2_load_error = (
+                "TargetAttractionV2Shadow module could not be imported"
+            )
+        else:
+            try:
+                repo_root = Path(__file__).resolve().parents[1]
+                self.tae_v2_model = TargetAttractionV2Shadow(
+                    repo_root / "tail_risk_shadow_v2.joblib",
+                    repo_root / "v2_metrics.json",
+                )
+            except Exception as exc:
+                # V2 is shadow-only and must never take down V1/server execution.
+                self.tae_v2_load_error = str(exc)
 
     async def start(self):
         if not self.task or self.task.done():
@@ -855,6 +885,105 @@ class MultiUserEngine:
             score += weight * value
         return self._sigmoid(score)
 
+    def _tae_v2_score_from_features(self, sid: int, features):
+        """
+        Score the current frozen T0 context with V2.
+
+        This method is strictly shadow-only. Its result is exposed to the
+        dashboard for research but is not consulted anywhere in the execution
+        path.
+        """
+        if self.tae_v2_model is None:
+            payload = {
+                "available": False,
+                "mode": "SHADOW_ONLY",
+                "target": "STOP10",
+                "stop10_probability": None,
+                "return_by_t10_probability": None,
+                "risk_band": "UNAVAILABLE",
+                "execution_eligible": False,
+                "validation_gate_passed": False,
+                "error": self.tae_v2_load_error,
+            }
+            self.tae_v2_shadow_scores[sid] = payload
+            return payload
+
+        try:
+            score = self.tae_v2_model.score(features)
+            metrics = self.tae_v2_model.metrics or {}
+            selected_name = metrics.get("selected_shadow_model")
+            selected_metrics = (
+                (metrics.get("models") or {}).get(selected_name) or {}
+            )
+            gate = metrics.get("execution_gate") or {}
+
+            payload = {
+                "available": True,
+                "mode": "SHADOW_ONLY",
+                "target": "STOP10",
+                "stop10_probability": float(score.stop10_probability),
+                "return_by_t10_probability": float(
+                    score.return_by_t10_probability
+                ),
+                "risk_band": str(score.risk_band),
+                # Hard shadow guard. Even if a later metrics file changes,
+                # this integration still cannot authorize execution.
+                "execution_eligible": False,
+                "validation_gate_passed": bool(gate.get("passed", False)),
+                "validation_reason": str(score.reason),
+                "selected_shadow_model": selected_name,
+                "oof_auc": selected_metrics.get("roc_auc"),
+                "mean_forward_auc": selected_metrics.get("mean_fold_auc"),
+                "brier_skill_vs_constant": selected_metrics.get(
+                    "brier_skill_vs_constant"
+                ),
+                "note": (
+                    "Research-only STOP10 score. V2 does not influence "
+                    "trade entry, recovery, stake sizing, or execution."
+                ),
+            }
+            self.tae_v2_shadow_scores[sid] = payload
+            return payload
+
+        except Exception as exc:
+            payload = {
+                "available": False,
+                "mode": "SHADOW_ONLY",
+                "target": "STOP10",
+                "stop10_probability": None,
+                "return_by_t10_probability": None,
+                "risk_band": "ERROR",
+                "execution_eligible": False,
+                "validation_gate_passed": False,
+                "error": str(exc),
+            }
+            self.tae_v2_shadow_scores[sid] = payload
+            return payload
+
+    def _tae_v2_status(self, sid: int):
+        current = self.tae_v2_shadow_scores.get(sid)
+        if current is not None:
+            return dict(current)
+
+        return {
+            "available": self.tae_v2_model is not None,
+            "mode": "SHADOW_ONLY",
+            "target": "STOP10",
+            "stop10_probability": None,
+            "return_by_t10_probability": None,
+            "risk_band": "WAITING",
+            "execution_eligible": False,
+            "validation_gate_passed": bool(
+                self.tae_v2_model and self.tae_v2_model.gate_passed
+            ),
+            "error": self.tae_v2_load_error,
+            "note": (
+                "Waiting for a complete T0 feature vector."
+                if self.tae_v2_model is not None
+                else "V2 model unavailable; V1 continues independently."
+            ),
+        }
+
     def _tae_train_one(self, sid: int, features, label: int, predicted: float):
         model = self._tae_model(sid)
         n = model["trained"] + 1
@@ -999,6 +1128,10 @@ class MultiUserEngine:
         model["last_features"] = list(features)
         model["last_target"] = int(target)
 
+        # Score V2 beside V1 on exactly the same T0 feature vector.
+        # V2 remains research-only and does not alter `selected`.
+        self._tae_v2_score_from_features(sid, features)
+
         new_sample = {
             "target": int(target),
             "features": list(features),
@@ -1102,6 +1235,7 @@ class MultiUserEngine:
                 and model["last_probability"] >= self.tae_arm_probability
             ),
             "research_stream": dict(self._research_diag_for(sid)),
+            "v2_shadow": self._tae_v2_status(sid),
             "persistent": True,
             "persistence_note": (
                 "Matured observations and model state are stored in the "

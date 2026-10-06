@@ -994,7 +994,7 @@
                              class="mt-3 p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-xs">
                             <div class="flex items-center justify-between gap-2 mb-2">
                                 <div class="font-black text-emerald-300">🎯 TARGET ATTRACTION ENGINE</div>
-                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">PERSISTENT · FORWARD-ONLY</div>
+                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">V1 ENTRY · V2 SHADOW</div>
                             </div>
                             <div class="grid grid-cols-2 gap-x-3 gap-y-1">
                                 <span class="text-gray-400">Target:</span>
@@ -1021,8 +1021,26 @@
                                 <span class="text-gray-400">Selected STOP10:</span>
                                 <span id="tae-live-stop10" class="font-bold text-white">—</span>
 
-                                <span class="text-gray-400">Current P(return ≤ T10):</span>
+                                <span class="text-gray-400">V1 P(return ≤ T10):</span>
                                 <span id="tae-live-prob" class="font-bold text-yellow-300">—</span>
+
+                                <span class="text-gray-400">V2 P(STOP10):</span>
+                                <span id="tae-v2-stop10-risk" class="font-black text-orange-300">—</span>
+
+                                <span class="text-gray-400">V2 P(return ≤ T10):</span>
+                                <span id="tae-v2-return-prob" class="font-bold text-cyan-300">—</span>
+
+                                <span class="text-gray-400">V2 risk band:</span>
+                                <span id="tae-v2-risk-band" class="font-bold text-white">WAITING</span>
+
+                                <span class="text-gray-400">V2 validation gate:</span>
+                                <span id="tae-v2-gate" class="font-black text-rose-300">FAILED</span>
+
+                                <span class="text-gray-400">V2 mode:</span>
+                                <span id="tae-v2-mode" class="font-bold text-cyan-300">SHADOW ONLY</span>
+
+                                <span class="text-gray-400">V2 model:</span>
+                                <span id="tae-v2-model" class="font-bold text-gray-300">—</span>
 
                                 <span class="text-gray-400">Model state:</span>
                                 <span id="tae-live-state" class="font-black text-yellow-300">WARMING</span>
@@ -11598,6 +11616,53 @@ window.executionLock = true;
             setText('tae-live-hit', pct(tae.forward_hit_rate));
             setText('tae-live-stop10', pct(tae.selected_stop10_rate));
             setText('tae-live-prob', pct(tae.current_probability_t10));
+
+            const v2 = tae.v2_shadow || {};
+            setText(
+                'tae-v2-stop10-risk',
+                v2.available ? pct(v2.stop10_probability) : '—'
+            );
+            setText(
+                'tae-v2-return-prob',
+                v2.available ? pct(v2.return_by_t10_probability) : '—'
+            );
+            setText(
+                'tae-v2-risk-band',
+                v2.risk_band || (v2.available ? 'WAITING' : 'UNAVAILABLE')
+            );
+            setText(
+                'tae-v2-gate',
+                v2.validation_gate_passed ? 'PASSED' : 'FAILED'
+            );
+            setText(
+                'tae-v2-mode',
+                String(v2.mode || 'SHADOW_ONLY').replaceAll('_', ' ')
+            );
+            setText(
+                'tae-v2-model',
+                v2.selected_shadow_model || (v2.available ? 'LOADED' : '—')
+            );
+
+            const v2RiskEl = document.getElementById('tae-v2-stop10-risk');
+            if (v2RiskEl) {
+                const risk = Number(v2.stop10_probability);
+                v2RiskEl.className = Number.isFinite(risk)
+                    ? (
+                        risk < 0.30
+                            ? 'font-black text-emerald-300'
+                            : risk < 0.40
+                                ? 'font-black text-yellow-300'
+                                : 'font-black text-orange-300'
+                    )
+                    : 'font-black text-gray-400';
+            }
+
+            const v2GateEl = document.getElementById('tae-v2-gate');
+            if (v2GateEl) {
+                v2GateEl.className = v2.validation_gate_passed
+                    ? 'font-black text-emerald-300'
+                    : 'font-black text-rose-300';
+            }
 
             let state = 'WARMING';
             if (tae.armed_now) state = 'ARMED';
