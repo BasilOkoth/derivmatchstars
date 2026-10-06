@@ -20,7 +20,7 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine + V36 Dedicated Persistent Target Attraction Engine.
+    DigitMatchStar DEMO low-latency engine + V37 TAE Pending/Maturation Fix.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -966,6 +966,12 @@ class MultiUserEngine:
             else:
                 still_pending.append(sample)
 
+        # IMPORTANT:
+        # still_pending is now the authoritative unresolved-sample list.
+        # The previous build assigned self.tae_pending[sid] = still_pending
+        # and then appended the new T0 sample to the OLD detached `pending`
+        # list. That made every new sample disappear immediately, leaving
+        # Pending=0 and Matured=0 forever even while server ticks increased.
         self.tae_pending[sid] = still_pending
 
         self._history(sid).append(int(digit))
@@ -993,19 +999,20 @@ class MultiUserEngine:
         model["last_features"] = list(features)
         model["last_target"] = int(target)
 
-        pending.append(
-            {
-                "target": int(target),
-                "features": list(features),
-                "predicted": predicted,
-                "remaining": self.tae_horizon,
-                "ticks_observed": 0,
-                "hit": False,
-                "forward_gap": None,
-                "selected": bool(selected),
-                "trained_at_t0": int(model["trained"]),
-            }
-        )
+        new_sample = {
+            "target": int(target),
+            "features": list(features),
+            "predicted": predicted,
+            "remaining": self.tae_horizon,
+            "ticks_observed": 0,
+            "hit": False,
+            "forward_gap": None,
+            "selected": bool(selected),
+            "trained_at_t0": int(model["trained"]),
+        }
+
+        # Append to the authoritative list.
+        self.tae_pending[sid].append(new_sample)
 
     def set_target_digit(self, sid: int, digit: int):
         """
@@ -1046,7 +1053,7 @@ class MultiUserEngine:
 
         return {
             "name": "TARGET_ATTRACTION_ENGINE_V1",
-            "version": "V36-DEDICATED-STREAM",
+            "version": "V37-PENDING-FIX",
             "horizon": self.tae_horizon,
             "minimum_history": self.tae_min_history,
             "history_count": history_n,
@@ -1179,7 +1186,7 @@ class MultiUserEngine:
 
         return {
             "schema": "DIGITMATCHSTAR_TARGET_ATTRACTION_ENGINE_V1_EXPORT",
-            "version": "V36-DEDICATED-TAE-2026-10-06",
+            "version": "V37-TAE-PENDING-FIX-2026-10-06",
             "forward_only": True,
             "persistent_database": True,
             "horizon_ticks": int(self.tae_horizon),

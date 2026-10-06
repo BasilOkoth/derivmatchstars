@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.2.2-dedicated-tae-stream",
+    version="2.2.3-tae-pending-fix",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.2.2-dedicated-tae-stream",
+        "version": "2.2.3-tae-pending-fix",
         "frontend_origin": frontend_origin,
     }
 
