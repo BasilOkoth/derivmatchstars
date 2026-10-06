@@ -1,96 +1,69 @@
-# DigitMatchStar Production OAuth Backend V2
+# Target Attraction V2 — Tail Risk Shadow
 
-This replaces the earlier single-user/global-token prototype.
+This package converts the V1 research objective from **predict return by T10**
+to the failure event that matters directly:
 
-## What changed
+> **STOP10 = target digit does not recur within the next 10 ticks.**
 
-- No global `DERIV_DEMO_TOKEN`
-- No global `DERIV_REAL_TOKEN`
-- Deriv OAuth 2.0 Authorization Code + PKCE per user
-- Tokens encrypted at rest with Fernet
-- User-scoped Deriv accounts
-- User-scoped trading sessions
-- Current Deriv REST -> OTP -> authenticated WebSocket flow
-- Postgres-ready on Render
-- DEMO worker can continue after dashboard closure
-- REAL worker state/reconciliation is server-side, but each new real-money purchase
-  requires explicit confirmation
+## What was tested
 
-## Required Render variables
+Source export: `target-attraction-v1-R_10-2026-10-06T15-41-15-834Z.json`
 
-- `DATABASE_URL`
-- `DERIV_CLIENT_ID`
-- `DERIV_REDIRECT_URI`
-- `TOKEN_ENCRYPTION_KEY`
-- `PLATFORM_JWT_SECRET`
-- `FRONTEND_URL`
+Eligible matured observations after V1's 250-sample warm-up: **2,582**
 
-Optional:
-- `DERIV_LEGACY_APP_ID` if you maintain a legacy Deriv API app
-- `DERIV_SCOPE=trade`
-- `ALLOW_REAL_MODE=false` initially
+Observed STOP10 rate: **35.86%**
 
-## Generate TOKEN_ENCRYPTION_KEY
+Validation:
+- forward-only
+- 5 expanding folds
+- 300 observations per validation fold
+- 10-tick purge gap between train and validation
+- two candidate models:
+  - L2 penalized logistic regression
+  - shallow histogram gradient boosting
 
-Run locally once:
+## Result
 
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
+Selected shadow model: **shallow_hgb**
 
-## Platform authentication contract
+Mean fold AUC: **0.450**
 
-The backend expects your existing platform to send:
+OOF AUC: **0.441**
 
-```http
-Authorization: Bearer <your-platform-JWT>
-```
+PR-AUC: **0.365**
 
-The JWT must contain a stable user id in `sub` and be signed using
-`PLATFORM_JWT_SECRET`.
+Brier score: **0.2614**
 
-If your current platform authentication is not JWT-based yet, adapt this middleware
-to your existing authenticated session before production. Do NOT expose
-`TRUST_PLATFORM_USER_HEADER=true` to public traffic unless a trusted reverse proxy
-guarantees and strips/sets that header.
+Constant-rate baseline Brier: **0.2375**
 
-## Deriv OAuth flow
+Brier skill vs constant: **-0.101**
 
-1. Authenticated platform user calls `GET /auth/deriv/start`
-2. Backend returns `authorization_url`
-3. Browser redirects to Deriv
-4. Deriv returns to `DERIV_REDIRECT_URI`, e.g.
-   `https://digitmatchstar-api.onrender.com/auth/deriv/callback`
-5. Backend validates state, exchanges the code with PKCE, encrypts the access token,
-   fetches the user's demo/real Options accounts and stores them.
-6. `GET /auth/deriv/accounts` returns only that user's accounts.
-7. When a session needs a WebSocket, backend requests an OTP for the selected account
-   and connects to the returned authenticated WebSocket URL.
+Execution gate passed: **False**
 
-## Important OAuth lifetime note
+## Meaning
 
-Deriv's public OAuth guide documents an `access_token` and `expires_in`. This package
-does not invent a refresh-token flow that the cited guide does not document. If the
-access token has expired when a new OTP is needed, the user is asked to reconnect Deriv.
-An already-open authenticated WebSocket may remain usable until it disconnects, but a
-new OTP requires a valid bearer token.
+The V2 architecture is implemented, but the current 12-feature dataset does
+**not** pass the forward-validation gate. Therefore V2 must remain **shadow-only**.
 
-## Core API
+Do not lower a threshold to force entries. The current features do not yet
+show stable forward discrimination of STOP10.
 
-- `GET /health`
-- `GET /auth/deriv/start`
-- `GET /auth/deriv/callback`
-- `GET /auth/deriv/accounts`
-- `GET /sessions`
-- `POST /sessions`
-- `POST /sessions/{id}/candidate`
-- `POST /sessions/{id}/start`
-- `POST /sessions/{id}/pause`
-- `POST /sessions/{id}/stop`
-- `POST /sessions/{id}/real/confirm`
+## Files
 
-## Production warning
+- `target_attraction_v2.py` — shadow scorer
+- `tail_risk_shadow_v2.joblib` — fitted research model
+- `v2_metrics.json` — frozen validation result and gate
+- `purged_forward_cv.csv` — fold-by-fold metrics
+- `evaluate_v2.py` — reproducible evaluator
 
-Do not deploy the previous V1/V1.1 global-token backend for multiple users. This V2
-is structured for per-user authorization, but you still need to wire its
-`current_user_id()` dependency to your platform's actual login/session mechanism.
+## Integration contract
+
+Feed the exact 12 T0 features in the same order as V1. The scorer returns:
+
+- `stop10_probability`
+- `return_by_t10_probability`
+- `risk_band`
+- `execution_eligible`
+- `reason`
+
+At this stage `execution_eligible` is intentionally `False`.
