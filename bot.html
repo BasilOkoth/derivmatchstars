@@ -12642,27 +12642,128 @@ window.executionLock = true;
 
         async function startServerExecutionSession() {
             const s = window.SERVER_EXECUTION;
+
             if (!s.enabled) return false;
-            if (!s.apiUrl) throw new Error('Configure the server execution backend URL first.');
+            if (!s.apiUrl) {
+                throw new Error(
+                    'Configure the server execution backend URL first.'
+                );
+            }
 
             const cfg = serverSessionConfigFromUi();
-            const digit = Number(sessionState.sessionDigit ?? document.getElementById('predictedDigit')?.value);
-            if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
-                throw new Error('A valid digit 0–9 is required before starting server execution.');
-            }
-
-            const accounts = await serverExecRequest('/auth/platform/me');
-            const wanted = String(cfg.requested_mode || 'DEMO').toLowerCase();
-            const account = (accounts.accounts || []).find(
-                a => String(a.account_type || '').toLowerCase() === wanted
+            const digit = Number(
+                sessionState.sessionDigit ??
+                document.getElementById('predictedDigit')?.value
             );
-            if (!account) {
-                throw new Error(`No ${cfg.requested_mode} Deriv Options account is connected.`);
+
+            if (
+                !Number.isInteger(digit) ||
+                digit < 0 ||
+                digit > 9
+            ) {
+                throw new Error(
+                    'A valid digit 0–9 is required before starting server execution.'
+                );
             }
 
+            const accounts = await serverExecRequest(
+                '/auth/platform/me'
+            );
+
+            const wanted = String(
+                cfg.requested_mode || 'DEMO'
+            ).toLowerCase();
+
+            const account = (accounts.accounts || []).find(
+                a => String(
+                    a.account_type || ''
+                ).toLowerCase() === wanted
+            );
+
+            if (!account) {
+                throw new Error(
+                    `No ${cfg.requested_mode} Deriv Options account is connected.`
+                );
+            }
+
+            // FIRST inspect existing server sessions.
+            // V34 may already have created a Trade-0 research session.
+            const existingRows = await serverExecRequest('/sessions');
+
+            let existing = null;
+
+            if (s.sessionId) {
+                existing = (existingRows || []).find(
+                    row => Number(row.id) === Number(s.sessionId)
+                ) || null;
+            }
+
+            if (!existing) {
+                existing = (existingRows || []).find(
+                    row =>
+                        String(row.account_id) === String(account.account_id)
+                ) || null;
+            }
+
+            // If the worker is already running, START is a no-op.
+            // This covers:
+            //   - repeated START clicks
+            //   - browser reload while server worker remains active
+            //   - TAE warming/scoring that was already started
+            if (existing?.running) {
+                s.sessionId = Number(existing.id);
+                s.state = existing;
+
+                sessionStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+                try {
+                    localStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                } catch (_) {}
+
+                // A candidate may still be updated while Trade 0 has no open
+                // contract. Never change it mid-cycle.
+                if (
+                    !existing.open_contract_id &&
+                    Number(existing.current_trade || 0) === 0 &&
+                    Number(existing.candidate_digit) !== digit
+                ) {
+                    const candidateResult = await serverExecRequest(
+                        `/sessions/${s.sessionId}/candidate`,
+                        {
+                            method: 'POST',
+                            body: { digit }
+                        }
+                    );
+
+                    if (!candidateResult?.reconcile_required) {
+                        s.lastCandidateSent = digit;
+                    }
+                }
+
+                await pollServerExecutionState();
+                renderServerExecutionState();
+                ensureServerExecutionPolling();
+
+                log(
+                    `☁ SERVER ALREADY ACTIVE · ${existing.account_mode} · ` +
+                    `${existing.symbol} · phase ${existing.phase}`,
+                    'SYSTEM'
+                );
+
+                return true;
+            }
+
+            // Session exists but is idle: reconfigure it from current UI.
+            // No session exists: create it. Backend handles both using the
+            // same account-scoped POST /sessions endpoint.
             const created = await serverExecRequest('/sessions', {
-                method:'POST',
-                body:{
+                method: 'POST',
+                body: {
                     account_id: account.account_id,
                     symbol: cfg.symbol,
                     base_stake: cfg.base_stake,
@@ -12671,39 +12772,79 @@ window.executionLock = true;
                 }
             });
 
-            // SERVER MODE RESEARCH BRIDGE:
-            // Browser execution used to trigger SAFE-TICK / Candidate DNA from
-            // analyzeAndTrade() immediately before executeTrade(). In server mode
-            // that browser path is intentionally bypassed, so explicitly freeze
-            // the current canonical T0 tick here for a NEW cycle only.
-            // Never create a new research candidate while reconciling an already
-            // open contract.
+            s.sessionId = Number(created.id);
+
+            sessionStorage.setItem(
+                'dms_server_session_id',
+                String(s.sessionId)
+            );
+            try {
+                localStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+            } catch (_) {}
+
+            // Browser-side research capture for a genuinely new/reconfigured
+            // cycle only. Do not create another candidate while reconciling.
             if (!created.reconcile_required && window.lastTick) {
                 try {
                     window.SafeTickV1?.captureLatestCanonical?.();
                 } catch (err) {
-                    console.warn('SAFE-TICK server-mode capture failed:', err);
+                    console.warn(
+                        'SAFE-TICK server-mode capture failed:',
+                        err
+                    );
                 }
+
                 try {
-                    window.CandidateTickDNAV3?.captureCandidate?.(window.lastTick);
+                    window.CandidateTickDNAV3?.captureCandidate?.(
+                        window.lastTick
+                    );
                 } catch (err) {
-                    console.warn('Candidate Tick DNA server-mode capture failed:', err);
+                    console.warn(
+                        'Candidate Tick DNA server-mode capture failed:',
+                        err
+                    );
                 }
             }
 
-            s.sessionId = Number(created.id);
-            sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
-            try { localStorage.setItem('dms_server_session_id', String(s.sessionId)); } catch (_) {}
+            if (!created.reconcile_required) {
+                const candidateResult = await serverExecRequest(
+                    `/sessions/${s.sessionId}/candidate`,
+                    {
+                        method: 'POST',
+                        body: { digit }
+                    }
+                );
 
-            await serverExecRequest(`/sessions/${s.sessionId}/candidate`, {method:'POST', body:{digit}});
-            s.lastCandidateSent = digit;
-            await serverExecRequest(`/sessions/${s.sessionId}/start`, {method:'POST'});
+                if (!candidateResult?.reconcile_required) {
+                    s.lastCandidateSent = digit;
+                }
+            }
+
+            // Idempotent backend START:
+            // calling it on an already-started worker returns success rather
+            // than "Session is already running".
+            const started = await serverExecRequest(
+                `/sessions/${s.sessionId}/start`,
+                { method: 'POST' }
+            );
+
             await pollServerExecutionState();
             renderServerExecutionState();
             ensureServerExecutionPolling();
-            log(`☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`, 'SYSTEM');
+
+            log(
+                started?.already_running
+                    ? `☁ SERVER ALREADY ACTIVE · ${created.account_mode} · ${cfg.symbol}`
+                    : `☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`,
+                'SYSTEM'
+            );
+
             return true;
         }
+
 
         async function stopServerExecutionSession() {
             const s = window.SERVER_EXECUTION;

@@ -14,7 +14,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="2.2.0-continuous-target-attraction",
+    version="2.2.1-idempotent-start",
 )
 
 frontend_origin = settings.frontend_url.rstrip("/")
@@ -51,7 +51,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "2.2.0-continuous-target-attraction",
+        "version": "2.2.1-idempotent-start",
         "frontend_origin": frontend_origin,
     }
 
@@ -198,10 +198,24 @@ def create_session(
             }
 
         if s.running:
-            raise HTTPException(
-                status_code=409,
-                detail="Session is already running",
-            )
+            # Idempotent lifecycle behavior:
+            # a research/trading session may already be active because the
+            # browser created it earlier or START was pressed twice. Do not
+            # destroy or reconfigure a live session; simply return its state.
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "running": True,
+                "already_running": True,
+                "reconcile_required": bool(s.open_contract_id),
+                "open_contract_id": s.open_contract_id,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
+            }
 
         s.account_mode = mode
         s.symbol = body.symbol
@@ -252,6 +266,18 @@ def candidate(
 
     try:
         s = owns_session(db, user_id, sid)
+
+        # START is idempotent. Repeated clicks or a browser reconnect must not
+        # fail if the server worker is already active.
+        if s.running:
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "already_running": True,
+                "reconciling": bool(s.open_contract_id),
+                "open_contract_id": s.open_contract_id,
+            }
 
         if s.open_contract_id:
             return {
