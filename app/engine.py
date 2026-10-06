@@ -351,16 +351,10 @@ class MultiUserEngine:
         s.updated_at = datetime.utcnow()
         db.commit()
 
-        await self._subscribe_open_contract(
-            sid=s.id,
-            user_id=s.user_id,
-            account_id=s.account_id,
-            contract_id=contract_id,
-            client=client,
-        )
-
-        # Pre-arm the next recovery proposal while this DEMO contract is open.
-        # No paid next contract is purchased here.
+        # Pre-arm the next recovery proposal immediately after BUY confirmation.
+        # Do this BEFORE waiting for the open-contract subscription request so
+        # that a Deriv subscription round-trip is never on the recovery critical
+        # path. No paid next contract is purchased here.
         if s.current_trade < s.max_trades:
             asyncio.create_task(
                 self._prefetch_next_recovery(
@@ -375,6 +369,14 @@ class MultiUserEngine:
                     next_trade_no=int(s.current_trade) + 1,
                 )
             )
+
+        await self._subscribe_open_contract(
+            sid=s.id,
+            user_id=s.user_id,
+            account_id=s.account_id,
+            contract_id=contract_id,
+            client=client,
+        )
 
     async def _prefetch_next_recovery(
         self,
@@ -474,8 +476,8 @@ class MultiUserEngine:
         # failing the entire trading session.
         async def poll_until_sold():
             try:
-                for _ in range(200):  # up to ~30 seconds
-                    await asyncio.sleep(0.15)
+                for _ in range(600):  # up to ~30 seconds
+                    await asyncio.sleep(0.05)
 
                     data = await client.contract_status(contract_id)
                     await on_contract_update(data)
@@ -530,6 +532,12 @@ class MultiUserEngine:
         self.contract_poll_tasks[sid] = asyncio.create_task(
             poll_until_sold()
         )
+
+    async def _forget_quietly(self, client, sub_id):
+        try:
+            await client.forget(sub_id)
+        except Exception:
+            pass
 
     async def _handle_contract_update(
         self,
@@ -619,10 +627,10 @@ class MultiUserEngine:
         client = self.clients.get((user_id, account_id))
         sub_id = self.contract_subscriptions.pop(sid, None)
         if client and sub_id:
-            try:
-                await client.forget(sub_id)
-            except Exception:
-                pass
+            # Forgetting the old subscription is housekeeping, not part of the
+            # trade critical path. Waiting for its WebSocket round trip here can
+            # make a 1-tick recovery miss the next market tick.
+            asyncio.create_task(self._forget_quietly(client, sub_id))
 
         # Confirmed DEMO loss: run the next step immediately.
         db = SessionLocal()
@@ -639,9 +647,10 @@ class MultiUserEngine:
             db.close()
 
         if should_continue:
-            self.session_tasks[sid] = asyncio.create_task(
-                self._safe_step(sid)
-            )
+            # The settlement callback already runs as its own task and the
+            # session lock has been released above. Continue the recovery now
+            # instead of adding another scheduler hop.
+            await self._safe_step(sid)
 
     async def confirm_real(self, user_id: str, session_id: int):
         raise RuntimeError(
