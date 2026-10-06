@@ -56,6 +56,16 @@ class DerivWS:
             return str(state).upper().endswith("OPEN")
         return True
 
+    def has_subscription(self, subscription_id: str) -> bool:
+        """
+        True only when this CURRENT WebSocket connection still owns the
+        subscription id. close()/reconnect clears self.subscriptions, so stale
+        engine-side ids are automatically detected.
+        """
+        if not subscription_id or not self.is_open():
+            return False
+        return str(subscription_id) in self.subscriptions
+
     async def connect(self):
         if self.is_open():
             return

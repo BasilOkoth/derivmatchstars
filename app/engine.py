@@ -269,11 +269,26 @@ class MultiUserEngine:
         existing = self.tick_subscriptions.get(sid)
 
         if existing and existing.get("symbol") == str(symbol):
-            return
+            existing_id = existing.get("subscription_id")
+
+            # IMPORTANT: engine memory can outlive a WebSocket reconnect.
+            # If DerivWS reconnects (for example after a proposal timeout),
+            # the old subscription id no longer exists on the new socket.
+            # Do not trust the engine-side id unless the CURRENT socket still
+            # owns it.
+            if (
+                existing_id
+                and client.has_subscription(existing_id)
+            ):
+                return
+
+            # Stale subscription marker: remove it and subscribe again now.
+            self.tick_subscriptions.pop(sid, None)
+            existing = None
 
         if existing:
             old_id = existing.get("subscription_id")
-            if old_id:
+            if old_id and client.has_subscription(old_id):
                 asyncio.create_task(
                     self._forget_quietly(client, old_id)
                 )
@@ -317,6 +332,12 @@ class MultiUserEngine:
             )
 
         active = self.fast_contracts.get(sid)
+
+        if active:
+            # Any live tick proves that the tick stream itself is healthy.
+            active["last_tick_seen_loop_time"] = (
+                asyncio.get_running_loop().time()
+            )
 
         if not active:
             return
@@ -533,7 +554,15 @@ class MultiUserEngine:
                         str(s.open_contract_id),
                     )
 
-                    if contract_key not in self.contract_subscriptions:
+                    existing_contract_sub = self.contract_subscriptions.get(
+                        contract_key
+                    )
+                    if (
+                        not existing_contract_sub
+                        or not client.has_subscription(
+                            existing_contract_sub
+                        )
+                    ):
                         asyncio.create_task(
                             self._subscribe_open_contract(
                                 sid=sid,
@@ -543,6 +572,61 @@ class MultiUserEngine:
                                 client=client,
                             )
                         )
+
+                    # PIPELINE watchdog:
+                    # if no result tick has been consumed for >3.5 seconds,
+                    # the most likely cause is a stale/lost tick subscription
+                    # after a WebSocket reconnect. Force a clean re-subscribe.
+                    fast = self.fast_contracts.get(sid)
+                    if fast and not fast.get("decided"):
+                        armed_at = float(
+                            fast.get("armed_at_loop_time") or 0.0
+                        )
+                        age = (
+                            asyncio.get_running_loop().time() - armed_at
+                            if armed_at
+                            else 0.0
+                        )
+
+                        if age > 3.5:
+                            stale = self.tick_subscriptions.pop(
+                                sid,
+                                None,
+                            )
+                            stale_id = (
+                                stale.get("subscription_id")
+                                if stale
+                                else None
+                            )
+
+                            if (
+                                stale_id
+                                and client.has_subscription(stale_id)
+                            ):
+                                asyncio.create_task(
+                                    self._forget_quietly(
+                                        client,
+                                        stale_id,
+                                    )
+                                )
+
+                            await self._ensure_tick_subscription(
+                                sid=s.id,
+                                user_id=s.user_id,
+                                account_id=s.account_id,
+                                symbol=s.symbol,
+                                client=client,
+                            )
+
+                            # Reset watchdog only after a real resubscribe.
+                            fast["armed_at_loop_time"] = (
+                                asyncio.get_running_loop().time()
+                            )
+
+                            s.phase = "PIPELINE_RESUBSCRIBED"
+                            s.updated_at = datetime.utcnow()
+                            db.commit()
+                            return
 
                     s.phase = (
                         "RECOVERY_PREARMED"
@@ -708,6 +792,7 @@ class MultiUserEngine:
             "symbol": str(s.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
+            "armed_at_loop_time": asyncio.get_running_loop().time(),
             "decided": False,
         }
 
@@ -874,8 +959,14 @@ class MultiUserEngine:
             str(contract_id),
         )
 
-        if key in self.contract_subscriptions:
-            return
+        existing_sub_id = self.contract_subscriptions.get(key)
+
+        if existing_sub_id:
+            if client.has_subscription(existing_sub_id):
+                return
+
+            # Socket was reconnected and this id belongs to the dead socket.
+            self.contract_subscriptions.pop(key, None)
 
         if key in self.contract_poll_tasks:
             return
