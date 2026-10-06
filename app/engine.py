@@ -20,7 +20,7 @@ from .deriv_ws import DerivWS
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine + V34 Continuous Persistent Target Attraction Engine.
+    DigitMatchStar DEMO low-latency engine + V36 Dedicated Persistent Target Attraction Engine.
 
     Strategy invariant:
       1. Buy Trade N.
@@ -48,6 +48,10 @@ class MultiUserEngine:
         # Independent TAE research workers. These keep the server tick stream
         # alive even while paid trading is IDLE / Trade 0.
         self.research_tasks = {}
+        self.research_clients = {}          # sid -> dedicated DerivWS
+        self.research_subscriptions = {}    # sid -> subscription id
+        self.research_diag = {}             # sid -> live stream diagnostics
+        self.tae_last_epoch = {}            # sid -> strict tick dedupe
         self._last_research_scan_at = 0.0
 
         # Live tick stream state.
@@ -161,17 +165,12 @@ class MultiUserEngine:
 
     async def run_forever(self):
         """
-        Two independent loops share this lightweight scheduler:
+        Trading and TAE research are deliberately independent.
 
-        1. Trading loop:
-           only sessions with running=True call step() and can place DEMO buys.
-
-        2. TAE research loop:
-           DEMO sessions with a candidate digit maintain a live tick
-           subscription even when trading is idle. This lets forward T10
-           observations mature continuously without requiring START BOT.
-
-        Research never calls proposal() or buy().
+        - Trading uses the account execution socket.
+        - TAE research uses a dedicated read-only tick WebSocket per session.
+        - TAE therefore continues at Trade 0 and is not disrupted by proposal,
+          buy, settlement, or execution-socket reconnects.
         """
         loop = asyncio.get_running_loop()
 
@@ -198,8 +197,6 @@ class MultiUserEngine:
 
             now = loop.time()
 
-            # Research subscriptions do not need a 20 ms database scan.
-            # Refresh eligible research sessions twice per second.
             if now - self._last_research_scan_at >= 0.50:
                 self._last_research_scan_at = now
 
@@ -219,59 +216,217 @@ class MultiUserEngine:
                 finally:
                     db.close()
 
+                eligible = set(research_ids)
+
                 for sid in research_ids:
                     task = self.research_tasks.get(sid)
                     if not task or task.done():
                         self.research_tasks[sid] = asyncio.create_task(
-                            self._ensure_research_stream(sid)
+                            self._research_stream_loop(sid)
                         )
+
+                # Stop orphaned dedicated research sockets.
+                for sid in list(self.research_tasks.keys()):
+                    if sid not in eligible:
+                        task = self.research_tasks.pop(sid, None)
+                        if task and not task.done():
+                            task.cancel()
+                        await self._drop_research_client(sid)
 
             await asyncio.sleep(0.02)
 
-    async def _ensure_research_stream(self, sid: int):
-        """
-        Keep TAE tick research alive independently of trading.
-
-        No proposal/buy/settlement request is made here.
-        """
+    async def _research_credentials(self, sid: int):
+        db = SessionLocal()
         try:
-            db = SessionLocal()
-            try:
-                s = db.get(TradingSession, sid)
+            s = db.get(TradingSession, sid)
+            if (
+                not s
+                or str(s.account_mode).upper() != "DEMO"
+                or s.candidate_digit is None
+            ):
+                return None
 
-                if (
-                    not s
-                    or str(s.account_mode).upper() != "DEMO"
-                    or s.candidate_digit is None
-                ):
+            cred = (
+                db.query(DerivCredential)
+                .filter(DerivCredential.user_id == s.user_id)
+                .first()
+            )
+
+            if not cred:
+                raise RuntimeError("TAE AUTH: Deriv account is not connected")
+
+            if cred.expires_at and cred.expires_at <= datetime.utcnow():
+                raise RuntimeError(
+                    "TAE AUTH: Deriv OAuth token expired"
+                )
+
+            return {
+                "user_id": s.user_id,
+                "account_id": s.account_id,
+                "symbol": s.symbol,
+                "target": int(s.candidate_digit),
+                "token": decrypt_token(cred.encrypted_access_token),
+            }
+        finally:
+            db.close()
+
+    async def _drop_research_client(self, sid: int):
+        self.research_subscriptions.pop(sid, None)
+        client = self.research_clients.pop(sid, None)
+        if client:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    def _research_diag_for(self, sid: int):
+        diag = self.research_diag.get(sid)
+        if diag is None:
+            diag = {
+                "connected": False,
+                "ticks_seen": 0,
+                "last_epoch": None,
+                "last_digit": None,
+                "last_tick_at": None,
+                "last_error": None,
+                "reconnects": 0,
+            }
+            self.research_diag[sid] = diag
+        return diag
+
+    def _observe_tae_tick_once(self, sid: int, digit: int, epoch: int = 0):
+        """
+        Strictly deduplicate TAE input by Deriv epoch.
+
+        Both the dedicated research socket and the trading socket may see the
+        same market tick. Exactly one copy is allowed into the TAE.
+        """
+        if epoch:
+            previous = int(self.tae_last_epoch.get(sid) or 0)
+            if epoch <= previous:
+                return False
+            self.tae_last_epoch[sid] = epoch
+
+        self._tae_observe_tick(sid, int(digit))
+        return True
+
+    async def _research_stream_loop(self, sid: int):
+        """
+        Long-lived dedicated read-only TAE stream.
+
+        It never requests proposals and never buys contracts.
+        """
+        diag = self._research_diag_for(sid)
+
+        while True:
+            try:
+                info = await self._research_credentials(sid)
+                if not info:
+                    await self._drop_research_client(sid)
+                    diag["connected"] = False
                     return
 
-                user_id = s.user_id
-                account_id = s.account_id
-                symbol = s.symbol
-                target = int(s.candidate_digit)
-            finally:
-                db.close()
+                self.set_target_digit(sid, info["target"])
 
-            self.set_target_digit(sid, target)
+                client = self.research_clients.get(sid)
 
-            client = await self._client(
-                user_id,
-                account_id,
-            )
+                if not client or not client.is_open():
+                    if client:
+                        await self._drop_research_client(sid)
 
-            await self._ensure_tick_subscription(
-                sid=sid,
-                user_id=user_id,
-                account_id=account_id,
-                symbol=symbol,
-                client=client,
-            )
+                    url = await get_ws_url(
+                        info["token"],
+                        info["account_id"],
+                    )
+                    client = DerivWS(url)
+                    await client.connect()
+                    self.research_clients[sid] = client
+                    diag["reconnects"] = int(diag["reconnects"] or 0) + 1
 
-        except Exception:
-            # Research-stream failure must never turn an idle session into a
-            # trading ERROR. The next research scan retries automatically.
-            return
+                async def on_research_tick(data: dict):
+                    try:
+                        tick = data.get("tick") or {}
+                        epoch = int(tick.get("epoch") or 0)
+                        digit = self._tick_last_digit(tick)
+                        if digit is None:
+                            return
+
+                        accepted = self._observe_tae_tick_once(
+                            sid,
+                            int(digit),
+                            epoch,
+                        )
+
+                        if accepted:
+                            diag["ticks_seen"] = int(diag["ticks_seen"] or 0) + 1
+                            diag["last_epoch"] = epoch or None
+                            diag["last_digit"] = int(digit)
+                            diag["last_tick_at"] = datetime.utcnow().isoformat()
+                            diag["last_error"] = None
+                            diag["connected"] = True
+
+                    except Exception as exc:
+                        # Unlike the generic WebSocket callback wrapper, retain
+                        # the actual research error so the dashboard can show it.
+                        diag["last_error"] = str(exc)
+
+                sub_id = self.research_subscriptions.get(sid)
+
+                if (
+                    not sub_id
+                    or not client.has_subscription(sub_id)
+                ):
+                    sub_id = await client.subscribe_ticks(
+                        str(info["symbol"]),
+                        on_research_tick,
+                    )
+                    self.research_subscriptions[sid] = sub_id
+                    diag["connected"] = True
+                    diag["last_error"] = None
+
+                # Health-check the dedicated stream. R_10 normally ticks around
+                # every 2 seconds, so 8 seconds with no new epoch is unhealthy.
+                previous_epoch = diag.get("last_epoch")
+                await asyncio.sleep(8.0)
+
+                current_info = await self._research_credentials(sid)
+                if not current_info:
+                    await self._drop_research_client(sid)
+                    diag["connected"] = False
+                    return
+
+                self.set_target_digit(
+                    sid,
+                    int(current_info["target"]),
+                )
+
+                if not client.is_open():
+                    raise RuntimeError("TAE research WebSocket closed")
+
+                if not client.has_subscription(
+                    self.research_subscriptions.get(sid)
+                ):
+                    raise RuntimeError("TAE tick subscription lost")
+
+                # If no tick arrived during a whole 8-second health window,
+                # reconnect rather than silently remaining at 0 pending.
+                if (
+                    previous_epoch is not None
+                    and diag.get("last_epoch") == previous_epoch
+                ):
+                    raise RuntimeError(
+                        "TAE tick stream stalled for >8 seconds"
+                    )
+
+            except asyncio.CancelledError:
+                await self._drop_research_client(sid)
+                raise
+
+            except Exception as exc:
+                diag["connected"] = False
+                diag["last_error"] = str(exc)
+                await self._drop_research_client(sid)
+                await asyncio.sleep(1.5)
 
     async def _safe_step(self, sid: int):
         try:
@@ -891,7 +1046,7 @@ class MultiUserEngine:
 
         return {
             "name": "TARGET_ATTRACTION_ENGINE_V1",
-            "version": "V33-PERSISTENT",
+            "version": "V36-DEDICATED-STREAM",
             "horizon": self.tae_horizon,
             "minimum_history": self.tae_min_history,
             "history_count": history_n,
@@ -939,6 +1094,7 @@ class MultiUserEngine:
                 and model["last_probability"] is not None
                 and model["last_probability"] >= self.tae_arm_probability
             ),
+            "research_stream": dict(self._research_diag_for(sid)),
             "persistent": True,
             "persistence_note": (
                 "Matured observations and model state are stored in the "
@@ -1023,7 +1179,7 @@ class MultiUserEngine:
 
         return {
             "schema": "DIGITMATCHSTAR_TARGET_ATTRACTION_ENGINE_V1_EXPORT",
-            "version": "V33-PERSISTENT-TAE-2026-10-06",
+            "version": "V36-DEDICATED-TAE-2026-10-06",
             "forward_only": True,
             "persistent_database": True,
             "horizon_ticks": int(self.tae_horizon),
@@ -1120,11 +1276,18 @@ class MultiUserEngine:
                 epoch,
             )
 
-        # Feed every live tick into the forward-only Target Attraction Engine,
-        # including periods when no paid contract is active.
+        # Trading socket is a fallback TAE source. Dedicated research stream is
+        # primary; strict epoch dedupe prevents double-counting.
         digit = self._tick_last_digit(tick)
         if digit is not None:
-            self._tae_observe_tick(sid, int(digit))
+            try:
+                self._observe_tae_tick_once(
+                    sid,
+                    int(digit),
+                    epoch,
+                )
+            except Exception as exc:
+                self._research_diag_for(sid)["last_error"] = str(exc)
 
         active = self.fast_contracts.get(sid)
 

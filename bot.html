@@ -1026,6 +1026,18 @@
 
                                 <span class="text-gray-400">Model state:</span>
                                 <span id="tae-live-state" class="font-black text-yellow-300">WARMING</span>
+
+                                <span class="text-gray-400">Server research stream:</span>
+                                <span id="tae-stream-state" class="font-bold text-yellow-300">CONNECTING</span>
+
+                                <span class="text-gray-400">Server TAE ticks:</span>
+                                <span id="tae-stream-ticks" class="font-bold text-white">0</span>
+
+                                <span class="text-gray-400">Last server tick:</span>
+                                <span id="tae-stream-last" class="font-bold text-white">—</span>
+
+                                <span class="text-gray-400">Research stream error:</span>
+                                <span id="tae-stream-error" class="font-bold text-gray-300">—</span>
                             </div>
 
                             <div class="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden">
@@ -1035,7 +1047,7 @@
                             </div>
 
                             <div class="mt-2 text-[10px] text-gray-400">
-                                TAE learns from the server tick stream even while Trade 0 is idle. Matured observations and model state survive redeploys when the configured database persists.
+                                TAE now uses a dedicated server-side read-only tick socket, independent of proposal/buy/settlement traffic. It learns even while Trade 0 is idle.
                             </div>
                         </div>
 
@@ -11593,6 +11605,33 @@ window.executionLock = true;
 
             const bar = document.getElementById('tae-live-progress-bar');
             if (bar) bar.style.width = `${progress.toFixed(1)}%`;
+
+            const stream = tae.research_stream || {};
+            setText(
+                'tae-stream-state',
+                stream.connected ? 'LIVE ✓' : 'RECONNECTING'
+            );
+            setText(
+                'tae-stream-ticks',
+                String(Number(stream.ticks_seen || 0))
+            );
+            setText(
+                'tae-stream-last',
+                stream.last_epoch
+                    ? `e:${stream.last_epoch} · digit ${stream.last_digit ?? '—'}`
+                    : '—'
+            );
+            setText(
+                'tae-stream-error',
+                stream.last_error || '—'
+            );
+
+            const streamState = document.getElementById('tae-stream-state');
+            if (streamState) {
+                streamState.className = stream.connected
+                    ? 'font-bold text-emerald-300'
+                    : 'font-bold text-yellow-300';
+            }
         }
 
 
@@ -12377,28 +12416,32 @@ window.executionLock = true;
         }
 
         function currentResearchTargetDigit() {
-            let digit = null;
+            // AI AUTO research follows the current AI recommendation directly.
+            // Do not depend on stale sessionState.mode flags.
+            const aiDigit = Number(
+                window.digitIntelligenceEngine
+                    ?.currentRecommendation
+                    ?.digit
+            );
 
             if (
-                sessionState?.mode === 'ai' &&
-                window.digitIntelligenceEngine?.warmupDone &&
-                window.digitIntelligenceEngine?.currentRecommendation
+                Number.isInteger(aiDigit) &&
+                aiDigit >= 0 &&
+                aiDigit <= 9
             ) {
-                digit = Number(
-                    window.digitIntelligenceEngine.currentRecommendation.digit
-                );
+                return aiDigit;
             }
 
-            if (!Number.isInteger(digit) || digit < 0 || digit > 9) {
-                digit = Number(
-                    sessionState?.sessionDigit ??
-                    document.getElementById('predictedDigit')?.value
-                );
-            }
+            const fallback = Number(
+                sessionState?.sessionDigit ??
+                document.getElementById('predictedDigit')?.value
+            );
 
             return (
-                Number.isInteger(digit) && digit >= 0 && digit <= 9
-            ) ? digit : null;
+                Number.isInteger(fallback) &&
+                fallback >= 0 &&
+                fallback <= 9
+            ) ? fallback : null;
         }
 
         async function ensureServerResearchSession() {
