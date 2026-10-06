@@ -1,38 +1,35 @@
-DigitMatchStar server fetch fix
+DigitMatchStar CLEAN bot.html
 
-ROOT CAUSE FOUND
-The new full app/engine.py removed the old Target Attraction API methods, but the
-repository still had the old app/main.py calling:
-- engine.target_attraction_status(...)
-- engine.export_target_attraction(...)
-- engine.set_target_digit(...)
+This is a FULL replacement bot.html, not a patch.
 
-That makes the frontend/backend pair incompatible and can break the /sessions
-flow used by START BOT.
+Removed from the active UI:
+- Target Attraction / TAE panel and export buttons
+- old Next-Tick research panel initialization
+- old Cycle Performance research panel initialization
+- Digit DNA panel initialization
+- Digit Feature research panel initialization
+- Randomness Auditor panel initialization
+- overnight research button/banner
+- S20 tail-research control
+- continuous-research auto-restart calls
 
-This package contains a FULL replacement app/main.py, not a patch.
+Preserved:
+- START/STOP trading
+- server execution API
+- user-set Max Trades
+- 1.15x multiplier control
+- exact FAST_WON handling
+- sound
+- Telegram WIN publication
+- current trade / stake / P&L status
 
-It also:
-- exposes digit_score in /sessions
-- exposes recycle_after=3
-- removes execution dependency on TAE methods
-- keeps the old /sessions/{sid}/tae/export URL as a harmless compatibility endpoint
-- allows both https://digitmatchstar.com and https://www.digitmatchstar.com in CORS
-- validates Max Trades >= 1
-- defaults Max Trades to 15
+Added:
+- live server 0-9 score ranking
+- selected target
+- attempt 1/3, 2/3, 3/3
+- overall trade/max-trades
+- current stake
+- rank order and score for every digit
 
-UPLOAD
-Replace:
-    app/main.py
-
-Then redeploy/restart the Render API.
-
-CHECK
-Open:
-    https://digitmatchstar-api.onrender.com/health
-
-Expected:
-    "ok": true
-    version: "3.0.0-digit-score-recycle3"
-
-Then refresh DigitMatchStar and START BOT again.
+Upload this complete file as:
+    /bot.html

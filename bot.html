@@ -1,21 +1,22 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
-    <!-- EXECUTION SYNC V23: EXACT NEXT-EPOCH PIPELINE; DERIV SETTLEMENT RECONCILES IN BACKGROUND -->
-    <!-- EXECUTION SYNC V22: DERIV SETTLEMENT AUTHORITATIVE; PUBLIC TICKS NEVER ADVANCE MARTINGALE -->
-    <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Deriv DigitMatchStar Bot</title>
-    <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
-    <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-    <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
-    <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
-    <!-- Contract Lifecycle v3 -->
-    <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
-    <style>
+<!-- EXECUTION SYNC V23: EXACT NEXT-EPOCH PIPELINE; DERIV SETTLEMENT RECONCILES IN BACKGROUND -->
+<!-- EXECUTION SYNC V22: DERIV SETTLEMENT AUTHORITATIVE; PUBLIC TICKS NEVER ADVANCE MARTINGALE -->
+<!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Deriv DigitMatchStar Bot</title>
+<!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
+<!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
+<!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
+<!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
+<!-- Contract Lifecycle v3 -->
+<!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
 
 /* --- Compact responsive controls --- */
 .sound-icon-btn{
@@ -522,604 +523,445 @@
 .server-exec-btn{padding:.48rem .72rem;border-radius:.65rem;font-size:.75rem;font-weight:800;color:white}
 
 </style>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&amp;display=swap" rel="stylesheet"/>
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
-
-    <div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
-        <div class="app-header">
-            <div class="app-brand">DigitMatchStar Bot</div>
-            <div class="app-status-row">
-                <div class="account-toggle-container">
-                    <span class="account-label account-label-demo">DEMO</span>
-                    <label class="account-toggle">
-                        <input type="checkbox" id="accTypeToggle" onchange="switchAccount()">
-                        <span class="account-toggle-slider"></span>
-                    </label>
-                    <span class="account-label account-label-real">REAL</span>
-                </div>
-                <span id="status-badge" class="inline-flex items-center rounded-full connection-badge-disconnected text-white">🔴 DISCONNECTED</span>
-                <span id="contract-type-badge" class="contract-type-badge bg-purple-600 text-white">DIGITMATCH</span>
-                <span id="engine-status-badge" class="inline-flex items-center rounded-full engine-status-warmup text-white">🔥 ENGINE: WARM-UP</span>
-                <button id="soundToggle" onclick="toggleSound()" class="sound-icon-btn" aria-label="Toggle sound" title="Sound ON">🔊</button>
-                <span id="network-recovery-badge" class="hidden network-recovery-badge">🔄 AUTO-RECOVER</span>
-                <span id="networkRecoveryIndicator" class="status-chip on header-utility-hidden" title="Auto-Recovery is ON"><span class="status-dot"></span><span class="status-label">Auto-Recovery</span></span>
-                <span id="engineIndicator" class="status-chip on header-utility-hidden" title="AI Engine is ON"><span class="status-dot"></span><span class="status-label">AI Engine</span></span>
-            </div>
-        </div>
-        
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-            <!-- LEFT COLUMN: MARKET STATUS & ENGINE ANALYSIS -->
-            <div class="lg:col-span-1">
-                <div class="bg-gray-900 border border-gray-700 rounded-xl p-4 shadow-lg">
-                    <h2 class="text-lg font-bold text-cyan-400 mb-4 pb-2 border-b border-gray-700">
+<div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
+<div class="app-header">
+<div class="app-brand">DigitMatchStar Bot</div>
+<div class="app-status-row">
+<div class="account-toggle-container">
+<span class="account-label account-label-demo">DEMO</span>
+<label class="account-toggle">
+<input id="accTypeToggle" onchange="switchAccount()" type="checkbox"/>
+<span class="account-toggle-slider"></span>
+</label>
+<span class="account-label account-label-real">REAL</span>
+</div>
+<span class="inline-flex items-center rounded-full connection-badge-disconnected text-white" id="status-badge">🔴 DISCONNECTED</span>
+<span class="contract-type-badge bg-purple-600 text-white" id="contract-type-badge">DIGITMATCH</span>
+<span class="inline-flex items-center rounded-full engine-status-warmup text-white" id="engine-status-badge">🔥 ENGINE: WARM-UP</span>
+<button aria-label="Toggle sound" class="sound-icon-btn" id="soundToggle" onclick="toggleSound()" title="Sound ON">🔊</button>
+<span class="hidden network-recovery-badge" id="network-recovery-badge">🔄 AUTO-RECOVER</span>
+<span class="status-chip on header-utility-hidden" id="networkRecoveryIndicator" title="Auto-Recovery is ON"><span class="status-dot"></span><span class="status-label">Auto-Recovery</span></span>
+<span class="status-chip on header-utility-hidden" id="engineIndicator" title="AI Engine is ON"><span class="status-dot"></span><span class="status-label">AI Engine</span></span>
+</div>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+<!-- LEFT COLUMN: MARKET STATUS & ENGINE ANALYSIS -->
+<div class="lg:col-span-1">
+<div class="bg-gray-900 border border-gray-700 rounded-xl p-4 shadow-lg">
+<h2 class="text-lg font-bold text-cyan-400 mb-4 pb-2 border-b border-gray-700">
                         📊 MARKET STATUS
                     </h2>
-                    
-                    <!-- Connection Status -->
-                    <div class="mb-4 p-3 bg-gray-800 rounded-lg border border-gray-600">
-                        <h3 class="text-sm font-bold text-gray-300 mb-2">Market Status</h3>
-                        <div class="grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                                <span class="text-gray-400">Connection:</span>
-                                <span id="market_status" class="ml-2 font-bold text-red-400">Offline</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-400">Symbol:</span>
-                                <span id="current_symbol" class="ml-2 font-bold text-cyan-400">V. 10 Index</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-400">Ticks Received:</span>
-                                <span id="ticks_received" class="ml-2 font-bold text-green-400">0</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-400">Tick Rate:</span>
-                                <span id="current_tick_rate" class="ml-2 font-bold text-blue-400">0/s</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Digit Intelligence Engine Panel -->
-                    <div class="mb-4 p-3 bg-gray-800 rounded-lg border border-purple-500/50">
-                        <h3 class="text-sm font-bold text-purple-400 mb-3 flex items-center">
+<!-- Connection Status -->
+<div class="mb-4 p-3 bg-gray-800 rounded-lg border border-gray-600">
+<h3 class="text-sm font-bold text-gray-300 mb-2">Market Status</h3>
+<div class="grid grid-cols-2 gap-2 text-xs">
+<div>
+<span class="text-gray-400">Connection:</span>
+<span class="ml-2 font-bold text-red-400" id="market_status">Offline</span>
+</div>
+<div>
+<span class="text-gray-400">Symbol:</span>
+<span class="ml-2 font-bold text-cyan-400" id="current_symbol">V. 10 Index</span>
+</div>
+<div>
+<span class="text-gray-400">Ticks Received:</span>
+<span class="ml-2 font-bold text-green-400" id="ticks_received">0</span>
+</div>
+<div>
+<span class="text-gray-400">Tick Rate:</span>
+<span class="ml-2 font-bold text-blue-400" id="current_tick_rate">0/s</span>
+</div>
+</div>
+</div>
+<!-- Digit Intelligence Engine Panel -->
+<div class="mb-4 p-3 bg-gray-800 rounded-lg border border-purple-500/50">
+<h3 class="text-sm font-bold text-purple-400 mb-3 flex items-center">
                             🧠 DIGIT INTELLIGENCE ENGINE
-                            <span id="engine-warmup-progress" class="ml-auto text-xs bg-gray-700 px-2 py-1 rounded">
+                            <span class="ml-auto text-xs bg-gray-700 px-2 py-1 rounded" id="engine-warmup-progress">
                                 0%
                             </span>
-                        </h3>
-                        
-                        <!-- Engine Status -->
-                        <div class="mb-3 p-2 bg-gray-900 rounded border border-gray-700">
-                            <div class="text-xs font-semibold text-gray-300 mb-1">Status:</div>
-                            <div id="engine-status-text" class="text-sm font-bold text-yellow-400">Warming up...</div>
-                            <div id="engine-regime-status" class="text-xs text-gray-400 mt-1">Regime: Unknown</div>
-                        </div>
-                        
-                        <!-- Selected Digit -->
-                        <div class="mb-3 p-2 bg-gray-900 rounded border border-green-500/30">
-                            <div class="text-xs font-semibold text-green-400 mb-1">AI Recommended Digit:</div>
-                            <div id="ai-recommended-digit" class="text-2xl font-bold text-center text-green-400">-</div>
-                            <div id="ai-digit-score" class="text-xs text-gray-400 text-center">Score: -</div>
-                        </div>
-                        
-                        <!-- Digit Analysis (Collapsible) -->
-                        <div class="mt-2">
-                            <button onclick="toggleDigitAnalysis()" class="w-full text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded mb-2">
+</h3>
+<!-- Engine Status -->
+<div class="mb-3 p-2 bg-gray-900 rounded border border-gray-700">
+<div class="text-xs font-semibold text-gray-300 mb-1">Status:</div>
+<div class="text-sm font-bold text-yellow-400" id="engine-status-text">Warming up...</div>
+<div class="text-xs text-gray-400 mt-1" id="engine-regime-status">Regime: Unknown</div>
+</div>
+<!-- Selected Digit -->
+<div class="mb-3 p-2 bg-gray-900 rounded border border-green-500/30">
+<div class="text-xs font-semibold text-green-400 mb-1">AI Recommended Digit:</div>
+<div class="text-2xl font-bold text-center text-green-400" id="ai-recommended-digit">-</div>
+<div class="text-xs text-gray-400 text-center" id="ai-digit-score">Score: -</div>
+</div>
+<!-- Digit Analysis (Collapsible) -->
+<div class="mt-2">
+<button class="w-full text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded mb-2" onclick="toggleDigitAnalysis()">
                                 📊 Show Digit Analysis <span id="digit-analysis-toggle">▼</span>
-                            </button>
-                            <div id="digit-analysis-panel" class="digit-analysis-panel hidden p-2 bg-gray-900 rounded border border-gray-700">
-                                <div class="text-xs font-semibold text-gray-300 mb-2">Digit Statistics:</div>
-                                <div id="digit-analysis-content" class="text-xs text-gray-400">
+</button>
+<div class="digit-analysis-panel hidden p-2 bg-gray-900 rounded border border-gray-700" id="digit-analysis-panel">
+<div class="text-xs font-semibold text-gray-300 mb-2">Digit Statistics:</div>
+<div class="text-xs text-gray-400" id="digit-analysis-content">
                                     Warming up engine...
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Session Status Display -->
-                    <div id="session_display" class="mt-4 p-3 bg-gray-800 rounded border border-blue-500/30 hidden">
-                        <h3 class="text-sm font-bold text-blue-300 mb-2">Active Session</h3>
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <div class="text-xs text-gray-300">Digit:</div>
-                                <div id="session_digit" class="text-xl font-bold text-green-400">-</div>
-                            </div>
-                            <div>
-                                <div class="text-xs text-gray-300">Trades:</div>
-                                <div id="session_trades" class="text-sm font-bold text-yellow-400">0/—</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- MIDDLE COLUMN: MAIN CONTROLS -->
-            <div class="lg:col-span-2">
-
-                <!-- DIGITMATCH ELIGIBLE MARKET SCANNER -->
-                <div id="edge-market-scanner" class="mb-6 p-4 bg-gray-900 rounded-xl border border-cyan-500/50 shadow-lg">
-                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
-                        <h2 class="text-lg font-bold text-cyan-400">🛰️ DIGITMATCH MARKET EDGE MONITOR</h2>
-                        <span id="edge-scanner-status" class="edge-pill text-yellow-300">Discovering eligible markets…</span>
-                        <button id="edge-use-best" type="button"
-                                class="ml-auto px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
-                                disabled>Use Best Market</button>
-                        <button id="edge-scanner-minimize" type="button"
-                                class="px-2.5 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold"
-                                aria-expanded="true" title="Minimize edge monitor">−</button>
-                    </div>
-                    <div id="edge-scanner-body">
-                        <div class="text-[11px] text-gray-400 mb-3">
+</div>
+</div>
+</div>
+<!-- Session Status Display -->
+<div class="mt-4 p-3 bg-gray-800 rounded border border-blue-500/30 hidden" id="session_display">
+<h3 class="text-sm font-bold text-blue-300 mb-2">Active Session</h3>
+<div class="flex items-center justify-between">
+<div>
+<div class="text-xs text-gray-300">Digit:</div>
+<div class="text-xl font-bold text-green-400" id="session_digit">-</div>
+</div>
+<div>
+<div class="text-xs text-gray-300">Trades:</div>
+<div class="text-sm font-bold text-yellow-400" id="session_trades">0/—</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- MIDDLE COLUMN: MAIN CONTROLS -->
+<div class="lg:col-span-2">
+<!-- DIGITMATCH ELIGIBLE MARKET SCANNER -->
+<div class="mb-6 p-4 bg-gray-900 rounded-xl border border-cyan-500/50 shadow-lg" id="edge-market-scanner">
+<div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
+<h2 class="text-lg font-bold text-cyan-400">🛰️ DIGITMATCH MARKET EDGE MONITOR</h2>
+<span class="edge-pill text-yellow-300" id="edge-scanner-status">Discovering eligible markets…</span>
+<button class="ml-auto px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed" disabled="" id="edge-use-best" type="button">Use Best Market</button>
+<button aria-expanded="true" class="px-2.5 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold" id="edge-scanner-minimize" title="Minimize edge monitor" type="button">−</button>
+</div>
+<div id="edge-scanner-body">
+<div class="text-[11px] text-gray-400 mb-3">
                             Only symbols returned by Deriv as supporting <b>DIGITMATCH</b> are shown.
                             The score is a research ranking from observed digit-gap behaviour, P5/P10, tail risk and sample support — not a guaranteed or verified trading edge.
                         </div>
-                        <div id="edge-best-summary" class="mb-3 p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300">
+<div class="mb-3 p-3 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300" id="edge-best-summary">
                             Waiting for enough ticks to compare eligible markets…
                         </div>
-                        <div id="edge-monitor-grid" class="edge-monitor-grid">
-                            <div class="text-xs text-gray-500">Loading eligible DIGITMATCH symbols…</div>
-                        </div>
-                    </div>
-                </div>
-
-
-                <!-- SAFE-TICK V1 SHADOW VALIDATION -->
-                <div id="safe-tick-v1-panel" class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg">
-                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
-                        <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
-                        <span id="safeTickStatusBadge" class="edge-pill text-cyan-300">V1.6 STRICT-CONTIGUOUS · SHADOW</span>
-                        <button type="button" onclick="downloadSafeTickV1Data()"
-                                class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold">
+<div class="edge-monitor-grid" id="edge-monitor-grid">
+<div class="text-xs text-gray-500">Loading eligible DIGITMATCH symbols…</div>
+</div>
+</div>
+</div>
+<!-- SAFE-TICK V1 SHADOW VALIDATION -->
+<div class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg" id="safe-tick-v1-panel">
+<div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
+<h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
+<span class="edge-pill text-cyan-300" id="safeTickStatusBadge">V1.6 STRICT-CONTIGUOUS · SHADOW</span>
+<button class="px-2.5 py-1 rounded-lg bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-bold" onclick="downloadSafeTickV1Data()" type="button">
                             ⬇ Export
                         </button>
-                        <span id="safeTickLiveDecision" class="ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200">
+<span class="ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-gray-700 text-gray-200" id="safeTickLiveDecision">
                             WAITING FOR CANDIDATE
                         </span>
-                    </div>
-
-                    <div class="text-[11px] text-gray-400 mb-3">
+</div>
+<div class="text-[11px] text-gray-400 mb-3">
                         Frozen rule:
                         <b class="text-gray-200">candidateFreq25 ≤ 0.08</b>
                         AND
                         <b class="text-gray-200">entropy10 ≤ 2.521928</b>.
                         Research-only: this panel does not block or place trades.
                     </div>
-
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
-                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
-                            <div class="text-[10px] uppercase text-gray-400 font-bold">Candidate Digit</div>
-                            <div id="safeTickCandidateDigit" class="text-xl font-black text-white">—</div>
-                        </div>
-                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
-                            <div class="text-[10px] uppercase text-gray-400 font-bold">Freq25</div>
-                            <div id="safeTickFreq25" class="text-xl font-black text-white">—</div>
-                            <div class="text-[10px] text-gray-500">must be ≤ 0.08</div>
-                        </div>
-                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
-                            <div class="text-[10px] uppercase text-gray-400 font-bold">Entropy10</div>
-                            <div id="safeTickEntropy10" class="text-xl font-black text-white">—</div>
-                            <div class="text-[10px] text-gray-500">must be ≤ 2.521928</div>
-                        </div>
-                        <div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
-                            <div class="text-[10px] uppercase text-gray-400 font-bold">Forward Gap</div>
-                            <div id="safeTickForwardGap" class="text-xl font-black text-yellow-300">—</div>
-                            <div id="safeTickOutcomeText" class="text-[10px] text-gray-500">awaiting outcome</div>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
-                        <div class="p-2 bg-gray-800 rounded border border-gray-700">
-                            <div class="text-[10px] text-gray-400 uppercase font-bold">Finalized</div>
-                            <div id="safeTickFinalized" class="text-lg font-black text-white">0</div>
-                        </div>
-                        <div class="p-2 bg-gray-800 rounded border border-emerald-700/50">
-                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted</div>
-                            <div id="safeTickAccepted" class="text-lg font-black text-emerald-300">0</div>
-                        </div>
-                        <div class="p-2 bg-gray-800 rounded border border-rose-700/50">
-                            <div class="text-[10px] text-gray-400 uppercase font-bold">Rejected</div>
-                            <div id="safeTickRejected" class="text-lg font-black text-rose-300">0</div>
-                        </div>
-                        <div class="p-2 bg-gray-800 rounded border border-yellow-700/50">
-                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted STOP10</div>
-                            <div id="safeTickAcceptedStop10" class="text-lg font-black text-yellow-300">0</div>
-                        </div>
-                        <div class="p-2 bg-gray-800 rounded border border-purple-700/50">
-                            <div class="text-[10px] text-gray-400 uppercase font-bold">Accepted Tail15</div>
-                            <div id="safeTickAcceptedTail15" class="text-lg font-black text-purple-300">0</div>
-                        </div>
-                    </div>
-
-                    <div class="mt-3 p-2.5 bg-slate-950 rounded-lg border border-slate-700">
-                        <div class="flex justify-between text-[11px] mb-1">
-                            <span class="text-gray-400">Fresh validation progress</span>
-                            <span id="safeTickProgressText" class="font-bold text-cyan-300">0 / 500</span>
-                        </div>
-                        <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
-                            <div id="safeTickProgressBar" class="h-full bg-emerald-500 rounded-full" style="width:0%"></div>
-                        </div>
-                        <div id="safeTickSummary" class="text-[11px] text-gray-400 mt-2">
+<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+<div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+<div class="text-[10px] uppercase text-gray-400 font-bold">Candidate Digit</div>
+<div class="text-xl font-black text-white" id="safeTickCandidateDigit">—</div>
+</div>
+<div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+<div class="text-[10px] uppercase text-gray-400 font-bold">Freq25</div>
+<div class="text-xl font-black text-white" id="safeTickFreq25">—</div>
+<div class="text-[10px] text-gray-500">must be ≤ 0.08</div>
+</div>
+<div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+<div class="text-[10px] uppercase text-gray-400 font-bold">Entropy10</div>
+<div class="text-xl font-black text-white" id="safeTickEntropy10">—</div>
+<div class="text-[10px] text-gray-500">must be ≤ 2.521928</div>
+</div>
+<div class="p-2.5 bg-gray-800 rounded-lg border border-gray-700">
+<div class="text-[10px] uppercase text-gray-400 font-bold">Forward Gap</div>
+<div class="text-xl font-black text-yellow-300" id="safeTickForwardGap">—</div>
+<div class="text-[10px] text-gray-500" id="safeTickOutcomeText">awaiting outcome</div>
+</div>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+<div class="p-2 bg-gray-800 rounded border border-gray-700">
+<div class="text-[10px] text-gray-400 uppercase font-bold">Finalized</div>
+<div class="text-lg font-black text-white" id="safeTickFinalized">0</div>
+</div>
+<div class="p-2 bg-gray-800 rounded border border-emerald-700/50">
+<div class="text-[10px] text-gray-400 uppercase font-bold">Accepted</div>
+<div class="text-lg font-black text-emerald-300" id="safeTickAccepted">0</div>
+</div>
+<div class="p-2 bg-gray-800 rounded border border-rose-700/50">
+<div class="text-[10px] text-gray-400 uppercase font-bold">Rejected</div>
+<div class="text-lg font-black text-rose-300" id="safeTickRejected">0</div>
+</div>
+<div class="p-2 bg-gray-800 rounded border border-yellow-700/50">
+<div class="text-[10px] text-gray-400 uppercase font-bold">Accepted STOP10</div>
+<div class="text-lg font-black text-yellow-300" id="safeTickAcceptedStop10">0</div>
+</div>
+<div class="p-2 bg-gray-800 rounded border border-purple-700/50">
+<div class="text-[10px] text-gray-400 uppercase font-bold">Accepted Tail15</div>
+<div class="text-lg font-black text-purple-300" id="safeTickAcceptedTail15">0</div>
+</div>
+</div>
+<div class="mt-3 p-2.5 bg-slate-950 rounded-lg border border-slate-700">
+<div class="flex justify-between text-[11px] mb-1">
+<span class="text-gray-400">Fresh validation progress</span>
+<span class="font-bold text-cyan-300" id="safeTickProgressText">0 / 500</span>
+</div>
+<div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+<div class="h-full bg-emerald-500 rounded-full" id="safeTickProgressBar" style="width:0%"></div>
+</div>
+<div class="text-[11px] text-gray-400 mt-2" id="safeTickSummary">
                             Persistent V1.3 cohort: refresh-safe local recovery enabled.
                         </div>
-                    </div>
-                </div>
-
-
-                <!-- SERVER EXECUTION ENGINE -->
-                <div id="server-execution-panel" class="server-exec-panel">
-                    <div class="flex flex-wrap items-center gap-2 mb-3">
-                        <h2 class="text-sm font-black text-sky-300">☁ SERVER EXECUTION</h2>
-                        <span id="serverExecBadge" class="edge-pill text-yellow-300">NOT CONFIGURED</span>
-                        <button type="button" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()"
-                                class="server-exec-btn bg-sky-700 hover:bg-sky-600">Use Server</button>
-                        <button type="button" onclick="configureServerExecutionUrl()"
-                                class="server-exec-btn bg-slate-700 hover:bg-slate-600">Backend URL</button>
-                        <button type="button" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()"
-                                class="server-exec-btn bg-emerald-700 hover:bg-emerald-600">Continuous Research: ON</button>
-                        <button type="button" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()"
-                                class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden">
+</div>
+</div>
+<!-- SERVER EXECUTION ENGINE -->
+<div class="server-exec-panel" id="server-execution-panel">
+<div class="flex flex-wrap items-center gap-2 mb-3">
+<h2 class="text-sm font-black text-sky-300">☁ SERVER EXECUTION</h2>
+<span class="edge-pill text-yellow-300" id="serverExecBadge">NOT CONFIGURED</span>
+<button class="server-exec-btn bg-sky-700 hover:bg-sky-600" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()" type="button">Use Server</button>
+<button class="server-exec-btn bg-slate-700 hover:bg-slate-600" onclick="configureServerExecutionUrl()" type="button">Backend URL</button>
+<button class="server-exec-btn bg-emerald-700 hover:bg-emerald-600" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()" type="button">Continuous Research: ON</button>
+<button class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()" type="button">
                             Confirm REAL Trade
                         </button>
-                    </div>
-                    <div class="text-[11px] text-gray-400 mb-3">
+</div>
+<div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
                         REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
                     </div>
-                    <div class="server-exec-grid">
-                        <div class="server-exec-card"><div class="server-exec-label">Backend</div><div id="serverExecBackend" class="server-exec-value">—</div></div>
-                        <div class="server-exec-card"><div class="server-exec-label">Mode</div><div id="serverExecMode" class="server-exec-value">BROWSER</div></div>
-                        <div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div id="serverExecPhase" class="server-exec-value">—</div></div>
-                        <div id="serverExecErrorCard" class="server-exec-card hidden" style="grid-column: 1 / -1;">
-                            <div class="server-exec-label">Worker error</div>
-                            <div id="serverExecError" class="server-exec-value" style="white-space: normal; word-break: break-word;">—</div>
-                        </div>
-                        <div class="server-exec-card"><div class="server-exec-label">Contract</div><div id="serverExecContract" class="server-exec-value">—</div></div>
-                        <div class="server-exec-card"><div class="server-exec-label">Trade</div><div id="serverExecTrade" class="server-exec-value">—</div></div>
-                        <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div id="serverExecPnl" class="server-exec-value">$0.00</div></div>
-                    </div>
-                </div>
-
-                <!-- MARTINGALE CALCULATOR -->
-                <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
-                    <h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
+<div class="server-exec-grid">
+<div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
+<div class="server-exec-card"><div class="server-exec-label">Mode</div><div class="server-exec-value" id="serverExecMode">BROWSER</div></div>
+<div class="server-exec-card"><div class="server-exec-label">Worker phase</div><div class="server-exec-value" id="serverExecPhase">—</div></div>
+<div class="server-exec-card hidden" id="serverExecErrorCard" style="grid-column: 1 / -1;">
+<div class="server-exec-label">Worker error</div>
+<div class="server-exec-value" id="serverExecError" style="white-space: normal; word-break: break-word;">—</div>
+</div>
+<div class="server-exec-card"><div class="server-exec-label">Contract</div><div class="server-exec-value" id="serverExecContract">—</div></div>
+<div class="server-exec-card"><div class="server-exec-label">Trade</div><div class="server-exec-value" id="serverExecTrade">—</div></div>
+<div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div class="server-exec-value" id="serverExecPnl">$0.00</div></div>
+</div>
+</div>
+<!-- MARTINGALE CALCULATOR -->
+<div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
+<h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
                         🧮 MARTINGALE CALCULATOR
-                        <button onclick="toggleCalculator()" class="ml-auto text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">
-                            <span id="calcToggleIcon">−</span>
-                        </button>
-                    </h2>
-                    
-                    <div id="calculatorContent" class="transition-all duration-300">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                            <!-- Left Column: Inputs -->
-                            <div class="space-y-3">
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-300 mb-1">Base Stake ($)</label>
-                                    <input type="number" id="calc_base_stake" value="1.0" min="0.1" step="0.1" 
-                                        class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm calculator-highlight">
-                                </div>
-                                
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-300 mb-1">Multiplier</label>
-                                    <input type="number" id="calc_multiplier" value="1.15" min="1.0" step="0.01" 
-                                        class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
-                                </div>
-                                
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                                    <input type="number" id="calc_max_trades" value="10" min="1" step="1" 
-                                        class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
-                                </div>
-                                
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-300 mb-1">Bankroll Limit ($)</label>
-                                    <input type="number" id="calc_bankroll_limit" value="50.0" min="1.0" step="0.1" 
-                                        class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm">
-                                </div>
-                                
-                                <button onclick="calculateMartingale()" 
-                                    class="w-full mt-2 px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition">
+                        <button class="ml-auto text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" onclick="toggleCalculator()">
+<span id="calcToggleIcon">−</span>
+</button>
+</h2>
+<div class="transition-all duration-300" id="calculatorContent">
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+<!-- Left Column: Inputs -->
+<div class="space-y-3">
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1">Base Stake ($)</label>
+<input class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm calculator-highlight" id="calc_base_stake" min="0.1" step="0.1" type="number" value="1.0"/>
+</div>
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1">Multiplier</label>
+<input class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm" id="calc_multiplier" min="1.0" step="0.01" type="number" value="1.15"/>
+</div>
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
+<input class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm" id="calc_max_trades" min="1" step="1" type="number" value="10"/>
+</div>
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1">Bankroll Limit ($)</label>
+<input class="w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-purple-500 focus:ring-purple-500 py-1.5 px-2 text-sm" id="calc_bankroll_limit" min="1.0" step="0.1" type="number" value="50.0"/>
+</div>
+<button class="w-full mt-2 px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition" onclick="calculateMartingale()">
                                     🧮 CALCULATE
                                 </button>
-                            </div>
-                            
-                            <!-- Right Column: Results -->
-                            <div class="space-y-3">
-                                <div class="p-3 bg-gray-800 rounded-lg border border-green-500/50">
-                                    <div class="text-xs font-semibold text-green-400 mb-1">Total Required</div>
-                                    <div id="calc_total_required" class="text-xl font-bold text-white">$0.00</div>
-                                    <div class="text-xs text-gray-400 mt-1">For all trades</div>
-                                </div>
-                                
-                                <div class="p-3 bg-gray-800 rounded-lg border border-blue-500/50">
-                                    <div class="text-xs font-semibold text-blue-400 mb-1">Final Stake</div>
-                                    <div id="calc_final_stake" class="text-lg font-bold text-white">$0.00</div>
-                                    <div class="text-xs text-gray-400 mt-1">Last trade amount</div>
-                                </div>
-                                
-                                <div class="p-3 bg-gray-800 rounded-lg border border-yellow-500/50">
-                                    <div class="text-xs font-semibold text-yellow-400 mb-1">Bankroll Status</div>
-                                    <div id="calc_bankroll_status" class="text-lg font-bold text-white">-</div>
-                                    <div class="text-xs text-gray-400 mt-1">vs. your limit</div>
-                                </div>
-                                
-                                <div class="p-3 bg-gray-800 rounded-lg border border-cyan-500/50">
-                                    <div class="text-xs font-semibold text-cyan-400 mb-1">Profit on Win</div>
-                                    <div id="calc_profit_on_win" class="text-lg font-bold text-white">$0.00</div>
-                                    <div class="text-xs text-gray-400 mt-1">9x payout minus investment</div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Stake Progression Table -->
-                        <div class="mt-4">
-                            <div class="text-xs font-semibold text-gray-300 mb-2">Stake Progression</div>
-                            <div id="calc_progression" class="text-xs text-gray-400 italic">Click CALCULATE to see stake progression</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Main Trading Controls -->
-                <div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
-                    <!-- Symbol -->
-                    <div>
-                        <label for="symbol" class="block text-xs font-semibold text-gray-300 mb-1">Symbol</label>
-                        <select id="symbol" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                            <option value="R_10">V. 10 Index</option>
-                            <option value="R_100">V. 100 Index</option>
-                            <option value="R_25">V. 25 Index</option>
-                            <option value="R_50">V. 50 Index</option>
-                            <option value="R_75">V. 75 Index</option>
-                        </select>
-                    </div>
-                    
-                    <!-- Predicted Digit -->
-                    <div>
-                        <label for="predictedDigit" class="block text-xs font-semibold text-gray-300 mb-1">
+</div>
+<!-- Right Column: Results -->
+<div class="space-y-3">
+<div class="p-3 bg-gray-800 rounded-lg border border-green-500/50">
+<div class="text-xs font-semibold text-green-400 mb-1">Total Required</div>
+<div class="text-xl font-bold text-white" id="calc_total_required">$0.00</div>
+<div class="text-xs text-gray-400 mt-1">For all trades</div>
+</div>
+<div class="p-3 bg-gray-800 rounded-lg border border-blue-500/50">
+<div class="text-xs font-semibold text-blue-400 mb-1">Final Stake</div>
+<div class="text-lg font-bold text-white" id="calc_final_stake">$0.00</div>
+<div class="text-xs text-gray-400 mt-1">Last trade amount</div>
+</div>
+<div class="p-3 bg-gray-800 rounded-lg border border-yellow-500/50">
+<div class="text-xs font-semibold text-yellow-400 mb-1">Bankroll Status</div>
+<div class="text-lg font-bold text-white" id="calc_bankroll_status">-</div>
+<div class="text-xs text-gray-400 mt-1">vs. your limit</div>
+</div>
+<div class="p-3 bg-gray-800 rounded-lg border border-cyan-500/50">
+<div class="text-xs font-semibold text-cyan-400 mb-1">Profit on Win</div>
+<div class="text-lg font-bold text-white" id="calc_profit_on_win">$0.00</div>
+<div class="text-xs text-gray-400 mt-1">9x payout minus investment</div>
+</div>
+</div>
+</div>
+<!-- Stake Progression Table -->
+<div class="mt-4">
+<div class="text-xs font-semibold text-gray-300 mb-2">Stake Progression</div>
+<div class="text-xs text-gray-400 italic" id="calc_progression">Click CALCULATE to see stake progression</div>
+</div>
+</div>
+</div>
+<!-- Main Trading Controls -->
+<div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+<!-- Symbol -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="symbol">Symbol</label>
+<select class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="symbol">
+<option value="R_10">V. 10 Index</option>
+<option value="R_100">V. 100 Index</option>
+<option value="R_25">V. 25 Index</option>
+<option value="R_50">V. 50 Index</option>
+<option value="R_75">V. 75 Index</option>
+</select>
+</div>
+<!-- Predicted Digit -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="predictedDigit">
                             Current Digit
                         </label>
-                        <div class="flex space-x-2">
-                            <input type="number" id="predictedDigit" value="5" min="0" max="9" 
-                                class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm text-center">
-                            <button onclick="useAIRecommendedDigit()" 
-                                class="px-2 py-1 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 transition"
-                                title="Use AI Recommended Digit">
+<div class="flex space-x-2">
+<input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm text-center" id="predictedDigit" max="9" min="0" type="number" value="5"/>
+<button class="px-2 py-1 bg-purple-600 text-white text-xs font-bold rounded hover:bg-purple-700 transition" onclick="useAIRecommendedDigit()" title="Use AI Recommended Digit">
                                 🤖 AI
                             </button>
-                        </div>
-                    </div>
-
-                    <!-- Contract Type -->
-                    <div>
-                        <label for="contractType" class="block text-xs font-semibold text-gray-300 mb-1">Contract Type</label>
-                        <select id="contractType" class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                            <option value="DIGITMATCH">DIGITMATCH</option>
-                        </select>
-                    </div>
-
-                    <!-- Base Stake -->
-                    <div>
-                        <label for="baseStake" class="block text-xs font-semibold text-gray-300 mb-1">Base Stake</label>
-                        <input type="number" id="baseStake" value="1.0" min="0.1" step="0.1" 
-                            class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                    </div>
-
-                    <!-- Multiplier -->
-                    <div>
-                        <label for="multiplier" class="block text-xs font-semibold text-gray-300 mb-1">Multiplier</label>
-                        <input type="number" id="multiplier" value="1.15" min="1.0" step="0.01" 
-                            class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                    </div>
-
-                    <!-- Max Trades -->
-                    <div>
-                        <label for="maxTrades" class="block text-xs font-semibold text-gray-300 mb-1">Max Trades</label>
-                        <input type="number" id="maxTrades" value="15" min="1" step="1" inputmode="numeric" 
-                            class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm">
-                        <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
-                    </div>
-
-                    <!-- Max Trades is now the single user-defined cycle cap -->
-                    <div class="flex items-end">
-                        <p class="text-[11px] leading-relaxed text-gray-400">
+</div>
+</div>
+<!-- Contract Type -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="contractType">Contract Type</label>
+<select class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="contractType">
+<option value="DIGITMATCH">DIGITMATCH</option>
+</select>
+</div>
+<!-- Base Stake -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="baseStake">Base Stake</label>
+<input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="baseStake" min="0.1" step="0.1" type="number" value="1.0"/>
+</div>
+<!-- Multiplier -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="multiplier">Multiplier</label>
+<input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="multiplier" min="1.0" step="0.01" type="number" value="1.15"/>
+</div>
+<!-- Max Trades -->
+<div>
+<label class="block text-xs font-semibold text-gray-300 mb-1" for="maxTrades">Max Trades</label>
+<input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
+<p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
+</div>
+<!-- Max Trades is now the single user-defined cycle cap -->
+<div class="flex items-end">
+<p class="text-[11px] leading-relaxed text-gray-400">
                             Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
                         </p>
-                    </div>
-                    
-                    <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
-                    <div class="col-span-2 lg:col-span-3">
-                        <label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
-                        <div class="grid grid-cols-2 gap-2">
-                            <button id="mode_instant" onclick="switchMode('instant')" 
-                                class="px-4 py-2 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition">
+</div>
+<!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
+<div class="col-span-2 lg:col-span-3">
+<label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
+<div class="grid grid-cols-2 gap-2">
+<button class="px-4 py-2 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition" id="mode_instant" onclick="switchMode('instant')">
                                 ⚡ INSTANT
                             </button>
-                            <button id="mode_ai" onclick="switchMode('ai')" 
-                                class="px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition">
+<button class="px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition" id="mode_ai" onclick="switchMode('ai')">
                                 🧠 SCORE AUTO
                             </button>
-                        </div>
-                        <p id="mode_description" class="text-xs text-gray-400 mt-1">
+</div>
+<p class="text-xs text-gray-400 mt-1" id="mode_description">
                             ⚡ INSTANT: Starts trading immediately with your selected digit
                         </p>
-                    </div>
-                </div>
-                
-                <!-- METRICS -->
-                <div class="grid grid-cols-3 gap-3">
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50 col-span-2">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Current Tick</p>
-                        <p id="metricLiveTick" class="text-xl font-extrabold text-white">---</p>
-                        <p id="metricLastDigit" class="text-lg font-bold text-green-300">Digit: ?</p>
-                        <p id="metricTickRate" class="text-xs font-bold text-blue-400">Ticks/sec: --</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Balance</p>
-                        <p id="metricAccountBalance" class="text-lg font-bold balance-green">$---</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Trade #</p>
-                        <p id="metricTradeCount" class="text-lg font-bold text-white">0</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-lime-400 uppercase">P/L</p>
-                        <p id="metricTotalProfit" class="text-lg font-bold profit-neutral">$0.00</p>
-                    </div>
-                    
-                    <div class="bg-gray-700 rounded-lg p-2 shadow-inner">
-                        <p class="text-[10px] font-semibold text-green-500 uppercase">Stake</p>
-                        <p id="metricCurrentStake" class="text-lg font-bold text-white">$0.00</p>
-                    </div>
-                    
-                    <!-- TRADE STATUS SECTION -->
-                    <div id="trade-result-container" class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3">
-                        <div class="flex justify-between items-center mb-2">
-                            <p class="text-[10px] font-semibold text-yellow-500 uppercase">TRADE STATUS</p>
-                            <p id="metricTradeResult" class="text-xs font-bold text-gray-400">READY</p>
-                        </div>
-                        <div class="mb-2">
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
-                            <p id="metricPreviousResult" class="text-sm font-bold text-gray-300">Waiting for connection...</p>
-                        </div>
-                        <div>
-                            <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
-                            <p id="metricNextAction" class="text-sm font-bold text-yellow-400">Start bot to begin</p>
-                        </div>
-                        <div id="tae-live-panel"
-                             class="hidden mt-3 p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 text-xs">
-                            <div class="flex items-center justify-between gap-2 mb-2">
-                                <div class="font-black text-emerald-300">🎯 LEGACY RESEARCH (HIDDEN)</div>
-                                <div id="tae-live-mode" class="text-[10px] font-bold text-cyan-300">PERSISTENT · FORWARD-ONLY</div>
-                            </div>
-                            <div class="grid grid-cols-2 gap-x-3 gap-y-1">
-                                <span class="text-gray-400">Target:</span>
-                                <span id="tae-live-target" class="font-bold text-white">—</span>
+</div>
+</div>
+<!-- METRICS -->
+<div class="grid grid-cols-3 gap-3">
+<div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50 col-span-2">
+<p class="text-[10px] font-semibold text-green-500 uppercase">Current Tick</p>
+<p class="text-xl font-extrabold text-white" id="metricLiveTick">---</p>
+<p class="text-lg font-bold text-green-300" id="metricLastDigit">Digit: ?</p>
+<p class="text-xs font-bold text-blue-400" id="metricTickRate">Ticks/sec: --</p>
+</div>
+<div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50">
+<p class="text-[10px] font-semibold text-green-500 uppercase">Balance</p>
+<p class="text-lg font-bold balance-green" id="metricAccountBalance">$---</p>
+</div>
+<div class="bg-gray-700 rounded-lg p-2 shadow-inner">
+<p class="text-[10px] font-semibold text-green-500 uppercase">Trade #</p>
+<p class="text-lg font-bold text-white" id="metricTradeCount">0</p>
+</div>
+<div class="bg-gray-700 rounded-lg p-2 shadow-inner">
+<p class="text-[10px] font-semibold text-lime-400 uppercase">P/L</p>
+<p class="text-lg font-bold profit-neutral" id="metricTotalProfit">$0.00</p>
+</div>
+<div class="bg-gray-700 rounded-lg p-2 shadow-inner">
+<p class="text-[10px] font-semibold text-green-500 uppercase">Stake</p>
+<p class="text-lg font-bold text-white" id="metricCurrentStake">$0.00</p>
+</div>
+<!-- TRADE STATUS SECTION -->
+<div class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3" id="trade-result-container">
+<div class="flex justify-between items-center mb-2">
+<p class="text-[10px] font-semibold text-yellow-500 uppercase">TRADE STATUS</p>
+<p class="text-xs font-bold text-gray-400" id="metricTradeResult">READY</p>
+</div>
+<div class="mb-2">
+<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
+<p class="text-sm font-bold text-gray-300" id="metricPreviousResult">Waiting for connection...</p>
+</div>
+<div>
+<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
+<p class="text-sm font-bold text-yellow-400" id="metricNextAction">Start bot to begin</p>
+</div>
 
-                                <span class="text-gray-400">History:</span>
-                                <span id="tae-live-history" class="font-bold text-white">0 / 100</span>
+<div class="trade-actions">
+<button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
 
-                                <span class="text-gray-400">Pending T10 samples:</span>
-                                <span id="tae-live-pending" class="font-bold text-white">0</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- LOG AREA -->
+<div class="w-full flex flex-col" id="log-column">
+<div class="research-action-bar">
+<div class="research-action-title-wrap">
+<div class="research-action-title">Live Log</div>
+<div class="research-action-subtitle">Trading status and execution log</div>
+</div>
+<div class="research-action-buttons">
 
-                                <span class="text-gray-400">Next sample matures:</span>
-                                <span id="tae-live-next" class="font-bold text-white">—</span>
 
-                                <span class="text-gray-400">Matured training:</span>
-                                <span id="tae-live-trained" class="font-bold text-white">0 / 250</span>
+<button class="premium-research-btn premium-reset-btn" id="resetPerformanceBtn" onclick="resetAllPerformanceData()" title="Clear saved P/L and cycle performance while preserving research histories" type="button">
+<span>♻</span><span>RESET PERFORMANCE</span>
+</button>
 
-                                <span class="text-gray-400">Training progress:</span>
-                                <span id="tae-live-progress-text" class="font-bold text-white">0.0%</span>
+</div>
+</div>
 
-                                <span class="text-gray-400">Observed T10 hit rate:</span>
-                                <span id="tae-live-hit" class="font-bold text-white">—</span>
-
-                                <span class="text-gray-400">Selected STOP10:</span>
-                                <span id="tae-live-stop10" class="font-bold text-white">—</span>
-
-                                <span class="text-gray-400">Current P(return ≤ T10):</span>
-                                <span id="tae-live-prob" class="font-bold text-yellow-300">—</span>
-
-                                <span class="text-gray-400">Model state:</span>
-                                <span id="tae-live-state" class="font-black text-yellow-300">WARMING</span>
-
-                                <span class="text-gray-400">Server research stream:</span>
-                                <span id="tae-stream-state" class="font-bold text-yellow-300">CONNECTING</span>
-
-                                <span class="text-gray-400">Server TAE ticks:</span>
-                                <span id="tae-stream-ticks" class="font-bold text-white">0</span>
-
-                                <span class="text-gray-400">Last server tick:</span>
-                                <span id="tae-stream-last" class="font-bold text-white">—</span>
-
-                                <span class="text-gray-400">Research stream error:</span>
-                                <span id="tae-stream-error" class="font-bold text-gray-300">—</span>
-                            </div>
-
-                            <div class="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden">
-                                <div id="tae-live-progress-bar"
-                                     class="h-full bg-emerald-500 transition-all duration-300"
-                                     style="width:0%"></div>
-                            </div>
-
-                            <div class="mt-2 text-[10px] text-gray-400">
-                                TAE now uses a dedicated server-side read-only tick socket, independent of proposal/buy/settlement traffic. It learns even while Trade 0 is idle.
-                            </div>
-
-                            <button id="taePanelExportBtn"
-                                    type="button"
-                                    onclick="downloadTargetAttractionResults()"
-                                    class="mt-3 w-full px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white font-black text-xs border border-emerald-400/40">
-                                📊 EXPORT TARGET ATTRACTION RESULTS
-                            </button>
-                        </div>
-
-                        <div class="trade-actions">
-                            <button id="toggleButton" onclick="toggleBot()" class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150">🚀 START BOT</button>
-                            <button id="s20Button" onclick="openS20Config()" class="bg-slate-700 text-white font-bold hover:bg-slate-600 transition duration-150" title="Tail-risk cap">🧯 S20: <span id="s20Value">5</span>%</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- LOG AREA -->
-        <div id="log-column" class="w-full flex flex-col">
-            <div class="research-action-bar">
-                <div class="research-action-title-wrap">
-                    <div class="research-action-title">Live Log</div>
-                    <div class="research-action-subtitle">Research controls and session tools</div>
-                </div>
-
-                <div class="research-action-buttons">
-                    <button id="fullObservabilityExportBtn" type="button"
-                            onclick="downloadMatchStarResearchReport()"
-                            class="premium-research-btn premium-export-btn">
-                        <span>⬇</span><span>EXPORT FULL DATA</span>
-                    </button>
-
-                    <button id="mainTaeExportBtn" type="button"
-                            onclick="downloadTargetAttractionResults()"
-                            class="premium-research-btn premium-export-btn"
-                            title="Export persisted Target Attraction Engine forward-only T10 research">
-                        <span>📊</span><span>EXPORT TAE RESULTS</span>
-                    </button>
-
-                    <button id="resetPerformanceBtn" type="button"
-                            onclick="resetAllPerformanceData()"
-                            class="premium-research-btn premium-reset-btn"
-                            title="Clear saved P/L and cycle performance while preserving research histories">
-                        <span>♻</span><span>RESET PERFORMANCE</span>
-                    </button>
-
-                    <button id="overnightResearchToggleBtn" type="button"
-                            
-                            class="premium-research-btn premium-overnight-btn"
-                            title="Toggle overnight research and DEMO trading. Nothing starts unless you turn this ON.">
-                        <span>🌙</span><span id="overnightResearchToggleLabel">OVERNIGHT: OFF</span>
-                    </button>
-                </div>
-            </div>
-            <div id="overnightDebugBanner" class="mb-2 px-3 py-2 rounded bg-violet-950 border border-violet-700 text-violet-200 text-xs">
-                <b>Manual trading:</b> START/STOP controls normal trading.
-                <b>Overnight:</b> one 🌙 button controls both overnight research and DEMO trading.
-                Nothing starts overnight unless you explicitly switch Overnight ON.
-            </div>
-            <div id="log-area" class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner">
+<div class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner" id="log-area">
 [00:00:00] 🤖 Deriv Bot Initialized
 [00:00:00] 📊 Ready to connect to live market
 [00:00:00] 🧮 Martingale calculator ready
 [00:00:00] 🔄 Auto-recovery system ready
-[00:00:00] 🧠 Digit Intelligence Engine loaded
+[00:00:00] 🧠 Server Digit Score 0–9 ready
             </div>
-        </div>
-    </div>
-
-    <script>
+</div>
+</div>
+<script>
         // ============================================================================
         // UI ONLY — MINIMIZABLE PANELS
         // No trading logic, cycle logic, or existing history storage is changed.
@@ -9219,10 +9061,6 @@ function rotateHybridDigit(reason = '') {
             startMinimizablePanelUI();
             runCanonicalDigitSelfTest();
             setTimeout(() => {
-                window.nextTickModel.ensurePanel();
-                window.nextTickModel.render();
-                window.cyclePerformance.ensurePanel();
-                window.cyclePerformance.render();
 
                 // V53: always show the Randomness Auditor panel immediately.
                 if (window.digitDNAEngine) {
@@ -11517,11 +11355,7 @@ window.executionLock = true;
             lastTaeCandidateSyncAt: 0,
             taeCandidateSyncPending: false,
             researchSessionCreatePending: false,
-            continuousResearch: (
-                sessionStorage.getItem('dms_server_continuous_research') ??
-                localStorage.getItem('dms_server_continuous_research') ??
-                '1'
-            ) !== '0',
+            continuousResearch: false,
             continuousRestartPending: false,
             continuousRestartTimer: null,
             continuousRestartAttempts: 0,
@@ -11867,31 +11701,112 @@ window.executionLock = true;
             if (document.getElementById('recycle-runtime-panel')) return;
             const host = document.getElementById('trade-result-container');
             if (!host) return;
+
             const el = document.createElement('div');
             el.id = 'recycle-runtime-panel';
-            el.className = 'mt-3 grid grid-cols-3 gap-2 text-xs';
+            el.className = 'mt-3 rounded-xl border border-cyan-500/30 bg-slate-950/70 p-3 text-xs';
             el.innerHTML = `
-                <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/30 p-2">
-                    <div class="text-[10px] uppercase text-cyan-400 font-bold">Target</div>
-                    <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
+                <div class="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
+                        <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
+                        <div class="text-sm font-black text-white">3 losses</div>
+                    </div>
                 </div>
-                <div class="rounded-lg bg-amber-950/30 border border-amber-500/30 p-2">
-                    <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle</div>
-                    <div id="recycle-attempt" class="text-lg font-black text-white">3 losses</div>
+
+                <div class="grid grid-cols-4 gap-2 mb-3">
+                    <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Target</div>
+                        <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
+                    </div>
+                    <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
+                        <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
+                        <div id="recycle-trade" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/20 p-2">
+                        <div class="text-[9px] uppercase text-emerald-400 font-bold">Stake</div>
+                        <div id="recycle-stake" class="text-lg font-black text-white">$0.00</div>
+                    </div>
                 </div>
-                <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/30 p-2">
-                    <div class="text-[10px] uppercase text-emerald-400 font-bold">Max Trades</div>
-                    <div id="recycle-max-trades" class="text-lg font-black text-white">—</div>
-                </div>`;
+
+                <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+                <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
+                    Server ranks all digits from canonical tick history. Scores are relative ranking signals, not guaranteed probabilities.
+                </div>
+            `;
             host.appendChild(el);
         }
 
         function renderRecycleRuntimePanel(st) {
             ensureRecycleRuntimePanel();
-            const t = document.getElementById('recycle-current-target');
-            const m = document.getElementById('recycle-max-trades');
-            if (t) t.textContent = Number.isInteger(Number(st?.candidate_digit)) ? String(st.candidate_digit) : '—';
-            if (m) m.textContent = Number.isFinite(Number(st?.max_trades)) ? String(st.max_trades) : '—';
+
+            const score = st?.digit_score || null;
+            const currentTrade = Number(st?.current_trade || 0);
+            const maxTrades = Number(st?.max_trades || 0);
+            const attempt = currentTrade > 0 ? (((currentTrade - 1) % 3) + 1) : 0;
+
+            const targetEl = document.getElementById('recycle-current-target');
+            const attemptEl = document.getElementById('recycle-attempt');
+            const tradeEl = document.getElementById('recycle-trade');
+            const stakeEl = document.getElementById('recycle-stake');
+            const stateEl = document.getElementById('score-engine-state');
+            const rankingEl = document.getElementById('digit-score-ranking');
+
+            if (targetEl) {
+                targetEl.textContent = Number.isInteger(Number(st?.candidate_digit))
+                    ? String(st.candidate_digit)
+                    : '—';
+            }
+            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
+            if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
+            if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
+
+            if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
+                if (stateEl) {
+                    const have = Number(score?.history_count || 0);
+                    const need = Number(score?.minimum_history || 10);
+                    stateEl.textContent = `Warming history ${have}/${need}`;
+                }
+                if (rankingEl) rankingEl.innerHTML = '';
+                return;
+            }
+
+            const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+            const selected = Number(score.selected_digit);
+
+            if (stateEl) {
+                const margin = Number(score.top_margin);
+                const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
+                stateEl.textContent = `Selected ${selected}${marginText}`;
+            }
+
+            if (rankingEl) {
+                rankingEl.innerHTML = ranked.map((row, idx) => {
+                    const digit = Number(row.digit);
+                    const isSelected = digit === selected;
+                    const isExcluded = Number(score.excluded_digit) === digit;
+                    const cls = isSelected
+                        ? 'border-cyan-400 bg-cyan-500/20 text-white'
+                        : isExcluded
+                            ? 'border-rose-500/30 bg-rose-950/20 text-rose-300'
+                            : 'border-slate-700 bg-slate-900/70 text-gray-300';
+
+                    return `
+                        <div class="rounded-lg border ${cls} p-1.5 text-center">
+                            <div class="text-base font-black">${digit}</div>
+                            <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
+                            <div class="text-[8px] opacity-70">${idx + 1}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
         }
 
         window.__dmsFastWinTelegram = window.__dmsFastWinTelegram || new Set();
@@ -12128,7 +12043,7 @@ window.executionLock = true;
                 }
             }
 
-            renderTargetAttractionStatus(st);
+            
             renderServerTradeNarrative(st);
         }
 
@@ -12702,13 +12617,13 @@ window.executionLock = true;
                 }
 
                 if (!s.state) {
-                    await ensureServerResearchSession();
+                    
                 } else {
-                    await syncServerResearchCandidate();
+                    
                 }
 
                 renderServerExecutionState();
-                maybeScheduleContinuousServerResearch();
+                
 
             } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
@@ -15001,8 +14916,7 @@ window.isBotRunning = true;
 
         log('📊 Precision Matcher loaded in ANALYTICS-ONLY mode', 'SYSTEM');
     </script>
-
-    <script>
+<script>
     // ============================================================================
     // TAILGUARD AUTOPILOT RESEARCH v2.6 — admin-only + export + run 5 more
     // DEMO-ONLY autonomous research runner.
@@ -15523,7 +15437,7 @@ window.isBotRunning = true;
             if (wantOn) {
                 window.manualTradingStopped = false;
                 window.__dmsManualStopRequested = false;
-                window.__dmsOvernightEnabled = true;
+                window.__dmsOvernightEnabled = false;
                 window.__dmsOvernightAccount = 'DEMO';
                 acquireScreenWakeLock().catch(() => {});
                 selectAiAuto();
@@ -15955,25 +15869,12 @@ window.isBotRunning = true;
         }
     })();
     </script>
-
-    <script src="/screen-recorder-safe-v5-2.js"></script>
-
-
+<script src="/screen-recorder-safe-v5-2.js"></script>
 <!-- Digit Differs Lab removed in V51 CORE CLEAN -->
-
-
 <!-- Multi-Digit Match Basket Lab removed in V51 CORE CLEAN -->
-
-
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
-<div id="v52-build-meta" style="display:none"
-data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW"
-data-instant-unchanged="true"
-data-ai-randomness-auditor="true"
-data-ai-adaptive-entry="true" data-digit-feature-engine="DFE-1" data-digit-dna-engine="DNA-1" data-public-market-parser="single-feed-v57" data-observability-only="true" data-tailguard-overnight="single-button-explicit-demo-trading" data-wake-lock="screen" data-auditor-panel="always-visible" data-safe-tick-v1="v1.3-persistent-shadow-validation"></div>
-
-    <!-- Tick DNA → Tail Risk Validation V2 integration -->
-    <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
-
+<div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
+<!-- Tick DNA → Tail Risk Validation V2 integration -->
+<script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
 </body>
 </html>
