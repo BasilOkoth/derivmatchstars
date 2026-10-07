@@ -16,7 +16,7 @@ class MultiUserEngine:
     """
     DigitMatchStar low-latency engine.
 
-    Strategy invariant:
+    Strategy invariant (DEMO and REAL are identical):
       1. Buy Trade N.
       2. The first eligible live tick after the trade is armed drives the
          immediate strategy decision:
@@ -24,10 +24,15 @@ class MultiUserEngine:
             target digit != tick last digit -> LOSS -> advance immediately
       3. The next recovery proposal is pre-armed while Trade N is open.
       4. On a fast loss, BUY Trade N+1 immediately with that pre-armed proposal.
-      5. Deriv proposal_open_contract settlement runs in the background only
+      5. Auto-advance until WIN or max_trades reached.
+      6. Deriv proposal_open_contract settlement runs in the background only
          for authoritative P/L/accounting/reconciliation.
-      6. If the fast tick result disagrees with Deriv's eventual settlement,
+      7. If the fast tick result disagrees with Deriv's eventual settlement,
          stop with RECONCILE_MISMATCH rather than silently continuing.
+
+    REAL and DEMO use exactly the same code path. The only place account_mode
+    is consulted is the Deriv `buy()` call, which simply tells the WebSocket
+    layer which account to place the contract on.
     """
 
     def __init__(self):
@@ -628,6 +633,14 @@ class MultiUserEngine:
                         s.last_error = None
                         db.commit()
 
+                # REAL and DEMO run identically. If any legacy confirmation
+                # flag is still set on the session, clear it automatically
+                # and continue buying on the next eligible tick.
+                if s.pending_real_confirmation:
+                    s.pending_real_confirmation = False
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                 client = await self._client(
                     s.user_id,
                     s.account_id,
@@ -680,11 +693,6 @@ class MultiUserEngine:
                         else "PIPELINE_ACTIVE"
                     )
                     s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                if s.pending_real_confirmation:
-                    s.phase = "WAITING_REAL_CONFIRMATION"
                     db.commit()
                     return
 
@@ -863,7 +871,8 @@ class MultiUserEngine:
             self.latest_tick_epoch.get(s.id) or 0
         )
 
-        # Check account mode to pass to WebSocket buy call
+        # DEMO and REAL use the same pipeline. account_mode only decides
+        # which Deriv account the contract is placed on.
         is_demo = str(s.account_mode).upper() == "DEMO"
 
         try:
@@ -1011,6 +1020,7 @@ class MultiUserEngine:
         row.phase = "PIPELINE_ACTIVE"
         row.current_trade = int(payload["trade_no"])
         row.pending_trade_json = None
+        # No confirmation is ever required mid-cycle for either account mode.
         row.pending_real_confirmation = False
         row.last_error = None
         row.updated_at = datetime.utcnow()
@@ -1582,17 +1592,28 @@ class MultiUserEngine:
         return dict(value) if isinstance(value, dict) else None
 
     async def confirm_real(self, user_id: str, session_id: int):
-        """Confirms and enables live execution for a REAL account trading session."""
+        """
+        Backward-compatible no-op endpoint.
+
+        REAL now runs identically to DEMO: once the session is started the
+        worker buys on the next eligible tick and auto-advances through
+        losses until a WIN or max_trades is reached. No confirmation is
+        required at any point in the cycle.
+
+        This method is kept so existing API routes and older clients do not
+        break. It simply clears any stale confirmation flag and returns True.
+        """
         db = SessionLocal()
         try:
             s = db.get(TradingSession, session_id)
             if not s or str(s.user_id) != str(user_id):
                 raise RuntimeError("Trading session not found or unauthorized.")
-            
-            s.pending_real_confirmation = False
-            s.phase = "REAL_CONFIRMED"
-            s.updated_at = datetime.utcnow()
-            db.commit()
+
+            if s.pending_real_confirmation:
+                s.pending_real_confirmation = False
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
             return True
         finally:
             db.close()
