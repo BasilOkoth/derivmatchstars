@@ -779,17 +779,7 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # Keep unattended execution DEMO-only.
-                if str(s.account_mode).upper() != "DEMO":
-                    s.running = True
-                    s.phase = "REAL_AUTOMATION_ABLED"
-                    s.last_error = (
-                        "REAL account connection is supported."
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
+                
                 currency = await self._currency_for(db, s)
 
                 # Normal first trade of the cycle. Recovery trades normally use
