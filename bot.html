@@ -864,12 +864,12 @@
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="maxTrades">Max Trades</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
-<p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target follows the current top-ranked digit from the live server score.</p>
+<p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The next target follows the current live rank #1.</p>
 </div>
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
-                            Choose any positive Max Trades value. The next target changes immediately when the server's rank #1 digit changes.
+                            Choose any positive Max Trades value. The next target updates from the current live rank #1.
                         </p>
 </div>
 <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
@@ -6334,7 +6334,9 @@ window.cyclePerformance = {
                         window.EV_GATE_CONFIG?.minEdge ??
                         NaN
                     ),
-                    recoveryDigitPolicy: 'ADAPTIVE_RENEWABLE_HOLD_THEN_RERANK',
+                    recoveryDigitPolicy: 'LIVE_TOP_RANK_EACH_RECOVERY',
+                    recoveryDigitTradeLock: Number(window.recoveryDigitTradeLimit || 3),
+                    adaptiveRecoveryHoldConfig: safeClone(window.ADAPTIVE_RECOVERY_HOLD_CONFIG),
                     adaptiveRecoveryHoldState: safeClone(window.adaptiveRecoveryHoldState),
                     hardCycleTradeCap: null,
                     cycleTradeCapSource: 'USER_DEFINED_MAX_TRADES',
@@ -7033,7 +7035,36 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
-        // Live recovery target follows current rank #1 directly.
+        window.recoveryDigitLock = null;
+        window.recoveryDigitTrades = 0;
+        window.recoveryDigitTradeLimit = 1;
+
+        // V57.7 — Adaptive recovery hold.
+        // Starts with the existing 3-purchase hold, then renews one trade at a time
+        // only while the currently locked digit remains sufficiently supported.
+        window.ADAPTIVE_RECOVERY_HOLD_CONFIG = {
+            enabled: false,
+            initialHold: 1,
+            minHold: 1,
+            maxHold: 1,
+            extensionStep: 1,
+            minAgreementForExtension: 1,
+            strongAgreementForExtension: 2,
+            minDnaSimilarity: 0.60,
+            minModelProbability: 0.10,
+            maxProbabilityDeficit: 0.015,
+            switchAdvantage: 0.020
+        };
+
+        window.adaptiveRecoveryHoldState = {
+            extensions: 0,
+            reranks: 0,
+            keeps: 0,
+            switches: 0,
+            lastDecision: null,
+            history: []
+        };
+
         window.smartEntryOverrideState = {
             digit: null,
             streak: 0,
@@ -7557,7 +7588,11 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.currentStake = Number(
                 parseFloat(document.getElementById('baseStake')?.value) || window.baseStake || 1
             );
-if (window.adaptiveRecoveryHoldState) {
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('PERFORMANCE_RESET');
+
+            if (window.adaptiveRecoveryHoldState) {
                 window.adaptiveRecoveryHoldState.extensions = 0;
                 window.adaptiveRecoveryHoldState.reranks = 0;
                 window.adaptiveRecoveryHoldState.keeps = 0;
@@ -7887,6 +7922,285 @@ if (window.adaptiveRecoveryHoldState) {
             return best;
         }
 
+
+        function getAdaptiveRecoveryEvidence(digit) {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const symbol =
+                window.currentSymbol ||
+                document.getElementById('symbol')?.value ||
+                'R_10';
+
+            let model = null;
+            try {
+                model = window.nextTickModel?.getPrediction?.(symbol, Number(digit)) || null;
+            } catch (_) {}
+
+            let dna = window.digitDNAEngine?.lastSnapshot || null;
+            try {
+                if (!dna?.ready && window.digitDNAEngine?.analyze) {
+                    dna = window.digitDNAEngine.analyze(symbol) || dna;
+                }
+            } catch (_) {}
+
+            let feature = window.digitFeatureEngine?.lastSnapshot || null;
+            try {
+                if (!feature?.ready && window.digitFeatureEngine?.analyze) {
+                    feature = window.digitFeatureEngine.analyze(symbol) || feature;
+                }
+            } catch (_) {}
+
+            let auditor = window.randomnessAuditor?.lastSnapshot || null;
+            try {
+                if (!auditor?.ready && window.randomnessAuditor?.analyze) {
+                    auditor = window.randomnessAuditor.analyze(symbol) || auditor;
+                }
+            } catch (_) {}
+
+            const recommendation =
+                window.digitIntelligenceEngine?.currentRecommendation || null;
+
+            const dnaRow = Array.isArray(dna?.rows)
+                ? dna.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+            const featureRow = Array.isArray(feature?.rows)
+                ? feature.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+            const auditorRow = Array.isArray(auditor?.rows)
+                ? auditor.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+
+            const topVotes = [
+                Number(dna?.topDigit),
+                Number(feature?.topDigit),
+                Number(auditor?.topDigit),
+                Number(recommendation?.digit)
+            ].filter(Number.isInteger);
+
+            const agreementCount = topVotes.filter(d => d === Number(digit)).length;
+
+            let bestPick = null;
+            try { bestPick = chooseBestRecoveryDigit(); } catch (_) {}
+
+            const currentP = Number(model?.probability ?? NaN);
+            const bestP = Number(bestPick?.probability ?? NaN);
+            const probabilityDeficit =
+                Number.isFinite(bestP) && Number.isFinite(currentP)
+                    ? bestP - currentP
+                    : null;
+
+            return {
+                symbol,
+                digit:Number(digit),
+                modelProbability:Number.isFinite(currentP) ? currentP : null,
+                modelSupport:Number(model?.effectiveSupport || 0),
+                dnaTop:Number.isInteger(Number(dna?.topDigit)) ? Number(dna.topDigit) : null,
+                dnaSimilarity:Number.isFinite(Number(dnaRow?.similarity)) ? Number(dnaRow.similarity) : null,
+                featureTop:Number.isInteger(Number(feature?.topDigit)) ? Number(feature.topDigit) : null,
+                featureScore:Number.isFinite(Number(featureRow?.score)) ? Number(featureRow.score) : null,
+                auditorTop:Number.isInteger(Number(auditor?.topDigit)) ? Number(auditor.topDigit) : null,
+                auditorScore:Number.isFinite(Number(auditorRow?.score)) ? Number(auditorRow.score) : null,
+                recommendationTop:Number.isInteger(Number(recommendation?.digit)) ? Number(recommendation.digit) : null,
+                recommendationSource:recommendation?.source || null,
+                agreementCount,
+                bestRecoveryDigit:Number.isInteger(Number(bestPick?.digit)) ? Number(bestPick.digit) : null,
+                bestRecoveryProbability:Number.isFinite(bestP) ? bestP : null,
+                probabilityDeficit,
+                configSnapshot:{
+                    minAgreementForExtension:Number(cfg.minAgreementForExtension ?? 1),
+                    strongAgreementForExtension:Number(cfg.strongAgreementForExtension ?? 2),
+                    minDnaSimilarity:Number(cfg.minDnaSimilarity ?? 0.60),
+                    minModelProbability:Number(cfg.minModelProbability ?? 0.10),
+                    maxProbabilityDeficit:Number(cfg.maxProbabilityDeficit ?? 0.015),
+                    switchAdvantage:Number(cfg.switchAdvantage ?? 0.020)
+                }
+            };
+        }
+
+        function recordAdaptiveRecoveryDecision(decision) {
+            const state = window.adaptiveRecoveryHoldState;
+            if (!state) return;
+
+            state.lastDecision = decision;
+            state.history.push(decision);
+            if (state.history.length > 500) {
+                state.history = state.history.slice(-500);
+            }
+
+            if (decision.action === 'EXTEND') {
+                state.extensions++;
+                state.keeps++;
+            } else if (decision.action === 'RERANK_KEEP') {
+                state.reranks++;
+                state.keeps++;
+            } else if (decision.action === 'RERANK_SWITCH') {
+                state.reranks++;
+                state.switches++;
+            }
+        }
+
+        function shouldExtendRecoveryHold(digit) {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const evidence = getAdaptiveRecoveryEvidence(digit);
+
+            const currentP = Number(evidence.modelProbability);
+            const bestP = Number(evidence.bestRecoveryProbability);
+            const deficit = Number(evidence.probabilityDeficit);
+            const dnaSimilarity = Number(evidence.dnaSimilarity);
+            const agreement = Number(evidence.agreementCount || 0);
+
+            const sameAsFreshBest =
+                Number.isInteger(evidence.bestRecoveryDigit) &&
+                Number(evidence.bestRecoveryDigit) === Number(digit);
+
+            const strongAgreement =
+                agreement >= Number(cfg.strongAgreementForExtension ?? 2);
+
+            const moderateAgreement =
+                agreement >= Number(cfg.minAgreementForExtension ?? 1);
+
+            const dnaSupport =
+                Number.isFinite(dnaSimilarity) &&
+                dnaSimilarity >= Number(cfg.minDnaSimilarity ?? 0.60);
+
+            const modelSupport =
+                Number.isFinite(currentP) &&
+                currentP >= Number(cfg.minModelProbability ?? 0.10);
+
+            const closeToBest =
+                !Number.isFinite(deficit) ||
+                deficit <= Number(cfg.maxProbabilityDeficit ?? 0.015);
+
+            const clearlyOutranked =
+                Number.isFinite(bestP) &&
+                Number.isFinite(currentP) &&
+                evidence.bestRecoveryDigit !== null &&
+                Number(evidence.bestRecoveryDigit) !== Number(digit) &&
+                (bestP - currentP) >= Number(cfg.switchAdvantage ?? 0.020);
+
+            const extend =
+                !clearlyOutranked &&
+                (
+                    sameAsFreshBest ||
+                    strongAgreement ||
+                    (moderateAgreement && dnaSupport && modelSupport && closeToBest) ||
+                    (dnaSupport && modelSupport && closeToBest)
+                );
+
+            return {
+                extend,
+                reason: clearlyOutranked
+                    ? 'FRESH_CANDIDATE_CLEARLY_STRONGER'
+                    : sameAsFreshBest
+                        ? 'CURRENT_DIGIT_STILL_FRESH_BEST'
+                        : strongAgreement
+                            ? 'MULTI_ENGINE_AGREEMENT'
+                            : (dnaSupport && modelSupport && closeToBest)
+                                ? 'DNA_MODEL_SUPPORT'
+                                : 'SUPPORT_WEAKENED',
+                evidence
+            };
+        }
+
+        function resetAdaptiveRecoveryHold(reason = '') {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            window.recoveryDigitTradeLimit = Math.max(
+                1,
+                Number(cfg.initialHold || 3)
+            );
+
+            if (reason) {
+                const state = window.adaptiveRecoveryHoldState;
+                if (state) {
+                    state.lastResetReason = reason;
+                    state.lastResetAt = Date.now();
+                }
+            }
+        }
+
+        function adaptiveRecoveryBoundaryDecision() {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const currentDigit = Number(window.recoveryDigitLock);
+            const currentLimit = Math.max(1, Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3));
+            const used = Math.min(
+                Number(window.recoveryDigitTrades || 0),
+                currentLimit
+            );
+            if (Number(window.recoveryDigitTrades || 0) !== used) {
+                window.recoveryDigitTrades = used;
+            }
+            const maxHold = Math.max(currentLimit, Number(cfg.maxHold || 6));
+
+            if (!cfg.enabled || !Number.isInteger(currentDigit)) {
+                return { action:'RERANK', reason:'ADAPTIVE_DISABLED_OR_NO_LOCK' };
+            }
+
+            if (used < currentLimit) {
+                return { action:'KEEP_UNTIL_BOUNDARY', reason:'CURRENT_BLOCK_NOT_COMPLETE' };
+            }
+
+            // Hard ceiling reached: force a fresh re-rank.
+            if (currentLimit >= maxHold) {
+                return {
+                    action:'RERANK',
+                    reason:'ADAPTIVE_MAX_HOLD_REACHED',
+                    evidence:getAdaptiveRecoveryEvidence(currentDigit)
+                };
+            }
+
+            const verdict = shouldExtendRecoveryHold(currentDigit);
+
+            if (verdict.extend) {
+                const nextLimit = Math.min(
+                    maxHold,
+                    currentLimit + Math.max(1, Number(cfg.extensionStep || 1))
+                );
+
+                window.recoveryDigitTradeLimit = nextLimit;
+
+                const decision = {
+                    at:Date.now(),
+                    action:'EXTEND',
+                    reason:verdict.reason,
+                    digit:currentDigit,
+                    used,
+                    previousLimit:currentLimit,
+                    newLimit:nextLimit,
+                    evidence:verdict.evidence
+                };
+                recordAdaptiveRecoveryDecision(decision);
+
+                log(
+                    `🧠 ADAPTIVE HOLD EXTEND | digit ${currentDigit} | ` +
+                    `${currentLimit} → ${nextLimit} purchased recovery trades | ` +
+                    `${verdict.reason} | agreement ${verdict.evidence.agreementCount} | ` +
+                    `DNA ${verdict.evidence.dnaSimilarity == null ? '-' : (verdict.evidence.dnaSimilarity*100).toFixed(1)+'%'} | ` +
+                    `model P ${verdict.evidence.modelProbability == null ? '-' : (verdict.evidence.modelProbability*100).toFixed(2)+'%'}`,
+                    'ENGINE'
+                );
+
+                return decision;
+            }
+
+            const decision = {
+                at:Date.now(),
+                action:'RERANK',
+                reason:verdict.reason,
+                digit:currentDigit,
+                used,
+                previousLimit:currentLimit,
+                newLimit:Number(cfg.initialHold || 3),
+                evidence:verdict.evidence
+            };
+            recordAdaptiveRecoveryDecision(decision);
+
+            log(
+                `🧠 ADAPTIVE HOLD RELEASE | digit ${currentDigit} | ` +
+                `re-rank after ${used} purchased recovery trades | ${verdict.reason}`,
+                'ENGINE'
+            );
+
+            return decision;
+        }
 
 function rotateHybridDigit(reason = '') {
             clearSessionDigitLock(reason || 'Rotate');
@@ -10248,9 +10562,8 @@ window.executionLock = true;
                     sessionState.mode === 'ai'
                 ) {
                     // LIVE TOP-RANK RECOVERY:
-                    // No 3-trade hold, no 6-trade ceiling, no recovery digit lock.
-                    // Before every next order, use the newest rank #1 currently
-                    // exposed by the live intelligence engine.
+                    // No 3-trade block and no 6-trade ceiling.
+                    // Before every next order, use the newest rank #1.
                     const liveTopDigit = Number(
                         window.digitIntelligenceEngine
                             ?.currentRecommendation
@@ -10271,29 +10584,20 @@ window.executionLock = true;
                             predictedDigitEl.value = String(selectedDigit);
                         }
 
-                        // Keep the session display synchronized with rank #1.
+                        // Keep the visible session target synchronized too.
                         sessionState.sessionDigit = selectedDigit;
                         sessionState.sessionStarted = true;
+
+                        // Reset legacy counters so they can never accumulate
+                        // into a hidden 3/6-trade boundary.
+                        window.recoveryDigitLock = null;
+                        window.recoveryDigitTrades = 0;
+                        window.recoveryDigitTradeLimit = 1;
 
                         log(
                             `⚡ LIVE TOP RANK | next target digit ${selectedDigit}`,
                             'ENGINE'
                         );
-                    } else {
-                        // If the live recommendation is momentarily unavailable,
-                        // keep the currently displayed digit rather than inventing
-                        // a new target.
-                        const fallbackDigit = Number(
-                            document.getElementById('predictedDigit')?.value
-                        );
-
-                        if (
-                            Number.isInteger(fallbackDigit) &&
-                            fallbackDigit >= 0 &&
-                            fallbackDigit <= 9
-                        ) {
-                            selectedDigit = fallbackDigit;
-                        }
                     }
                 }
 
@@ -11371,171 +11675,124 @@ window.executionLock = true;
         }
 
 
-        function ensureLiveTargetRuntimePanel() {
-            if (document.getElementById('live-target-runtime-panel')) return;
-
+        function ensureRecycleRuntimePanel() {
+            if (document.getElementById('recycle-runtime-panel')) return;
             const host = document.getElementById('trade-result-container');
             if (!host) return;
 
             const el = document.createElement('div');
-            el.id = 'live-target-runtime-panel';
+            el.id = 'recycle-runtime-panel';
             el.className = 'mt-3 rounded-xl border border-cyan-500/30 bg-slate-950/70 p-3 text-xs';
-
             el.innerHTML = `
                 <div class="flex items-center justify-between gap-3 mb-3">
                     <div>
-                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">
-                            Live Digit Ranking
-                        </div>
-                        <div id="score-engine-state" class="text-sm font-black text-white">
-                            Waiting for server score…
-                        </div>
+                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
+                        <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
                     </div>
                     <div class="text-right">
-                        <div class="text-[10px] uppercase text-emerald-400 font-bold">
-                            Target policy
-                        </div>
-                        <div class="text-sm font-black text-white">
-                            LIVE RANK #1
-                        </div>
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
+                        <div class="text-sm font-black text-white">3 losses</div>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-3 gap-2 mb-3">
+                <div class="grid grid-cols-4 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">
-                            Target = Top Rank
-                        </div>
-                        <div id="live-target-digit" class="text-lg font-black text-white">—</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Target</div>
+                        <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
-
+                    <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
+                    </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
-                        <div class="text-[9px] uppercase text-violet-400 font-bold">
-                            Trade
-                        </div>
-                        <div id="live-target-trade" class="text-lg font-black text-white">—</div>
+                        <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
+                        <div id="recycle-trade" class="text-lg font-black text-white">—</div>
                     </div>
-
                     <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/20 p-2">
-                        <div class="text-[9px] uppercase text-emerald-400 font-bold">
-                            Stake
-                        </div>
-                        <div id="live-target-stake" class="text-lg font-black text-white">$0.00</div>
+                        <div class="text-[9px] uppercase text-emerald-400 font-bold">Stake</div>
+                        <div id="recycle-stake" class="text-lg font-black text-white">$0.00</div>
                     </div>
                 </div>
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
-
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    The server rescans all digits on every new canonical tick. Rank #1 is the next target immediately; there is no multi-loss target lock.
+                    Server ranks all digits from canonical tick history. Scores are relative ranking signals, not guaranteed probabilities.
                 </div>
             `;
-
             host.appendChild(el);
         }
 
-        function renderLiveTargetRuntimePanel(st) {
-            ensureLiveTargetRuntimePanel();
+        function renderRecycleRuntimePanel(st) {
+            ensureRecycleRuntimePanel();
 
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
             const maxTrades = Number(st?.max_trades || 0);
+            const attempt = currentTrade > 0 ? (((currentTrade - 1) % 3) + 1) : 0;
 
-            const targetEl = document.getElementById('live-target-digit');
-            const tradeEl = document.getElementById('live-target-trade');
-            const stakeEl = document.getElementById('live-target-stake');
+            const targetEl = document.getElementById('recycle-current-target');
+            const attemptEl = document.getElementById('recycle-attempt');
+            const tradeEl = document.getElementById('recycle-trade');
+            const stakeEl = document.getElementById('recycle-stake');
             const stateEl = document.getElementById('score-engine-state');
             const rankingEl = document.getElementById('digit-score-ranking');
 
-            const rankedTop = Number(score?.selected_digit);
-            const serverCandidate = Number(st?.candidate_digit);
-
-            // Display the current server rank #1 as the target. This intentionally
-            // does not pretend an already-purchased one-tick contract can have its
-            // barrier changed after purchase; it is the target for the next order.
-            const liveTarget =
-                Number.isInteger(rankedTop) && rankedTop >= 0 && rankedTop <= 9
-                    ? rankedTop
-                    : (
-                        Number.isInteger(serverCandidate) &&
-                        serverCandidate >= 0 &&
-                        serverCandidate <= 9
-                            ? serverCandidate
-                            : null
-                    );
-
             if (targetEl) {
-                targetEl.textContent =
-                    liveTarget === null ? '—' : String(liveTarget);
+                targetEl.textContent = Number.isInteger(Number(st?.candidate_digit))
+                    ? String(st.candidate_digit)
+                    : '—';
             }
+            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
+            if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
+            if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
 
-            if (tradeEl) {
-                tradeEl.textContent =
-                    maxTrades
-                        ? `${currentTrade} / ${maxTrades}`
-                        : String(currentTrade || '—');
-            }
-
-            if (stakeEl) {
-                stakeEl.textContent =
-                    `$${Number(st?.current_stake || 0).toFixed(2)}`;
-            }
-
-            if (
-                !score?.ready ||
-                !Array.isArray(score.ranking) ||
-                !score.ranking.length
-            ) {
+            if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
                 if (stateEl) {
-                    const count = Number(score?.history_count || 0);
-                    const minimum = Number(score?.minimum_history || 10);
-                    stateEl.textContent = `Warming score ${count}/${minimum}`;
+                    const have = Number(score?.history_count || 0);
+                    const need = Number(score?.minimum_history || 10);
+                    stateEl.textContent = `Warming history ${have}/${need}`;
                 }
-
                 if (rankingEl) rankingEl.innerHTML = '';
                 return;
             }
 
-            const topDigit = Number(score.selected_digit);
+            const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+            const selected = Number(score.selected_digit);
 
             if (stateEl) {
-                stateEl.textContent =
-                    Number.isInteger(topDigit)
-                        ? `Rank #1 digit ${topDigit} · target synced`
-                        : 'Live ranking ready';
+                const margin = Number(score.top_margin);
+                const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
+                stateEl.textContent = `Selected ${selected}${marginText}`;
             }
 
             if (rankingEl) {
-                rankingEl.innerHTML = score.ranking
-                    .slice(0, 10)
-                    .map((row, index) => {
-                        const d = Number(row?.digit);
-                        const value = Number(row?.score || 0);
-                        const isTop = index === 0;
+                rankingEl.innerHTML = ranked.map((row, idx) => {
+                    const digit = Number(row.digit);
+                    const isSelected = digit === selected;
+                    const isExcluded = Number(score.excluded_digit) === digit;
+                    const cls = isSelected
+                        ? 'border-cyan-400 bg-cyan-500/20 text-white'
+                        : isExcluded
+                            ? 'border-rose-500/30 bg-rose-950/20 text-rose-300'
+                            : 'border-slate-700 bg-slate-900/70 text-gray-300';
 
-                        return `
-                            <div class="rounded-md border ${
-                                isTop
-                                    ? 'border-emerald-400 bg-emerald-950/40'
-                                    : 'border-slate-700 bg-slate-900/60'
-                            } px-1.5 py-1 text-center">
-                                <div class="${
-                                    isTop
-                                        ? 'text-emerald-300'
-                                        : 'text-gray-300'
-                                } font-black">
-                                    ${Number.isInteger(d) ? d : '—'}
-                                </div>
-                                <div class="text-[8px] text-gray-500">
-                                    ${Number.isFinite(value) ? value.toFixed(2) : '—'}
-                                </div>
-                            </div>
-                        `;
-                    })
-                    .join('');
+                    return `
+                        <div class="rounded-lg border ${cls} p-1.5 text-center">
+                            <div class="text-base font-black">${digit}</div>
+                            <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
+                            <div class="text-[8px] opacity-70">${idx + 1}</div>
+                        </div>
+                    `;
+                }).join('');
             }
         }
 
+        // Telegram settlement-safe publisher.
+        // FAST_WON is used for immediate sound/strategy stop only.
+        // A Telegram WIN is sent only after the exact winning contract has
+        // an authoritative Deriv settlement in st.last_settlement.
+        window.__dmsPendingTelegramWins = window.__dmsPendingTelegramWins || new Map();
+        window.__dmsPublishedSettlementWins = window.__dmsPublishedSettlementWins || new Set();
 
         function publishFastWinToTelegram(st) {
             try {
@@ -11638,7 +11895,7 @@ window.executionLock = true;
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
-            try { renderLiveTargetRuntimePanel(st); } catch (_) {}
+            try { renderRecycleRuntimePanel(st); } catch (_) {}
             try { publishFastWinToTelegram(st); } catch (_) {}
 
             // V1.6 deterministic server audio.
@@ -12774,6 +13031,9 @@ window.executionLock = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('CYCLE_RESET');
                 window.cycleHasPurchasedContract = false;
                 log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
                 updatePnL();
@@ -12786,13 +13046,21 @@ window.executionLock = true;
                 // V1.6: do not keep a stale recovery digit across losses.
                 // The next eligible tick must re-score all 10 digits and either
                 // keep the current leader or switch to the stronger candidate.
-renderTailRiskPanel();
+                window.recoveryDigitLock = null;
+                window.recoveryDigitTrades = 0;
+                window.recoveryDigitTradeLimit = 1;
+                resetAdaptiveRecoveryHold('PER_TRADE_RERANK');
+
+                renderTailRiskPanel();
                 log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
             } else {
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('CYCLE_RESET');
                 log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
                 updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
             }
@@ -12898,7 +13166,11 @@ window.isBotRunning = true;
             
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
             updateStake('initial');
-initTone();
+            log(
+                '🧠 AI recovery policy: next target follows the current live rank #1 on every recovery trade',
+                'ENGINE'
+            );
+            initTone();
 
             if (window.SERVER_EXECUTION?.enabled) {
                 log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
@@ -13670,6 +13942,24 @@ initTone();
             window.tradeCount++;
             window.stats.tradesExecuted++;
             window.cycleHasPurchasedContract = true;
+
+            if (
+                sessionState.mode === 'ai' &&
+                Number.isInteger(window.recoveryDigitLock) &&
+                window.tradeCount > 1
+            ) {
+                window.recoveryDigitTrades = Math.min(
+                    Number(window.recoveryDigitTrades || 0) + 1,
+                    Math.max(
+                        1,
+                        Number(
+                            window.recoveryDigitTradeLimit ||
+                            window.ADAPTIVE_RECOVERY_HOLD_CONFIG?.initialHold ||
+                            3
+                        )
+                    )
+                );
+            }
 
             trackTradeInvestment(
                 Number.isFinite(actualBuyPrice) && actualBuyPrice > 0
