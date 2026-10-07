@@ -11797,10 +11797,10 @@ window.executionLock = true;
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-v2-meta" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px]">
-                    <div class="rounded bg-slate-900/70 p-1.5">Strength: <b id="score-strength">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Agreement: <b id="score-agreement">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Velocity: <b id="score-velocity">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Trigger: <b id="score-trigger">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Active Target: <b id="score-strength">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Agreement: <b id="score-agreement">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Velocity: <b id="score-velocity">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Pick: <b id="score-trigger">—</b></div>
                 </div>
 
                 <div class="mt-2">
@@ -11809,14 +11809,14 @@ window.executionLock = true;
                         type="button"
                         onclick="downloadTriggerFusionData()"
                         class="w-full rounded-lg border border-cyan-500/40 bg-cyan-700/30 hover:bg-cyan-700/50 px-3 py-2 text-[10px] font-black tracking-wide text-cyan-100 transition"
-                        title="Export persisted Trigger Fusion trade evidence from PostgreSQL"
+                        title="Export persisted V1 execution + Trigger Fusion shadow evidence from PostgreSQL"
                     >
-                        📥 EXPORT TRIGGER FUSION DATA
+                        📥 EXPORT STABLE + SHADOW DATA
                     </button>
                 </div>
 
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V2 Trigger Fusion · relative ranking only · no hard entry threshold.
+                    DigitScore V1 Stable execution · Trigger Fusion runs in SHADOW only and cannot change the target.
                 </div>
             `;
             host.appendChild(el);
@@ -11860,12 +11860,16 @@ window.executionLock = true;
             const selected = Number(score.selected_digit);
 
             const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
+            const activeTarget = Number(st?.candidate_digit);
+            const shadow = score?.shadow || {};
+            const shadowSelected = Number(shadow?.selected_digit);
+            const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
+            const shadowRow = shadowRows.find(row => Number(row.digit) === shadowSelected) || shadowRows[0] || null;
 
             if (stateEl) {
                 const margin = Number(score.top_margin);
-                const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
-                const strength = selectedRow?.strength || '—';
-                stateEl.textContent = `Selected ${selected} · ${strength}${marginText}`;
+                const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
+                stateEl.textContent = `ACTIVE ${Number.isInteger(activeTarget) ? activeTarget : '—'} · live V1 rank ${selected}${marginText}`;
             }
 
             const strengthEl = document.getElementById('score-strength');
@@ -11873,25 +11877,22 @@ window.executionLock = true;
             const velocityEl = document.getElementById('score-velocity');
             const triggerEl = document.getElementById('score-trigger');
 
-            if (strengthEl) strengthEl.textContent = selectedRow?.strength || '—';
+            if (strengthEl) strengthEl.textContent = Number.isInteger(activeTarget) ? String(activeTarget) : '—';
             if (agreementEl) {
-                agreementEl.textContent = selectedRow
-                    ? `${Number(selectedRow.signal_agreement || 0)}/${Number(selectedRow.signal_total || 7)}`
+                agreementEl.textContent = shadowRow
+                    ? `${Number(shadowRow.signal_agreement || 0)}/${Number(shadowRow.signal_total || 7)}`
                     : '—';
             }
             if (velocityEl) {
-                const v = Number(selectedRow?.trend_velocity);
+                const v = Number(shadowRow?.trend_velocity);
                 velocityEl.textContent = Number.isFinite(v)
                     ? `${v >= 0 ? '+' : ''}${v.toFixed(3)}`
                     : '—';
             }
             if (triggerEl) {
-                const tags = [];
-                if (selectedRow?.break_digit_match) tags.push('BREAK');
-                if (selectedRow?.alternating_pair_match) tags.push('PAIR');
-                if (selectedRow?.dominance_match) tags.push('DOM');
-                if (Number(selectedRow?.trend_velocity || 0) > 0.005) tags.push('VEL');
-                triggerEl.textContent = tags.length ? tags.join(' + ') : 'BASE';
+                triggerEl.textContent = Number.isInteger(shadowSelected)
+                    ? `${shadowSelected} (${shadowRow?.strength || '—'})`
+                    : '—';
             }
 
             if (rankingEl) {
@@ -11909,8 +11910,7 @@ window.executionLock = true;
                         <div class="rounded-lg border ${cls} p-1.5 text-center">
                             <div class="text-base font-black">${digit}</div>
                             <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
-                            <div class="text-[8px] opacity-80">${Number(row.signal_agreement || 0)}/${Number(row.signal_total || 7)} · ${row.strength || '—'}</div>
-                            <div class="text-[8px] opacity-60">#${idx + 1}</div>
+                            <div class="text-[8px] opacity-70">V1 rank #${idx + 1}</div>
                         </div>
                     `;
                 }).join('');
@@ -12451,7 +12451,7 @@ window.executionLock = true;
             } finally {
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = '📥 EXPORT TRIGGER FUSION DATA';
+                    btn.textContent = '📥 EXPORT STABLE + SHADOW DATA';
                 }
             }
         }

@@ -16,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.2.0-execution-integrity",
+    version="3.3.0-stable-rank-shadow",
 )
 
 
@@ -96,7 +96,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.2.0-execution-integrity",
+        "version": "3.3.0-stable-rank-shadow",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -254,8 +254,10 @@ def export_trigger_fusion(
 
             evidence = raw.get("dms_score_evidence") or {}
             candidate = evidence.get("candidate") or {}
-            dominance = evidence.get("dominance") or {}
-            signals = candidate.get("signals") or {}
+            shadow = evidence.get("shadow") or {}
+            shadow_row = shadow.get("selected_row") or {}
+            dominance = shadow.get("dominance") or {}
+            signals = shadow_row.get("signals") or {}
 
             record = {
                 "trade_log_id": row.id,
@@ -278,16 +280,23 @@ def export_trigger_fusion(
                 "score_version": evidence.get("score_version"),
                 "history_count": evidence.get("history_count"),
                 "selected_digit": evidence.get("selected_digit"),
+                "executed_target": evidence.get("locked_target_digit", row.digit),
+                "executed_v1_score": candidate.get("score"),
                 "top_margin": evidence.get("top_margin"),
                 "excluded_digit": evidence.get("excluded_digit"),
 
-                # Candidate score
+                # Shadow Trigger Fusion research — NEVER used for execution.
+                "shadow_version": shadow.get("version"),
+                "shadow_selected_digit": shadow.get("selected_digit"),
+                "shadow_score": shadow_row.get("shadow_score"),
+                "signal_agreement": shadow_row.get("signal_agreement"),
+                "signal_total": shadow_row.get("signal_total"),
+                "strength": shadow_row.get("strength"),
+
+                # Compatibility fields
                 "final_score": candidate.get("score"),
-                "base_score": candidate.get("base_score"),
-                "trigger_bonus": candidate.get("trigger_bonus"),
-                "signal_agreement": candidate.get("signal_agreement"),
-                "signal_total": candidate.get("signal_total"),
-                "strength": candidate.get("strength"),
+                "base_score": candidate.get("score"),
+                "trigger_bonus": 0.0,
 
                 # Core features
                 "gap": candidate.get("gap"),
@@ -305,18 +314,18 @@ def export_trigger_fusion(
                 "safe_tick_like": candidate.get("safe_tick_like"),
 
                 # Trigger Fusion features
-                "trend_velocity": candidate.get("trend_velocity"),
-                "trend_blocks": candidate.get("trend_blocks"),
-                "trend_bonus": candidate.get("trend_bonus"),
-                "dominance_match": candidate.get("dominance_match"),
-                "dominance_bonus": candidate.get("dominance_bonus"),
-                "dominance_window": candidate.get("dominance_window"),
-                "dominance_margin": candidate.get("dominance_margin"),
-                "break_digit_match": candidate.get("break_digit_match"),
-                "break_digit_bonus": candidate.get("break_digit_bonus"),
-                "alternating_pair_match": candidate.get("alternating_pair_match"),
-                "alternating_pair_bonus": candidate.get("alternating_pair_bonus"),
-                "digit9_setup": candidate.get("digit9_setup"),
+                "trend_velocity": shadow_row.get("trend_velocity"),
+                "trend_blocks": shadow_row.get("trend_blocks"),
+                "trend_bonus": None,
+                "dominance_match": shadow_row.get("dominance_match"),
+                "dominance_bonus": None,
+                "dominance_window": dominance.get("window"),
+                "dominance_margin": dominance.get("dominance_margin"),
+                "break_digit_match": shadow_row.get("break_digit_match"),
+                "break_digit_bonus": None,
+                "alternating_pair_match": shadow_row.get("alternating_pair_match"),
+                "alternating_pair_bonus": None,
+                "digit9_setup": None,
 
                 # Individual agreement signals
                 "signal_transition1": signals.get("transition1_support"),

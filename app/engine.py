@@ -60,6 +60,7 @@ class MultiUserEngine:
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
+        self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
         # Identifies this server process in persisted execution evidence.
         # Useful for detecting overlapping Render instances during deploy/restart.
@@ -302,15 +303,28 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    def _choose_scored_digit(self, sid: int, exclude_digit=None):
+    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
         snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
         digit = snapshot.get("selected_digit")
+
+        if lock_target and digit is not None:
+            self.locked_target_snapshots[sid] = {
+                "digit": int(digit),
+                "snapshot": json.loads(json.dumps(snapshot)),
+                "locked_at": datetime.utcnow().isoformat(),
+            }
+
         return (int(digit) if digit is not None else None), snapshot
 
     def _trade_score_evidence(self, sid: int, digit: int):
-        """Compact causal score snapshot captured before BUY."""
-        snapshot = self.digit_score_snapshots.get(sid)
-        if not snapshot:
+        """Return the exact execution snapshot frozen when this block target was chosen."""
+        locked = self.locked_target_snapshots.get(sid) or {}
+        snapshot = locked.get("snapshot")
+
+        if (
+            not snapshot
+            or int(locked.get("digit", -1)) != int(digit)
+        ):
             snapshot = self._score_all_digits(sid)
 
         row = None
@@ -319,16 +333,30 @@ class MultiUserEngine:
                 row = dict(item)
                 break
 
+        shadow = snapshot.get("shadow") or {}
+        shadow_row = None
+        for item in shadow.get("ranking") or []:
+            if int(item.get("digit", -1)) == int(shadow.get("selected_digit", -1)):
+                shadow_row = dict(item)
+                break
+
         return {
             "score_version": snapshot.get("version"),
             "history_count": snapshot.get("history_count"),
             "selected_digit": snapshot.get("selected_digit"),
             "top_margin": snapshot.get("top_margin"),
             "excluded_digit": snapshot.get("excluded_digit"),
-            "dominance": snapshot.get("dominance"),
-            "break_digit_target": snapshot.get("break_digit_target"),
-            "alternating_pair_targets": snapshot.get("alternating_pair_targets"),
             "candidate": row,
+            "locked_target_digit": int(digit),
+            "locked_at": locked.get("locked_at"),
+            "shadow": {
+                "version": shadow.get("version"),
+                "selected_digit": shadow.get("selected_digit"),
+                "selected_row": shadow_row,
+                "dominance": shadow.get("dominance"),
+                "break_digit_target": shadow.get("break_digit_target"),
+                "alternating_pair_targets": shadow.get("alternating_pair_targets"),
+            },
         }
 
     async def _ensure_tick_subscription(
@@ -466,6 +494,7 @@ class MultiUserEngine:
                     s.running = False
                     s.paused = False
                     s.phase = "FAST_WON"
+                    self.locked_target_snapshots.pop(sid, None)
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
@@ -524,10 +553,9 @@ class MultiUserEngine:
                     planned_digit = int(payload.get("digit"))
                     if planned_digit != failed_digit:
                         s.candidate_digit = planned_digit
-                        self._score_all_digits(
-                            sid,
-                            exclude_digit=failed_digit,
-                        )
+                        # Keep the execution snapshot frozen when the proposal
+                        # was pre-armed. Live scoring continues separately for
+                        # research/UI and must not overwrite block evidence.
                         s.phase = (
                             f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
                         )
@@ -566,6 +594,7 @@ class MultiUserEngine:
                         new_digit, _ = self._choose_scored_digit(
                             sid,
                             exclude_digit=failed_digit,
+                            lock_target=True,
                         )
                         if new_digit is not None:
                             s.candidate_digit = int(new_digit)
@@ -694,7 +723,7 @@ class MultiUserEngine:
                     return
 
                 if int(s.current_trade) == 0:
-                    scored_digit, snapshot = self._choose_scored_digit(s.id)
+                    scored_digit, snapshot = self._choose_scored_digit(s.id, lock_target=True)
                     if scored_digit is None:
                         s.phase = "DIGIT_SCORE_WARMING"
                         s.last_error = (
@@ -1076,6 +1105,7 @@ class MultiUserEngine:
                     candidate, _snapshot = self._choose_scored_digit(
                         s.id,
                         exclude_digit=failed_digit,
+                        lock_target=True,
                     )
                     if candidate is not None:
                         planned_digit = int(candidate)
