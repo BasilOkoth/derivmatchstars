@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-httpx
-pillow
-imageio-ffmpeg
-python-multipart
-pydantic
