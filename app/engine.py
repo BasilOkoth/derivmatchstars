@@ -56,6 +56,11 @@ class MultiUserEngine:
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
 
+        # Latest live V1 rank #1 for the NEXT trade.
+        # This may change while a purchased contract is open; the purchased
+        # contract itself remains immutable at Deriv.
+        self.live_next_target = {}  # sid -> digit
+
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
@@ -288,6 +293,22 @@ class MultiUserEngine:
         digits = [ch for ch in text if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
+    def _set_live_next_target(self, sid: int, digit):
+        if digit is None:
+            return False
+
+        digit = int(digit)
+        previous = self.live_next_target.get(sid)
+        self.live_next_target[sid] = digit
+
+        # Completed proposal for another digit must never be consumed after
+        # V1 rank #1 has changed.
+        payload = self.prefetched_recovery.get(sid)
+        if payload and int(payload.get("digit", -1)) != digit:
+            self.prefetched_recovery.pop(sid, None)
+
+        return previous != digit
+
     def _digit_history(self, sid: int):
         history = self.digit_history.get(sid)
         if history is None:
@@ -427,7 +448,12 @@ class MultiUserEngine:
                     history.append(int(digit))
                     if epoch:
                         self._last_scored_epoch[sid] = int(epoch)
-                    self._score_all_digits(sid)
+                    live_snapshot = self._score_all_digits(sid)
+                    if live_snapshot.get("ready"):
+                        self._set_live_next_target(
+                            sid,
+                            live_snapshot.get("selected_digit"),
+                        )
 
         active = self.fast_contracts.get(sid)
 
@@ -540,9 +566,23 @@ class MultiUserEngine:
                             pass
                         payload = self.prefetched_recovery.pop(sid, None)
 
-                # If the prearmed proposal exists, its digit IS the next target.
-                if payload and payload.get("digit") is not None:
-                    next_digit = int(payload.get("digit"))
+                # The latest V1 rank #1 is the authoritative NEXT target.
+                # A proposal armed for an older #1 is stale and is never bought.
+                desired_next = self.live_next_target.get(sid)
+
+                if desired_next is None:
+                    desired_next, _ = self._choose_scored_digit(
+                        sid,
+                        lock_target=True,
+                    )
+                    if desired_next is not None:
+                        self._set_live_next_target(
+                            sid,
+                            desired_next,
+                        )
+
+                if desired_next is not None:
+                    next_digit = int(desired_next)
                     old_digit = int(s.candidate_digit)
                     s.candidate_digit = next_digit
                     s.phase = (
@@ -584,6 +624,10 @@ class MultiUserEngine:
                     )
                     if new_digit is not None:
                         s.candidate_digit = int(new_digit)
+                        self._set_live_next_target(
+                            sid,
+                            int(new_digit),
+                        )
 
                     currency = await self._currency_for(db, s)
                     client = await self._client(user_id, account_id)
@@ -721,6 +765,10 @@ class MultiUserEngine:
                         db.commit()
                         return
                     s.candidate_digit = int(scored_digit)
+                    self._set_live_next_target(
+                        s.id,
+                        int(scored_digit),
+                    )
                     s.last_error = None
                     s.phase = "DIGIT_SCORE_READY"
                     s.updated_at = datetime.utcnow()
@@ -1079,14 +1127,24 @@ class MultiUserEngine:
             existing = self.prefetch_tasks.get(s.id)
 
             if not existing or existing.done():
-                planned_digit = int(s.candidate_digit)
+                planned_digit = self.live_next_target.get(s.id)
 
-                candidate, _snapshot = self._choose_scored_digit(
-                    s.id,
-                    lock_target=True,
-                )
-                if candidate is not None:
-                    planned_digit = int(candidate)
+                if planned_digit is None:
+                    candidate, _snapshot = self._choose_scored_digit(
+                        s.id,
+                        lock_target=True,
+                    )
+                    if candidate is not None:
+                        planned_digit = int(candidate)
+                        self._set_live_next_target(
+                            s.id,
+                            planned_digit,
+                        )
+
+                if planned_digit is None:
+                    planned_digit = int(s.candidate_digit)
+
+                planned_digit = int(planned_digit)
 
                 next_stake = round(
                     float(s.current_stake)

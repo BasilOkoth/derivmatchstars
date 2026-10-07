@@ -17,7 +17,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.7.0-live-account-balance",
+    version="3.8.0-live-v1-target-tracking",
 )
 
 
@@ -97,7 +97,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.7.0-live-account-balance",
+        "version": "3.8.0-live-v1-target-tracking",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -314,6 +314,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "max_trades": s.max_trades,
                     "current_stake": s.current_stake,
                     "candidate_digit": s.candidate_digit,
+                    "live_next_target": engine.live_next_target.get(s.id),
                     "open_contract_id": s.open_contract_id,
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,

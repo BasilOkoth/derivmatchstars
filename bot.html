@@ -12023,12 +12023,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 <div class="grid grid-cols-4 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Active Target</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Open Contract Target</div>
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next Rule</div>
-                        <div id="recycle-attempt" class="text-sm font-black text-white">LIVE #1</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Active / Next Target</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
                         <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
@@ -12061,7 +12061,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
 
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V1 Live-Rank execution · current contract stays fixed; after every loss the next trade uses the latest V1 rank #1. Trigger Fusion remains SHADOW only.
+                    DigitScore V1 Live Target Tracking · ACTIVE/NEXT target follows V1 rank #1 immediately. The already-open Deriv contract remains fixed until its result. Trigger Fusion remains SHADOW only.
                 </div>
             `;
             host.appendChild(el);
@@ -12087,7 +12087,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? String(st.candidate_digit)
                     : '—';
             }
-            if (attemptEl) attemptEl.textContent = 'LIVE #1';
+            if (attemptEl) {
+                const liveNext = Number(
+                    st?.live_next_target ?? score?.selected_digit
+                );
+                attemptEl.textContent = Number.isInteger(liveNext)
+                    ? String(liveNext)
+                    : '—';
+            }
             if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
             if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
 
@@ -12114,7 +12121,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (stateEl) {
                 const margin = Number(score.top_margin);
                 const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent = `ACTIVE ${Number.isInteger(activeTarget) ? activeTarget : '—'} · NEXT V1 #1 ${selected}${marginText}`;
+                stateEl.textContent =
+                    `OPEN ${Number.isInteger(activeTarget) ? activeTarget : '—'} · ` +
+                    `ACTIVE/NEXT ${Number.isInteger(Number(st?.live_next_target)) ? Number(st.live_next_target) : selected} · ` +
+                    `V1 #1 ${selected}${marginText}`;
             }
 
             const strengthEl = document.getElementById('score-strength');
