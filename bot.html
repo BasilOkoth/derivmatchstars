@@ -11607,6 +11607,15 @@ window.executionLock = true;
                     resultClass = 'text-xs font-bold text-orange-300';
                     break;
 
+                case 'BUY_UNCERTAIN_STOPPED':
+                case 'BUY_CLAIM_LOST':
+                case 'BUY_SEQUENCE_MISMATCH':
+                    result = 'EXECUTION STOPPED';
+                    status = 'Database execution-integrity guard stopped the cycle';
+                    action = st.last_error || 'Review the last contract before restarting';
+                    resultClass = 'text-xs font-bold text-red-300';
+                    break;
+
                 case 'FAST_RECOVERY_PREFETCH_MISSED':
                     result = 'PREFETCH FALLBACK';
                     status = hasDigit
@@ -12321,7 +12330,12 @@ window.executionLock = true;
                 'second_frequency',
                 'dominance_snapshot_margin',
                 'least_frequency_digit',
-                'least_frequency'
+                'least_frequency',
+                'derived_cycle',
+                'duplicate_trade_in_cycle',
+                'execution_instance_id',
+                'buy_claim_token',
+                'execution_prearmed'
             ];
 
             const lines = [columns.join(',')];
@@ -12358,9 +12372,12 @@ window.executionLock = true;
                     { method: 'GET' }
                 );
 
-                const records = Array.isArray(data?.records)
+                const rawRecords = Array.isArray(data?.records)
                     ? data.records
                     : [];
+                const records = Array.isArray(data?.clean_records)
+                    ? data.clean_records
+                    : rawRecords;
 
                 const now = new Date();
                 const stamp = now.toISOString().replace(/[:.]/g, '-');

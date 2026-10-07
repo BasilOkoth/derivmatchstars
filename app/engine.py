@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from datetime import datetime
 from collections import deque
 
@@ -60,6 +61,9 @@ class MultiUserEngine:
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
+        # Identifies this server process in persisted execution evidence.
+        # Useful for detecting overlapping Render instances during deploy/restart.
+        self.instance_id = uuid.uuid4().hex[:12]
 
     async def start(self):
         if not self.task or self.task.done():
@@ -166,6 +170,27 @@ class MultiUserEngine:
             try:
                 s = db.get(TradingSession, sid)
                 if not s:
+                    return
+
+                # A BUY request is never retried when its outcome is uncertain.
+                # Preserve the hard-stop phase instead of converting it into a
+                # recoverable proposal/rate-limit loop.
+                if (
+                    "buy_uncertain" in lower
+                    or "buy_claim_lost" in lower
+                    or "buy_sequence_mismatch" in lower
+                ):
+                    s.running = False
+                    s.paused = False
+                    if "buy_claim_lost" in lower:
+                        s.phase = "BUY_CLAIM_LOST"
+                    elif "buy_sequence_mismatch" in lower:
+                        s.phase = "BUY_SEQUENCE_MISMATCH"
+                    else:
+                        s.phase = "BUY_UNCERTAIN_STOPPED"
+                    s.last_error = message
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
                     return
 
                 # Proposal throttling is recoverable. Do not convert it into a
@@ -737,6 +762,93 @@ class MultiUserEngine:
             finally:
                 db.close()
 
+    @staticmethod
+    def _pending_json(value):
+        try:
+            parsed = json.loads(value or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _claim_demo_buy(self, db, sid: int, payload: dict):
+        """
+        Atomically claim one BUY through the shared database.
+
+        Python asyncio locks only protect one process. PostgreSQL row locking +
+        a persisted claim prevents a second Render process from buying the same
+        logical trade number during overlapping deploys/restarts.
+        """
+        row = (
+            db.query(TradingSession)
+            .filter(TradingSession.id == int(sid))
+            .with_for_update()
+            .one_or_none()
+        )
+
+        if not row or not row.running or row.paused:
+            db.rollback()
+            return None
+
+        trade_no = int(payload.get("trade_no") or 0)
+        digit = int(payload.get("digit"))
+        stake = round(float(payload.get("stake") or 0), 2)
+        expected_trade_no = int(row.current_trade or 0) + 1
+
+        # A stale or competing continuation is never allowed to BUY.
+        if trade_no != expected_trade_no:
+            db.rollback()
+            return None
+
+        if row.candidate_digit is None or int(row.candidate_digit) != digit:
+            db.rollback()
+            return None
+
+        if abs(float(row.current_stake or 0) - stake) > 0.005:
+            db.rollback()
+            return None
+
+        pending = self._pending_json(row.pending_trade_json)
+
+        # Another process already owns this exact BUY.
+        if (
+            pending.get("kind") == "BUY_CLAIM"
+            and int(pending.get("trade_no") or 0) == trade_no
+        ):
+            db.rollback()
+            return None
+
+        claim_token = uuid.uuid4().hex
+
+        row.pending_trade_json = json.dumps({
+            "kind": "BUY_CLAIM",
+            "token": claim_token,
+            "trade_no": trade_no,
+            "digit": digit,
+            "stake": stake,
+            "instance_id": self.instance_id,
+            "claimed_at": datetime.utcnow().isoformat(),
+        })
+        row.phase = f"BUY_CLAIMED_{trade_no}"
+        row.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "token": claim_token,
+            "trade_no": trade_no,
+            "digit": digit,
+            "stake": stake,
+            "instance_id": self.instance_id,
+        }
+
+    def _claim_is_owned(self, row, claim: dict) -> bool:
+        pending = self._pending_json(row.pending_trade_json)
+        return bool(
+            pending.get("kind") == "BUY_CLAIM"
+            and pending.get("token") == claim.get("token")
+            and int(pending.get("trade_no") or 0)
+            == int(claim.get("trade_no") or 0)
+        )
+
     async def _execute_demo_buy(
         self,
         db,
@@ -751,6 +863,22 @@ class MultiUserEngine:
                 "Automated purchase blocked outside DEMO mode"
             )
 
+        # ------------------------------------------------------------------
+        # DATABASE BUY CLAIM
+        # ------------------------------------------------------------------
+        # This is the cross-process idempotency barrier. Every code path,
+        # including Trade 1, recovery, recycle and fallback, must pass here.
+        claim = self._claim_demo_buy(db, s.id, payload)
+
+        if not claim:
+            # Another process/path already owns or advanced this logical trade.
+            # Do not BUY, do not mutate the shared session, do not increment
+            # stake/trade number.
+            return False
+
+        # Refresh after the claim commit so all following state is canonical.
+        s = db.get(TradingSession, s.id)
+
         await self._ensure_tick_subscription(
             sid=s.id,
             user_id=s.user_id,
@@ -759,51 +887,120 @@ class MultiUserEngine:
             client=client,
         )
 
-        s.phase = (
-            "BUYING_PREARMED"
-            if prearmed
-            else "BUYING"
-        )
+        # Do not replace BUY_CLAIMED_* before the network call; the claim must
+        # remain visible to every competing server process.
         s.updated_at = datetime.utcnow()
         db.commit()
 
-        # Snapshot the newest tick before BUY. This prevents a tick that already
-        # existed before purchase from being treated as this contract's result.
         armed_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
         )
 
-        result = await client.buy(
-            payload["proposal_id"],
-            payload["ask_price"],
-            demo=True,
-        )
+        try:
+            result = await client.buy(
+                payload["proposal_id"],
+                payload["ask_price"],
+                demo=True,
+            )
+        except Exception as exc:
+            # BUY is deliberately never auto-retried. Its outcome may be
+            # uncertain after a network failure, so stop rather than risking
+            # a duplicate contract.
+            row = (
+                db.query(TradingSession)
+                .filter(TradingSession.id == int(s.id))
+                .with_for_update()
+                .one_or_none()
+            )
+            if row and self._claim_is_owned(row, claim):
+                row.running = False
+                row.paused = False
+                row.phase = "BUY_UNCERTAIN_STOPPED"
+                row.last_error = (
+                    f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+                )
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(
+                f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+            ) from exc
 
         buy = result.get("buy") or {}
 
         if not buy.get("contract_id"):
+            row = (
+                db.query(TradingSession)
+                .filter(TradingSession.id == int(s.id))
+                .with_for_update()
+                .one_or_none()
+            )
+            if row and self._claim_is_owned(row, claim):
+                row.running = False
+                row.phase = "BUY_UNCERTAIN_STOPPED"
+                row.last_error = "BUY_UNCERTAIN: Deriv returned no contract_id"
+                row.updated_at = datetime.utcnow()
+                db.commit()
             raise RuntimeError(
-                "BUY: Deriv returned no contract_id; "
+                "BUY_UNCERTAIN: Deriv returned no contract_id; "
                 f"keys={list(result.keys())}"
             )
 
         contract_id = str(buy["contract_id"])
 
+        # Lock the row again and prove that this process still owns the exact
+        # claim before committing the purchased contract into the cycle.
+        row = (
+            db.query(TradingSession)
+            .filter(TradingSession.id == int(s.id))
+            .with_for_update()
+            .one_or_none()
+        )
+
+        if not row or not self._claim_is_owned(row, claim):
+            # A BUY has happened, so never retry. Record a hard stop for manual
+            # reconciliation rather than silently creating a second purchase.
+            if row:
+                row.running = False
+                row.phase = "BUY_CLAIM_LOST"
+                row.last_error = (
+                    f"BUY_CLAIM_LOST trade {claim['trade_no']} "
+                    f"contract {contract_id}"
+                )
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(
+                f"BUY_CLAIM_LOST trade {claim['trade_no']} "
+                f"contract {contract_id}"
+            )
+
+        # Re-check sequence under the same PostgreSQL row lock.
+        if int(row.current_trade or 0) + 1 != int(claim["trade_no"]):
+            row.running = False
+            row.phase = "BUY_SEQUENCE_MISMATCH"
+            row.last_error = (
+                f"BUY_SEQUENCE_MISMATCH expected "
+                f"{int(row.current_trade or 0) + 1}, "
+                f"bought {claim['trade_no']} contract {contract_id}"
+            )
+            row.updated_at = datetime.utcnow()
+            db.commit()
+            raise RuntimeError(row.last_error)
+
         score_evidence = self._trade_score_evidence(
-            s.id,
+            row.id,
             int(payload["digit"]),
         )
 
         db.add(
             TradeLog(
-                user_id=s.user_id,
-                trading_session_id=s.id,
-                trade_no=payload["trade_no"],
-                account_mode=s.account_mode,
-                account_id=s.account_id,
-                symbol=s.symbol,
-                digit=payload["digit"],
-                stake=payload["stake"],
+                user_id=row.user_id,
+                trading_session_id=row.id,
+                trade_no=int(payload["trade_no"]),
+                account_mode=row.account_mode,
+                account_id=row.account_id,
+                symbol=row.symbol,
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
                 contract_id=contract_id,
                 status="OPEN",
                 buy_price=float(
@@ -814,6 +1011,12 @@ class MultiUserEngine:
                 raw_json=json.dumps({
                     "deriv_buy": result,
                     "dms_score_evidence": score_evidence,
+                    "execution_integrity": {
+                        "instance_id": self.instance_id,
+                        "buy_claim_token": claim["token"],
+                        "claimed_trade_no": claim["trade_no"],
+                        "prearmed": bool(prearmed),
+                    },
                 }),
             )
         )
@@ -830,34 +1033,31 @@ class MultiUserEngine:
             purchase_epoch,
         )
 
-        # This is now the only contract whose next eligible live tick may drive
-        # strategy advancement.
-        self.fast_contracts[s.id] = {
+        self.fast_contracts[row.id] = {
             "contract_id": contract_id,
             "target_digit": int(payload["digit"]),
-            "symbol": str(s.symbol),
+            "symbol": str(row.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
             "score_evidence": score_evidence,
+            "buy_claim_token": claim["token"],
+            "instance_id": self.instance_id,
             "decided": False,
         }
 
-        # open_contract_id is allowed to point to the newest contract while
-        # older contracts reconcile independently by their own contract IDs.
-        s.open_contract_id = contract_id
-        s.phase = "PIPELINE_ACTIVE"
-        s.current_trade += 1
-        s.pending_trade_json = None
-        s.pending_real_confirmation = False
-        s.last_error = None
-        s.updated_at = datetime.utcnow()
+        row.open_contract_id = contract_id
+        row.phase = "PIPELINE_ACTIVE"
+        row.current_trade = int(payload["trade_no"])
+        row.pending_trade_json = None
+        row.pending_real_confirmation = False
+        row.last_error = None
+        row.updated_at = datetime.utcnow()
         db.commit()
 
+        # Rebind local reference after commit.
+        s = db.get(TradingSession, row.id)
+
         # PRE-ARM FIRST.
-        #
-        # Schedule the exact next-loss proposal before we dispatch any cached
-        # result tick. This closes the old race where the result callback could
-        # advance before the prefetch task had even been created.
         if s.current_trade < s.max_trades:
             existing = self.prefetch_tasks.get(s.id)
 
@@ -900,18 +1100,12 @@ class MultiUserEngine:
                         owner_trade_no=int(s.current_trade),
                     )
                 )
-
                 self.prefetch_tasks[s.id] = task
 
-        # A live tick can arrive while the BUY response is travelling back.
-        # Only after the prefetch task exists do we dispatch a cached newer tick.
         cached_tick = self.latest_ticks.get(s.id)
 
         if cached_tick:
-            cached_epoch = int(
-                cached_tick.get("epoch") or 0
-            )
-
+            cached_epoch = int(cached_tick.get("epoch") or 0)
             if cached_epoch > decision_after_epoch:
                 asyncio.create_task(
                     self._handle_strategy_tick(
@@ -923,7 +1117,6 @@ class MultiUserEngine:
                     )
                 )
 
-        # Official settlement is background accounting/reconciliation only.
         asyncio.create_task(
             self._subscribe_open_contract(
                 sid=s.id,
@@ -933,6 +1126,8 @@ class MultiUserEngine:
                 client=client,
             )
         )
+
+        return True
 
     async def _prefetch_next_recovery(
         self,

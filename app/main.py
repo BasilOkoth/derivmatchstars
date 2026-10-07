@@ -16,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.1.0-trigger-fusion-export",
+    version="3.2.0-execution-integrity",
 )
 
 
@@ -96,7 +96,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.1.0-trigger-fusion-export",
+        "version": "3.2.0-execution-integrity",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -335,19 +335,69 @@ def export_trigger_fusion(
                 "least_frequency_digit": dominance.get("least_frequency_digit"),
                 "least_frequency": dominance.get("least_frequency"),
 
+                # Execution integrity
+                "execution_instance_id": (
+                    (raw.get("execution_integrity") or {}).get("instance_id")
+                ),
+                "buy_claim_token": (
+                    (raw.get("execution_integrity") or {}).get("buy_claim_token")
+                ),
+                "execution_prearmed": (
+                    (raw.get("execution_integrity") or {}).get("prearmed")
+                ),
+
                 # Raw evidence retained for full reproducibility
                 "evidence": evidence,
             }
 
             records.append(record)
 
+        # Derive cycle boundaries from trade-number reset. Consecutive
+        # duplicate Trade 1 rows remain in the same derived cycle.
+        cycle_index = 0
+        previous_trade_no = None
+        seen_by_cycle = {}
+
+        for record in records:
+            trade_no = int(record.get("trade_no") or 0)
+
+            if cycle_index == 0:
+                cycle_index = 1
+            elif trade_no == 1 and previous_trade_no != 1:
+                cycle_index += 1
+
+            record["derived_cycle"] = cycle_index
+            seen = seen_by_cycle.setdefault(cycle_index, set())
+            record["duplicate_trade_in_cycle"] = trade_no in seen
+            seen.add(trade_no)
+            previous_trade_no = trade_no
+
+        clean_records = [
+            r for r in records
+            if not r.get("duplicate_trade_in_cycle")
+        ]
+        duplicate_records = [
+            r for r in records
+            if r.get("duplicate_trade_in_cycle")
+        ]
+
         settled = [r for r in records if r.get("status") == "SETTLED"]
-        wins = [r for r in settled if float(r.get("settlement_profit") or 0) > 0]
-        losses = [r for r in settled if float(r.get("settlement_profit") or 0) <= 0]
+        clean_settled = [
+            r for r in clean_records
+            if r.get("status") == "SETTLED"
+        ]
+        wins = [
+            r for r in clean_settled
+            if float(r.get("settlement_profit") or 0) > 0
+        ]
+        losses = [
+            r for r in clean_settled
+            if float(r.get("settlement_profit") or 0) <= 0
+        ]
 
         total_profit = sum(
             float(r.get("settlement_profit") or 0)
-            for r in settled
+            for r in clean_settled
         )
 
         return {
@@ -366,12 +416,16 @@ def export_trigger_fusion(
             },
             "summary": {
                 "records_count": len(records),
-                "settled_count": len(settled),
+                "clean_records_count": len(clean_records),
+                "duplicates_detected": len(duplicate_records),
+                "settled_count": len(clean_settled),
                 "wins": len(wins),
                 "losses": len(losses),
                 "settlement_net_pnl": total_profit,
             },
             "records": records,
+            "clean_records": clean_records,
+            "duplicate_records": duplicate_records,
         }
 
     finally:
