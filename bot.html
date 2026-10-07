@@ -731,16 +731,14 @@
 <button class="server-exec-btn bg-sky-700 hover:bg-sky-600" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()" type="button">Use Server</button>
 <button class="server-exec-btn bg-slate-700 hover:bg-slate-600" onclick="configureServerExecutionUrl()" type="button">Backend URL</button>
 <button class="server-exec-btn bg-emerald-700 hover:bg-emerald-600" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()" type="button">Continuous Research: ON</button>
-<button class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()" type="button">
-                            Confirm REAL Trade
-                        </button>
+
 </div>
 <div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
-                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
+                        REAL accounts may be connected for account/status display, but this frontend does not initiate automated real-money execution.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -12427,7 +12425,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
             const continuousBtn = serverExecEl('serverContinuousResearchBtn');
-            const confirmBtn = serverExecEl('serverRealConfirmBtn');
 
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
             if (serverExecEl('serverExecMode')) {
@@ -12521,14 +12518,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 continuousBtn.className = s.continuousResearch && demoMode
                     ? 'server-exec-btn bg-emerald-700 hover:bg-emerald-600'
                     : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
-            }
-
-            if (confirmBtn) {
-                const needsConfirm =
-                    s.enabled &&
-                    String(st.account_mode || '').toUpperCase() === 'REAL' &&
-                    st.pending_real_confirmation === true;
-                confirmBtn.classList.toggle('hidden', !needsConfirm);
             }
 
             if (s.enabled && st) {
@@ -13677,19 +13666,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
 
-        async function confirmServerRealTrade() {
-            const s = window.SERVER_EXECUTION;
-            if (!s.enabled) return;
-            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
-            try {
-                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
-                await pollServerExecutionState();
-                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
-            } catch (e) {
-                alert(e.message);
-                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
-            }
-        }
+
 
         // In SERVER mode, the browser must never submit proposals/buys.
 
@@ -14305,7 +14282,7 @@ window.isBotRunning = true;
         document.addEventListener('click', (event) => {
             try {
                 const target = event.target?.closest?.(
-                    '#toggleButton, #soundToggle, #serverRealConfirmBtn, button'
+                    '#toggleButton, #soundToggle, button'
                 );
                 if (!target || !window.soundEnabled) return;
                 initTone();
