@@ -21,8 +21,10 @@ class MultiUserEngine:
          immediate strategy decision:
             target digit == tick last digit -> WIN -> stop immediately
             target digit != tick last digit -> LOSS -> advance immediately
-      3. The next recovery proposal is pre-armed while Trade N is open.
-      4. On a fast loss, BUY Trade N+1 immediately with that pre-armed proposal.
+      3. Every fresh canonical tick re-ranks digits 0-9; the NEXT target follows
+         the current highest-scoring digit.
+      4. Recovery proposals are pre-armed when possible, but stale-target
+         proposals are rejected and refreshed before the next DEMO buy.
       5. Deriv proposal_open_contract settlement runs in the background only
          for authoritative P/L/accounting/reconciliation.
       6. If the fast tick result disagrees with Deriv's eventual settlement,
@@ -57,8 +59,10 @@ class MultiUserEngine:
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
 
-        # Unified 0-9 scoring + target recycling.
-        self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+        # Unified 0-9 scoring + live target following.
+        # recycle_after is retained only for compatibility with DigitScoreEngine;
+        # the execution engine no longer holds a target for 3 trades.
+        self.digit_scorer = DigitScoreEngine(recycle_after=1, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
@@ -284,6 +288,28 @@ class MultiUserEngine:
         digit = snapshot.get("selected_digit")
         return (int(digit) if digit is not None else None), snapshot
 
+    async def _sync_live_candidate(self, sid: int, digit: int):
+        """
+        Keep the session's NEXT target aligned with the latest top score.
+
+        This never mutates fast_contracts[sid]['target_digit']; an already-bought
+        contract must retain the digit that was actually purchased.
+        """
+        async with self._lock(sid):
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if not s:
+                    return
+
+                digit = int(digit)
+                if s.candidate_digit is None or int(s.candidate_digit) != digit:
+                    s.candidate_digit = digit
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
+
     async def _ensure_tick_subscription(
         self,
         *,
@@ -352,7 +378,19 @@ class MultiUserEngine:
                     history.append(int(digit))
                     if epoch:
                         self._last_scored_epoch[sid] = int(epoch)
-                    self._score_all_digits(sid)
+
+                    # Re-rank 0-9 on every fresh canonical tick.
+                    snapshot = self._score_all_digits(sid)
+                    selected = snapshot.get("selected_digit")
+
+                    if selected is not None:
+                        # Keep the NEXT target live in session state. This is
+                        # deliberately scheduled outside the current callback's
+                        # critical path; the loss path below also applies the
+                        # same selected digit synchronously before recovery.
+                        asyncio.create_task(
+                            self._sync_live_candidate(sid, int(selected))
+                        )
 
         active = self.fast_contracts.get(sid)
 
@@ -441,33 +479,14 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # After 3 losses on the same target, force a fresh 0-9
-                # score and exclude the failed digit for this immediate recycle.
-                recycle_due = (
-                    int(s.current_trade) > 0
-                    and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                )
-
-                if recycle_due:
-                    failed_digit = int(s.candidate_digit)
-                    prefetched = self.prefetched_recovery.get(sid)
-                    prefetched_digit = (
-                        int(prefetched.get("digit"))
-                        if prefetched and prefetched.get("digit") is not None
-                        else None
-                    )
-
-                    if prefetched_digit is not None and prefetched_digit != failed_digit:
-                        s.candidate_digit = prefetched_digit
-                        self._score_all_digits(sid, exclude_digit=failed_digit)
-                    else:
-                        new_digit, _ = self._choose_scored_digit(
-                            sid, exclude_digit=failed_digit
-                        )
-                        if new_digit is not None:
-                            s.candidate_digit = int(new_digit)
-
-                    s.phase = f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
+                # LIVE TARGET FOLLOWING:
+                # Re-select from the newest 0-9 score snapshot after EVERY loss.
+                # The just-finished contract keeps its purchased target, but the
+                # next recovery follows whichever digit is currently ranked #1.
+                next_digit, _ = self._choose_scored_digit(sid)
+                if next_digit is not None:
+                    s.candidate_digit = int(next_digit)
+                    s.phase = f"LIVE_TARGET_TO_{int(next_digit)}"
                     s.updated_at = datetime.utcnow()
                     db.commit()
 
@@ -618,23 +637,25 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                if int(s.current_trade) == 0:
-                    scored_digit, snapshot = self._choose_scored_digit(s.id)
-                    if scored_digit is None:
-                        s.phase = "DIGIT_SCORE_WARMING"
-                        s.last_error = (
-                            "Scoring digits 0-9 from canonical ticks "
-                            f"({snapshot.get('history_count', 0)}/"
-                            f"{snapshot.get('minimum_history', 10)})"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-                    s.candidate_digit = int(scored_digit)
-                    s.last_error = None
-                    s.phase = "DIGIT_SCORE_READY"
+                # Always align the NEXT purchasable target with the newest
+                # highest-scoring digit. There is no 3-trade target lock.
+                scored_digit, snapshot = self._choose_scored_digit(s.id)
+                if scored_digit is None:
+                    s.phase = "DIGIT_SCORE_WARMING"
+                    s.last_error = (
+                        "Scoring digits 0-9 from canonical ticks "
+                        f"({snapshot.get('history_count', 0)}/"
+                        f"{snapshot.get('minimum_history', 10)})"
+                    )
                     s.updated_at = datetime.utcnow()
                     db.commit()
+                    return
+
+                s.candidate_digit = int(scored_digit)
+                s.last_error = None
+                s.phase = "DIGIT_SCORE_READY"
+                s.updated_at = datetime.utcnow()
+                db.commit()
 
                 if s.candidate_digit is None:
                     s.phase = "WAITING_CANDIDATE"
@@ -860,18 +881,8 @@ class MultiUserEngine:
                         account_id=s.account_id,
                         symbol=s.symbol,
                         digit=int(
-                            (self._choose_scored_digit(
-                                s.id,
-                                exclude_digit=int(s.candidate_digit),
-                            )[0])
-                            if (
-                                int(s.current_trade) > 0
-                                and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                                and self._choose_scored_digit(
-                                    s.id,
-                                    exclude_digit=int(s.candidate_digit),
-                                )[0] is not None
-                            )
+                            self._choose_scored_digit(s.id)[0]
+                            if self._choose_scored_digit(s.id)[0] is not None
                             else int(s.candidate_digit)
                         ),
                         next_stake=round(
@@ -955,6 +966,8 @@ class MultiUserEngine:
                     and s.open_contract_id
                     and int(s.current_trade) + 1
                     == int(next_trade_no)
+                    and s.candidate_digit is not None
+                    and int(s.candidate_digit) == int(digit)
                 ):
                     self.prefetched_recovery[sid] = payload
                     s.phase = "RECOVERY_PREARMED"
