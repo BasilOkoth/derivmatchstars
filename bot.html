@@ -6335,8 +6335,6 @@ window.cyclePerformance = {
                         NaN
                     ),
                     recoveryDigitPolicy: 'ADAPTIVE_RENEWABLE_HOLD_THEN_RERANK',
-                    recoveryDigitTradeLock: Number(window.recoveryDigitTradeLimit || 3),
-                    adaptiveRecoveryHoldConfig: safeClone(window.ADAPTIVE_RECOVERY_HOLD_CONFIG),
                     adaptiveRecoveryHoldState: safeClone(window.adaptiveRecoveryHoldState),
                     hardCycleTradeCap: null,
                     cycleTradeCapSource: 'USER_DEFINED_MAX_TRADES',
@@ -7035,36 +7033,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
         window.cycleRotations = 0;
         window.tradeCount = 0;
         window.martingaleStep = 0;
-        window.recoveryDigitLock = null;
-        window.recoveryDigitTrades = 0;
-        window.recoveryDigitTradeLimit = 1;
-
-        // V57.7 — Adaptive recovery hold.
-        // Starts with the existing 3-purchase hold, then renews one trade at a time
-        // only while the currently locked digit remains sufficiently supported.
-        window.ADAPTIVE_RECOVERY_HOLD_CONFIG = {
-            enabled: true,
-            initialHold: 3,
-            minHold: 2,
-            maxHold: 1,
-            extensionStep: 1,
-            minAgreementForExtension: 1,
-            strongAgreementForExtension: 2,
-            minDnaSimilarity: 0.60,
-            minModelProbability: 0.10,
-            maxProbabilityDeficit: 0.015,
-            switchAdvantage: 0.020
-        };
-
-        window.adaptiveRecoveryHoldState = {
-            extensions: 0,
-            reranks: 0,
-            keeps: 0,
-            switches: 0,
-            lastDecision: null,
-            history: []
-        };
-
+        // Live recovery target follows current rank #1 directly.
         window.smartEntryOverrideState = {
             digit: null,
             streak: 0,
@@ -7588,11 +7557,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             window.currentStake = Number(
                 parseFloat(document.getElementById('baseStake')?.value) || window.baseStake || 1
             );
-            window.recoveryDigitLock = null;
-            window.recoveryDigitTrades = 0;
-            resetAdaptiveRecoveryHold('PERFORMANCE_RESET');
-
-            if (window.adaptiveRecoveryHoldState) {
+if (window.adaptiveRecoveryHoldState) {
                 window.adaptiveRecoveryHoldState.extensions = 0;
                 window.adaptiveRecoveryHoldState.reranks = 0;
                 window.adaptiveRecoveryHoldState.keeps = 0;
@@ -7922,285 +7887,6 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             return best;
         }
 
-
-        function getAdaptiveRecoveryEvidence(digit) {
-            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
-            const symbol =
-                window.currentSymbol ||
-                document.getElementById('symbol')?.value ||
-                'R_10';
-
-            let model = null;
-            try {
-                model = window.nextTickModel?.getPrediction?.(symbol, Number(digit)) || null;
-            } catch (_) {}
-
-            let dna = window.digitDNAEngine?.lastSnapshot || null;
-            try {
-                if (!dna?.ready && window.digitDNAEngine?.analyze) {
-                    dna = window.digitDNAEngine.analyze(symbol) || dna;
-                }
-            } catch (_) {}
-
-            let feature = window.digitFeatureEngine?.lastSnapshot || null;
-            try {
-                if (!feature?.ready && window.digitFeatureEngine?.analyze) {
-                    feature = window.digitFeatureEngine.analyze(symbol) || feature;
-                }
-            } catch (_) {}
-
-            let auditor = window.randomnessAuditor?.lastSnapshot || null;
-            try {
-                if (!auditor?.ready && window.randomnessAuditor?.analyze) {
-                    auditor = window.randomnessAuditor.analyze(symbol) || auditor;
-                }
-            } catch (_) {}
-
-            const recommendation =
-                window.digitIntelligenceEngine?.currentRecommendation || null;
-
-            const dnaRow = Array.isArray(dna?.rows)
-                ? dna.rows.find(r => Number(r.digit) === Number(digit))
-                : null;
-            const featureRow = Array.isArray(feature?.rows)
-                ? feature.rows.find(r => Number(r.digit) === Number(digit))
-                : null;
-            const auditorRow = Array.isArray(auditor?.rows)
-                ? auditor.rows.find(r => Number(r.digit) === Number(digit))
-                : null;
-
-            const topVotes = [
-                Number(dna?.topDigit),
-                Number(feature?.topDigit),
-                Number(auditor?.topDigit),
-                Number(recommendation?.digit)
-            ].filter(Number.isInteger);
-
-            const agreementCount = topVotes.filter(d => d === Number(digit)).length;
-
-            let bestPick = null;
-            try { bestPick = chooseBestRecoveryDigit(); } catch (_) {}
-
-            const currentP = Number(model?.probability ?? NaN);
-            const bestP = Number(bestPick?.probability ?? NaN);
-            const probabilityDeficit =
-                Number.isFinite(bestP) && Number.isFinite(currentP)
-                    ? bestP - currentP
-                    : null;
-
-            return {
-                symbol,
-                digit:Number(digit),
-                modelProbability:Number.isFinite(currentP) ? currentP : null,
-                modelSupport:Number(model?.effectiveSupport || 0),
-                dnaTop:Number.isInteger(Number(dna?.topDigit)) ? Number(dna.topDigit) : null,
-                dnaSimilarity:Number.isFinite(Number(dnaRow?.similarity)) ? Number(dnaRow.similarity) : null,
-                featureTop:Number.isInteger(Number(feature?.topDigit)) ? Number(feature.topDigit) : null,
-                featureScore:Number.isFinite(Number(featureRow?.score)) ? Number(featureRow.score) : null,
-                auditorTop:Number.isInteger(Number(auditor?.topDigit)) ? Number(auditor.topDigit) : null,
-                auditorScore:Number.isFinite(Number(auditorRow?.score)) ? Number(auditorRow.score) : null,
-                recommendationTop:Number.isInteger(Number(recommendation?.digit)) ? Number(recommendation.digit) : null,
-                recommendationSource:recommendation?.source || null,
-                agreementCount,
-                bestRecoveryDigit:Number.isInteger(Number(bestPick?.digit)) ? Number(bestPick.digit) : null,
-                bestRecoveryProbability:Number.isFinite(bestP) ? bestP : null,
-                probabilityDeficit,
-                configSnapshot:{
-                    minAgreementForExtension:Number(cfg.minAgreementForExtension ?? 1),
-                    strongAgreementForExtension:Number(cfg.strongAgreementForExtension ?? 2),
-                    minDnaSimilarity:Number(cfg.minDnaSimilarity ?? 0.60),
-                    minModelProbability:Number(cfg.minModelProbability ?? 0.10),
-                    maxProbabilityDeficit:Number(cfg.maxProbabilityDeficit ?? 0.015),
-                    switchAdvantage:Number(cfg.switchAdvantage ?? 0.020)
-                }
-            };
-        }
-
-        function recordAdaptiveRecoveryDecision(decision) {
-            const state = window.adaptiveRecoveryHoldState;
-            if (!state) return;
-
-            state.lastDecision = decision;
-            state.history.push(decision);
-            if (state.history.length > 500) {
-                state.history = state.history.slice(-500);
-            }
-
-            if (decision.action === 'EXTEND') {
-                state.extensions++;
-                state.keeps++;
-            } else if (decision.action === 'RERANK_KEEP') {
-                state.reranks++;
-                state.keeps++;
-            } else if (decision.action === 'RERANK_SWITCH') {
-                state.reranks++;
-                state.switches++;
-            }
-        }
-
-        function shouldExtendRecoveryHold(digit) {
-            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
-            const evidence = getAdaptiveRecoveryEvidence(digit);
-
-            const currentP = Number(evidence.modelProbability);
-            const bestP = Number(evidence.bestRecoveryProbability);
-            const deficit = Number(evidence.probabilityDeficit);
-            const dnaSimilarity = Number(evidence.dnaSimilarity);
-            const agreement = Number(evidence.agreementCount || 0);
-
-            const sameAsFreshBest =
-                Number.isInteger(evidence.bestRecoveryDigit) &&
-                Number(evidence.bestRecoveryDigit) === Number(digit);
-
-            const strongAgreement =
-                agreement >= Number(cfg.strongAgreementForExtension ?? 2);
-
-            const moderateAgreement =
-                agreement >= Number(cfg.minAgreementForExtension ?? 1);
-
-            const dnaSupport =
-                Number.isFinite(dnaSimilarity) &&
-                dnaSimilarity >= Number(cfg.minDnaSimilarity ?? 0.60);
-
-            const modelSupport =
-                Number.isFinite(currentP) &&
-                currentP >= Number(cfg.minModelProbability ?? 0.10);
-
-            const closeToBest =
-                !Number.isFinite(deficit) ||
-                deficit <= Number(cfg.maxProbabilityDeficit ?? 0.015);
-
-            const clearlyOutranked =
-                Number.isFinite(bestP) &&
-                Number.isFinite(currentP) &&
-                evidence.bestRecoveryDigit !== null &&
-                Number(evidence.bestRecoveryDigit) !== Number(digit) &&
-                (bestP - currentP) >= Number(cfg.switchAdvantage ?? 0.020);
-
-            const extend =
-                !clearlyOutranked &&
-                (
-                    sameAsFreshBest ||
-                    strongAgreement ||
-                    (moderateAgreement && dnaSupport && modelSupport && closeToBest) ||
-                    (dnaSupport && modelSupport && closeToBest)
-                );
-
-            return {
-                extend,
-                reason: clearlyOutranked
-                    ? 'FRESH_CANDIDATE_CLEARLY_STRONGER'
-                    : sameAsFreshBest
-                        ? 'CURRENT_DIGIT_STILL_FRESH_BEST'
-                        : strongAgreement
-                            ? 'MULTI_ENGINE_AGREEMENT'
-                            : (dnaSupport && modelSupport && closeToBest)
-                                ? 'DNA_MODEL_SUPPORT'
-                                : 'SUPPORT_WEAKENED',
-                evidence
-            };
-        }
-
-        function resetAdaptiveRecoveryHold(reason = '') {
-            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
-            window.recoveryDigitTradeLimit = Math.max(
-                1,
-                Number(cfg.initialHold || 3)
-            );
-
-            if (reason) {
-                const state = window.adaptiveRecoveryHoldState;
-                if (state) {
-                    state.lastResetReason = reason;
-                    state.lastResetAt = Date.now();
-                }
-            }
-        }
-
-        function adaptiveRecoveryBoundaryDecision() {
-            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
-            const currentDigit = Number(window.recoveryDigitLock);
-            const currentLimit = Math.max(1, Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3));
-            const used = Math.min(
-                Number(window.recoveryDigitTrades || 0),
-                currentLimit
-            );
-            if (Number(window.recoveryDigitTrades || 0) !== used) {
-                window.recoveryDigitTrades = used;
-            }
-            const maxHold = Math.max(currentLimit, Number(cfg.maxHold || 6));
-
-            if (!cfg.enabled || !Number.isInteger(currentDigit)) {
-                return { action:'RERANK', reason:'ADAPTIVE_DISABLED_OR_NO_LOCK' };
-            }
-
-            if (used < currentLimit) {
-                return { action:'KEEP_UNTIL_BOUNDARY', reason:'CURRENT_BLOCK_NOT_COMPLETE' };
-            }
-
-            // Hard ceiling reached: force a fresh re-rank.
-            if (currentLimit >= maxHold) {
-                return {
-                    action:'RERANK',
-                    reason:'ADAPTIVE_MAX_HOLD_REACHED',
-                    evidence:getAdaptiveRecoveryEvidence(currentDigit)
-                };
-            }
-
-            const verdict = shouldExtendRecoveryHold(currentDigit);
-
-            if (verdict.extend) {
-                const nextLimit = Math.min(
-                    maxHold,
-                    currentLimit + Math.max(1, Number(cfg.extensionStep || 1))
-                );
-
-                window.recoveryDigitTradeLimit = nextLimit;
-
-                const decision = {
-                    at:Date.now(),
-                    action:'EXTEND',
-                    reason:verdict.reason,
-                    digit:currentDigit,
-                    used,
-                    previousLimit:currentLimit,
-                    newLimit:nextLimit,
-                    evidence:verdict.evidence
-                };
-                recordAdaptiveRecoveryDecision(decision);
-
-                log(
-                    `🧠 ADAPTIVE HOLD EXTEND | digit ${currentDigit} | ` +
-                    `${currentLimit} → ${nextLimit} purchased recovery trades | ` +
-                    `${verdict.reason} | agreement ${verdict.evidence.agreementCount} | ` +
-                    `DNA ${verdict.evidence.dnaSimilarity == null ? '-' : (verdict.evidence.dnaSimilarity*100).toFixed(1)+'%'} | ` +
-                    `model P ${verdict.evidence.modelProbability == null ? '-' : (verdict.evidence.modelProbability*100).toFixed(2)+'%'}`,
-                    'ENGINE'
-                );
-
-                return decision;
-            }
-
-            const decision = {
-                at:Date.now(),
-                action:'RERANK',
-                reason:verdict.reason,
-                digit:currentDigit,
-                used,
-                previousLimit:currentLimit,
-                newLimit:Number(cfg.initialHold || 3),
-                evidence:verdict.evidence
-            };
-            recordAdaptiveRecoveryDecision(decision);
-
-            log(
-                `🧠 ADAPTIVE HOLD RELEASE | digit ${currentDigit} | ` +
-                `re-rank after ${used} purchased recovery trades | ${verdict.reason}`,
-                'ENGINE'
-            );
-
-            return decision;
-        }
 
 function rotateHybridDigit(reason = '') {
             clearSessionDigitLock(reason || 'Rotate');
@@ -10557,92 +10243,57 @@ window.executionLock = true;
                 const nextTradeNumber = window.tradeCount + 1;
                 let selectedDigit = parseInt(document.getElementById('predictedDigit').value);
 
-                if (window.cycleHasPurchasedContract) {
-                    const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || { initialHold:3, maxHold:6 };
-
-                    const approvedLimit = Math.max(
-                        1,
-                        Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3)
+                if (
+                    window.cycleHasPurchasedContract &&
+                    sessionState.mode === 'ai'
+                ) {
+                    // LIVE TOP-RANK RECOVERY:
+                    // No 3-trade hold, no 6-trade ceiling, no recovery digit lock.
+                    // Before every next order, use the newest rank #1 currently
+                    // exposed by the live intelligence engine.
+                    const liveTopDigit = Number(
+                        window.digitIntelligenceEngine
+                            ?.currentRecommendation
+                            ?.digit
                     );
-                    if (Number(window.recoveryDigitTrades || 0) > approvedLimit) {
-                        window.recoveryDigitTrades = approvedLimit;
-                    }
 
-                    // At the end of the current hold block, ask whether the locked digit
-                    // still deserves another purchased attempt. If yes, extend by one.
-                    // If no, release it and perform a full fresh recovery re-rank.
                     if (
-                        Number.isInteger(window.recoveryDigitLock) &&
-                        Number(window.recoveryDigitTrades || 0) >=
-                            Math.max(1, Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3))
+                        Number.isInteger(liveTopDigit) &&
+                        liveTopDigit >= 0 &&
+                        liveTopDigit <= 9
                     ) {
-                        const boundary = adaptiveRecoveryBoundaryDecision();
-                        if (boundary?.action === 'RERANK') {
-                            window.recoveryDigitLock = null;
-                            window.recoveryDigitTrades = 0;
-                            resetAdaptiveRecoveryHold(`RERANK:${boundary.reason || 'BOUNDARY'}`);
+                        selectedDigit = liveTopDigit;
+
+                        const predictedDigitEl =
+                            document.getElementById('predictedDigit');
+
+                        if (predictedDigitEl) {
+                            predictedDigitEl.value = String(selectedDigit);
                         }
-                    }
 
-                    if (!Number.isInteger(window.recoveryDigitLock)) {
-                        const recoveryPick = chooseBestRecoveryDigit();
-
-                        if (recoveryPick && Number.isInteger(recoveryPick.digit)) {
-                            const previousDigit = Number.isInteger(Number(selectedDigit))
-                                ? Number(selectedDigit)
-                                : null;
-
-                            window.recoveryDigitLock = recoveryPick.digit;
-                            window.recoveryDigitTrades = 0;
-                            resetAdaptiveRecoveryHold('NEW_RECOVERY_SELECTION');
-
-                            const evidence = getAdaptiveRecoveryEvidence(window.recoveryDigitLock);
-                            const action =
-                                previousDigit !== null &&
-                                previousDigit === Number(window.recoveryDigitLock)
-                                    ? 'RERANK_KEEP'
-                                    : 'RERANK_SWITCH';
-
-                            recordAdaptiveRecoveryDecision({
-                                at:Date.now(),
-                                action,
-                                reason:'FRESH_RECOVERY_RANK',
-                                previousDigit,
-                                digit:Number(window.recoveryDigitLock),
-                                used:0,
-                                previousLimit:null,
-                                newLimit:Number(window.recoveryDigitTradeLimit),
-                                evidence
-                            });
-
-                            log(
-                                `🔄 RECOVERY DIGIT SELECTED | digit ${window.recoveryDigitLock} | ` +
-                                `adaptive initial hold ${window.recoveryDigitTradeLimit} | ` +
-                                `max adaptive hold ${Number(cfg.maxHold || 6)} | ` +
-                                `model P ${(recoveryPick.probability * 100).toFixed(2)}% | ` +
-                                `support ${recoveryPick.support}`,
-                                'ENGINE'
-                            );
-                        }
-                    }
-
-                    if (Number.isInteger(window.recoveryDigitLock)) {
-                        selectedDigit = window.recoveryDigitLock;
-
-                        const predictedDigitEl = document.getElementById('predictedDigit');
-                        if (predictedDigitEl) predictedDigitEl.value = String(selectedDigit);
-
-                        const limit = Math.max(
-                            1,
-                            Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3)
-                        );
+                        // Keep the session display synchronized with rank #1.
+                        sessionState.sessionDigit = selectedDigit;
+                        sessionState.sessionStarted = true;
 
                         log(
-                            `🔒 ADAPTIVE RECOVERY HOLD | digit ${selectedDigit} | ` +
-                            `purchase ${(window.recoveryDigitTrades || 0) + 1}/${limit} | ` +
-                            `ceiling ${Number(cfg.maxHold || 6)}`,
+                            `⚡ LIVE TOP RANK | next target digit ${selectedDigit}`,
                             'ENGINE'
                         );
+                    } else {
+                        // If the live recommendation is momentarily unavailable,
+                        // keep the currently displayed digit rather than inventing
+                        // a new target.
+                        const fallbackDigit = Number(
+                            document.getElementById('predictedDigit')?.value
+                        );
+
+                        if (
+                            Number.isInteger(fallbackDigit) &&
+                            fallbackDigit >= 0 &&
+                            fallbackDigit <= 9
+                        ) {
+                            selectedDigit = fallbackDigit;
+                        }
                     }
                 }
 
@@ -13123,9 +12774,6 @@ window.executionLock = true;
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
-            window.recoveryDigitLock = null;
-            window.recoveryDigitTrades = 0;
-            resetAdaptiveRecoveryHold('CYCLE_RESET');
                 window.cycleHasPurchasedContract = false;
                 log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
                 updatePnL();
@@ -13138,21 +12786,13 @@ window.executionLock = true;
                 // V1.6: do not keep a stale recovery digit across losses.
                 // The next eligible tick must re-score all 10 digits and either
                 // keep the current leader or switch to the stronger candidate.
-                window.recoveryDigitLock = null;
-                window.recoveryDigitTrades = 0;
-                window.recoveryDigitTradeLimit = 1;
-                resetAdaptiveRecoveryHold('PER_TRADE_RERANK');
-
-                renderTailRiskPanel();
+renderTailRiskPanel();
                 log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
                 updatePnL();
             } else {
                 window.martingaleStep = 0;
                 window.cycleLosses = 0;
                 window.currentStake = window.baseStake;
-            window.recoveryDigitLock = null;
-            window.recoveryDigitTrades = 0;
-            resetAdaptiveRecoveryHold('CYCLE_RESET');
                 log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
                 updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
             }
@@ -13258,11 +12898,7 @@ window.isBotRunning = true;
             
             updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
             updateStake('initial');
-            log(
-                '🧠 AI recovery policy: adaptive hold starts at 3 purchased trades, then extends one trade at a time while evidence remains supportive (max 6), otherwise re-ranks all 10 digits',
-                'ENGINE'
-            );
-            initTone();
+initTone();
 
             if (window.SERVER_EXECUTION?.enabled) {
                 log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
@@ -14034,24 +13670,6 @@ window.isBotRunning = true;
             window.tradeCount++;
             window.stats.tradesExecuted++;
             window.cycleHasPurchasedContract = true;
-
-            if (
-                sessionState.mode === 'ai' &&
-                Number.isInteger(window.recoveryDigitLock) &&
-                window.tradeCount > 1
-            ) {
-                window.recoveryDigitTrades = Math.min(
-                    Number(window.recoveryDigitTrades || 0) + 1,
-                    Math.max(
-                        1,
-                        Number(
-                            window.recoveryDigitTradeLimit ||
-                            window.ADAPTIVE_RECOVERY_HOLD_CONFIG?.initialHold ||
-                            3
-                        )
-                    )
-                );
-            }
 
             trackTradeInvestment(
                 Number.isFinite(actualBuyPrice) && actualBuyPrice > 0
