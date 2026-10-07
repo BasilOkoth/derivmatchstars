@@ -5,6 +5,7 @@
 <!-- EXECUTION SYNC V23: EXACT NEXT-EPOCH PIPELINE; DERIV SETTLEMENT RECONCILES IN BACKGROUND -->
 <!-- EXECUTION SYNC V22: DERIV SETTLEMENT AUTHORITATIVE; PUBLIC TICKS NEVER ADVANCE MARTINGALE -->
 <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
+<!-- V57.8 REAL == DEMO: no confirmation, identical auto-advance pipeline -->
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>Deriv DigitMatchStar Bot</title>
@@ -12,6 +13,7 @@
 <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
 <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
 <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
+<!-- V57.8 REAL PARITY: REAL account uses identical recovery pipeline as DEMO -->
 <!-- Contract Lifecycle v3 -->
 <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -731,14 +733,18 @@
 <button class="server-exec-btn bg-sky-700 hover:bg-sky-600" id="serverExecToggleBtn" onclick="toggleServerExecutionMode()" type="button">Use Server</button>
 <button class="server-exec-btn bg-slate-700 hover:bg-slate-600" onclick="configureServerExecutionUrl()" type="button">Backend URL</button>
 <button class="server-exec-btn bg-emerald-700 hover:bg-emerald-600" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()" type="button">Continuous Research: ON</button>
-
+<button class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()" type="button">
+                            Confirm REAL Trade
+                        </button>
 </div>
 <div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
-                        REAL accounts may be connected for account/status display, but this frontend does not initiate automated real-money execution.
+                        REAL trading uses the identical auto-advance pipeline as DEMO: Trade 1 fires on
+                        the next eligible tick, losses auto-advance the stake and target, and the cycle
+                        ends only on a WIN or when Max Trades is reached. No per-trade confirmation is required.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -6292,6 +6298,7 @@ window.cyclePerformance = {
                 schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V2_OBSERVABILITY',
                 generatedAt: new Date().toISOString(),
                 runtime: 'MATCHSTAR V16',
+
                 symbol,
 
                 liveState: {
@@ -6486,15 +6493,16 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX',
+                    version: 'DIGITMATCHSTAR-V57.8-REAL-DEMO-PARITY',
                     strategyLogicChanged: false,
-                    recoveryLogicChanged: true,
-                    maxTradesBehaviorChanged: true,
+                    recoveryLogicChanged: false,
+                    maxTradesBehaviorChanged: false,
                     performanceResetAvailable: true,
                     performanceResetPreservesResearch: true,
                     manualStopPreventsAutoRestart: true,
                     overnightMode: 'SINGLE_BUTTON_EXPLICIT_RESEARCH_PLUS_DEMO_TRADING',
                     executionIntegrityFix: 'DUPLICATE_RECOVERY_GUARD_T0_SEPARATION_DERIV_ONLY_CONFIRMED_WIN',
+                    realAccountParity: 'REAL_USES_IDENTICAL_FAST_PIPELINE_AS_DEMO_NO_PER_TRADE_CONFIRMATION',
                     reportIncludesSecrets: false
                 },
 
@@ -6520,7 +6528,7 @@ window.cyclePerformance = {
                     'Technical stops are excluded from market-tail recovery statistics.',
                     'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.',
                     'Digit DNA similarity is a descriptive precursor-state similarity score, not a calibrated win probability.',
-                    'This V57.1 build changes observability/export only; trading and recovery selection logic are unchanged from V57.',
+                    'This V57.8 build treats REAL and DEMO identically on the server: one purchase pipeline, auto-advance on loss, single confirmation never required.',
                     'Authentication tokens and private credentials are intentionally excluded from the report.'
                 ]
             };
@@ -9259,6 +9267,7 @@ function rotateHybridDigit(reason = '') {
             
             log('🤖 Bot ready', 'SYSTEM');
             log('🚀 Runtime: MATCHSTAR V16 · persistent trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
+            log('🟢 REAL == DEMO: single execution pipeline, auto-advance on loss until WIN or Max Trades', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -10339,6 +10348,8 @@ function rotateHybridDigit(reason = '') {
                     <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V16</span>
                     <span class="mx-1">·</span>
                     <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
+                    <span class="mx-1">·</span>
+                    <span class="font-bold text-emerald-300">REAL == DEMO</span>
                 </div>
 
                 <div class="grid grid-cols-2 gap-x-2 gap-y-1">
@@ -11402,8 +11413,7 @@ window.executionLock = true;
 
         // ============================================================================
         // SERVER EXECUTION BRIDGE V1
-        // DEMO may continue unattended on the server.
-        // REAL remains server-resident but requires explicit confirmation per purchase.
+        // V57.8 REAL == DEMO: identical execution pipeline, no confirmation gate.
         // ============================================================================
         
         window.DMS_BALANCE_REFRESH = window.DMS_BALANCE_REFRESH || {
@@ -11939,12 +11949,40 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-purple-300';
                     break;
 
-                case 'WAITING_REAL_CONFIRMATION':
-                    result = 'CONFIRM REQUIRED';
+                case 'REAL_ARMED':
+                    result = 'REAL ARMED 🔓';
                     status = hasDigit
-                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
-                        : 'REAL purchase is waiting';
-                    action = 'Explicit confirmation is required before this purchase';
+                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
+                        : 'REAL session armed';
+                    action = 'Trade 1 will fire on the next eligible tick · auto-recovery enabled';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'REAL_CONFIRMED':
+                    result = 'REAL CONFIRMED ✅';
+                    status = hasDigit
+                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
+                        : 'REAL session confirmed';
+                    action = 'Trade 1 fires on the next eligible tick · recovery auto-advances on loss';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'WAITING_REAL_CONFIRMATION':
+                    // Legacy phase. This build auto-clears it on the worker side.
+                    result = 'REAL RUNNING 🔓';
+                    status = hasDigit
+                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
+                        : 'REAL session running';
+                    action = 'Identical to DEMO · no confirmation step · auto-advance on loss';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'AWAITING_REAL_SETTLEMENT':
+                    result = 'SETTLING ⏳';
+                    status = hasDigit
+                        ? `REAL trade ${tradeNo} settled · awaiting Deriv confirmation for the next purchase`
+                        : 'Waiting for previous REAL contract settlement';
+                    action = 'Auto-recovery will continue as soon as settlement arrives';
                     resultClass = 'text-xs font-bold text-amber-300';
                     break;
 
@@ -12425,6 +12463,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
             const continuousBtn = serverExecEl('serverContinuousResearchBtn');
+            const confirmBtn = serverExecEl('serverRealConfirmBtn');
 
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
             if (serverExecEl('serverExecMode')) {
@@ -12518,6 +12557,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 continuousBtn.className = s.continuousResearch && demoMode
                     ? 'server-exec-btn bg-emerald-700 hover:bg-emerald-600'
                     : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
+            }
+
+            // V57.8 REAL == DEMO.
+            // REAL uses the same fast pipeline as DEMO and never waits for a
+            // per-trade confirmation. The confirmation button is never shown.
+            if (confirmBtn) {
+                confirmBtn.classList.add('hidden');
             }
 
             if (s.enabled && st) {
@@ -13490,13 +13536,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             if (wanted === 'real') {
-                // REAL OAuth/account selection is supported. Automated
-                // unattended live-money execution remains intentionally
-                // disabled by the backend in this build.
+                // V57.8: REAL and DEMO use the identical execution pipeline.
+                // Trade 1 fires on the next eligible tick, losses auto-advance
+                // the stake and target, and the cycle ends only on a WIN or
+                // when Max Trades is reached. No per-trade confirmation is
+                // required at any point.
                 sessionStorage.setItem('selectedAccountMode', 'REAL');
                 localStorage.setItem('selectedAccountMode', 'REAL');
-                
-           }
+            }
 
             // FIRST inspect existing server sessions.
             // V34 may already have created a Trade-0 research session.
@@ -13666,7 +13713,16 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
 
-
+        async function confirmServerRealTrade() {
+            // V57.8: REAL == DEMO.
+            // REAL uses the exact same fast pipeline as DEMO. Trade 1 fires on
+            // the next eligible tick, losses auto-advance the stake and target,
+            // and the cycle ends only on a WIN or when Max Trades is reached.
+            //
+            // No confirmation is required at any point. This function is kept
+            // only for UI/API compatibility and is a strict no-op.
+            return true;
+        }
 
         // In SERVER mode, the browser must never submit proposals/buys.
 
@@ -14282,7 +14338,7 @@ window.isBotRunning = true;
         document.addEventListener('click', (event) => {
             try {
                 const target = event.target?.closest?.(
-                    '#toggleButton, #soundToggle, button'
+                    '#toggleButton, #soundToggle, #serverRealConfirmBtn, button'
                 );
                 if (!target || !window.soundEnabled) return;
                 initTone();
@@ -16625,7 +16681,7 @@ window.isBotRunning = true;
 <!-- Digit Differs Lab removed in V51 CORE CLEAN -->
 <!-- Multi-Digit Match Basket Lab removed in V51 CORE CLEAN -->
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
-<div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
+<div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-real-demo-parity="true" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.8-REAL-DEMO-PARITY" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
 <!-- Tick DNA → Tail Risk Validation V2 integration -->
 <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
 
