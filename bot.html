@@ -9173,6 +9173,7 @@ function rotateHybridDigit(reason = '') {
                 }
             }, 50);
             initializeToggleState();
+            startLiveDerivBalanceRefresh();
             updateS20Label();
             
             // Initialize intelligence engine
@@ -11406,7 +11407,167 @@ window.executionLock = true;
         // DEMO may continue unattended on the server.
         // REAL remains server-resident but requires explicit confirmation per purchase.
         // ============================================================================
-        window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+        
+        window.DMS_BALANCE_REFRESH = window.DMS_BALANCE_REFRESH || {
+            timer: null,
+            inFlight: false,
+            lastRefreshAt: 0,
+            intervalMs: 5000
+        };
+
+        function renderLiveAccountBalance(account) {
+            if (!account) return;
+
+            const balance = Number(account.balance);
+            if (!Number.isFinite(balance)) return;
+
+            const candidates = [
+                document.getElementById('metricAccountBalance'),
+                document.getElementById('metricBalance'),
+                document.getElementById('account-balance'),
+                document.getElementById('balanceDisplay'),
+                window.metricBalance || null
+            ].filter(Boolean);
+
+            for (const el of candidates) {
+                try {
+                    el.textContent = `$${balance.toFixed(2)}`;
+                } catch (_) {}
+            }
+        }
+
+        async function refreshLiveDerivBalances({ silent = true } = {}) {
+            const state = window.DMS_BALANCE_REFRESH;
+            if (state.inFlight) return null;
+
+            const token = getPlatformJwt();
+            if (!token) return null;
+
+            const apiUrl = String(
+                window.SERVER_EXECUTION?.apiUrl ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/, '');
+
+            state.inFlight = true;
+
+            try {
+                const res = await fetch(
+                    `${apiUrl}/accounts/refresh-balances`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            Accept: 'application/json'
+                        },
+                        cache: 'no-store'
+                    }
+                );
+
+                const data = await res.json().catch(() => null);
+
+                if (!res.ok) {
+                    const detail =
+                        data?.detail ||
+                        data?.error ||
+                        `HTTP ${res.status}`;
+
+                    if (!silent) {
+                        log(`⚠️ Live balance refresh failed: ${detail}`, 'WARNING');
+                    }
+                    return null;
+                }
+
+                state.lastRefreshAt = Date.now();
+
+                const selectedMode = String(
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                const selectedAccountId = String(
+                    localStorage.getItem('active_account') ||
+                    localStorage.getItem(
+                        selectedMode === 'REAL'
+                            ? 'derivRealAccount'
+                            : 'derivDemoAccount'
+                    ) ||
+                    ''
+                );
+
+                const accounts = Array.isArray(data?.accounts)
+                    ? data.accounts
+                    : [];
+
+                let account = null;
+
+                if (selectedAccountId) {
+                    account = accounts.find(
+                        a => String(a?.account_id || '') === selectedAccountId
+                    ) || null;
+                }
+
+                if (!account) {
+                    account = accounts.find(
+                        a => String(a?.account_type || '').toUpperCase() === selectedMode
+                    ) || null;
+                }
+
+                if (account) {
+                    localStorage.setItem(
+                        'active_account',
+                        String(account.account_id)
+                    );
+
+                    localStorage.setItem(
+                        selectedMode === 'REAL'
+                            ? 'derivRealAccount'
+                            : 'derivDemoAccount',
+                        String(account.account_id)
+                    );
+
+                    renderLiveAccountBalance(account);
+                }
+
+                if (typeof pollServerExecutionState === 'function') {
+                    try {
+                        await pollServerExecutionState();
+                    } catch (_) {}
+                }
+
+                return data;
+
+            } catch (err) {
+                if (!silent) {
+                    log(
+                        `⚠️ Live balance refresh error: ${err.message}`,
+                        'WARNING'
+                    );
+                }
+                return null;
+
+            } finally {
+                state.inFlight = false;
+            }
+        }
+
+        function startLiveDerivBalanceRefresh() {
+            const state = window.DMS_BALANCE_REFRESH;
+
+            if (state.timer) {
+                clearInterval(state.timer);
+            }
+
+            refreshLiveDerivBalances({ silent: true });
+
+            state.timer = setInterval(() => {
+                if (document.visibilityState === 'visible') {
+                    refreshLiveDerivBalances({ silent: true });
+                }
+            }, state.intervalMs);
+        }
+
+window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             enabled: (
                 sessionStorage.getItem('dms_server_execution_enabled') ??
                 localStorage.getItem('dms_server_execution_enabled')
@@ -12386,6 +12547,15 @@ window.executionLock = true;
 
             
             renderServerTradeNarrative(st);
+            if (
+                st?.last_settlement?.settled_at &&
+                Date.now() - Number(
+                    window.DMS_BALANCE_REFRESH?.lastRefreshAt || 0
+                ) > 1500
+            ) {
+                refreshLiveDerivBalances({ silent: true });
+            }
+
             try { syncServerTerminalLifecycle(st); } catch (_) {}
         }
 
@@ -16474,5 +16644,53 @@ window.isBotRunning = true;
 <div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
 <!-- Tick DNA → Tail Risk Validation V2 integration -->
 <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
+
+<script>
+(function () {
+    function installBalanceRefreshButton() {
+        if (document.getElementById('dms-balance-refresh-btn')) return;
+
+        const balance =
+            document.getElementById('metricAccountBalance') ||
+            document.getElementById('metricBalance') ||
+            document.getElementById('account-balance') ||
+            document.getElementById('balanceDisplay');
+
+        if (!balance || !balance.parentElement) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'dms-balance-refresh-btn';
+        btn.type = 'button';
+        btn.textContent = '↻';
+        btn.title = 'Refresh current balance from Deriv';
+        btn.className =
+            'ml-2 px-2 py-1 rounded border border-emerald-500/30 ' +
+            'text-emerald-300 text-xs font-black hover:bg-emerald-500/10';
+
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            const old = btn.textContent;
+            btn.textContent = '…';
+
+            await refreshLiveDerivBalances({ silent: false });
+
+            btn.textContent = old;
+            btn.disabled = false;
+        });
+
+        balance.parentElement.appendChild(btn);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            installBalanceRefreshButton
+        );
+    } else {
+        installBalanceRefreshButton();
+    }
+})();
+</script>
+
 </body>
 </html>

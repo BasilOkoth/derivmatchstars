@@ -8,15 +8,16 @@ from pydantic import BaseModel
 
 from .config import settings
 from .db import SessionLocal
-from .models import TradingSession, DerivAccount, TradeLog
-from .security import current_user_id
+from .models import TradingSession, DerivAccount, DerivCredential, TradeLog
+from .security import current_user_id, decrypt_token
 from .oauth import router as oauth_router
+from .deriv_rest import get_accounts
 from .engine import engine
 
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.6.0-telegram-actual-cycle-pnl",
+    version="3.7.0-live-account-balance",
 )
 
 
@@ -96,7 +97,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.6.0-telegram-actual-cycle-pnl",
+        "version": "3.7.0-live-account-balance",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -154,6 +155,125 @@ def digit_score_for_session(session_id: int):
             ),
             "error": str(exc),
         }
+
+
+
+@app.post("/accounts/refresh-balances")
+async def refresh_account_balances(
+    user_id: str = Depends(current_user_id),
+):
+    """
+    Pull the latest Options account balances from Deriv and persist them.
+
+    Fixes stale balances after deposits/withdrawals. The Deriv OAuth token
+    remains server-side and is never exposed to the browser.
+    """
+    db = SessionLocal()
+
+    try:
+        credential = (
+            db.query(DerivCredential)
+            .filter(DerivCredential.user_id == user_id)
+            .first()
+        )
+
+        if not credential:
+            raise HTTPException(
+                status_code=401,
+                detail="Deriv account is not connected",
+            )
+
+        if (
+            credential.expires_at
+            and credential.expires_at <= datetime.utcnow()
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Deriv OAuth token expired; reconnect Deriv",
+            )
+
+        access_token = decrypt_token(
+            credential.encrypted_access_token
+        )
+
+        payload = await get_accounts(access_token)
+        accounts = payload.get("data", [])
+
+        if isinstance(accounts, dict):
+            accounts = [accounts]
+
+        if not isinstance(accounts, list):
+            accounts = []
+
+        refreshed = []
+
+        for account in accounts:
+            if not account or not account.get("account_id"):
+                continue
+
+            account_id = str(account.get("account_id"))
+
+            row = (
+                db.query(DerivAccount)
+                .filter(
+                    DerivAccount.user_id == user_id,
+                    DerivAccount.account_id == account_id,
+                )
+                .first()
+            )
+
+            if not row:
+                row = DerivAccount(
+                    user_id=user_id,
+                    account_id=account_id,
+                )
+                db.add(row)
+
+            balance = None
+
+            if account.get("balance") is not None:
+                try:
+                    balance = float(account.get("balance"))
+                except Exception:
+                    balance = None
+
+            row.account_type = str(
+                account.get("account_type", "")
+            ).lower()
+            row.currency = account.get("currency")
+            row.status = account.get("status")
+            row.balance = balance
+            row.raw_json = json.dumps(account)
+            row.updated_at = datetime.utcnow()
+
+            refreshed.append({
+                "account_id": account_id,
+                "account_type": row.account_type,
+                "currency": row.currency,
+                "status": row.status,
+                "balance": row.balance,
+            })
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "refreshed_at": datetime.utcnow().isoformat(),
+            "accounts": refreshed,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not refresh Deriv balances: {exc}",
+        ) from exc
+
+    finally:
+        db.close()
 
 
 @app.get("/sessions")
