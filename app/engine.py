@@ -55,8 +55,9 @@ class MultiUserEngine:
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
 
-        # Unified 0-9 scoring + target recycling.
-        self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+        # Unified 0-9 scoring. Rank #1 is always the next DEMO target.
+        # No multi-loss target lock/recycle delay.
+        self.digit_scorer = DigitScoreEngine(recycle_after=1, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
@@ -340,6 +341,8 @@ class MultiUserEngine:
             self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
 
         digit = self._tick_last_digit(tick)
+        latest_top_digit = None
+
         if digit is not None:
             history = self._digit_history(sid)
             # Only append a new canonical market epoch once.
@@ -350,7 +353,18 @@ class MultiUserEngine:
                     history.append(int(digit))
                     if epoch:
                         self._last_scored_epoch[sid] = int(epoch)
-                    self._score_all_digits(sid)
+
+                    snapshot = self._score_all_digits(sid)
+                    selected = snapshot.get("selected_digit")
+                    if selected is not None:
+                        latest_top_digit = int(selected)
+
+        # If this callback did not add a new epoch, reuse the newest ranking.
+        if latest_top_digit is None:
+            snapshot = self.digit_score_snapshots.get(sid) or {}
+            selected = snapshot.get("selected_digit")
+            if selected is not None:
+                latest_top_digit = int(selected)
 
         active = self.fast_contracts.get(sid)
 
@@ -439,35 +453,26 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # After 3 losses on the same target, force a fresh 0-9
-                # score and exclude the failed digit for this immediate recycle.
-                recycle_due = (
-                    int(s.current_trade) > 0
-                    and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                )
+                # LIVE TOP-DIGIT SYNC:
+                # The ranking has already been refreshed from this exact
+                # canonical outcome tick. The next recovery target must be the
+                # current rank #1 immediately. There is no 3-loss lock and the
+                # previous target is not forcibly excluded.
+                if latest_top_digit is None:
+                    latest_top_digit, _ = self._choose_scored_digit(sid)
 
-                if recycle_due:
-                    failed_digit = int(s.candidate_digit)
-                    prefetched = self.prefetched_recovery.get(sid)
-                    prefetched_digit = (
-                        int(prefetched.get("digit"))
-                        if prefetched and prefetched.get("digit") is not None
+                if latest_top_digit is not None:
+                    previous_target = (
+                        int(s.candidate_digit)
+                        if s.candidate_digit is not None
                         else None
                     )
+                    s.candidate_digit = int(latest_top_digit)
 
-                    if prefetched_digit is not None and prefetched_digit != failed_digit:
-                        s.candidate_digit = prefetched_digit
-                        self._score_all_digits(sid, exclude_digit=failed_digit)
-                    else:
-                        new_digit, _ = self._choose_scored_digit(
-                            sid, exclude_digit=failed_digit
-                        )
-                        if new_digit is not None:
-                            s.candidate_digit = int(new_digit)
-
-                    s.phase = f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
+                    if previous_target != int(latest_top_digit):
+                        s.phase = f"TOP_DIGIT_CHANGED_TO_{int(latest_top_digit)}"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
 
                 s.current_stake = round(
                     float(s.current_stake) * float(s.multiplier),
@@ -811,32 +816,25 @@ class MultiUserEngine:
                 )
 
         # Pre-arm exactly ONE proposal for the next recovery while this trade is
-        # active. The proposal request is outside the result-critical path.
+        # active. Use the newest rank #1 available now. If rank #1 changes again
+        # on the outcome tick, the proposal-digit validation in the fast-loss
+        # path rejects the stale prefetch and requests one fresh proposal for
+        # the newly selected top digit.
         if s.current_trade < s.max_trades:
             existing = self.prefetch_tasks.get(s.id)
 
             if not existing or existing.done():
+                next_digit, _ = self._choose_scored_digit(s.id)
+                if next_digit is None:
+                    next_digit = int(s.candidate_digit)
+
                 task = asyncio.create_task(
                     self._prefetch_next_recovery(
                         sid=s.id,
                         user_id=s.user_id,
                         account_id=s.account_id,
                         symbol=s.symbol,
-                        digit=int(
-                            (self._choose_scored_digit(
-                                s.id,
-                                exclude_digit=int(s.candidate_digit),
-                            )[0])
-                            if (
-                                int(s.current_trade) > 0
-                                and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                                and self._choose_scored_digit(
-                                    s.id,
-                                    exclude_digit=int(s.candidate_digit),
-                                )[0] is not None
-                            )
-                            else int(s.candidate_digit)
-                        ),
+                        digit=int(next_digit),
                         next_stake=round(
                             float(s.current_stake)
                             * float(s.multiplier),
