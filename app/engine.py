@@ -1730,7 +1730,7 @@ class MultiUserEngine:
 
     async def confirm_real(self, user_id: str, session_id: int):
         raise RuntimeError(
-            "REAL account connection is supported. Automated REAL-money execution is disabled "
+            "REAL account connection is supported. Automated REAL-money execution is abled "
             "in this low-latency build."
         )
 
