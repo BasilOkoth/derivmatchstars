@@ -1,7 +1,7 @@
 // /api/publish-cycle.js
-// DigitMatchStar Telegram publisher V3.0
-// Settlement-safe: a WIN message distinguishes the authoritative winning
-// contract profit from cycle P/L.
+// DigitMatchStar Telegram publisher V3.2
+// Settlement-safe: Telegram reports the FULL cycle result, not only
+// the profit of the final winning contract.
 
 const WEBSITE = process.env.DIGITMATCHSTAR_URL || 'https://www.digitmatchstar.com';
 const DMS_API = (process.env.DMS_API_URL || 'https://digitmatchstar-api.onrender.com').replace(/\/+$/, '');
@@ -13,6 +13,22 @@ function clean(v, n = 180) {
 function money(v) {
   const n = Number(v || 0);
   return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
+}
+
+// Telegram does not support arbitrary text font colours.
+// Use a strong green/red status emoji plus bold HTML text.
+function netResultLine(v) {
+  const n = Number(v || 0);
+
+  if (n > 0) {
+    return `🟢 <b>NET CYCLE PROFIT: ${money(n)}</b>`;
+  }
+
+  if (n < 0) {
+    return `🔴 <b>NET CYCLE LOSS: ${money(n)}</b>`;
+  }
+
+  return `⚪ <b>NET CYCLE RESULT: ${money(n)}</b>`;
 }
 
 function market(s) {
@@ -146,14 +162,66 @@ function lastWinningTrade(c) {
   return rows.length ? rows[rows.length - 1] : null;
 }
 
+/*
+ * The browser already sends:
+ *   c.netPnL = st.pnl
+ *
+ * st.pnl is the server cycle ledger:
+ *   prior losing-contract profits + confirmed winning-contract profit.
+ *
+ * For DIGITMATCH a losing contract loses its full stake, therefore:
+ *
+ *   priorLossStake = winningProfit - cycleNetPnL
+ *   totalStakeUsed = winningStake + priorLossStake
+ *
+ * This gives the complete cycle investment without mistaking the final
+ * winning-contract profit for the full-cycle profit.
+ */
+function deriveWinCycleTotals(c) {
+  const winningTrade = lastWinningTrade(c);
+
+  const winningStake = Math.max(0, Number(winningTrade?.stake || 0));
+  const winningProfit = Number(winningTrade?.profit);
+  const cycleNetPnL = Number(c.netPnL);
+
+  let winningPayout = Math.max(0, Number(winningTrade?.payout || c.totalPayout || 0));
+
+  if (
+    (!Number.isFinite(winningPayout) || winningPayout <= 0) &&
+    Number.isFinite(winningProfit)
+  ) {
+    winningPayout = Math.max(0, winningStake + winningProfit);
+  }
+
+  let totalStakeUsed = Number(c.totalInvestment || 0);
+
+  if (
+    Number.isFinite(winningProfit) &&
+    Number.isFinite(cycleNetPnL) &&
+    winningStake > 0
+  ) {
+    const priorLossStake = Math.max(0, winningProfit - cycleNetPnL);
+    totalStakeUsed = winningStake + priorLossStake;
+  }
+
+  return {
+    winningTrade,
+    winningStake: Number(winningStake.toFixed(2)),
+    winningProfit: Number.isFinite(winningProfit) ? Number(winningProfit.toFixed(2)) : null,
+    winningPayout: Number(Math.max(0, winningPayout).toFixed(2)),
+    totalStakeUsed: Number(Math.max(0, totalStakeUsed).toFixed(2)),
+    cycleNetPnL: Number.isFinite(cycleNetPnL) ? Number(cycleNetPnL.toFixed(2)) : 0
+  };
+}
+
 function caption(c, type) {
   const win = c.status === 'WIN';
   const n = c.trades.length;
   const account = type === 'REAL' ? 'REAL ACCOUNT' : 'DEMO ACCOUNT';
 
   if (win) {
-    const winningTrade = lastWinningTrade(c);
-    const winningProfit = Number(winningTrade?.profit);
+    const totals = deriveWinCycleTotals(c);
+
     const lines = [
       `⭐ <b>DIGITMATCHSTAR — ${account}</b>`, '',
       `📈 <b>${market(c.symbol)}</b>`,
@@ -161,16 +229,11 @@ function caption(c, type) {
       `✅ <b>MATCHED AT TRADE ${c.winningTradeNumber || n}</b>`
     ];
 
-    if (c.settlementConfirmed && Number.isFinite(winningProfit)) {
-      lines.push(`💰 <b>Winning trade P/L: ${money(winningProfit)}</b>`);
+    if (c.settlementConfirmed) {
+      lines.push(`💵 Total stake used: <b>$${totals.totalStakeUsed.toFixed(2)}</b>`);
+      lines.push(`💰 Winning payout: <b>$${totals.winningPayout.toFixed(2)}</b>`);
+      lines.push(netResultLine(totals.cycleNetPnL));
       lines.push('🔒 Deriv settlement: <b>CONFIRMED</b>');
-    }
-
-    // Only show cycle P/L when the sender explicitly says the whole cycle is
-    // fully reconciled. This prevents stale/pending losses from being presented
-    // as the final cycle result.
-    if (c.cyclePnlAuthoritative) {
-      lines.push(`📊 <b>Final cycle P/L: ${money(c.netPnL)}</b>`);
     }
 
     lines.push('');
@@ -192,7 +255,7 @@ function caption(c, type) {
     `📈 <b>${market(c.symbol)}</b>`,
     `🎯 Target digit: <b>${Number.isFinite(c.digit) ? c.digit : '-'}</b>`,
     `🛑 <b>CYCLE STOPPED AFTER ${n} TRADE${n === 1 ? '' : 'S'}</b>`,
-    `📊 <b>Cycle P/L: ${money(c.netPnL)}</b>`, '',
+    netResultLine(c.netPnL), '',
     'The selected digit did not match within the configured trade limit.', '',
     'Trading involves risk, and past results do not guarantee future performance.', '',
     '🚀 <b>Experience DigitMatchStar</b>',
@@ -302,7 +365,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'telegram-settlement-confirmed-v3.1',
+      version: 'telegram-cycle-net-v3.2',
       environment: envStatus()
     });
   }
@@ -350,8 +413,7 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Invalid or empty cycle' });
     }
 
-    // Never publish a WIN without the exact Deriv settlement. This turns any
-    // stale legacy caller into a harmless skip instead of a misleading post.
+    // Never publish a WIN without the exact Deriv settlement.
     if (c.status === 'WIN' && c.settlementConfirmed !== true) {
       return res.status(202).json({
         ok: true,
