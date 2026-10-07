@@ -864,12 +864,12 @@
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="maxTrades">Max Trades</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
-<p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
+<p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target follows the current top-ranked digit from the live server score.</p>
 </div>
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
-                            Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
+                            Choose any positive Max Trades value. The next target changes immediately when the server's rank #1 digit changes.
                         </p>
 </div>
 <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
@@ -11720,124 +11720,171 @@ window.executionLock = true;
         }
 
 
-        function ensureRecycleRuntimePanel() {
-            if (document.getElementById('recycle-runtime-panel')) return;
+        function ensureLiveTargetRuntimePanel() {
+            if (document.getElementById('live-target-runtime-panel')) return;
+
             const host = document.getElementById('trade-result-container');
             if (!host) return;
 
             const el = document.createElement('div');
-            el.id = 'recycle-runtime-panel';
+            el.id = 'live-target-runtime-panel';
             el.className = 'mt-3 rounded-xl border border-cyan-500/30 bg-slate-950/70 p-3 text-xs';
+
             el.innerHTML = `
                 <div class="flex items-center justify-between gap-3 mb-3">
                     <div>
-                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
-                        <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
+                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">
+                            Live Digit Ranking
+                        </div>
+                        <div id="score-engine-state" class="text-sm font-black text-white">
+                            Waiting for server score…
+                        </div>
                     </div>
                     <div class="text-right">
-                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
-                        <div class="text-sm font-black text-white">3 losses</div>
+                        <div class="text-[10px] uppercase text-emerald-400 font-bold">
+                            Target policy
+                        </div>
+                        <div class="text-sm font-black text-white">
+                            LIVE RANK #1
+                        </div>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-4 gap-2 mb-3">
+                <div class="grid grid-cols-3 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Target</div>
-                        <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">
+                            Target = Top Rank
+                        </div>
+                        <div id="live-target-digit" class="text-lg font-black text-white">—</div>
                     </div>
-                    <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
-                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
-                    </div>
+
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
-                        <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
-                        <div id="recycle-trade" class="text-lg font-black text-white">—</div>
+                        <div class="text-[9px] uppercase text-violet-400 font-bold">
+                            Trade
+                        </div>
+                        <div id="live-target-trade" class="text-lg font-black text-white">—</div>
                     </div>
+
                     <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/20 p-2">
-                        <div class="text-[9px] uppercase text-emerald-400 font-bold">Stake</div>
-                        <div id="recycle-stake" class="text-lg font-black text-white">$0.00</div>
+                        <div class="text-[9px] uppercase text-emerald-400 font-bold">
+                            Stake
+                        </div>
+                        <div id="live-target-stake" class="text-lg font-black text-white">$0.00</div>
                     </div>
                 </div>
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    Server ranks all digits from canonical tick history. Scores are relative ranking signals, not guaranteed probabilities.
+                    The server rescans all digits on every new canonical tick. Rank #1 is the next target immediately; there is no multi-loss target lock.
                 </div>
             `;
+
             host.appendChild(el);
         }
 
-        function renderRecycleRuntimePanel(st) {
-            ensureRecycleRuntimePanel();
+        function renderLiveTargetRuntimePanel(st) {
+            ensureLiveTargetRuntimePanel();
 
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
             const maxTrades = Number(st?.max_trades || 0);
-            const attempt = currentTrade > 0 ? (((currentTrade - 1) % 3) + 1) : 0;
 
-            const targetEl = document.getElementById('recycle-current-target');
-            const attemptEl = document.getElementById('recycle-attempt');
-            const tradeEl = document.getElementById('recycle-trade');
-            const stakeEl = document.getElementById('recycle-stake');
+            const targetEl = document.getElementById('live-target-digit');
+            const tradeEl = document.getElementById('live-target-trade');
+            const stakeEl = document.getElementById('live-target-stake');
             const stateEl = document.getElementById('score-engine-state');
             const rankingEl = document.getElementById('digit-score-ranking');
 
-            if (targetEl) {
-                targetEl.textContent = Number.isInteger(Number(st?.candidate_digit))
-                    ? String(st.candidate_digit)
-                    : '—';
-            }
-            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
-            if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
-            if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
+            const rankedTop = Number(score?.selected_digit);
+            const serverCandidate = Number(st?.candidate_digit);
 
-            if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
+            // Display the current server rank #1 as the target. This intentionally
+            // does not pretend an already-purchased one-tick contract can have its
+            // barrier changed after purchase; it is the target for the next order.
+            const liveTarget =
+                Number.isInteger(rankedTop) && rankedTop >= 0 && rankedTop <= 9
+                    ? rankedTop
+                    : (
+                        Number.isInteger(serverCandidate) &&
+                        serverCandidate >= 0 &&
+                        serverCandidate <= 9
+                            ? serverCandidate
+                            : null
+                    );
+
+            if (targetEl) {
+                targetEl.textContent =
+                    liveTarget === null ? '—' : String(liveTarget);
+            }
+
+            if (tradeEl) {
+                tradeEl.textContent =
+                    maxTrades
+                        ? `${currentTrade} / ${maxTrades}`
+                        : String(currentTrade || '—');
+            }
+
+            if (stakeEl) {
+                stakeEl.textContent =
+                    `$${Number(st?.current_stake || 0).toFixed(2)}`;
+            }
+
+            if (
+                !score?.ready ||
+                !Array.isArray(score.ranking) ||
+                !score.ranking.length
+            ) {
                 if (stateEl) {
-                    const have = Number(score?.history_count || 0);
-                    const need = Number(score?.minimum_history || 10);
-                    stateEl.textContent = `Warming history ${have}/${need}`;
+                    const count = Number(score?.history_count || 0);
+                    const minimum = Number(score?.minimum_history || 10);
+                    stateEl.textContent = `Warming score ${count}/${minimum}`;
                 }
+
                 if (rankingEl) rankingEl.innerHTML = '';
                 return;
             }
 
-            const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
-            const selected = Number(score.selected_digit);
+            const topDigit = Number(score.selected_digit);
 
             if (stateEl) {
-                const margin = Number(score.top_margin);
-                const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent = `Selected ${selected}${marginText}`;
+                stateEl.textContent =
+                    Number.isInteger(topDigit)
+                        ? `Rank #1 digit ${topDigit} · target synced`
+                        : 'Live ranking ready';
             }
 
             if (rankingEl) {
-                rankingEl.innerHTML = ranked.map((row, idx) => {
-                    const digit = Number(row.digit);
-                    const isSelected = digit === selected;
-                    const isExcluded = Number(score.excluded_digit) === digit;
-                    const cls = isSelected
-                        ? 'border-cyan-400 bg-cyan-500/20 text-white'
-                        : isExcluded
-                            ? 'border-rose-500/30 bg-rose-950/20 text-rose-300'
-                            : 'border-slate-700 bg-slate-900/70 text-gray-300';
+                rankingEl.innerHTML = score.ranking
+                    .slice(0, 10)
+                    .map((row, index) => {
+                        const d = Number(row?.digit);
+                        const value = Number(row?.score || 0);
+                        const isTop = index === 0;
 
-                    return `
-                        <div class="rounded-lg border ${cls} p-1.5 text-center">
-                            <div class="text-base font-black">${digit}</div>
-                            <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
-                            <div class="text-[8px] opacity-70">${idx + 1}</div>
-                        </div>
-                    `;
-                }).join('');
+                        return `
+                            <div class="rounded-md border ${
+                                isTop
+                                    ? 'border-emerald-400 bg-emerald-950/40'
+                                    : 'border-slate-700 bg-slate-900/60'
+                            } px-1.5 py-1 text-center">
+                                <div class="${
+                                    isTop
+                                        ? 'text-emerald-300'
+                                        : 'text-gray-300'
+                                } font-black">
+                                    ${Number.isInteger(d) ? d : '—'}
+                                </div>
+                                <div class="text-[8px] text-gray-500">
+                                    ${Number.isFinite(value) ? value.toFixed(2) : '—'}
+                                </div>
+                            </div>
+                        `;
+                    })
+                    .join('');
             }
         }
 
-        // Telegram settlement-safe publisher.
-        // FAST_WON is used for immediate sound/strategy stop only.
-        // A Telegram WIN is sent only after the exact winning contract has
-        // an authoritative Deriv settlement in st.last_settlement.
-        window.__dmsPendingTelegramWins = window.__dmsPendingTelegramWins || new Map();
-        window.__dmsPublishedSettlementWins = window.__dmsPublishedSettlementWins || new Set();
 
         function publishFastWinToTelegram(st) {
             try {
@@ -11940,7 +11987,7 @@ window.executionLock = true;
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
-            try { renderRecycleRuntimePanel(st); } catch (_) {}
+            try { renderLiveTargetRuntimePanel(st); } catch (_) {}
             try { publishFastWinToTelegram(st); } catch (_) {}
 
             // V1.6 deterministic server audio.

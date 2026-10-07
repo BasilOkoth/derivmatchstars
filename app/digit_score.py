@@ -11,10 +11,12 @@ class DigitScoreEngine:
     It combines the feature families already studied in DigitMatchStar while
     deliberately preventing a large gap from becoming an endless 'overdue'
     chase signal.
+
+    There is no multi-loss target lock. The engine may use the current rank #1
+    as the next target as soon as a fresh canonical tick changes the ranking.
     """
 
-    def __init__(self, recycle_after: int = 3, min_history: int = 10, max_history: int = 100):
-        self.recycle_after = max(1, int(recycle_after))
+    def __init__(self, min_history: int = 10, max_history: int = 100):
         self.min_history = max(5, int(min_history))
         self.max_history = max(self.min_history, int(max_history))
 
@@ -72,7 +74,6 @@ class DigitScoreEngine:
                 "minimum_history": self.min_history,
                 "selected_digit": None,
                 "ranking": [],
-                "recycle_after": self.recycle_after,
             }
 
         last10 = history[-10:]
@@ -84,10 +85,14 @@ class DigitScoreEngine:
 
         repeat10 = 0.0
         if len(last10) > 1:
-            repeat10 = sum(a == b for a, b in zip(last10[:-1], last10[1:])) / (len(last10) - 1)
+            repeat10 = (
+                sum(a == b for a, b in zip(last10[:-1], last10[1:]))
+                / (len(last10) - 1)
+            )
 
         current = history[-1]
         rows = []
+
         for digit in range(10):
             if exclude_digit is not None and digit == int(exclude_digit):
                 continue
@@ -105,8 +110,19 @@ class DigitScoreEngine:
 
             # Avoid the gambler's-fallacy failure mode discovered in the TAE
             # work: reward a moderate gap, not an ever-growing gap.
-            moderate_gap = max(0.0, 1.0 - abs(min(gap, 16) - 6.0) / 10.0)
-            safe_tick_like = 1.0 if (f25 <= 0.08 and entropy10_bits <= 2.5219280948873625) else 0.0
+            moderate_gap = max(
+                0.0,
+                1.0 - abs(min(gap, 16) - 6.0) / 10.0,
+            )
+
+            safe_tick_like = (
+                1.0
+                if (
+                    f25 <= 0.08
+                    and entropy10_bits <= 2.5219280948873625
+                )
+                else 0.0
+            )
 
             score = 0.0
             score += 42.0 * (tr1 - 0.10)
@@ -119,39 +135,56 @@ class DigitScoreEngine:
             score += 8.0 * short_long
             score += 5.0 * cluster
             score += 2.0 * moderate_gap
-            score += 2.0 * (1.0 if current == digit else 0.0) * max(0.0, repeat10 - 0.10)
+            score += (
+                2.0
+                * (1.0 if current == digit else 0.0)
+                * max(0.0, repeat10 - 0.10)
+            )
             score += 1.0 * safe_tick_like
 
             # High entropy compresses confidence rather than creating fake edge.
             score *= max(0.55, 1.15 - 0.60 * entropy25)
 
-            rows.append({
-                "digit": digit,
-                "score": float(score),
-                "gap": int(gap),
-                "freq5": float(f5),
-                "freq10": float(f10),
-                "freq25": float(f25),
-                "freq50": float(f50),
-                "freq100": float(f100),
-                "entropy10": float(entropy10),
-                "entropy25": float(entropy25),
-                "repeat10": float(repeat10),
-                "transition1": float(tr1),
-                "transition2": float(tr2),
-                "short_long_divergence": float(short_long),
-                "cluster_pressure": float(cluster),
-                "safe_tick_like": float(safe_tick_like),
-            })
+            rows.append(
+                {
+                    "digit": digit,
+                    "score": float(score),
+                    "gap": int(gap),
+                    "freq5": float(f5),
+                    "freq10": float(f10),
+                    "freq25": float(f25),
+                    "freq50": float(f50),
+                    "freq100": float(f100),
+                    "entropy10": float(entropy10),
+                    "entropy25": float(entropy25),
+                    "repeat10": float(repeat10),
+                    "transition1": float(tr1),
+                    "transition2": float(tr2),
+                    "short_long_divergence": float(short_long),
+                    "cluster_pressure": float(cluster),
+                    "safe_tick_like": float(safe_tick_like),
+                }
+            )
 
-        rows.sort(key=lambda r: (r["score"], r["transition2"], r["transition1"]), reverse=True)
+        rows.sort(
+            key=lambda r: (
+                r["score"],
+                r["transition2"],
+                r["transition1"],
+            ),
+            reverse=True,
+        )
+
         return {
             "ready": bool(rows),
             "history_count": len(history),
             "minimum_history": self.min_history,
             "selected_digit": rows[0]["digit"] if rows else None,
             "ranking": rows,
-            "top_margin": (rows[0]["score"] - rows[1]["score"]) if len(rows) > 1 else None,
+            "top_margin": (
+                rows[0]["score"] - rows[1]["score"]
+                if len(rows) > 1
+                else None
+            ),
             "excluded_digit": exclude_digit,
-            "recycle_after": self.recycle_after,
         }

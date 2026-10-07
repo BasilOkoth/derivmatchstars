@@ -15,7 +15,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.0.0-digit-score-recycle3",
+    version="3.1.0-live-top-digit",
 )
 
 
@@ -42,8 +42,6 @@ def _cors_origins():
 
     configured = _normalise_origin(settings.frontend_url)
 
-    # If FRONTEND_URL is a custom HTTPS hostname, also tolerate the www/non-www
-    # spelling of that same hostname.
     if configured:
         try:
             parsed = urlparse(configured)
@@ -95,14 +93,13 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.0.0-digit-score-recycle3",
+        "version": "3.1.0-live-top-digit",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
-            "name": "DIGIT_SCORE_RECYCLE",
-            "recycle_after_losses": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
-            ),
+            "name": "LIVE_TOP_DIGIT",
+            "target_policy": "rank_1_each_canonical_tick",
+            "multi_loss_target_lock": False,
         },
     }
 
@@ -121,10 +118,11 @@ def owns_session(db, user_id, sid):
 
 def digit_score_for_session(session_id: int):
     """
-    Compatibility wrapper around the new full engine.
+    Compatibility wrapper around the live top-digit scoring engine.
 
-    The replacement engine exposes _score_all_digits internally. Keeping the
-    API adapter here avoids reintroducing old TAE methods into the engine.
+    The engine exposes _score_all_digits internally. Keeping this adapter here
+    lets the frontend inspect the current ranking without duplicating scoring
+    logic in the API.
     """
     scorer = getattr(engine, "_score_all_digits", None)
 
@@ -135,7 +133,6 @@ def digit_score_for_session(session_id: int):
             "selected_digit": None,
             "history_count": 0,
             "minimum_history": 10,
-            "recycle_after": 3,
             "error": "Digit score engine is not available",
         }
 
@@ -148,9 +145,6 @@ def digit_score_for_session(session_id: int):
             "selected_digit": None,
             "history_count": 0,
             "minimum_history": 10,
-            "recycle_after": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
-            ),
             "error": str(exc),
         }
 
@@ -198,13 +192,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
-                    "recycle_after": int(
-                        getattr(
-                            getattr(engine, "digit_scorer", None),
-                            "recycle_after",
-                            3,
-                        )
-                    ),
+                    "target_policy": "rank_1_each_canonical_tick",
                     "last_settlement": engine.last_settlement_status(s.id),
                 }
             )
@@ -223,8 +211,8 @@ def removed_tae_export(
     """
     Kept only so an old browser button does not crash the API.
 
-    TAE no longer controls execution in the unified Digit Score / Recycle-3
-    trading engine.
+    TAE no longer controls execution. The active engine scores digits 0-9 and
+    uses the current rank #1 as the next target without a multi-loss lock.
     """
     db = SessionLocal()
     try:
@@ -233,11 +221,12 @@ def removed_tae_export(
         db.close()
 
     return {
-        "schema": "DIGITMATCHSTAR_DIGIT_SCORE_RECYCLE3",
+        "schema": "DIGITMATCHSTAR_LIVE_TOP_DIGIT",
         "session_id": sid,
         "message": (
             "Target Attraction execution was retired. "
-            "The active system scores digits 0-9 and recycles after 3 losses."
+            "The active system scores digits 0-9 and uses the current "
+            "rank #1 as the next target without a multi-loss target lock."
         ),
         "digit_score": digit_score_for_session(sid),
     }
@@ -409,7 +398,7 @@ def candidate(
             }
 
         # This sets the initial/fallback digit only. Once the server has enough
-        # canonical history, the unified engine scores 0-9 and chooses Trade 1.
+        # canonical history, the engine scores 0-9 and chooses rank #1.
         s.candidate_digit = int(body.digit)
         s.updated_at = datetime.utcnow()
         db.commit()
@@ -451,9 +440,9 @@ def start(
                 "open_contract_id": s.open_contract_id,
             }
 
-        # A fallback digit is still accepted so START never fails merely because
-        # scoring history is warming. The engine replaces it with the ranked
-        # candidate as soon as scoring is ready.
+        # A fallback digit is accepted so START never fails merely because
+        # scoring history is warming. The engine replaces it with rank #1 as
+        # soon as scoring is ready.
         if s.candidate_digit is None:
             s.candidate_digit = 5
 
@@ -471,9 +460,7 @@ def start(
             "reconciling": False,
             "candidate_digit": s.candidate_digit,
             "max_trades": s.max_trades,
-            "recycle_after": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
-            ),
+            "target_policy": "rank_1_each_canonical_tick",
         }
 
     finally:

@@ -56,8 +56,7 @@ class MultiUserEngine:
         self.prefetch_tasks = {}  # sid -> asyncio.Task
 
         # Unified 0-9 scoring. Rank #1 is always the next DEMO target.
-        # No multi-loss target lock/recycle delay.
-        self.digit_scorer = DigitScoreEngine(recycle_after=1, min_history=10, max_history=100)
+        self.digit_scorer = DigitScoreEngine(min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
