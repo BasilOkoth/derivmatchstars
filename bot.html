@@ -12770,7 +12770,7 @@ window.executionLock = true;
                 symbol: document.getElementById('symbol')?.value || 'R_10',
                 base_stake: Number(document.getElementById('baseStake')?.value || 1),
                 multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
-                max_trades: getUserMaxTrades()
+                max_trades: Number(document.getElementById('maxTrades')?.value || 10)
             };
         }
 
@@ -13117,16 +13117,11 @@ window.executionLock = true;
         function getUserMaxTrades() {
             const input = document.getElementById('maxTrades');
             const raw = Number.parseInt(input?.value, 10);
-
-            // User-defined cycle cap. The live/demo execution engine accepts
-            // any positive integer; old research builds incorrectly forced a
-            // minimum of 20 trades even though the control itself allowed 1.
-            const value = Number.isFinite(raw) && raw >= 1 ? raw : 15;
-
+            // Tick DNA V2.2 validation requires an uncensored 20-trade observation window.
+            const value = Number.isFinite(raw) && raw >= 20 ? raw : 20;
             if (input && String(value) !== String(input.value).trim()) {
                 input.value = String(value);
             }
-
             return value;
         }
 
