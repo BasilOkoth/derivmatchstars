@@ -13506,11 +13506,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 // disabled by the backend in this build.
                 sessionStorage.setItem('selectedAccountMode', 'REAL');
                 localStorage.setItem('selectedAccountMode', 'REAL');
-                throw new Error(
-                    `REAL account ${account.account_id} is connected successfully. ` +
-                    `Automated REAL-money execution is disabled in this build.`
-                );
-            }
+                
+           }
 
             // FIRST inspect existing server sessions.
             // V34 may already have created a Trade-0 research session.
