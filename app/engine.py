@@ -463,61 +463,56 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # After 3 losses on the same target, force a fresh 0-9
-                # score and exclude the failed digit for this immediate recycle.
+                # After every active trade, the exact next-loss proposal should
+                # already be pre-armed. At a 3-loss boundary that proposal was
+                # prepared for a freshly ranked target with the failed digit
+                # excluded.
                 recycle_due = (
                     int(s.current_trade) > 0
                     and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
                 )
 
-                if recycle_due:
-                    failed_digit = int(s.candidate_digit)
-                    prefetched = self.prefetched_recovery.get(sid)
-                    prefetched_digit = (
-                        int(prefetched.get("digit"))
-                        if prefetched and prefetched.get("digit") is not None
-                        else None
-                    )
-
-                    if prefetched_digit is not None and prefetched_digit != failed_digit:
-                        s.candidate_digit = prefetched_digit
-                        self._score_all_digits(sid, exclude_digit=failed_digit)
-                    else:
-                        new_digit, _ = self._choose_scored_digit(
-                            sid, exclude_digit=failed_digit
-                        )
-                        if new_digit is not None:
-                            s.candidate_digit = int(new_digit)
-
-                    s.phase = f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-                s.current_stake = round(
+                expected_trade_no = int(s.current_trade) + 1
+                expected_stake = round(
                     float(s.current_stake) * float(s.multiplier),
                     2,
                 )
-                s.phase = "FAST_RECOVERING"
-                s.updated_at = datetime.utcnow()
-                db.commit()
 
-                expected_trade_no = int(s.current_trade) + 1
                 payload = self.prefetched_recovery.pop(sid, None)
 
-                # CRITICAL RATE-LIMIT RULE:
-                # if the proposal for this exact recovery is already being
-                # prepared, wait for that ONE request. Do NOT start a second
-                # fallback proposal after an arbitrary timeout.
+                # If the one prefetch request is still in flight, wait for that
+                # SAME request. Never start a parallel duplicate proposal.
                 if not payload:
                     prefetch_task = self.prefetch_tasks.get(sid)
-
                     if prefetch_task and not prefetch_task.done():
                         try:
                             await asyncio.shield(prefetch_task)
                         except Exception:
                             pass
-
                         payload = self.prefetched_recovery.pop(sid, None)
+
+                # At recycle boundaries the target comes directly from the
+                # preplanned proposal. This makes target switching local and
+                # zero-network-latency.
+                if recycle_due and payload and payload.get("digit") is not None:
+                    failed_digit = int(s.candidate_digit)
+                    planned_digit = int(payload.get("digit"))
+                    if planned_digit != failed_digit:
+                        s.candidate_digit = planned_digit
+                        self._score_all_digits(
+                            sid,
+                            exclude_digit=failed_digit,
+                        )
+                        s.phase = (
+                            f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+
+                s.current_stake = expected_stake
+                s.phase = "FAST_RECOVERING"
+                s.updated_at = datetime.utcnow()
+                db.commit()
 
                 valid_prefetch = bool(
                     payload
@@ -532,8 +527,24 @@ class MultiUserEngine:
                 )
 
                 if not valid_prefetch:
-                    # Only one fresh fallback proposal is allowed, and
-                    # DerivWS serializes/rate-limits it globally per socket.
+                    # Exceptional fallback only. The worker remains inside the
+                    # FAST recovery path and is not allowed to fall back to the
+                    # normal REQUESTING_PROPOSAL state.
+                    s.phase = "FAST_RECOVERY_PREFETCH_MISSED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                    if recycle_due:
+                        failed_digit = int(
+                            current_fast.get("target_digit", s.candidate_digit)
+                        )
+                        new_digit, _ = self._choose_scored_digit(
+                            sid,
+                            exclude_digit=failed_digit,
+                        )
+                        if new_digit is not None:
+                            s.candidate_digit = int(new_digit)
+
                     currency = await self._currency_for(db, s)
                     client = await self._client(user_id, account_id)
 
@@ -597,6 +608,26 @@ class MultiUserEngine:
                     symbol=s.symbol,
                     client=client,
                 )
+
+                # The fast strategy contract, not settlement state, owns an
+                # in-cycle trade. Deriv may clear open_contract_id before the
+                # exact strategy tick callback finishes. Do not let the normal
+                # worker race ahead and request another proposal.
+                fast_owner = self.fast_contracts.get(sid)
+                if (
+                    int(s.current_trade or 0) > 0
+                    and fast_owner
+                    and int(fast_owner.get("trade_no") or 0)
+                    == int(s.current_trade)
+                ):
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
 
                 # An open contract must never send the worker back into a
                 # foreground WAITING_SETTLEMENT state.
@@ -822,9 +853,58 @@ class MultiUserEngine:
         s.updated_at = datetime.utcnow()
         db.commit()
 
+        # PRE-ARM FIRST.
+        #
+        # Schedule the exact next-loss proposal before we dispatch any cached
+        # result tick. This closes the old race where the result callback could
+        # advance before the prefetch task had even been created.
+        if s.current_trade < s.max_trades:
+            existing = self.prefetch_tasks.get(s.id)
+
+            if not existing or existing.done():
+                recycle_on_loss = (
+                    int(s.current_trade) > 0
+                    and int(s.current_trade)
+                    % int(self.digit_scorer.recycle_after)
+                    == 0
+                )
+
+                planned_digit = int(s.candidate_digit)
+
+                if recycle_on_loss:
+                    failed_digit = int(s.candidate_digit)
+                    candidate, _snapshot = self._choose_scored_digit(
+                        s.id,
+                        exclude_digit=failed_digit,
+                    )
+                    if candidate is not None:
+                        planned_digit = int(candidate)
+
+                next_stake = round(
+                    float(s.current_stake)
+                    * float(s.multiplier),
+                    2,
+                )
+                next_trade_no = int(s.current_trade) + 1
+
+                task = asyncio.create_task(
+                    self._prefetch_next_recovery(
+                        sid=s.id,
+                        user_id=s.user_id,
+                        account_id=s.account_id,
+                        symbol=s.symbol,
+                        digit=planned_digit,
+                        next_stake=next_stake,
+                        next_trade_no=next_trade_no,
+                        owner_contract_id=contract_id,
+                        owner_trade_no=int(s.current_trade),
+                    )
+                )
+
+                self.prefetch_tasks[s.id] = task
+
         # A live tick can arrive while the BUY response is travelling back.
-        # If that happened, immediately feed the cached newer tick into the
-        # strategy instead of waiting for yet another tick.
+        # Only after the prefetch task exists do we dispatch a cached newer tick.
         cached_tick = self.latest_ticks.get(s.id)
 
         if cached_tick:
@@ -842,44 +922,6 @@ class MultiUserEngine:
                         data={"tick": dict(cached_tick)},
                     )
                 )
-
-        # Pre-arm exactly ONE proposal for the next recovery while this trade is
-        # active. The proposal request is outside the result-critical path.
-        if s.current_trade < s.max_trades:
-            existing = self.prefetch_tasks.get(s.id)
-
-            if not existing or existing.done():
-                task = asyncio.create_task(
-                    self._prefetch_next_recovery(
-                        sid=s.id,
-                        user_id=s.user_id,
-                        account_id=s.account_id,
-                        symbol=s.symbol,
-                        digit=int(
-                            (self._choose_scored_digit(
-                                s.id,
-                                exclude_digit=int(s.candidate_digit),
-                            )[0])
-                            if (
-                                int(s.current_trade) > 0
-                                and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                                and self._choose_scored_digit(
-                                    s.id,
-                                    exclude_digit=int(s.candidate_digit),
-                                )[0] is not None
-                            )
-                            else int(s.candidate_digit)
-                        ),
-                        next_stake=round(
-                            float(s.current_stake)
-                            * float(s.multiplier),
-                            2,
-                        ),
-                        next_trade_no=int(s.current_trade) + 1,
-                    )
-                )
-
-                self.prefetch_tasks[s.id] = task
 
         # Official settlement is background accounting/reconciliation only.
         asyncio.create_task(
@@ -902,6 +944,8 @@ class MultiUserEngine:
         digit,
         next_stake,
         next_trade_no,
+        owner_contract_id,
+        owner_trade_no,
     ):
         try:
             client = await self._client(
@@ -914,10 +958,17 @@ class MultiUserEngine:
             try:
                 s = db.get(TradingSession, sid)
 
+                fast_owner = self.fast_contracts.get(sid)
                 if (
                     not s
                     or not s.running
-                    or not s.open_contract_id
+                    or not fast_owner
+                    or str(fast_owner.get("contract_id"))
+                    != str(owner_contract_id)
+                    or int(fast_owner.get("trade_no") or 0)
+                    != int(owner_trade_no)
+                    or int(s.current_trade or 0)
+                    != int(owner_trade_no)
                 ):
                     return
 
@@ -943,15 +994,24 @@ class MultiUserEngine:
             try:
                 s = db.get(TradingSession, sid)
 
-                # Keep only a proposal that still belongs to the exact next
-                # trade of the currently running session.
+                # Keep the proposal while the same strategy-active trade
+                # still owns this session. Do NOT require open_contract_id:
+                # authoritative settlement may legitimately clear it before
+                # the local result path consumes this prefetch.
+                fast_owner = self.fast_contracts.get(sid)
                 if (
                     s
                     and s.running
-                    and s.open_contract_id
+                    and fast_owner
+                    and str(fast_owner.get("contract_id"))
+                    == str(owner_contract_id)
+                    and int(fast_owner.get("trade_no") or 0)
+                    == int(owner_trade_no)
                     and int(s.current_trade) + 1
                     == int(next_trade_no)
                 ):
+                    payload["owner_contract_id"] = str(owner_contract_id)
+                    payload["owner_trade_no"] = int(owner_trade_no)
                     self.prefetched_recovery[sid] = payload
                     s.phase = "RECOVERY_PREARMED"
                     s.updated_at = datetime.utcnow()
@@ -963,10 +1023,19 @@ class MultiUserEngine:
         except asyncio.CancelledError:
             raise
 
-        except Exception:
-            # Prefetch is an optimization. A later recovery may safely obtain
-            # one fresh proposal through the serialized proposal lane.
+        except Exception as exc:
+            # Prefetch failure is non-fatal, but keep it visible. Recovery stays
+            # in the fast pipeline and may make one serialized fallback request.
             self.prefetched_recovery.pop(sid, None)
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if s and s.running:
+                    s.last_error = f"PREFETCH: {exc}"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
 
         finally:
             current = self.prefetch_tasks.get(sid)

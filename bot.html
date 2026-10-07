@@ -11589,6 +11589,33 @@ window.executionLock = true;
                     resultClass = 'text-xs font-bold text-emerald-300';
                     break;
 
+                case 'RECOVERY_PREARMED':
+                    result = 'NEXT TRADE PREARMED ⚡';
+                    status = hasDigit
+                        ? `Trade ${tradeNo}/${maxTrades || '—'} active · target ${digit}`
+                        : `Trade ${tradeNo}/${maxTrades || '—'} active`;
+                    action = 'Next-loss proposal is already prepared · no proposal wait on recovery';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'FAST_RECOVERING':
+                    result = 'FAST RECOVERY ⚡';
+                    status = hasDigit
+                        ? `Switch/continue target ${digit} · next stake $${stake.toFixed(2)}`
+                        : `Preparing immediate recovery trade ${tradeNo + 1}`;
+                    action = 'Using pre-armed proposal → BUY';
+                    resultClass = 'text-xs font-bold text-orange-300';
+                    break;
+
+                case 'FAST_RECOVERY_PREFETCH_MISSED':
+                    result = 'PREFETCH FALLBACK';
+                    status = hasDigit
+                        ? `Target ${digit} · stake $${stake.toFixed(2)}`
+                        : 'Recovery proposal was not ready';
+                    action = 'Exceptional fallback proposal request · fast pipeline retained';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
                 case 'REQUESTING_PROPOSAL':
                     result = 'PREPARING TRADE';
                     status = hasDigit
