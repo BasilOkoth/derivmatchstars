@@ -282,6 +282,30 @@ class MultiUserEngine:
         digit = snapshot.get("selected_digit")
         return (int(digit) if digit is not None else None), snapshot
 
+    def _trade_score_evidence(self, sid: int, digit: int):
+        """Compact causal score snapshot captured before BUY."""
+        snapshot = self.digit_score_snapshots.get(sid)
+        if not snapshot:
+            snapshot = self._score_all_digits(sid)
+
+        row = None
+        for item in snapshot.get("ranking") or []:
+            if int(item.get("digit", -1)) == int(digit):
+                row = dict(item)
+                break
+
+        return {
+            "score_version": snapshot.get("version"),
+            "history_count": snapshot.get("history_count"),
+            "selected_digit": snapshot.get("selected_digit"),
+            "top_margin": snapshot.get("top_margin"),
+            "excluded_digit": snapshot.get("excluded_digit"),
+            "dominance": snapshot.get("dominance"),
+            "break_digit_target": snapshot.get("break_digit_target"),
+            "alternating_pair_targets": snapshot.get("alternating_pair_targets"),
+            "candidate": row,
+        }
+
     async def _ensure_tick_subscription(
         self,
         *,
@@ -734,6 +758,11 @@ class MultiUserEngine:
 
         contract_id = str(buy["contract_id"])
 
+        score_evidence = self._trade_score_evidence(
+            s.id,
+            int(payload["digit"]),
+        )
+
         db.add(
             TradeLog(
                 user_id=s.user_id,
@@ -751,7 +780,10 @@ class MultiUserEngine:
                     or payload["ask_price"]
                 ),
                 payout=payload["payout"],
-                raw_json=json.dumps(result),
+                raw_json=json.dumps({
+                    "deriv_buy": result,
+                    "dms_score_evidence": score_evidence,
+                }),
             )
         )
 
@@ -775,6 +807,7 @@ class MultiUserEngine:
             "symbol": str(s.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
+            "score_evidence": score_evidence,
             "decided": False,
         }
 
@@ -1074,7 +1107,20 @@ class MultiUserEngine:
                     log.status = "SETTLED"
                     log.profit = profit
                     log.settled_at = datetime.utcnow()
-                    log.raw_json = json.dumps(data)
+
+                    try:
+                        existing_raw = json.loads(log.raw_json or "{}")
+                        if not isinstance(existing_raw, dict):
+                            existing_raw = {"previous_raw": existing_raw}
+                    except Exception:
+                        existing_raw = {"previous_raw_text": log.raw_json}
+
+                    existing_raw["deriv_settlement"] = data
+                    existing_raw["settlement_profit"] = float(profit)
+                    existing_raw["settlement_result"] = (
+                        "WIN" if profit > 0 else "LOSS"
+                    )
+                    log.raw_json = json.dumps(existing_raw)
 
                 s.pnl = float(s.pnl or 0) + profit
 

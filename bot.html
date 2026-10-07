@@ -11760,8 +11760,27 @@ window.executionLock = true;
                 </div>
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+                <div id="digit-score-v2-meta" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px]">
+                    <div class="rounded bg-slate-900/70 p-1.5">Strength: <b id="score-strength">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Agreement: <b id="score-agreement">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Velocity: <b id="score-velocity">—</b></div>
+                    <div class="rounded bg-slate-900/70 p-1.5">Trigger: <b id="score-trigger">—</b></div>
+                </div>
+
+                <div class="mt-2">
+                    <button
+                        id="triggerFusionExportBtn"
+                        type="button"
+                        onclick="downloadTriggerFusionData()"
+                        class="w-full rounded-lg border border-cyan-500/40 bg-cyan-700/30 hover:bg-cyan-700/50 px-3 py-2 text-[10px] font-black tracking-wide text-cyan-100 transition"
+                        title="Export persisted Trigger Fusion trade evidence from PostgreSQL"
+                    >
+                        📥 EXPORT TRIGGER FUSION DATA
+                    </button>
+                </div>
+
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    Server ranks all digits from canonical tick history. Scores are relative ranking signals, not guaranteed probabilities.
+                    DigitScore V2 Trigger Fusion · relative ranking only · no hard entry threshold.
                 </div>
             `;
             host.appendChild(el);
@@ -11804,10 +11823,39 @@ window.executionLock = true;
             const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
             const selected = Number(score.selected_digit);
 
+            const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
+
             if (stateEl) {
                 const margin = Number(score.top_margin);
                 const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent = `Selected ${selected}${marginText}`;
+                const strength = selectedRow?.strength || '—';
+                stateEl.textContent = `Selected ${selected} · ${strength}${marginText}`;
+            }
+
+            const strengthEl = document.getElementById('score-strength');
+            const agreementEl = document.getElementById('score-agreement');
+            const velocityEl = document.getElementById('score-velocity');
+            const triggerEl = document.getElementById('score-trigger');
+
+            if (strengthEl) strengthEl.textContent = selectedRow?.strength || '—';
+            if (agreementEl) {
+                agreementEl.textContent = selectedRow
+                    ? `${Number(selectedRow.signal_agreement || 0)}/${Number(selectedRow.signal_total || 7)}`
+                    : '—';
+            }
+            if (velocityEl) {
+                const v = Number(selectedRow?.trend_velocity);
+                velocityEl.textContent = Number.isFinite(v)
+                    ? `${v >= 0 ? '+' : ''}${v.toFixed(3)}`
+                    : '—';
+            }
+            if (triggerEl) {
+                const tags = [];
+                if (selectedRow?.break_digit_match) tags.push('BREAK');
+                if (selectedRow?.alternating_pair_match) tags.push('PAIR');
+                if (selectedRow?.dominance_match) tags.push('DOM');
+                if (Number(selectedRow?.trend_velocity || 0) > 0.005) tags.push('VEL');
+                triggerEl.textContent = tags.length ? tags.join(' + ') : 'BASE';
             }
 
             if (rankingEl) {
@@ -11825,7 +11873,8 @@ window.executionLock = true;
                         <div class="rounded-lg border ${cls} p-1.5 text-center">
                             <div class="text-base font-black">${digit}</div>
                             <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
-                            <div class="text-[8px] opacity-70">${idx + 1}</div>
+                            <div class="text-[8px] opacity-80">${Number(row.signal_agreement || 0)}/${Number(row.signal_total || 7)} · ${row.strength || '—'}</div>
+                            <div class="text-[8px] opacity-60">#${idx + 1}</div>
                         </div>
                     `;
                 }).join('');
@@ -12166,6 +12215,204 @@ window.executionLock = true;
             return data;
         }
 
+
+
+        function triggerFusionCsvEscape(value) {
+            if (value === null || value === undefined) return '';
+            let text = typeof value === 'object'
+                ? JSON.stringify(value)
+                : String(value);
+
+            if (/[",\n\r]/.test(text)) {
+                text = `"${text.replace(/"/g, '""')}"`;
+            }
+            return text;
+        }
+
+        function triggerFusionToCsv(records) {
+            const columns = [
+                'trade_log_id',
+                'session_id',
+                'trade_no',
+                'account_mode',
+                'account_id',
+                'symbol',
+                'target_digit',
+                'stake',
+                'contract_id',
+                'status',
+                'buy_price',
+                'quoted_payout',
+                'settlement_profit',
+                'created_at',
+                'settled_at',
+                'score_version',
+                'history_count',
+                'selected_digit',
+                'top_margin',
+                'excluded_digit',
+                'final_score',
+                'base_score',
+                'trigger_bonus',
+                'signal_agreement',
+                'signal_total',
+                'strength',
+                'gap',
+                'freq5',
+                'freq10',
+                'freq25',
+                'freq50',
+                'freq100',
+                'transition1',
+                'transition2',
+                'entropy10',
+                'entropy25',
+                'short_long_divergence',
+                'cluster_pressure',
+                'safe_tick_like',
+                'trend_velocity',
+                'trend_blocks',
+                'trend_bonus',
+                'dominance_match',
+                'dominance_bonus',
+                'dominance_window',
+                'dominance_margin',
+                'break_digit_match',
+                'break_digit_bonus',
+                'alternating_pair_match',
+                'alternating_pair_bonus',
+                'digit9_setup',
+                'signal_transition1',
+                'signal_transition2',
+                'signal_velocity',
+                'signal_recent_frequency',
+                'signal_dominance',
+                'signal_break_digit',
+                'signal_alternating_pair',
+                'dominant_digit',
+                'dominant_frequency',
+                'second_frequency',
+                'dominance_snapshot_margin',
+                'least_frequency_digit',
+                'least_frequency'
+            ];
+
+            const lines = [columns.join(',')];
+
+            for (const row of records || []) {
+                lines.push(
+                    columns.map(col => triggerFusionCsvEscape(row?.[col])).join(',')
+                );
+            }
+
+            return lines.join('\n');
+        }
+
+        async function downloadTriggerFusionData() {
+            const btn = document.getElementById('triggerFusionExportBtn');
+
+            try {
+                const s = window.SERVER_EXECUTION;
+                const sid = Number(s?.sessionId || 0);
+
+                if (!sid) {
+                    throw new Error(
+                        'No server session exists yet. Start or configure the server session first.'
+                    );
+                }
+
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = '⏳ PREPARING EXPORT...';
+                }
+
+                const data = await serverExecRequest(
+                    `/sessions/${sid}/trigger-fusion/export`,
+                    { method: 'GET' }
+                );
+
+                const records = Array.isArray(data?.records)
+                    ? data.records
+                    : [];
+
+                const now = new Date();
+                const stamp = now.toISOString().replace(/[:.]/g, '-');
+                const symbol = String(
+                    data?.session?.symbol ||
+                    s?.state?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    'R_10'
+                ).replace(/[^A-Za-z0-9_-]/g, '_');
+
+                // Primary export: flat CSV for Excel / R / Python.
+                const csv = triggerFusionToCsv(records);
+                const csvBlob = new Blob(
+                    [csv],
+                    { type: 'text/csv;charset=utf-8' }
+                );
+                const csvUrl = URL.createObjectURL(csvBlob);
+                const csvLink = document.createElement('a');
+                csvLink.href = csvUrl;
+                csvLink.download =
+                    `digitmatchstar-trigger-fusion-v2-${symbol}-${stamp}.csv`;
+                document.body.appendChild(csvLink);
+                csvLink.click();
+                csvLink.remove();
+                setTimeout(() => URL.revokeObjectURL(csvUrl), 1500);
+
+                // Also export the complete JSON evidence for reproducibility.
+                const jsonBlob = new Blob(
+                    [JSON.stringify(data, null, 2)],
+                    { type: 'application/json;charset=utf-8' }
+                );
+                const jsonUrl = URL.createObjectURL(jsonBlob);
+                const jsonLink = document.createElement('a');
+                jsonLink.href = jsonUrl;
+                jsonLink.download =
+                    `digitmatchstar-trigger-fusion-v2-${symbol}-${stamp}.json`;
+                document.body.appendChild(jsonLink);
+
+                setTimeout(() => {
+                    jsonLink.click();
+                    jsonLink.remove();
+                    URL.revokeObjectURL(jsonUrl);
+                }, 250);
+
+                const summary = data?.summary || {};
+
+                try {
+                    log(
+                        `📥 TRIGGER FUSION EXPORT | ${Number(summary.records_count || records.length)} trades · ` +
+                        `${Number(summary.settled_count || 0)} settled · ` +
+                        `${Number(summary.wins || 0)} wins · ` +
+                        `${Number(summary.losses || 0)} losses · ` +
+                        `P/L ${Number(summary.settlement_net_pnl || 0) >= 0 ? '+' : ''}$${Number(summary.settlement_net_pnl || 0).toFixed(2)}`,
+                        'SYSTEM'
+                    );
+                } catch (_) {}
+
+                return data;
+
+            } catch (error) {
+                console.error('Trigger Fusion export failed:', error);
+                try {
+                    log(
+                        `❌ TRIGGER FUSION EXPORT FAILED | ${error.message}`,
+                        'ERROR'
+                    );
+                } catch (_) {}
+                alert(`Trigger Fusion export failed: ${error.message}`);
+                throw error;
+
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '📥 EXPORT TRIGGER FUSION DATA';
+                }
+            }
+        }
+
+        window.downloadTriggerFusionData = downloadTriggerFusionData;
 
 
         async function downloadTargetAttractionResults() {

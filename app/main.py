@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -7,7 +8,7 @@ from pydantic import BaseModel
 
 from .config import settings
 from .db import SessionLocal
-from .models import TradingSession, DerivAccount
+from .models import TradingSession, DerivAccount, TradeLog
 from .security import current_user_id
 from .oauth import router as oauth_router
 from .engine import engine
@@ -15,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.0.0-digit-score-recycle3",
+    version="3.1.0-trigger-fusion-export",
 )
 
 
@@ -95,7 +96,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.0.0-digit-score-recycle3",
+        "version": "3.1.0-trigger-fusion-export",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -210,6 +211,168 @@ def sessions(user_id: str = Depends(current_user_id)):
             )
 
         return result
+
+    finally:
+        db.close()
+
+
+
+@app.get("/sessions/{sid}/trigger-fusion/export")
+def export_trigger_fusion(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    """
+    Export persisted DigitScore V2 Trigger Fusion evidence from TradeLog.
+
+    Data comes from PostgreSQL/SQLAlchemy, not browser memory.
+    """
+    db = SessionLocal()
+
+    try:
+        session = owns_session(db, user_id, sid)
+
+        rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.user_id == user_id,
+                TradeLog.trading_session_id == sid,
+            )
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        records = []
+
+        for row in rows:
+            try:
+                raw = json.loads(row.raw_json or "{}")
+                if not isinstance(raw, dict):
+                    raw = {"raw": raw}
+            except Exception:
+                raw = {"raw_text": row.raw_json}
+
+            evidence = raw.get("dms_score_evidence") or {}
+            candidate = evidence.get("candidate") or {}
+            dominance = evidence.get("dominance") or {}
+            signals = candidate.get("signals") or {}
+
+            record = {
+                "trade_log_id": row.id,
+                "session_id": row.trading_session_id,
+                "trade_no": row.trade_no,
+                "account_mode": row.account_mode,
+                "account_id": row.account_id,
+                "symbol": row.symbol,
+                "target_digit": row.digit,
+                "stake": row.stake,
+                "contract_id": row.contract_id,
+                "status": row.status,
+                "buy_price": row.buy_price,
+                "quoted_payout": row.payout,
+                "settlement_profit": row.profit,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "settled_at": row.settled_at.isoformat() if row.settled_at else None,
+
+                # Ranking snapshot
+                "score_version": evidence.get("score_version"),
+                "history_count": evidence.get("history_count"),
+                "selected_digit": evidence.get("selected_digit"),
+                "top_margin": evidence.get("top_margin"),
+                "excluded_digit": evidence.get("excluded_digit"),
+
+                # Candidate score
+                "final_score": candidate.get("score"),
+                "base_score": candidate.get("base_score"),
+                "trigger_bonus": candidate.get("trigger_bonus"),
+                "signal_agreement": candidate.get("signal_agreement"),
+                "signal_total": candidate.get("signal_total"),
+                "strength": candidate.get("strength"),
+
+                # Core features
+                "gap": candidate.get("gap"),
+                "freq5": candidate.get("freq5"),
+                "freq10": candidate.get("freq10"),
+                "freq25": candidate.get("freq25"),
+                "freq50": candidate.get("freq50"),
+                "freq100": candidate.get("freq100"),
+                "transition1": candidate.get("transition1"),
+                "transition2": candidate.get("transition2"),
+                "entropy10": candidate.get("entropy10"),
+                "entropy25": candidate.get("entropy25"),
+                "short_long_divergence": candidate.get("short_long_divergence"),
+                "cluster_pressure": candidate.get("cluster_pressure"),
+                "safe_tick_like": candidate.get("safe_tick_like"),
+
+                # Trigger Fusion features
+                "trend_velocity": candidate.get("trend_velocity"),
+                "trend_blocks": candidate.get("trend_blocks"),
+                "trend_bonus": candidate.get("trend_bonus"),
+                "dominance_match": candidate.get("dominance_match"),
+                "dominance_bonus": candidate.get("dominance_bonus"),
+                "dominance_window": candidate.get("dominance_window"),
+                "dominance_margin": candidate.get("dominance_margin"),
+                "break_digit_match": candidate.get("break_digit_match"),
+                "break_digit_bonus": candidate.get("break_digit_bonus"),
+                "alternating_pair_match": candidate.get("alternating_pair_match"),
+                "alternating_pair_bonus": candidate.get("alternating_pair_bonus"),
+                "digit9_setup": candidate.get("digit9_setup"),
+
+                # Individual agreement signals
+                "signal_transition1": signals.get("transition1_support"),
+                "signal_transition2": signals.get("transition2_support"),
+                "signal_velocity": signals.get("trend_velocity_positive"),
+                "signal_recent_frequency": signals.get("recent_frequency_support"),
+                "signal_dominance": signals.get("dominant_digit_support"),
+                "signal_break_digit": signals.get("break_digit_support"),
+                "signal_alternating_pair": signals.get("alternating_pair_support"),
+
+                # Dominance snapshot
+                "dominant_digit": dominance.get("dominant_digit"),
+                "dominant_frequency": dominance.get("dominant_frequency"),
+                "second_frequency": dominance.get("second_frequency"),
+                "dominance_snapshot_margin": dominance.get("dominance_margin"),
+                "least_frequency_digit": dominance.get("least_frequency_digit"),
+                "least_frequency": dominance.get("least_frequency"),
+
+                # Raw evidence retained for full reproducibility
+                "evidence": evidence,
+            }
+
+            records.append(record)
+
+        settled = [r for r in records if r.get("status") == "SETTLED"]
+        wins = [r for r in settled if float(r.get("settlement_profit") or 0) > 0]
+        losses = [r for r in settled if float(r.get("settlement_profit") or 0) <= 0]
+
+        total_profit = sum(
+            float(r.get("settlement_profit") or 0)
+            for r in settled
+        )
+
+        return {
+            "schema": "DIGITMATCHSTAR_TRIGGER_FUSION_V2_EXPORT",
+            "score_version": getattr(
+                getattr(engine, "digit_scorer", None),
+                "VERSION",
+                "DIGIT_SCORE_V2_TRIGGER_FUSION",
+            ),
+            "exported_at": datetime.utcnow().isoformat(),
+            "session": {
+                "id": session.id,
+                "account_id": session.account_id,
+                "account_mode": session.account_mode,
+                "symbol": session.symbol,
+            },
+            "summary": {
+                "records_count": len(records),
+                "settled_count": len(settled),
+                "wins": len(wins),
+                "losses": len(losses),
+                "settlement_net_pnl": total_profit,
+            },
+            "records": records,
+        }
 
     finally:
         db.close()
