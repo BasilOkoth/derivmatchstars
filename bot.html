@@ -732,7 +732,7 @@
 <button class="server-exec-btn bg-slate-700 hover:bg-slate-600" onclick="configureServerExecutionUrl()" type="button">Backend URL</button>
 <button class="server-exec-btn bg-emerald-700 hover:bg-emerald-600" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()" type="button">Continuous Research: ON</button>
 <button class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()" type="button">
-                            View REAL Preview
+                            Confirm REAL Trade
                         </button>
 </div>
 <div class="text-[11px] text-gray-400 mb-3">
@@ -740,7 +740,7 @@
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
-                        REAL mode is preview-only: the server may prepare proposal details for review, but no real-money purchase is submitted.
+                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -869,7 +869,7 @@
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
-                            Choose any positive Max Trades value. In SCORE AUTO, the next target follows the latest highest digit score.
+                            Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
                         </p>
 </div>
 <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
@@ -8292,7 +8292,7 @@ function rotateHybridDigit(reason = '') {
             } else if (mode === 'ai') {
                 document.getElementById('mode_ai').classList.add('bg-green-600');
                 document.getElementById('mode_instant').classList.add('bg-purple-600');
-                document.getElementById('mode_description').textContent = '🧠 SCORE AUTO: Keep the next target aligned with the latest highest digit score';
+                document.getElementById('mode_description').textContent = '🧠 SCORE AUTO: Let AI select and lock the current prediction when started';
                 log('🔄 Switched to SCORE AUTO mode', 'SYSTEM');
 
                 // In AI mode we PREVIEW digits while stopped, and LOCK only when the bot is running.
@@ -11589,24 +11589,6 @@ window.executionLock = true;
                     resultClass = 'text-xs font-bold text-emerald-300';
                     break;
 
-                case 'REAL_PREVIEW_PREPARING':
-                    result = 'REAL PREVIEW';
-                    status = hasDigit
-                        ? `Preparing read-only DIGITMATCH ${digit} proposal · Stake $${stake.toFixed(2)}`
-                        : 'Preparing read-only REAL proposal';
-                    action = 'No purchase will be submitted.';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
-                case 'REAL_PREVIEW_READY':
-                    result = 'REAL PREVIEW READY 🔎';
-                    status = hasDigit
-                        ? `DIGITMATCH ${digit} · Stake $${stake.toFixed(2)} · preview only`
-                        : 'REAL proposal details prepared for review';
-                    action = 'Execution disabled · no real-money purchase was submitted.';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
                 case 'REQUESTING_PROPOSAL':
                     result = 'PREPARING TRADE';
                     status = hasDigit
@@ -11753,8 +11735,8 @@ window.executionLock = true;
                         <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
                     </div>
                     <div class="text-right">
-                        <div class="text-[10px] uppercase text-amber-400 font-bold">Target rule</div>
-                        <div class="text-sm font-black text-white">Live top score</div>
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
+                        <div class="text-sm font-black text-white">3 losses</div>
                     </div>
                 </div>
 
@@ -11764,8 +11746,8 @@ window.executionLock = true;
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Mode</div>
-                        <div id="recycle-attempt" class="text-sm font-black text-white">LIVE</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
                         <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
@@ -11791,6 +11773,7 @@ window.executionLock = true;
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
             const maxTrades = Number(st?.max_trades || 0);
+            const attempt = currentTrade > 0 ? (((currentTrade - 1) % 3) + 1) : 0;
 
             const targetEl = document.getElementById('recycle-current-target');
             const attemptEl = document.getElementById('recycle-attempt');
@@ -11804,7 +11787,7 @@ window.executionLock = true;
                     ? String(st.candidate_digit)
                     : '—';
             }
-            if (attemptEl) attemptEl.textContent = 'LIVE';
+            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
             if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
             if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
 
@@ -11824,7 +11807,7 @@ window.executionLock = true;
             if (stateEl) {
                 const margin = Number(score.top_margin);
                 const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent = `Live top ${selected}${marginText}`;
+                stateEl.textContent = `Selected ${selected}${marginText}`;
             }
 
             if (rankingEl) {
@@ -13006,14 +12989,17 @@ window.executionLock = true;
         }
 
         async function confirmServerRealTrade() {
-            // Compatibility shim for older markup/callers.
-            // REAL mode is intentionally preview-only and never submits a buy.
             const s = window.SERVER_EXECUTION;
             if (!s.enabled) return;
-            await pollServerExecutionState();
-            renderServerExecutionState();
-            alert('REAL mode is preview-only in this build. No real-money purchase was submitted.');
-            log('🔎 REAL preview only · no purchase submitted.', 'SYSTEM');
+            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
+            try {
+                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
+                await pollServerExecutionState();
+                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
+            } catch (e) {
+                alert(e.message);
+                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
+            }
         }
 
         // In SERVER mode, the browser must never submit proposals/buys.
@@ -13022,16 +13008,6 @@ window.executionLock = true;
         function executeTrade(tick) {
             if (window.SERVER_EXECUTION?.enabled) {
                 log('☁ Browser trade submission suppressed — server owns execution.', 'SYSTEM');
-                return;
-            }
-            if (accountMode() === 'REAL') {
-                log('🔎 REAL mode is preview-only · browser proposal/buy flow blocked.', 'SYSTEM');
-                updateTradeStatus(
-                    'REAL PREVIEW ONLY',
-                    'No real-money purchase was submitted',
-                    'Use server mode to prepare read-only proposal details for review.',
-                    'normal'
-                );
                 return;
             }
             const contractType = document.getElementById('contractType').value;
@@ -13937,12 +13913,6 @@ window.isBotRunning = true;
         }
 
         function executeBuy(proposal_id, ask_price, pending) {
-            if (accountMode() === 'REAL') {
-                log('🛑 REAL-money buy blocked · preview-only build.', 'ERROR');
-                rollbackUnsentTrade(pending?.stake || window.currentStake);
-                return;
-            }
-
             const numericAskPrice = Number(ask_price);
             if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
                 log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
