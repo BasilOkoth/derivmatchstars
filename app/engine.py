@@ -781,10 +781,10 @@ class MultiUserEngine:
 
                 # Keep unattended execution DEMO-only.
                 if str(s.account_mode).upper() != "DEMO":
-                    s.running = False
-                    s.phase = "REAL_AUTOMATION_DISABLED"
+                    s.running = True
+                    s.phase = "REAL_AUTOMATION_ABLED"
                     s.last_error = (
-                        "REAL account connection is supported, but automated REAL-money execution is disabled in this build."
+                        "REAL account connection is supported."
                     )
                     s.updated_at = datetime.utcnow()
                     db.commit()
