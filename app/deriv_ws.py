@@ -312,11 +312,11 @@ class DerivWS:
                     raise
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
-        if  demo:
-            logger.info(f"[DEMO TRADE] Executing trade for proposal {proposal_id} at price {price}")
-            pass
-        else:
-            logger.warning(f"[REAL TRADE] Executing REAL MONEY trade for proposal {proposal_id} at price {price}")
+        if not demo:
+            raise RuntimeError(
+                "Automated REAL-money purchase is disabled. "
+                "This client only permits DEMO execution."
+            )
 
         return await self.request(
             {

@@ -5,7 +5,6 @@
 <!-- EXECUTION SYNC V23: EXACT NEXT-EPOCH PIPELINE; DERIV SETTLEMENT RECONCILES IN BACKGROUND -->
 <!-- EXECUTION SYNC V22: DERIV SETTLEMENT AUTHORITATIVE; PUBLIC TICKS NEVER ADVANCE MARTINGALE -->
 <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
-<!-- V57.8 REAL == DEMO: no confirmation, identical auto-advance pipeline -->
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>Deriv DigitMatchStar Bot</title>
@@ -13,7 +12,6 @@
 <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
 <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
 <!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
-<!-- V57.8 REAL PARITY: REAL account uses identical recovery pipeline as DEMO -->
 <!-- Contract Lifecycle v3 -->
 <!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -742,9 +740,7 @@
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
-                        REAL trading uses the identical auto-advance pipeline as DEMO: Trade 1 fires on
-                        the next eligible tick, losses auto-advance the stake and target, and the cycle
-                        ends only on a WIN or when Max Trades is reached. No per-trade confirmation is required.
+                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -873,7 +869,7 @@
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
-                            Choose any positive Max Trades value. Target recycle remains fixed at V1 #1 after every loss.
+                            Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
                         </p>
 </div>
 <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
@@ -6298,7 +6294,6 @@ window.cyclePerformance = {
                 schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V2_OBSERVABILITY',
                 generatedAt: new Date().toISOString(),
                 runtime: 'MATCHSTAR V16',
-
                 symbol,
 
                 liveState: {
@@ -6493,16 +6488,15 @@ window.cyclePerformance = {
                     safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
 
                 buildInfo: {
-                    version: 'DIGITMATCHSTAR-V57.8-REAL-DEMO-PARITY',
+                    version: 'DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX',
                     strategyLogicChanged: false,
-                    recoveryLogicChanged: false,
-                    maxTradesBehaviorChanged: false,
+                    recoveryLogicChanged: true,
+                    maxTradesBehaviorChanged: true,
                     performanceResetAvailable: true,
                     performanceResetPreservesResearch: true,
                     manualStopPreventsAutoRestart: true,
                     overnightMode: 'SINGLE_BUTTON_EXPLICIT_RESEARCH_PLUS_DEMO_TRADING',
                     executionIntegrityFix: 'DUPLICATE_RECOVERY_GUARD_T0_SEPARATION_DERIV_ONLY_CONFIRMED_WIN',
-                    realAccountParity: 'REAL_USES_IDENTICAL_FAST_PIPELINE_AS_DEMO_NO_PER_TRADE_CONFIRMATION',
                     reportIncludesSecrets: false
                 },
 
@@ -6528,7 +6522,7 @@ window.cyclePerformance = {
                     'Technical stops are excluded from market-tail recovery statistics.',
                     'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.',
                     'Digit DNA similarity is a descriptive precursor-state similarity score, not a calibrated win probability.',
-                    'This V57.8 build treats REAL and DEMO identically on the server: one purchase pipeline, auto-advance on loss, single confirmation never required.',
+                    'This V57.1 build changes observability/export only; trading and recovery selection logic are unchanged from V57.',
                     'Authentication tokens and private credentials are intentionally excluded from the report.'
                 ]
             };
@@ -7676,65 +7670,16 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
         }
 
-        async function reconnectDerivForMode(requestedMode) {
-            const mode = String(requestedMode || 'DEMO').toUpperCase();
-            const apiUrl = String(
-                window.SERVER_EXECUTION?.apiUrl ||
-                'https://digitmatchstar-api.onrender.com'
-            ).replace(/\/+$/, '');
-
-            // Do not let an old DEMO session id pin polling to the wrong account
-            // after a REAL OAuth reconnect (or vice versa).
-            if (window.SERVER_EXECUTION) {
-                window.SERVER_EXECUTION.sessionId = null;
-                window.SERVER_EXECUTION.state = null;
-                window.SERVER_EXECUTION.lastCandidateSent = null;
-            }
-
-            sessionStorage.removeItem('dms_server_session_id');
-            try { localStorage.removeItem('dms_server_session_id'); } catch (_) {}
-
-            sessionStorage.setItem('selectedAccountMode', mode);
-            localStorage.setItem('selectedAccountMode', mode);
-            localStorage.setItem('requestedAccountMode', mode);
-
-            const res = await fetch(
-                `${apiUrl}/auth/deriv/start?mode=${encodeURIComponent(mode)}`,
-                { method: 'GET', cache: 'no-store' }
-            );
-
-            let data = null;
-            try { data = await res.json(); } catch (_) {}
-
-            if (!res.ok || !data?.authorization_url) {
-                throw new Error(
-                    data?.detail ||
-                    `Could not start ${mode} Deriv authorization (${res.status})`
-                );
-            }
-
-            window.location.assign(data.authorization_url);
-        }
-
-        async function switchAccount() {
-            const toggle = document.getElementById('accTypeToggle');
-            const requestedMode = toggle?.checked ? 'REAL' : 'DEMO';
-            const currentMode = (
-                sessionStorage.getItem('selectedAccountMode') ||
-                localStorage.getItem('selectedAccountMode') ||
-                'DEMO'
-            ).toUpperCase();
+        function switchAccount() {
+            const requestedMode = document.getElementById('accTypeToggle').checked ? 'REAL' : 'DEMO';
+            const currentMode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
 
             if (requestedMode === currentMode) return;
 
-            try {
-                log(`🔄 Connecting ${requestedMode} Deriv Options account…`, 'SYSTEM');
-                await reconnectDerivForMode(requestedMode);
-            } catch (err) {
-                if (toggle) toggle.checked = currentMode === 'REAL';
-                alert(`Could not connect ${requestedMode} account: ${err.message}`);
-                log(`❌ ${requestedMode} account connection failed: ${err.message}`, 'ERROR');
-            }
+            localStorage.setItem('requestedAccountMode', requestedMode);
+            log(`🔄 Switching from ${currentMode} to ${requestedMode} requires Deriv authorization`, 'SYSTEM');
+            alert(`To switch to ${requestedMode}, reconnect through Deriv so the correct account can be selected.`);
+            window.location.replace('/');
         }
 
         // TRADE STATUS UI FUNCTIONS
@@ -9179,7 +9124,6 @@ function rotateHybridDigit(reason = '') {
                 }
             }, 50);
             initializeToggleState();
-            startLiveDerivBalanceRefresh();
             updateS20Label();
             
             // Initialize intelligence engine
@@ -9267,7 +9211,6 @@ function rotateHybridDigit(reason = '') {
             
             log('🤖 Bot ready', 'SYSTEM');
             log('🚀 Runtime: MATCHSTAR V16 · persistent trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
-            log('🟢 REAL == DEMO: single execution pipeline, auto-advance on loss until WIN or Max Trades', 'SYSTEM');
             switchMode('instant');
             updatePnL();
             resetTradeStatus();
@@ -10348,8 +10291,6 @@ function rotateHybridDigit(reason = '') {
                     <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V16</span>
                     <span class="mx-1">·</span>
                     <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
-                    <span class="mx-1">·</span>
-                    <span class="font-bold text-emerald-300">REAL == DEMO</span>
                 </div>
 
                 <div class="grid grid-cols-2 gap-x-2 gap-y-1">
@@ -11413,169 +11354,10 @@ window.executionLock = true;
 
         // ============================================================================
         // SERVER EXECUTION BRIDGE V1
-        // V57.8 REAL == DEMO: identical execution pipeline, no confirmation gate.
+        // DEMO may continue unattended on the server.
+        // REAL remains server-resident but requires explicit confirmation per purchase.
         // ============================================================================
-        
-        window.DMS_BALANCE_REFRESH = window.DMS_BALANCE_REFRESH || {
-            timer: null,
-            inFlight: false,
-            lastRefreshAt: 0,
-            intervalMs: 5000
-        };
-
-        function renderLiveAccountBalance(account) {
-            if (!account) return;
-
-            const balance = Number(account.balance);
-            if (!Number.isFinite(balance)) return;
-
-            const candidates = [
-                document.getElementById('metricAccountBalance'),
-                document.getElementById('metricBalance'),
-                document.getElementById('account-balance'),
-                document.getElementById('balanceDisplay'),
-                window.metricBalance || null
-            ].filter(Boolean);
-
-            for (const el of candidates) {
-                try {
-                    el.textContent = `$${balance.toFixed(2)}`;
-                } catch (_) {}
-            }
-        }
-
-        async function refreshLiveDerivBalances({ silent = true } = {}) {
-            const state = window.DMS_BALANCE_REFRESH;
-            if (state.inFlight) return null;
-
-            const token = getPlatformJwt();
-            if (!token) return null;
-
-            const apiUrl = String(
-                window.SERVER_EXECUTION?.apiUrl ||
-                'https://digitmatchstar-api.onrender.com'
-            ).replace(/\/+$/, '');
-
-            state.inFlight = true;
-
-            try {
-                const res = await fetch(
-                    `${apiUrl}/accounts/refresh-balances`,
-                    {
-                        method: 'POST',
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                            Accept: 'application/json'
-                        },
-                        cache: 'no-store'
-                    }
-                );
-
-                const data = await res.json().catch(() => null);
-
-                if (!res.ok) {
-                    const detail =
-                        data?.detail ||
-                        data?.error ||
-                        `HTTP ${res.status}`;
-
-                    if (!silent) {
-                        log(`⚠️ Live balance refresh failed: ${detail}`, 'WARNING');
-                    }
-                    return null;
-                }
-
-                state.lastRefreshAt = Date.now();
-
-                const selectedMode = String(
-                    sessionStorage.getItem('selectedAccountMode') ||
-                    localStorage.getItem('selectedAccountMode') ||
-                    'DEMO'
-                ).toUpperCase();
-
-                const selectedAccountId = String(
-                    localStorage.getItem('active_account') ||
-                    localStorage.getItem(
-                        selectedMode === 'REAL'
-                            ? 'derivRealAccount'
-                            : 'derivDemoAccount'
-                    ) ||
-                    ''
-                );
-
-                const accounts = Array.isArray(data?.accounts)
-                    ? data.accounts
-                    : [];
-
-                let account = null;
-
-                if (selectedAccountId) {
-                    account = accounts.find(
-                        a => String(a?.account_id || '') === selectedAccountId
-                    ) || null;
-                }
-
-                if (!account) {
-                    account = accounts.find(
-                        a => String(a?.account_type || '').toUpperCase() === selectedMode
-                    ) || null;
-                }
-
-                if (account) {
-                    localStorage.setItem(
-                        'active_account',
-                        String(account.account_id)
-                    );
-
-                    localStorage.setItem(
-                        selectedMode === 'REAL'
-                            ? 'derivRealAccount'
-                            : 'derivDemoAccount',
-                        String(account.account_id)
-                    );
-
-                    renderLiveAccountBalance(account);
-                }
-
-                if (typeof pollServerExecutionState === 'function') {
-                    try {
-                        await pollServerExecutionState();
-                    } catch (_) {}
-                }
-
-                return data;
-
-            } catch (err) {
-                if (!silent) {
-                    log(
-                        `⚠️ Live balance refresh error: ${err.message}`,
-                        'WARNING'
-                    );
-                }
-                return null;
-
-            } finally {
-                state.inFlight = false;
-            }
-        }
-
-        function startLiveDerivBalanceRefresh() {
-            const state = window.DMS_BALANCE_REFRESH;
-
-            if (state.timer) {
-                clearInterval(state.timer);
-            }
-
-            refreshLiveDerivBalances({ silent: true });
-
-            state.timer = setInterval(() => {
-                if (document.visibilityState === 'visible') {
-                    refreshLiveDerivBalances({ silent: true });
-                }
-            }, state.intervalMs);
-        }
-
-window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+        window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             enabled: (
                 sessionStorage.getItem('dms_server_execution_enabled') ??
                 localStorage.getItem('dms_server_execution_enabled')
@@ -11749,32 +11531,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             let action = 'Waiting for the next action';
             let resultClass = 'text-xs font-bold text-cyan-300';
 
-            if (phase.startsWith('LIVE_RANK_SWITCH_')) {
-                const parts = phase.replace('LIVE_RANK_SWITCH_', '').split('_TO_');
-                result = 'LIVE V1 SWITCH ⚡';
-                status = `Target ${parts[0] || '—'} → ${parts[1] || '—'} · next stake $${stake.toFixed(2)}`;
-                action = 'Latest V1 rank #1 is pre-armed for the next trade';
-                resultClass = 'text-xs font-bold text-cyan-300';
-                resultEl.textContent = result;
-                resultEl.className = resultClass;
-                statusEl.textContent = status;
-                actionEl.textContent = action;
-                return;
-            }
-
-            if (phase.startsWith('LIVE_RANK_KEEP_')) {
-                const d = phase.replace('LIVE_RANK_KEEP_', '');
-                result = 'LIVE V1 HOLD';
-                status = `Digit ${d} remains V1 rank #1 · next stake $${stake.toFixed(2)}`;
-                action = 'Same top-ranked digit is pre-armed for the next trade';
-                resultClass = 'text-xs font-bold text-cyan-300';
-                resultEl.textContent = result;
-                resultEl.className = resultClass;
-                statusEl.textContent = status;
-                actionEl.textContent = action;
-                return;
-            }
-
             switch (phase) {
                 case 'CONFIGURED':
                     result = 'READY';
@@ -11833,42 +11589,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-emerald-300';
                     break;
 
-                case 'RECOVERY_PREARMED':
-                    result = 'NEXT TRADE PREARMED ⚡';
-                    status = hasDigit
-                        ? `Trade ${tradeNo}/${maxTrades || '—'} active · target ${digit}`
-                        : `Trade ${tradeNo}/${maxTrades || '—'} active`;
-                    action = 'Next-loss proposal is already prepared · no proposal wait on recovery';
-                    resultClass = 'text-xs font-bold text-emerald-300';
-                    break;
-
-                case 'FAST_RECOVERING':
-                    result = 'FAST RECOVERY ⚡';
-                    status = hasDigit
-                        ? `Switch/continue target ${digit} · next stake $${stake.toFixed(2)}`
-                        : `Preparing immediate recovery trade ${tradeNo + 1}`;
-                    action = 'Using pre-armed proposal → BUY';
-                    resultClass = 'text-xs font-bold text-orange-300';
-                    break;
-
-                case 'BUY_UNCERTAIN_STOPPED':
-                case 'BUY_CLAIM_LOST':
-                case 'BUY_SEQUENCE_MISMATCH':
-                    result = 'EXECUTION STOPPED';
-                    status = 'Database execution-integrity guard stopped the cycle';
-                    action = st.last_error || 'Review the last contract before restarting';
-                    resultClass = 'text-xs font-bold text-red-300';
-                    break;
-
-                case 'FAST_RECOVERY_PREFETCH_MISSED':
-                    result = 'PREFETCH FALLBACK';
-                    status = hasDigit
-                        ? `Target ${digit} · stake $${stake.toFixed(2)}`
-                        : 'Recovery proposal was not ready';
-                    action = 'Exceptional fallback proposal request · fast pipeline retained';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
                 case 'REQUESTING_PROPOSAL':
                     result = 'PREPARING TRADE';
                     status = hasDigit
@@ -11914,15 +11634,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-green-300';
                     break;
 
-                case 'FAST_WON':
-                    result = 'WIN ✅';
-                    status = `Cycle won on trade ${tradeNo} · P/L ${formatServerMoney(pnl)}`;
-                    action = continuous
-                        ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
-                        : 'Cycle complete · START BOT is ready for another cycle';
-                    resultClass = 'text-xs font-bold text-green-300';
-                    break;
-
                 case 'MAX_TRADES_REACHED':
                     result = 'MAX TRADES';
                     status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
@@ -11949,40 +11660,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-purple-300';
                     break;
 
-                case 'REAL_ARMED':
-                    result = 'REAL ARMED 🔓';
-                    status = hasDigit
-                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
-                        : 'REAL session armed';
-                    action = 'Trade 1 will fire on the next eligible tick · auto-recovery enabled';
-                    resultClass = 'text-xs font-bold text-emerald-300';
-                    break;
-
-                case 'REAL_CONFIRMED':
-                    result = 'REAL CONFIRMED ✅';
-                    status = hasDigit
-                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
-                        : 'REAL session confirmed';
-                    action = 'Trade 1 fires on the next eligible tick · recovery auto-advances on loss';
-                    resultClass = 'text-xs font-bold text-emerald-300';
-                    break;
-
                 case 'WAITING_REAL_CONFIRMATION':
-                    // Legacy phase. This build auto-clears it on the worker side.
-                    result = 'REAL RUNNING 🔓';
+                    result = 'CONFIRM REQUIRED';
                     status = hasDigit
-                        ? `Digit ${digit} locked · stake $${stake.toFixed(2)}`
-                        : 'REAL session running';
-                    action = 'Identical to DEMO · no confirmation step · auto-advance on loss';
-                    resultClass = 'text-xs font-bold text-emerald-300';
-                    break;
-
-                case 'AWAITING_REAL_SETTLEMENT':
-                    result = 'SETTLING ⏳';
-                    status = hasDigit
-                        ? `REAL trade ${tradeNo} settled · awaiting Deriv confirmation for the next purchase`
-                        : 'Waiting for previous REAL contract settlement';
-                    action = 'Auto-recovery will continue as soon as settlement arrives';
+                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
+                        : 'REAL purchase is waiting';
+                    action = 'Explicit confirmation is required before this purchase';
                     resultClass = 'text-xs font-bold text-amber-300';
                     break;
 
@@ -12052,19 +11735,19 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
                     </div>
                     <div class="text-right">
-                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recovery rule</div>
-                        <div class="text-sm font-black text-white">V1 #1 after every loss</div>
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
+                        <div class="text-sm font-black text-white">3 losses</div>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-4 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Open Contract Target</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Target</div>
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Active / Next Target</div>
-                        <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
                         <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
@@ -12077,27 +11760,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
-                <div id="digit-score-v2-meta" class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px]">
-                    <div class="rounded bg-slate-900/70 p-1.5">Active Target: <b id="score-strength">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Agreement: <b id="score-agreement">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Velocity: <b id="score-velocity">—</b></div>
-                    <div class="rounded bg-slate-900/70 p-1.5">Shadow Pick: <b id="score-trigger">—</b></div>
-                </div>
-
-                <div class="mt-2">
-                    <button
-                        id="triggerFusionExportBtn"
-                        type="button"
-                        onclick="downloadTriggerFusionData()"
-                        class="w-full rounded-lg border border-cyan-500/40 bg-cyan-700/30 hover:bg-cyan-700/50 px-3 py-2 text-[10px] font-black tracking-wide text-cyan-100 transition"
-                        title="Export persisted V1 execution + Trigger Fusion shadow evidence from PostgreSQL"
-                    >
-                        📥 EXPORT STABLE + SHADOW DATA
-                    </button>
-                </div>
-
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V1 Live Target Tracking · ACTIVE/NEXT target follows V1 rank #1 immediately. The already-open Deriv contract remains fixed until its result. Trigger Fusion remains SHADOW only.
+                    Server ranks all digits from canonical tick history. Scores are relative ranking signals, not guaranteed probabilities.
                 </div>
             `;
             host.appendChild(el);
@@ -12123,14 +11787,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? String(st.candidate_digit)
                     : '—';
             }
-            if (attemptEl) {
-                const liveNext = Number(
-                    st?.live_next_target ?? score?.selected_digit
-                );
-                attemptEl.textContent = Number.isInteger(liveNext)
-                    ? String(liveNext)
-                    : '—';
-            }
+            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
             if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
             if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
 
@@ -12147,43 +11804,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
             const selected = Number(score.selected_digit);
 
-            const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
-            const activeTarget = Number(st?.candidate_digit);
-            const shadow = score?.shadow || {};
-            const shadowSelected = Number(shadow?.selected_digit);
-            const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
-            const shadowRow = shadowRows.find(row => Number(row.digit) === shadowSelected) || shadowRows[0] || null;
-
             if (stateEl) {
                 const margin = Number(score.top_margin);
-                const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent =
-                    `OPEN ${Number.isInteger(activeTarget) ? activeTarget : '—'} · ` +
-                    `ACTIVE/NEXT ${Number.isInteger(Number(st?.live_next_target)) ? Number(st.live_next_target) : selected} · ` +
-                    `V1 #1 ${selected}${marginText}`;
-            }
-
-            const strengthEl = document.getElementById('score-strength');
-            const agreementEl = document.getElementById('score-agreement');
-            const velocityEl = document.getElementById('score-velocity');
-            const triggerEl = document.getElementById('score-trigger');
-
-            if (strengthEl) strengthEl.textContent = Number.isInteger(activeTarget) ? String(activeTarget) : '—';
-            if (agreementEl) {
-                agreementEl.textContent = shadowRow
-                    ? `${Number(shadowRow.signal_agreement || 0)}/${Number(shadowRow.signal_total || 7)}`
-                    : '—';
-            }
-            if (velocityEl) {
-                const v = Number(shadowRow?.trend_velocity);
-                velocityEl.textContent = Number.isFinite(v)
-                    ? `${v >= 0 ? '+' : ''}${v.toFixed(3)}`
-                    : '—';
-            }
-            if (triggerEl) {
-                triggerEl.textContent = Number.isInteger(shadowSelected)
-                    ? `${shadowSelected} (${shadowRow?.strength || '—'})`
-                    : '—';
+                const marginText = Number.isFinite(margin) ? ` · margin ${margin.toFixed(3)}` : '';
+                stateEl.textContent = `Selected ${selected}${marginText}`;
             }
 
             if (rankingEl) {
@@ -12201,7 +11825,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         <div class="rounded-lg border ${cls} p-1.5 text-center">
                             <div class="text-base font-black">${digit}</div>
                             <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
-                            <div class="text-[8px] opacity-70">V1 rank #${idx + 1}</div>
+                            <div class="text-[8px] opacity-70">${idx + 1}</div>
                         </div>
                     `;
                 }).join('');
@@ -12258,22 +11882,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 const winningProfit = Number(settlement?.profit);
                 if (!Number.isFinite(winningProfit) || winningProfit <= 0) {
-                    return;
-                }
-
-                // Telegram now waits for the WHOLE CYCLE, not merely the final
-                // winning contract. Earlier losses may still be settling in the
-                // background when FAST_WON occurs.
-                const cyclePnlAuthoritative =
-                    settlement?.cycle_pnl_authoritative === true;
-                const actualCyclePnl = Number(settlement?.cycle_pnl);
-
-                if (
-                    !cyclePnlAuthoritative ||
-                    !Number.isFinite(actualCyclePnl)
-                ) {
-                    // Keep pending entry. A later settlement refresh will expose
-                    // the exact summed Deriv P/L for trades 1..winning trade.
+                    // A WIN notification requires a positive authoritative
+                    // winning-contract settlement.
                     return;
                 }
 
@@ -12287,17 +11897,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     settlement?.payout ??
                     (Math.max(stake, 0) + winningProfit)
                 );
-                const cycleTotalStake = Number(
-                    settlement?.cycle_total_stake ?? stake
-                );
-                const cycleTradeCount = Number(
-                    settlement?.cycle_trade_count ??
-                    settlement?.trade_no ??
-                    pending.tradeNo
-                );
 
-                // Safe to publish only now: exact contract WIN + exact whole-cycle
-                // Deriv P/L are both authoritative.
+                // At this point the notification is safe to publish.
                 window.__dmsPublishedSettlementWins.add(settledContractId);
                 window.__dmsPendingTelegramWins.delete(settledContractId);
 
@@ -12308,14 +11909,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     startedAt: pending.capturedAt,
                     endedAt: Date.now(),
                     status: 'WIN',
-                    finalReason: 'Official Deriv cycle settlement confirmed',
+                    finalReason: 'Official Deriv settlement confirmed WIN',
                     winningTradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
-                    totalInvestment: Number.isFinite(cycleTotalStake)
-                        ? Math.max(cycleTotalStake, 0)
-                        : Math.max(stake, 0.01),
-                    totalPayout: 0,
-                    netPnL: actualCyclePnl,
-                    cyclePnlAuthoritative: true,
+                    totalInvestment: Math.max(stake, 0.01),
+                    totalPayout: Math.max(payout, stake + winningProfit),
+                    // Retained for API compatibility; publisher no longer calls
+                    // this the winning-trade profit.
+                    netPnL: Number(st?.pnl || 0),
+                    cyclePnlAuthoritative: false,
                     maxStake: Math.max(stake, 0.01),
                     settlementConfirmed: true,
                     settlementContractId: settledContractId,
@@ -12329,73 +11930,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         profit: winningProfit,
                         contractId: settledContractId,
                         settled: true
-                    }],
-                    cycleTradeCount
+                    }]
                 });
             } catch (err) {
                 console.warn('Settlement-confirmed Telegram WIN publish failed:', err);
-            }
-        }
-
-
-        function syncServerTerminalLifecycle(st) {
-            try {
-                if (!window.SERVER_EXECUTION?.enabled || !st) return;
-
-                const phase = String(st.phase || '').toUpperCase();
-                const demoMode = String(st.account_mode || '').toUpperCase() === 'DEMO';
-                const autoContinue = !!window.SERVER_EXECUTION.continuousResearch && demoMode;
-
-                // A win is terminal at FAST_WON. Wait until the authoritative
-                // settlement has cleared open_contract_id before either
-                // restarting or resetting the local START/STOP control.
-                if (phase === 'FAST_WON' || phase === 'WON') {
-                    if (st.open_contract_id) return;
-
-                    if (autoContinue) {
-                        maybeScheduleContinuousServerResearch();
-                        return;
-                    }
-
-                    // Server has already stopped buying. Mirror that state in
-                    // the browser so the button becomes START BOT again.
-                    if (window.isBotRunning === true) {
-                        stopBot('Confirmed DIGITMATCH win');
-                    }
-                    return;
-                }
-
-                // A tail/max-trade stop is always terminal. Do not silently
-                // restart another cycle after hitting the user's loss cap.
-                if (phase === 'MAX_TRADES_REACHED') {
-                    if (window.SERVER_EXECUTION) {
-                        window.SERVER_EXECUTION.continuousRestartPending = false;
-                        if (window.SERVER_EXECUTION.continuousRestartTimer) {
-                            clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
-                            window.SERVER_EXECUTION.continuousRestartTimer = null;
-                        }
-                    }
-
-                    if (window.isBotRunning === true) {
-                        stopBot('Maximum trades reached');
-                    }
-                    return;
-                }
-
-                // Any server-side hard stop should also release the stale STOP
-                // button in the browser.
-                if (
-                    ['STOPPED', 'BUY_UNCERTAIN_STOPPED', 'BUY_CLAIM_LOST',
-                     'BUY_SEQUENCE_MISMATCH', 'RECONCILE_MISMATCH'].includes(phase)
-                    && !st.running
-                    && !st.open_contract_id
-                    && window.isBotRunning === true
-                ) {
-                    stopBot(st.last_error || phase);
-                }
-
-            } catch (err) {
-                console.warn('Server terminal lifecycle sync failed:', err);
             }
         }
 
@@ -12551,7 +12089,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 ).toUpperCase() === 'DEMO';
 
                 continuousBtn.textContent =
-                    `Auto Continue After Win: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
+                    `Continuous Research: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
 
                 continuousBtn.disabled = !demoMode;
                 continuousBtn.className = s.continuousResearch && demoMode
@@ -12559,11 +12097,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
             }
 
-            // V57.8 REAL == DEMO.
-            // REAL uses the same fast pipeline as DEMO and never waits for a
-            // per-trade confirmation. The confirmation button is never shown.
             if (confirmBtn) {
-                confirmBtn.classList.add('hidden');
+                const needsConfirm =
+                    s.enabled &&
+                    String(st.account_mode || '').toUpperCase() === 'REAL' &&
+                    st.pending_real_confirmation === true;
+                confirmBtn.classList.toggle('hidden', !needsConfirm);
             }
 
             if (s.enabled && st) {
@@ -12592,16 +12131,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             
             renderServerTradeNarrative(st);
-            if (
-                st?.last_settlement?.settled_at &&
-                Date.now() - Number(
-                    window.DMS_BALANCE_REFRESH?.lastRefreshAt || 0
-                ) > 1500
-            ) {
-                refreshLiveDerivBalances({ silent: true });
-            }
-
-            try { syncServerTerminalLifecycle(st); } catch (_) {}
         }
 
         async function serverExecRequest(path, options = {}) {
@@ -12637,212 +12166,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             return data;
         }
 
-
-
-        function triggerFusionCsvEscape(value) {
-            if (value === null || value === undefined) return '';
-            let text = typeof value === 'object'
-                ? JSON.stringify(value)
-                : String(value);
-
-            if (/[",\n\r]/.test(text)) {
-                text = `"${text.replace(/"/g, '""')}"`;
-            }
-            return text;
-        }
-
-        function triggerFusionToCsv(records) {
-            const columns = [
-                'trade_log_id',
-                'session_id',
-                'trade_no',
-                'account_mode',
-                'account_id',
-                'symbol',
-                'target_digit',
-                'stake',
-                'contract_id',
-                'status',
-                'buy_price',
-                'quoted_payout',
-                'settlement_profit',
-                'created_at',
-                'settled_at',
-                'score_version',
-                'history_count',
-                'selected_digit',
-                'top_margin',
-                'excluded_digit',
-                'final_score',
-                'base_score',
-                'trigger_bonus',
-                'signal_agreement',
-                'signal_total',
-                'strength',
-                'gap',
-                'freq5',
-                'freq10',
-                'freq25',
-                'freq50',
-                'freq100',
-                'transition1',
-                'transition2',
-                'entropy10',
-                'entropy25',
-                'short_long_divergence',
-                'cluster_pressure',
-                'safe_tick_like',
-                'trend_velocity',
-                'trend_blocks',
-                'trend_bonus',
-                'dominance_match',
-                'dominance_bonus',
-                'dominance_window',
-                'dominance_margin',
-                'break_digit_match',
-                'break_digit_bonus',
-                'alternating_pair_match',
-                'alternating_pair_bonus',
-                'digit9_setup',
-                'signal_transition1',
-                'signal_transition2',
-                'signal_velocity',
-                'signal_recent_frequency',
-                'signal_dominance',
-                'signal_break_digit',
-                'signal_alternating_pair',
-                'dominant_digit',
-                'dominant_frequency',
-                'second_frequency',
-                'dominance_snapshot_margin',
-                'least_frequency_digit',
-                'least_frequency',
-                'derived_cycle',
-                'duplicate_trade_in_cycle',
-                'execution_instance_id',
-                'buy_claim_token',
-                'execution_prearmed'
-            ];
-
-            const lines = [columns.join(',')];
-
-            for (const row of records || []) {
-                lines.push(
-                    columns.map(col => triggerFusionCsvEscape(row?.[col])).join(',')
-                );
-            }
-
-            return lines.join('\n');
-        }
-
-        async function downloadTriggerFusionData() {
-            const btn = document.getElementById('triggerFusionExportBtn');
-
-            try {
-                const s = window.SERVER_EXECUTION;
-                const sid = Number(s?.sessionId || 0);
-
-                if (!sid) {
-                    throw new Error(
-                        'No server session exists yet. Start or configure the server session first.'
-                    );
-                }
-
-                if (btn) {
-                    btn.disabled = true;
-                    btn.textContent = '⏳ PREPARING EXPORT...';
-                }
-
-                const data = await serverExecRequest(
-                    `/sessions/${sid}/trigger-fusion/export`,
-                    { method: 'GET' }
-                );
-
-                const rawRecords = Array.isArray(data?.records)
-                    ? data.records
-                    : [];
-                const records = Array.isArray(data?.clean_records)
-                    ? data.clean_records
-                    : rawRecords;
-
-                const now = new Date();
-                const stamp = now.toISOString().replace(/[:.]/g, '-');
-                const symbol = String(
-                    data?.session?.symbol ||
-                    s?.state?.symbol ||
-                    document.getElementById('symbol')?.value ||
-                    'R_10'
-                ).replace(/[^A-Za-z0-9_-]/g, '_');
-
-                // Primary export: flat CSV for Excel / R / Python.
-                const csv = triggerFusionToCsv(records);
-                const csvBlob = new Blob(
-                    [csv],
-                    { type: 'text/csv;charset=utf-8' }
-                );
-                const csvUrl = URL.createObjectURL(csvBlob);
-                const csvLink = document.createElement('a');
-                csvLink.href = csvUrl;
-                csvLink.download =
-                    `digitmatchstar-trigger-fusion-v2-${symbol}-${stamp}.csv`;
-                document.body.appendChild(csvLink);
-                csvLink.click();
-                csvLink.remove();
-                setTimeout(() => URL.revokeObjectURL(csvUrl), 1500);
-
-                // Also export the complete JSON evidence for reproducibility.
-                const jsonBlob = new Blob(
-                    [JSON.stringify(data, null, 2)],
-                    { type: 'application/json;charset=utf-8' }
-                );
-                const jsonUrl = URL.createObjectURL(jsonBlob);
-                const jsonLink = document.createElement('a');
-                jsonLink.href = jsonUrl;
-                jsonLink.download =
-                    `digitmatchstar-trigger-fusion-v2-${symbol}-${stamp}.json`;
-                document.body.appendChild(jsonLink);
-
-                setTimeout(() => {
-                    jsonLink.click();
-                    jsonLink.remove();
-                    URL.revokeObjectURL(jsonUrl);
-                }, 250);
-
-                const summary = data?.summary || {};
-
-                try {
-                    log(
-                        `📥 TRIGGER FUSION EXPORT | ${Number(summary.records_count || records.length)} trades · ` +
-                        `${Number(summary.settled_count || 0)} settled · ` +
-                        `${Number(summary.wins || 0)} wins · ` +
-                        `${Number(summary.losses || 0)} losses · ` +
-                        `P/L ${Number(summary.settlement_net_pnl || 0) >= 0 ? '+' : ''}$${Number(summary.settlement_net_pnl || 0).toFixed(2)}`,
-                        'SYSTEM'
-                    );
-                } catch (_) {}
-
-                return data;
-
-            } catch (error) {
-                console.error('Trigger Fusion export failed:', error);
-                try {
-                    log(
-                        `❌ TRIGGER FUSION EXPORT FAILED | ${error.message}`,
-                        'ERROR'
-                    );
-                } catch (_) {}
-                alert(`Trigger Fusion export failed: ${error.message}`);
-                throw error;
-
-            } finally {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.textContent = '📥 EXPORT STABLE + SHADOW DATA';
-                }
-            }
-        }
-
-        window.downloadTriggerFusionData = downloadTriggerFusionData;
 
 
         async function downloadTargetAttractionResults() {
@@ -12931,7 +12254,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             ).toUpperCase();
 
             if (mode !== 'DEMO') {
-                alert('Auto Continue is available only for DEMO accounts.');
+                alert('Continuous Research is available only for DEMO accounts.');
                 return;
             }
 
@@ -12960,7 +12283,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             renderServerExecutionState();
 
             log(
-                `🔁 Auto Continue After Win ${s.continuousResearch ? 'ON' : 'OFF'}`,
+                `🧪 Continuous DEMO Research ${s.continuousResearch ? 'ON' : 'OFF'}`,
                 'SYSTEM'
             );
         }
@@ -13052,7 +12375,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 triggerPhase || state.phase || ''
             ).toUpperCase();
 
-            if (!['WON', 'FAST_WON'].includes(terminalPhase)) {
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) {
                 return;
             }
 
@@ -13061,10 +12384,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             try {
                 updateTradeStatus(
-                    'WIN ✅',
-                    `Cycle won · preparing next DEMO cycle`,
-                    'Waiting for final settlement, then starting a fresh cycle…',
-                    'win'
+                    terminalPhase === 'WON' ? 'WIN ✅' : 'CYCLE COMPLETE',
+                    terminalPhase === 'WON'
+                        ? `Cycle won · preparing next DEMO research cycle`
+                        : `Maximum trades reached · preparing next research cycle`,
+                    'Stopping completed cycle before starting the next candidate…',
+                    terminalPhase === 'WON' ? 'win' : 'normal'
                 );
 
                 // User requirement: the bot should STOP the completed cycle
@@ -13167,7 +12492,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             const phase = String(st.phase || '').toUpperCase();
 
-            if (!['WON', 'FAST_WON'].includes(phase)) {
+            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) {
                 return;
             }
 
@@ -13212,18 +12537,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
         async function ensureServerResearchSession() {
             const s = window.SERVER_EXECUTION;
-
-            const selectedMode = String(
-                sessionStorage.getItem('selectedAccountMode') ||
-                localStorage.getItem('selectedAccountMode') ||
-                'DEMO'
-            ).toUpperCase();
-
-            // Background research-session bootstrap is DEMO-only. Never create
-            // a DEMO session behind the user's back while REAL is selected.
-            if (selectedMode !== 'DEMO') {
-                return;
-            }
 
             if (
                 !s?.enabled ||
@@ -13365,41 +12678,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             try {
                 const rows = await serverExecRequest('/sessions');
 
-                const selectedMode = String(
-                    sessionStorage.getItem('selectedAccountMode') ||
-                    localStorage.getItem('selectedAccountMode') ||
-                    'DEMO'
-                ).toUpperCase();
-
-                const modeRow = (rows || []).find(
-                    x => String(x.account_mode || '').toUpperCase() === selectedMode
-                ) || null;
-
-                const idRow = s.sessionId
-                    ? (rows || []).find(
-                        x => Number(x.id) === Number(s.sessionId)
-                    ) || null
-                    : null;
-
-                // Prefer the stored id only when it belongs to the currently
-                // selected DEMO/REAL mode. Otherwise adopt the correct-mode row.
-                s.state = (
-                    idRow &&
-                    String(idRow.account_mode || '').toUpperCase() === selectedMode
-                )
-                    ? idRow
-                    : (modeRow || null);
-
-                if (
-                    s.state &&
-                    Number(s.sessionId || 0) !== Number(s.state.id || 0)
-                ) {
-                    s.sessionId = Number(s.state.id);
-                    sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
-                    try {
-                        localStorage.setItem('dms_server_session_id', String(s.sessionId));
-                    } catch (_) {}
-                }
+                s.state = s.sessionId
+                    ? (
+                        rows.find(
+                            x => Number(x.id) === Number(s.sessionId)
+                        ) || rows[0] || null
+                    )
+                    : (rows[0] || null);
 
                 // Adopt an already-persisted backend session after browser
                 // reload rather than waiting for START BOT.
@@ -13485,7 +12770,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 symbol: document.getElementById('symbol')?.value || 'R_10',
                 base_stake: Number(document.getElementById('baseStake')?.value || 1),
                 multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
-                max_trades: Number(document.getElementById('maxTrades')?.value || 10)
+                max_trades: getUserMaxTrades()
             };
         }
 
@@ -13533,16 +12818,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 throw new Error(
                     `No ${cfg.requested_mode} Deriv Options account is connected.`
                 );
-            }
-
-            if (wanted === 'real') {
-                // V57.8: REAL and DEMO use the identical execution pipeline.
-                // Trade 1 fires on the next eligible tick, losses auto-advance
-                // the stake and target, and the cycle ends only on a WIN or
-                // when Max Trades is reached. No per-trade confirmation is
-                // required at any point.
-                sessionStorage.setItem('selectedAccountMode', 'REAL');
-                localStorage.setItem('selectedAccountMode', 'REAL');
             }
 
             // FIRST inspect existing server sessions.
@@ -13714,14 +12989,17 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         }
 
         async function confirmServerRealTrade() {
-            // V57.8: REAL == DEMO.
-            // REAL uses the exact same fast pipeline as DEMO. Trade 1 fires on
-            // the next eligible tick, losses auto-advance the stake and target,
-            // and the cycle ends only on a WIN or when Max Trades is reached.
-            //
-            // No confirmation is required at any point. This function is kept
-            // only for UI/API compatibility and is a strict no-op.
-            return true;
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled) return;
+            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
+            try {
+                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
+                await pollServerExecutionState();
+                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
+            } catch (e) {
+                alert(e.message);
+                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
+            }
         }
 
         // In SERVER mode, the browser must never submit proposals/buys.
@@ -13839,11 +13117,16 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         function getUserMaxTrades() {
             const input = document.getElementById('maxTrades');
             const raw = Number.parseInt(input?.value, 10);
-            // Tick DNA V2.2 validation requires an uncensored 20-trade observation window.
-            const value = Number.isFinite(raw) && raw >= 20 ? raw : 20;
+
+            // User-defined cycle cap. The live/demo execution engine accepts
+            // any positive integer; old research builds incorrectly forced a
+            // minimum of 20 trades even though the control itself allowed 1.
+            const value = Number.isFinite(raw) && raw >= 1 ? raw : 15;
+
             if (input && String(value) !== String(input.value).trim()) {
                 input.value = String(value);
             }
+
             return value;
         }
 
@@ -16681,56 +15964,8 @@ window.isBotRunning = true;
 <!-- Digit Differs Lab removed in V51 CORE CLEAN -->
 <!-- Multi-Digit Match Basket Lab removed in V51 CORE CLEAN -->
 <!-- Experimental lab helpers removed in V51 CORE CLEAN -->
-<div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-real-demo-parity="true" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.8-REAL-DEMO-PARITY" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
+<div data-ai-adaptive-entry="true" data-ai-randomness-auditor="true" data-auditor-panel="always-visible" data-digit-dna-engine="DNA-1" data-digit-feature-engine="DFE-1" data-instant-unchanged="true" data-observability-only="true" data-public-market-parser="single-feed-v57" data-safe-tick-v1="v1.3-persistent-shadow-validation" data-tailguard-overnight="single-button-explicit-demo-trading" data-version="DIGITMATCHSTAR-V57.7.6-SAFE-TICK-V1-SHADOW" data-wake-lock="screen" id="v52-build-meta" style="display:none"></div>
 <!-- Tick DNA → Tail Risk Validation V2 integration -->
 <script src="/research-suite-loader.js?v=tickdna-v3-5-authoritative-state-poll"></script>
-
-<script>
-(function () {
-    function installBalanceRefreshButton() {
-        if (document.getElementById('dms-balance-refresh-btn')) return;
-
-        const balance =
-            document.getElementById('metricAccountBalance') ||
-            document.getElementById('metricBalance') ||
-            document.getElementById('account-balance') ||
-            document.getElementById('balanceDisplay');
-
-        if (!balance || !balance.parentElement) return;
-
-        const btn = document.createElement('button');
-        btn.id = 'dms-balance-refresh-btn';
-        btn.type = 'button';
-        btn.textContent = '↻';
-        btn.title = 'Refresh current balance from Deriv';
-        btn.className =
-            'ml-2 px-2 py-1 rounded border border-emerald-500/30 ' +
-            'text-emerald-300 text-xs font-black hover:bg-emerald-500/10';
-
-        btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            const old = btn.textContent;
-            btn.textContent = '…';
-
-            await refreshLiveDerivBalances({ silent: false });
-
-            btn.textContent = old;
-            btn.disabled = false;
-        });
-
-        balance.parentElement.appendChild(btn);
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener(
-            'DOMContentLoaded',
-            installBalanceRefreshButton
-        );
-    } else {
-        installBalanceRefreshButton();
-    }
-})();
-</script>
-
 </body>
 </html>
