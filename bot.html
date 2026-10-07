@@ -12051,8 +12051,22 @@ window.executionLock = true;
 
                 const winningProfit = Number(settlement?.profit);
                 if (!Number.isFinite(winningProfit) || winningProfit <= 0) {
-                    // A WIN notification requires a positive authoritative
-                    // winning-contract settlement.
+                    return;
+                }
+
+                // Telegram now waits for the WHOLE CYCLE, not merely the final
+                // winning contract. Earlier losses may still be settling in the
+                // background when FAST_WON occurs.
+                const cyclePnlAuthoritative =
+                    settlement?.cycle_pnl_authoritative === true;
+                const actualCyclePnl = Number(settlement?.cycle_pnl);
+
+                if (
+                    !cyclePnlAuthoritative ||
+                    !Number.isFinite(actualCyclePnl)
+                ) {
+                    // Keep pending entry. A later settlement refresh will expose
+                    // the exact summed Deriv P/L for trades 1..winning trade.
                     return;
                 }
 
@@ -12066,8 +12080,17 @@ window.executionLock = true;
                     settlement?.payout ??
                     (Math.max(stake, 0) + winningProfit)
                 );
+                const cycleTotalStake = Number(
+                    settlement?.cycle_total_stake ?? stake
+                );
+                const cycleTradeCount = Number(
+                    settlement?.cycle_trade_count ??
+                    settlement?.trade_no ??
+                    pending.tradeNo
+                );
 
-                // At this point the notification is safe to publish.
+                // Safe to publish only now: exact contract WIN + exact whole-cycle
+                // Deriv P/L are both authoritative.
                 window.__dmsPublishedSettlementWins.add(settledContractId);
                 window.__dmsPendingTelegramWins.delete(settledContractId);
 
@@ -12078,14 +12101,14 @@ window.executionLock = true;
                     startedAt: pending.capturedAt,
                     endedAt: Date.now(),
                     status: 'WIN',
-                    finalReason: 'Official Deriv settlement confirmed WIN',
+                    finalReason: 'Official Deriv cycle settlement confirmed',
                     winningTradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
-                    totalInvestment: Math.max(stake, 0.01),
-                    totalPayout: Math.max(payout, stake + winningProfit),
-                    // Retained for API compatibility; publisher no longer calls
-                    // this the winning-trade profit.
-                    netPnL: Number(st?.pnl || 0),
-                    cyclePnlAuthoritative: false,
+                    totalInvestment: Number.isFinite(cycleTotalStake)
+                        ? Math.max(cycleTotalStake, 0)
+                        : Math.max(stake, 0.01),
+                    totalPayout: 0,
+                    netPnL: actualCyclePnl,
+                    cyclePnlAuthoritative: true,
                     maxStake: Math.max(stake, 0.01),
                     settlementConfirmed: true,
                     settlementContractId: settledContractId,
@@ -12099,7 +12122,8 @@ window.executionLock = true;
                         profit: winningProfit,
                         contractId: settledContractId,
                         settled: true
-                    }]
+                    }],
+                    cycleTradeCount
                 });
             } catch (err) {
                 console.warn('Settlement-confirmed Telegram WIN publish failed:', err);

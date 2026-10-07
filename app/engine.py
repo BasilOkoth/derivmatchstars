@@ -1326,6 +1326,119 @@ class MultiUserEngine:
             poll_until_sold()
         )
 
+    def _authoritative_cycle_summary(self, db, log):
+        """
+        Return the exact Deriv-settled P/L for the cycle containing `log`.
+
+        Cycle boundaries are reconstructed from persisted TradeLog trade_no
+        resets. A summary becomes authoritative only when:
+        - the cycle starts at trade_no 1,
+        - every trade number through the winning/current trade exists once,
+        - every row is SETTLED.
+
+        This is used for Telegram so the message reports actual cycle profit/loss,
+        not merely the final winning contract's profit.
+        """
+        if not log:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        target_trade_no = int(log.trade_no or 0)
+        if target_trade_no < 1:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        previous_rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.trading_session_id == int(log.trading_session_id),
+                TradeLog.id <= int(log.id),
+            )
+            .order_by(TradeLog.id.desc())
+            .all()
+        )
+
+        cycle_start_id = None
+        for row in previous_rows:
+            if int(row.trade_no or 0) == 1:
+                cycle_start_id = int(row.id)
+                break
+
+        if cycle_start_id is None:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.trading_session_id == int(log.trading_session_id),
+                TradeLog.id >= cycle_start_id,
+                TradeLog.id <= int(log.id),
+            )
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        # Exactly one persisted row for each logical trade number 1..N.
+        by_trade = {}
+        duplicate = False
+        for row in rows:
+            no = int(row.trade_no or 0)
+            if no in by_trade:
+                duplicate = True
+            by_trade[no] = row
+
+        expected = set(range(1, target_trade_no + 1))
+        present = set(by_trade.keys())
+
+        all_present = (present == expected) and not duplicate
+        all_settled = all(
+            str(by_trade[n].status or "").upper() == "SETTLED"
+            and by_trade[n].profit is not None
+            for n in expected
+            if n in by_trade
+        ) if all_present else False
+
+        if not (all_present and all_settled):
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": sum(
+                    float(r.stake or 0)
+                    for r in rows
+                ),
+                "cycle_trades": len(rows),
+            }
+
+        cycle_pnl = sum(
+            float(by_trade[n].profit or 0)
+            for n in range(1, target_trade_no + 1)
+        )
+        cycle_stake = sum(
+            float(by_trade[n].stake or 0)
+            for n in range(1, target_trade_no + 1)
+        )
+
+        return {
+            "authoritative": True,
+            "cycle_pnl": float(cycle_pnl),
+            "cycle_stake": float(cycle_stake),
+            "cycle_trades": target_trade_no,
+        }
+
+
     async def _handle_contract_update(
         self,
         *,
@@ -1442,6 +1555,11 @@ class MultiUserEngine:
                     # Expose the exact authoritative settlement used for
                     # notifications. Telegram must never infer winning profit
                     # from the pre-settlement session P/L.
+                    cycle_summary = self._authoritative_cycle_summary(
+                        db,
+                        log,
+                    )
+
                     self.last_settlement_by_sid[sid] = {
                         "contract_id": str(contract_id),
                         "trade_no": int(log.trade_no) if log else None,
@@ -1452,6 +1570,14 @@ class MultiUserEngine:
                         "profit": float(profit),
                         "result": official,
                         "settled_at": datetime.utcnow().isoformat(),
+
+                        # Exact cycle accounting from persisted Deriv settlements.
+                        "cycle_pnl_authoritative": bool(
+                            cycle_summary.get("authoritative")
+                        ),
+                        "cycle_pnl": cycle_summary.get("cycle_pnl"),
+                        "cycle_total_stake": cycle_summary.get("cycle_stake"),
+                        "cycle_trade_count": cycle_summary.get("cycle_trades"),
                     }
 
                     if (
@@ -1468,6 +1594,41 @@ class MultiUserEngine:
                             f"Deriv settlement {official} for "
                             f"contract {contract_id}"
                         )
+
+                # If FAST_WON has already occurred, an older losing contract
+                # may settle after the winning contract. Refresh the pending WIN
+                # summary so Telegram can publish once the entire cycle is fully
+                # reconciled, without replacing it with this older LOSS.
+                pending_win = self.last_settlement_by_sid.get(sid)
+                if (
+                    pending_win
+                    and str(pending_win.get("result") or "").upper() == "WIN"
+                    and not bool(pending_win.get("cycle_pnl_authoritative"))
+                ):
+                    winning_contract_id = str(
+                        pending_win.get("contract_id") or ""
+                    )
+                    winning_log = (
+                        db.query(TradeLog)
+                        .filter(
+                            TradeLog.trading_session_id == sid,
+                            TradeLog.contract_id == winning_contract_id,
+                        )
+                        .order_by(TradeLog.id.desc())
+                        .first()
+                    )
+                    if winning_log:
+                        refreshed = self._authoritative_cycle_summary(
+                            db,
+                            winning_log,
+                        )
+                        pending_win["cycle_pnl_authoritative"] = bool(
+                            refreshed.get("authoritative")
+                        )
+                        pending_win["cycle_pnl"] = refreshed.get("cycle_pnl")
+                        pending_win["cycle_total_stake"] = refreshed.get("cycle_stake")
+                        pending_win["cycle_trade_count"] = refreshed.get("cycle_trades")
+                        self.last_settlement_by_sid[sid] = pending_win
 
                 s.updated_at = datetime.utcnow()
                 db.commit()

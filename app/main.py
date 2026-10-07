@@ -16,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.5.0-live-v1-rank-recovery",
+    version="3.6.0-telegram-actual-cycle-pnl",
 )
 
 
@@ -96,7 +96,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.5.0-live-v1-rank-recovery",
+        "version": "3.6.0-telegram-actual-cycle-pnl",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {

@@ -161,16 +161,21 @@ function caption(c, type) {
       `✅ <b>MATCHED AT TRADE ${c.winningTradeNumber || n}</b>`
     ];
 
-    if (c.settlementConfirmed && Number.isFinite(winningProfit)) {
-      lines.push(`💰 <b>Winning trade P/L: ${money(winningProfit)}</b>`);
-      lines.push('🔒 Deriv settlement: <b>CONFIRMED</b>');
-    }
-
-    // Only show cycle P/L when the sender explicitly says the whole cycle is
-    // fully reconciled. This prevents stale/pending losses from being presented
-    // as the final cycle result.
-    if (c.cyclePnlAuthoritative) {
-      lines.push(`📊 <b>Final cycle P/L: ${money(c.netPnL)}</b>`);
+    // The headline money figure is the ACTUAL WHOLE-CYCLE P/L.
+    // It includes every settled loss plus the final winning contract.
+    if (
+      c.settlementConfirmed &&
+      c.cyclePnlAuthoritative &&
+      Number.isFinite(c.netPnL)
+    ) {
+      const pnlEmoji = c.netPnL >= 0 ? '🟢' : '🔴';
+      lines.push(`${pnlEmoji} <b>ACTUAL P/L: ${money(c.netPnL)}</b>`);
+      lines.push('🔒 Deriv cycle settlement: <b>CONFIRMED</b>');
+    } else if (c.settlementConfirmed && Number.isFinite(winningProfit)) {
+      // Defensive legacy fallback only; current frontend holds publication
+      // until whole-cycle P/L is authoritative.
+      lines.push(`💰 <b>Winning contract P/L: ${money(winningProfit)}</b>`);
+      lines.push('⏳ <b>Full cycle P/L pending</b>');
     }
 
     lines.push('');
@@ -302,7 +307,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
-      version: 'telegram-settlement-confirmed-v3.1',
+      version: 'telegram-actual-cycle-pnl-v3.6',
       environment: envStatus()
     });
   }
@@ -352,13 +357,20 @@ module.exports = async function handler(req, res) {
 
     // Never publish a WIN without the exact Deriv settlement. This turns any
     // stale legacy caller into a harmless skip instead of a misleading post.
-    if (c.status === 'WIN' && c.settlementConfirmed !== true) {
+    if (
+      c.status === 'WIN' &&
+      (
+        c.settlementConfirmed !== true ||
+        c.cyclePnlAuthoritative !== true ||
+        !Number.isFinite(c.netPnL)
+      )
+    ) {
       return res.status(202).json({
         ok: true,
         published: false,
         pendingSettlement: true,
         cycleId: c.id,
-        message: 'WIN held until authoritative Deriv settlement is available'
+        message: 'WIN held until authoritative whole-cycle Deriv P/L is available'
       });
     }
 
