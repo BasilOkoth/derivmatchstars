@@ -750,7 +750,7 @@ class MultiUserEngine:
                     s.running = False
                     s.phase = "REAL_AUTOMATION_DISABLED"
                     s.last_error = (
-                        "Automated server execution is DEMO-only in this build."
+                        "REAL account connection is supported, but automated REAL-money execution is disabled in this build."
                     )
                     s.updated_at = datetime.utcnow()
                     db.commit()
@@ -1533,7 +1533,7 @@ class MultiUserEngine:
 
     async def confirm_real(self, user_id: str, session_id: int):
         raise RuntimeError(
-            "Automated REAL-money execution is disabled "
+            "REAL account connection is supported. Automated REAL-money execution is disabled "
             "in this low-latency build."
         )
 

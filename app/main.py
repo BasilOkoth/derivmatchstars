@@ -16,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.3.0-stable-rank-shadow",
+    version="3.4.0-win-lifecycle-real-connect",
 )
 
 
@@ -96,7 +96,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.3.0-stable-rank-shadow",
+        "version": "3.4.0-win-lifecycle-real-connect",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {

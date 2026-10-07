@@ -7670,16 +7670,65 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
         }
 
-        function switchAccount() {
-            const requestedMode = document.getElementById('accTypeToggle').checked ? 'REAL' : 'DEMO';
-            const currentMode = (localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+        async function reconnectDerivForMode(requestedMode) {
+            const mode = String(requestedMode || 'DEMO').toUpperCase();
+            const apiUrl = String(
+                window.SERVER_EXECUTION?.apiUrl ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/, '');
+
+            // Do not let an old DEMO session id pin polling to the wrong account
+            // after a REAL OAuth reconnect (or vice versa).
+            if (window.SERVER_EXECUTION) {
+                window.SERVER_EXECUTION.sessionId = null;
+                window.SERVER_EXECUTION.state = null;
+                window.SERVER_EXECUTION.lastCandidateSent = null;
+            }
+
+            sessionStorage.removeItem('dms_server_session_id');
+            try { localStorage.removeItem('dms_server_session_id'); } catch (_) {}
+
+            sessionStorage.setItem('selectedAccountMode', mode);
+            localStorage.setItem('selectedAccountMode', mode);
+            localStorage.setItem('requestedAccountMode', mode);
+
+            const res = await fetch(
+                `${apiUrl}/auth/deriv/start?mode=${encodeURIComponent(mode)}`,
+                { method: 'GET', cache: 'no-store' }
+            );
+
+            let data = null;
+            try { data = await res.json(); } catch (_) {}
+
+            if (!res.ok || !data?.authorization_url) {
+                throw new Error(
+                    data?.detail ||
+                    `Could not start ${mode} Deriv authorization (${res.status})`
+                );
+            }
+
+            window.location.assign(data.authorization_url);
+        }
+
+        async function switchAccount() {
+            const toggle = document.getElementById('accTypeToggle');
+            const requestedMode = toggle?.checked ? 'REAL' : 'DEMO';
+            const currentMode = (
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
 
             if (requestedMode === currentMode) return;
 
-            localStorage.setItem('requestedAccountMode', requestedMode);
-            log(`🔄 Switching from ${currentMode} to ${requestedMode} requires Deriv authorization`, 'SYSTEM');
-            alert(`To switch to ${requestedMode}, reconnect through Deriv so the correct account can be selected.`);
-            window.location.replace('/');
+            try {
+                log(`🔄 Connecting ${requestedMode} Deriv Options account…`, 'SYSTEM');
+                await reconnectDerivForMode(requestedMode);
+            } catch (err) {
+                if (toggle) toggle.checked = currentMode === 'REAL';
+                alert(`Could not connect ${requestedMode} account: ${err.message}`);
+                log(`❌ ${requestedMode} account connection failed: ${err.message}`, 'ERROR');
+            }
         }
 
         // TRADE STATUS UI FUNCTIONS
@@ -11670,6 +11719,15 @@ window.executionLock = true;
                     resultClass = 'text-xs font-bold text-green-300';
                     break;
 
+                case 'FAST_WON':
+                    result = 'WIN ✅';
+                    status = `Cycle won on trade ${tradeNo} · P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
+                        : 'Cycle complete · START BOT is ready for another cycle';
+                    resultClass = 'text-xs font-bold text-green-300';
+                    break;
+
                 case 'MAX_TRADES_REACHED':
                     result = 'MAX TRADES';
                     status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
@@ -12022,6 +12080,68 @@ window.executionLock = true;
             }
         }
 
+
+        function syncServerTerminalLifecycle(st) {
+            try {
+                if (!window.SERVER_EXECUTION?.enabled || !st) return;
+
+                const phase = String(st.phase || '').toUpperCase();
+                const demoMode = String(st.account_mode || '').toUpperCase() === 'DEMO';
+                const autoContinue = !!window.SERVER_EXECUTION.continuousResearch && demoMode;
+
+                // A win is terminal at FAST_WON. Wait until the authoritative
+                // settlement has cleared open_contract_id before either
+                // restarting or resetting the local START/STOP control.
+                if (phase === 'FAST_WON' || phase === 'WON') {
+                    if (st.open_contract_id) return;
+
+                    if (autoContinue) {
+                        maybeScheduleContinuousServerResearch();
+                        return;
+                    }
+
+                    // Server has already stopped buying. Mirror that state in
+                    // the browser so the button becomes START BOT again.
+                    if (window.isBotRunning === true) {
+                        stopBot('Confirmed DIGITMATCH win');
+                    }
+                    return;
+                }
+
+                // A tail/max-trade stop is always terminal. Do not silently
+                // restart another cycle after hitting the user's loss cap.
+                if (phase === 'MAX_TRADES_REACHED') {
+                    if (window.SERVER_EXECUTION) {
+                        window.SERVER_EXECUTION.continuousRestartPending = false;
+                        if (window.SERVER_EXECUTION.continuousRestartTimer) {
+                            clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
+                            window.SERVER_EXECUTION.continuousRestartTimer = null;
+                        }
+                    }
+
+                    if (window.isBotRunning === true) {
+                        stopBot('Maximum trades reached');
+                    }
+                    return;
+                }
+
+                // Any server-side hard stop should also release the stale STOP
+                // button in the browser.
+                if (
+                    ['STOPPED', 'BUY_UNCERTAIN_STOPPED', 'BUY_CLAIM_LOST',
+                     'BUY_SEQUENCE_MISMATCH', 'RECONCILE_MISMATCH'].includes(phase)
+                    && !st.running
+                    && !st.open_contract_id
+                    && window.isBotRunning === true
+                ) {
+                    stopBot(st.last_error || phase);
+                }
+
+            } catch (err) {
+                console.warn('Server terminal lifecycle sync failed:', err);
+            }
+        }
+
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
@@ -12174,7 +12294,7 @@ window.executionLock = true;
                 ).toUpperCase() === 'DEMO';
 
                 continuousBtn.textContent =
-                    `Continuous Research: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
+                    `Auto Continue After Win: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
 
                 continuousBtn.disabled = !demoMode;
                 continuousBtn.className = s.continuousResearch && demoMode
@@ -12216,6 +12336,7 @@ window.executionLock = true;
 
             
             renderServerTradeNarrative(st);
+            try { syncServerTerminalLifecycle(st); } catch (_) {}
         }
 
         async function serverExecRequest(path, options = {}) {
@@ -12545,7 +12666,7 @@ window.executionLock = true;
             ).toUpperCase();
 
             if (mode !== 'DEMO') {
-                alert('Continuous Research is available only for DEMO accounts.');
+                alert('Auto Continue is available only for DEMO accounts.');
                 return;
             }
 
@@ -12574,7 +12695,7 @@ window.executionLock = true;
             renderServerExecutionState();
 
             log(
-                `🧪 Continuous DEMO Research ${s.continuousResearch ? 'ON' : 'OFF'}`,
+                `🔁 Auto Continue After Win ${s.continuousResearch ? 'ON' : 'OFF'}`,
                 'SYSTEM'
             );
         }
@@ -12666,7 +12787,7 @@ window.executionLock = true;
                 triggerPhase || state.phase || ''
             ).toUpperCase();
 
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(terminalPhase)) {
+            if (!['WON', 'FAST_WON'].includes(terminalPhase)) {
                 return;
             }
 
@@ -12675,12 +12796,10 @@ window.executionLock = true;
 
             try {
                 updateTradeStatus(
-                    terminalPhase === 'WON' ? 'WIN ✅' : 'CYCLE COMPLETE',
-                    terminalPhase === 'WON'
-                        ? `Cycle won · preparing next DEMO research cycle`
-                        : `Maximum trades reached · preparing next research cycle`,
-                    'Stopping completed cycle before starting the next candidate…',
-                    terminalPhase === 'WON' ? 'win' : 'normal'
+                    'WIN ✅',
+                    `Cycle won · preparing next DEMO cycle`,
+                    'Waiting for final settlement, then starting a fresh cycle…',
+                    'win'
                 );
 
                 // User requirement: the bot should STOP the completed cycle
@@ -12783,7 +12902,7 @@ window.executionLock = true;
 
             const phase = String(st.phase || '').toUpperCase();
 
-            if (!['WON', 'MAX_TRADES_REACHED'].includes(phase)) {
+            if (!['WON', 'FAST_WON'].includes(phase)) {
                 return;
             }
 
@@ -12828,6 +12947,18 @@ window.executionLock = true;
 
         async function ensureServerResearchSession() {
             const s = window.SERVER_EXECUTION;
+
+            const selectedMode = String(
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            // Background research-session bootstrap is DEMO-only. Never create
+            // a DEMO session behind the user's back while REAL is selected.
+            if (selectedMode !== 'DEMO') {
+                return;
+            }
 
             if (
                 !s?.enabled ||
@@ -12969,13 +13100,41 @@ window.executionLock = true;
             try {
                 const rows = await serverExecRequest('/sessions');
 
-                s.state = s.sessionId
-                    ? (
-                        rows.find(
-                            x => Number(x.id) === Number(s.sessionId)
-                        ) || rows[0] || null
-                    )
-                    : (rows[0] || null);
+                const selectedMode = String(
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                const modeRow = (rows || []).find(
+                    x => String(x.account_mode || '').toUpperCase() === selectedMode
+                ) || null;
+
+                const idRow = s.sessionId
+                    ? (rows || []).find(
+                        x => Number(x.id) === Number(s.sessionId)
+                    ) || null
+                    : null;
+
+                // Prefer the stored id only when it belongs to the currently
+                // selected DEMO/REAL mode. Otherwise adopt the correct-mode row.
+                s.state = (
+                    idRow &&
+                    String(idRow.account_mode || '').toUpperCase() === selectedMode
+                )
+                    ? idRow
+                    : (modeRow || null);
+
+                if (
+                    s.state &&
+                    Number(s.sessionId || 0) !== Number(s.state.id || 0)
+                ) {
+                    s.sessionId = Number(s.state.id);
+                    sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
+                    try {
+                        localStorage.setItem('dms_server_session_id', String(s.sessionId));
+                    } catch (_) {}
+                }
 
                 // Adopt an already-persisted backend session after browser
                 // reload rather than waiting for START BOT.
@@ -13108,6 +13267,18 @@ window.executionLock = true;
             if (!account) {
                 throw new Error(
                     `No ${cfg.requested_mode} Deriv Options account is connected.`
+                );
+            }
+
+            if (wanted === 'real') {
+                // REAL OAuth/account selection is supported. Automated
+                // unattended live-money execution remains intentionally
+                // disabled by the backend in this build.
+                sessionStorage.setItem('selectedAccountMode', 'REAL');
+                localStorage.setItem('selectedAccountMode', 'REAL');
+                throw new Error(
+                    `REAL account ${account.account_id} is connected successfully. ` +
+                    `Automated REAL-money execution is disabled in this build.`
                 );
             }
 
