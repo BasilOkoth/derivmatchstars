@@ -732,7 +732,7 @@
 <button class="server-exec-btn bg-slate-700 hover:bg-slate-600" onclick="configureServerExecutionUrl()" type="button">Backend URL</button>
 <button class="server-exec-btn bg-emerald-700 hover:bg-emerald-600" id="serverContinuousResearchBtn" onclick="toggleServerContinuousResearch()" type="button">Continuous Research: ON</button>
 <button class="server-exec-btn bg-amber-700 hover:bg-amber-600 hidden" id="serverRealConfirmBtn" onclick="confirmServerRealTrade()" type="button">
-                            Confirm REAL Trade
+                            View REAL Preview
                         </button>
 </div>
 <div class="text-[11px] text-gray-400 mb-3">
@@ -740,7 +740,7 @@
                         A started DEMO cycle can continue after this dashboard closes. Continuous Research can
                         automatically begin a fresh DEMO cycle after a win while this dashboard remains open,
                         so the browser can select and freeze the next AI candidate and record research.
-                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
+                        REAL mode is preview-only: the server may prepare proposal details for review, but no real-money purchase is submitted.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -11589,6 +11589,24 @@ window.executionLock = true;
                     resultClass = 'text-xs font-bold text-emerald-300';
                     break;
 
+                case 'REAL_PREVIEW_PREPARING':
+                    result = 'REAL PREVIEW';
+                    status = hasDigit
+                        ? `Preparing read-only DIGITMATCH ${digit} proposal · Stake $${stake.toFixed(2)}`
+                        : 'Preparing read-only REAL proposal';
+                    action = 'No purchase will be submitted.';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
+                case 'REAL_PREVIEW_READY':
+                    result = 'REAL PREVIEW READY 🔎';
+                    status = hasDigit
+                        ? `DIGITMATCH ${digit} · Stake $${stake.toFixed(2)} · preview only`
+                        : 'REAL proposal details prepared for review';
+                    action = 'Execution disabled · no real-money purchase was submitted.';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
                 case 'REQUESTING_PROPOSAL':
                     result = 'PREPARING TRADE';
                     status = hasDigit
@@ -12989,17 +13007,14 @@ window.executionLock = true;
         }
 
         async function confirmServerRealTrade() {
+            // Compatibility shim for older markup/callers.
+            // REAL mode is intentionally preview-only and never submits a buy.
             const s = window.SERVER_EXECUTION;
             if (!s.enabled) return;
-            if (!confirm('Confirm this REAL-money DigitMatch purchase?')) return;
-            try {
-                if (!s.sessionId) throw new Error('No server session selected.'); await serverExecRequest(`/sessions/${s.sessionId}/real/confirm`, {method:'POST'});
-                await pollServerExecutionState();
-                log('✅ REAL trade confirmed and submitted by server.', 'SYSTEM');
-            } catch (e) {
-                alert(e.message);
-                log(`❌ REAL confirmation failed: ${e.message}`, 'ERROR');
-            }
+            await pollServerExecutionState();
+            renderServerExecutionState();
+            alert('REAL mode is preview-only in this build. No real-money purchase was submitted.');
+            log('🔎 REAL preview only · no purchase submitted.', 'SYSTEM');
         }
 
         // In SERVER mode, the browser must never submit proposals/buys.
@@ -13008,6 +13023,16 @@ window.executionLock = true;
         function executeTrade(tick) {
             if (window.SERVER_EXECUTION?.enabled) {
                 log('☁ Browser trade submission suppressed — server owns execution.', 'SYSTEM');
+                return;
+            }
+            if (accountMode() === 'REAL') {
+                log('🔎 REAL mode is preview-only · browser proposal/buy flow blocked.', 'SYSTEM');
+                updateTradeStatus(
+                    'REAL PREVIEW ONLY',
+                    'No real-money purchase was submitted',
+                    'Use server mode to prepare read-only proposal details for review.',
+                    'normal'
+                );
                 return;
             }
             const contractType = document.getElementById('contractType').value;
@@ -13913,6 +13938,12 @@ window.isBotRunning = true;
         }
 
         function executeBuy(proposal_id, ask_price, pending) {
+            if (accountMode() === 'REAL') {
+                log('🛑 REAL-money buy blocked · preview-only build.', 'ERROR');
+                rollbackUnsentTrade(pending?.stake || window.currentStake);
+                return;
+            }
+
             const numericAskPrice = Number(ask_price);
             if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
                 log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
