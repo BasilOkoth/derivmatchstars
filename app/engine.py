@@ -517,15 +517,10 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # After every active trade, the exact next-loss proposal should
-                # already be pre-armed. At a 3-loss boundary that proposal was
-                # prepared for a freshly ranked target with the failed digit
-                # excluded.
-                recycle_due = (
-                    int(s.current_trade) > 0
-                    and int(s.current_trade) % int(self.digit_scorer.recycle_after) == 0
-                )
-
+                # LIVE V1 RECOVERY:
+                # the next-loss proposal is prepared while the current contract
+                # is still active using the latest V1 rank #1 digit. The current
+                # purchased contract remains fixed; only the NEXT trade changes.
                 expected_trade_no = int(s.current_trade) + 1
                 expected_stake = round(
                     float(s.current_stake) * float(s.multiplier),
@@ -534,8 +529,8 @@ class MultiUserEngine:
 
                 payload = self.prefetched_recovery.pop(sid, None)
 
-                # If the one prefetch request is still in flight, wait for that
-                # SAME request. Never start a parallel duplicate proposal.
+                # Wait only for the single already-started prefetch. Never launch
+                # a duplicate proposal in parallel.
                 if not payload:
                     prefetch_task = self.prefetch_tasks.get(sid)
                     if prefetch_task and not prefetch_task.done():
@@ -545,22 +540,18 @@ class MultiUserEngine:
                             pass
                         payload = self.prefetched_recovery.pop(sid, None)
 
-                # At recycle boundaries the target comes directly from the
-                # preplanned proposal. This makes target switching local and
-                # zero-network-latency.
-                if recycle_due and payload and payload.get("digit") is not None:
-                    failed_digit = int(s.candidate_digit)
-                    planned_digit = int(payload.get("digit"))
-                    if planned_digit != failed_digit:
-                        s.candidate_digit = planned_digit
-                        # Keep the execution snapshot frozen when the proposal
-                        # was pre-armed. Live scoring continues separately for
-                        # research/UI and must not overwrite block evidence.
-                        s.phase = (
-                            f"TARGET_RECYCLED_TO_{int(s.candidate_digit)}"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
+                # If the prearmed proposal exists, its digit IS the next target.
+                if payload and payload.get("digit") is not None:
+                    next_digit = int(payload.get("digit"))
+                    old_digit = int(s.candidate_digit)
+                    s.candidate_digit = next_digit
+                    s.phase = (
+                        f"LIVE_RANK_SWITCH_{old_digit}_TO_{next_digit}"
+                        if next_digit != old_digit
+                        else f"LIVE_RANK_KEEP_{next_digit}"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
 
                 s.current_stake = expected_stake
                 s.phase = "FAST_RECOVERING"
@@ -580,24 +571,19 @@ class MultiUserEngine:
                 )
 
                 if not valid_prefetch:
-                    # Exceptional fallback only. The worker remains inside the
-                    # FAST recovery path and is not allowed to fall back to the
-                    # normal REQUESTING_PROPOSAL state.
+                    # Exceptional fallback: rescore NOW and use the current live
+                    # V1 rank #1. This is the only path allowed to make a fresh
+                    # proposal after a loss.
                     s.phase = "FAST_RECOVERY_PREFETCH_MISSED"
                     s.updated_at = datetime.utcnow()
                     db.commit()
 
-                    if recycle_due:
-                        failed_digit = int(
-                            current_fast.get("target_digit", s.candidate_digit)
-                        )
-                        new_digit, _ = self._choose_scored_digit(
-                            sid,
-                            exclude_digit=failed_digit,
-                            lock_target=True,
-                        )
-                        if new_digit is not None:
-                            s.candidate_digit = int(new_digit)
+                    new_digit, _ = self._choose_scored_digit(
+                        sid,
+                        lock_target=True,
+                    )
+                    if new_digit is not None:
+                        s.candidate_digit = int(new_digit)
 
                     currency = await self._currency_for(db, s)
                     client = await self._client(user_id, account_id)
@@ -1086,29 +1072,21 @@ class MultiUserEngine:
         # Rebind local reference after commit.
         s = db.get(TradingSession, row.id)
 
-        # PRE-ARM FIRST.
+        # PRE-ARM FIRST: always use the freshest V1 rank #1 as the NEXT
+        # target if the current contract loses. This keeps the network proposal
+        # outside the result-critical path while allowing target changes every loss.
         if s.current_trade < s.max_trades:
             existing = self.prefetch_tasks.get(s.id)
 
             if not existing or existing.done():
-                recycle_on_loss = (
-                    int(s.current_trade) > 0
-                    and int(s.current_trade)
-                    % int(self.digit_scorer.recycle_after)
-                    == 0
-                )
-
                 planned_digit = int(s.candidate_digit)
 
-                if recycle_on_loss:
-                    failed_digit = int(s.candidate_digit)
-                    candidate, _snapshot = self._choose_scored_digit(
-                        s.id,
-                        exclude_digit=failed_digit,
-                        lock_target=True,
-                    )
-                    if candidate is not None:
-                        planned_digit = int(candidate)
+                candidate, _snapshot = self._choose_scored_digit(
+                    s.id,
+                    lock_target=True,
+                )
+                if candidate is not None:
+                    planned_digit = int(candidate)
 
                 next_stake = round(
                     float(s.current_stake)

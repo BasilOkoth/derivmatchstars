@@ -16,7 +16,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.4.0-win-lifecycle-real-connect",
+    version="3.5.0-live-v1-rank-recovery",
 )
 
 
@@ -96,11 +96,11 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.4.0-win-lifecycle-real-connect",
+        "version": "3.5.0-live-v1-rank-recovery",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
-            "name": "DIGIT_SCORE_RECYCLE",
+            "name": "DIGIT_SCORE_V1_LIVE_RANK_RECOVERY",
             "recycle_after_losses": int(
                 getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
             ),

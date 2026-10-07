@@ -869,7 +869,7 @@
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
-                            Choose any positive Max Trades value. Target recycle remains fixed at 3 losses.
+                            Choose any positive Max Trades value. Target recycle remains fixed at V1 #1 after every loss.
                         </p>
 </div>
 <!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
@@ -11580,6 +11580,32 @@ window.executionLock = true;
             let action = 'Waiting for the next action';
             let resultClass = 'text-xs font-bold text-cyan-300';
 
+            if (phase.startsWith('LIVE_RANK_SWITCH_')) {
+                const parts = phase.replace('LIVE_RANK_SWITCH_', '').split('_TO_');
+                result = 'LIVE V1 SWITCH ⚡';
+                status = `Target ${parts[0] || '—'} → ${parts[1] || '—'} · next stake $${stake.toFixed(2)}`;
+                action = 'Latest V1 rank #1 is pre-armed for the next trade';
+                resultClass = 'text-xs font-bold text-cyan-300';
+                resultEl.textContent = result;
+                resultEl.className = resultClass;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
+                return;
+            }
+
+            if (phase.startsWith('LIVE_RANK_KEEP_')) {
+                const d = phase.replace('LIVE_RANK_KEEP_', '');
+                result = 'LIVE V1 HOLD';
+                status = `Digit ${d} remains V1 rank #1 · next stake $${stake.toFixed(2)}`;
+                action = 'Same top-ranked digit is pre-armed for the next trade';
+                resultClass = 'text-xs font-bold text-cyan-300';
+                resultEl.textContent = result;
+                resultEl.className = resultClass;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
+                return;
+            }
+
             switch (phase) {
                 case 'CONFIGURED':
                     result = 'READY';
@@ -11829,19 +11855,19 @@ window.executionLock = true;
                         <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
                     </div>
                     <div class="text-right">
-                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recycle rule</div>
-                        <div class="text-sm font-black text-white">3 losses</div>
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recovery rule</div>
+                        <div class="text-sm font-black text-white">V1 #1 after every loss</div>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-4 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Target</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Active Target</div>
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Attempt</div>
-                        <div id="recycle-attempt" class="text-lg font-black text-white">— / 3</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next Rule</div>
+                        <div id="recycle-attempt" class="text-sm font-black text-white">LIVE #1</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
                         <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
@@ -11874,7 +11900,7 @@ window.executionLock = true;
                 </div>
 
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V1 Stable execution · Trigger Fusion runs in SHADOW only and cannot change the target.
+                    DigitScore V1 Live-Rank execution · current contract stays fixed; after every loss the next trade uses the latest V1 rank #1. Trigger Fusion remains SHADOW only.
                 </div>
             `;
             host.appendChild(el);
@@ -11900,7 +11926,7 @@ window.executionLock = true;
                     ? String(st.candidate_digit)
                     : '—';
             }
-            if (attemptEl) attemptEl.textContent = attempt ? `${attempt} / 3` : '— / 3';
+            if (attemptEl) attemptEl.textContent = 'LIVE #1';
             if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
             if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
 
@@ -11927,7 +11953,7 @@ window.executionLock = true;
             if (stateEl) {
                 const margin = Number(score.top_margin);
                 const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
-                stateEl.textContent = `ACTIVE ${Number.isInteger(activeTarget) ? activeTarget : '—'} · live V1 rank ${selected}${marginText}`;
+                stateEl.textContent = `ACTIVE ${Number.isInteger(activeTarget) ? activeTarget : '—'} · NEXT V1 #1 ${selected}${marginText}`;
             }
 
             const strengthEl = document.getElementById('score-strength');
