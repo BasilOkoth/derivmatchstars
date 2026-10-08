@@ -12,7 +12,7 @@
     '/candidate-tick-dna-v3-shadow.js?v=3.7-exact-aligned-cloud',
     '/passive-forward-readiness-v1.js?v=1.0',
     '/trade-alignment-export.js?v=1.0',
-    '/tick-rank-sync-v1.js?v=1.0'
+    '/tick-rank-sync-v1.1.js?v=1.1'
   ];
 
   function alreadyLoaded(src) {
@@ -20,7 +20,10 @@
     return Array.from(document.scripts).some(s => {
       try {
         const existing = new URL(s.src, location.href);
-        return existing.pathname === requested.pathname && existing.search === requested.search;
+        return (
+          existing.pathname === requested.pathname &&
+          existing.search === requested.search
+        );
       } catch (_) {
         return false;
       }
@@ -30,6 +33,7 @@
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       if (alreadyLoaded(src)) return resolve();
+
       const el = document.createElement('script');
       el.src = src;
       el.async = false;
@@ -41,12 +45,21 @@
   }
 
   async function start() {
-    for (const src of scripts) await loadScript(src);
-    console.info('[DMS Research Add-on] Passive research + canonical tick/rank sync active.');
+    for (const src of scripts) {
+      await loadScript(src);
+    }
+
+    console.info(
+      '[DMS Research Add-on] Passive research + canonical tick/rank sync v1.1 loaded.'
+    );
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => start().catch(err => console.error('[DMS Research Add-on]', err)), { once: true });
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => start().catch(err => console.error('[DMS Research Add-on]', err)),
+      { once: true }
+    );
   } else {
     start().catch(err => console.error('[DMS Research Add-on]', err));
   }

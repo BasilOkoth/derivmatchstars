@@ -1,30 +1,22 @@
-DigitMatchStar Telegram Settlement Confirmation Fix v3.1
+DigitMatchStar Canonical Tick ↔ Rank Sync V2
 
-ROOT CAUSE
-The server settlement was available, but bot.html's matchstarPublisher stripped:
-- settlementConfirmed
-- settlementContractId
-- cyclePnlAuthoritative
+Upload:
+1. app/__init__.py                         NEW FILE
+2. tick-rank-sync-v1.1.js                 NEW FILE
+3. research-suite-loader.js               REPLACE EXISTING FILE
 
-before sending the payload to /api/publish-cycle.
+Then redeploy/restart the backend and refresh the frontend.
 
-At the same time, the old cyclePerformance recorder was still independently
-publishing WIN cycles without any settlement metadata.
+Expected panel when synchronized:
+Browser tick       digit X  e: N
+Server tick        digit X  e: N
+V1 #1              digit Y  e: N
+Shadow pick        digit Z  e: N
+NEXT target        digit Y  e: N
+Badge: EXACT SAME EPOCH ✓
 
-FIX
-- settlement metadata is now forwarded end-to-end
-- old cycle recorder no longer publishes WINs
-- matchstarPublisher refuses any unconfirmed WIN
-- /api/publish-cycle holds unconfirmed WIN payloads with HTTP 202
-- Telegram no longer prints "Settlement confirmation unavailable"
-- only the exact Deriv-settled winning contract can produce a WIN post
+The open contract target remains frozen and is intentionally not required
+to equal the newest V1/NEXT target.
 
-FULL FILES INCLUDED
-- bot.html
-- api/publish-cycle.js
-- app/engine.py
-- app/main.py
-- app/digit_score.py
-- app/deriv_ws.py
-
-Upload the complete files to the same repository paths and redeploy.
+This update changes provenance/reporting only; it does not place trades or
+change the execution strategy.
