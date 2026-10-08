@@ -1,6 +1,6 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Auto-loads passive forward readiness research in addition to the existing labs.
+ * Auto-loads passive forward readiness research plus canonical tick/rank sync.
  */
 (() => {
   'use strict';
@@ -11,7 +11,8 @@
     '/tick-dna-tail-validation-v2.js?v=2.6-hardstop',
     '/candidate-tick-dna-v3-shadow.js?v=3.7-exact-aligned-cloud',
     '/passive-forward-readiness-v1.js?v=1.0',
-    '/trade-alignment-export.js?v=1.0'
+    '/trade-alignment-export.js?v=1.0',
+    '/tick-rank-sync-v1.js?v=1.0'
   ];
 
   function alreadyLoaded(src) {
@@ -19,10 +20,7 @@
     return Array.from(document.scripts).some(s => {
       try {
         const existing = new URL(s.src, location.href);
-        return (
-          existing.pathname === requested.pathname &&
-          existing.search === requested.search
-        );
+        return existing.pathname === requested.pathname && existing.search === requested.search;
       } catch (_) {
         return false;
       }
@@ -32,35 +30,23 @@
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       if (alreadyLoaded(src)) return resolve();
-
       const el = document.createElement('script');
       el.src = src;
       el.async = false;
       el.dataset.dmsResearchAddon = '1';
       el.onload = resolve;
-      el.onerror = () => reject(
-        new Error(`Failed to load ${src}`)
-      );
+      el.onerror = () => reject(new Error(`Failed to load ${src}`));
       document.head.appendChild(el);
     });
   }
 
   async function start() {
-    for (const src of scripts) {
-      await loadScript(src);
-    }
-
-    console.info(
-      '[DMS Research Add-on] Passive forward readiness research is auto-running; START BOT is not required.'
-    );
+    for (const src of scripts) await loadScript(src);
+    console.info('[DMS Research Add-on] Passive research + canonical tick/rank sync active.');
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener(
-      'DOMContentLoaded',
-      () => start().catch(err => console.error('[DMS Research Add-on]', err)),
-      { once: true }
-    );
+    document.addEventListener('DOMContentLoaded', () => start().catch(err => console.error('[DMS Research Add-on]', err)), { once: true });
   } else {
     start().catch(err => console.error('[DMS Research Add-on]', err));
   }

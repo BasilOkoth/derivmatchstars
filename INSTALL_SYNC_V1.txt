@@ -1,0 +1,33 @@
+DigitMatchStar Canonical Tick ↔ Rank Sync v1.0
+
+FILES TO UPLOAD TO GITHUB
+1. app/engine.py
+   Replace the current app/engine.py.
+
+2. tick-rank-sync-v1.js
+   Add this file at the repository root.
+
+3. research-suite-loader.js
+   Replace the current root research-suite-loader.js.
+
+DEPLOY
+- Commit the three files.
+- Redeploy/restart the Render backend so the new engine.py is active.
+- Redeploy/refresh the frontend.
+- Hard-refresh the browser once after deployment.
+
+WHAT CHANGES
+- Every V1 ranking snapshot is stamped with rank_epoch.
+- Shadow uses the same canonical rank epoch.
+- NEXT target is stamped with target_epoch.
+- The server snapshot exposes the canonical tick epoch/digit/quote inside digit_score.
+- Each browser canonical tick immediately requests fresh server state instead of waiting only for the 250 ms periodic poll.
+- Short retries (45/110/220 ms) handle the case where the browser sees the Deriv tick slightly before the server.
+- A Canonical Tick ↔ Rank Sync strip appears inside the Digit Score panel.
+- EXACT SAME EPOCH ✓ means browser tick, server tick, V1 rank, shadow and NEXT target all refer to the same canonical epoch.
+- The already-open contract target remains frozen. This package does not alter trade placement or settlement logic.
+
+VALIDATION
+- engine.py: Python syntax compile passed.
+- tick-rank-sync-v1.js: node --check passed.
+- research-suite-loader.js: node --check passed.
