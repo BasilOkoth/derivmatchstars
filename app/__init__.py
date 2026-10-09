@@ -7,6 +7,8 @@ Key rule:
 """
 
 import asyncio
+import json
+from datetime import datetime
 from collections import deque
 from time import monotonic
 
@@ -391,3 +393,383 @@ if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
     MultiUserEngine._handle_strategy_tick = _handle_tick_with_timeline
     MultiUserEngine.last_settlement_status = _last_settlement_with_timeline
     MultiUserEngine._dms_trade_timeline_v4 = True
+
+
+# ---------------------------------------------------------------------------
+# Target Eligibility Gate V6
+#
+# A digit may become a purchased target only when V1 rank #1 score >= 9.0.
+#
+# Behaviour:
+# - Ranking still calculates and displays all 10 digits on every canonical tick.
+# - If top score < 9.0, no proposal/buy is sent.
+# - Trade 1 waits until a future canonical tick produces score >= 9.0.
+# - After a loss, the stake advances once, then the recovery waits until a
+#   future canonical tick produces score >= 9.0.
+# - The open contract target remains immutable.
+# ---------------------------------------------------------------------------
+
+if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
+
+    MIN_TARGET_SCORE_V6 = 9.0
+
+    _original_score_all_digits_v6 = MultiUserEngine._score_all_digits
+    _original_handle_strategy_tick_v6 = MultiUserEngine._handle_strategy_tick
+    _original_step_v6 = MultiUserEngine.step
+
+    def _score_all_digits_min9(
+        self,
+        sid: int,
+        exclude_digit=None,
+    ):
+        sid = int(sid)
+
+        snapshot = _original_score_all_digits_v6(
+            self,
+            sid,
+            exclude_digit=exclude_digit,
+        )
+
+        ranking = snapshot.get("ranking") or []
+
+        raw_digit = None
+        raw_score = None
+
+        if ranking:
+            try:
+                raw_digit = int(ranking[0].get("digit"))
+            except Exception:
+                raw_digit = None
+
+            try:
+                raw_score = float(ranking[0].get("score"))
+            except Exception:
+                raw_score = None
+
+        eligible = bool(
+            snapshot.get("ready")
+            and raw_digit is not None
+            and raw_score is not None
+            and raw_score >= MIN_TARGET_SCORE_V6
+        )
+
+        snapshot["raw_selected_digit"] = raw_digit
+        snapshot["raw_top_score"] = raw_score
+        snapshot["target_min_score"] = MIN_TARGET_SCORE_V6
+        snapshot["target_eligible"] = eligible
+        snapshot["target_gate"] = "V1_TOP_SCORE_GE_9"
+
+        # selected_digit is the EXECUTION selection. Preserve the full ranking
+        # even when no digit is currently eligible.
+        snapshot["selected_digit"] = raw_digit if eligible else None
+
+        if not eligible:
+            # Never leave a stale "next target" visible/executable.
+            self.live_next_target.pop(sid, None)
+
+        # The original scorer stores this same snapshot, but assign explicitly
+        # so readers always see the gated execution state.
+        self.digit_score_snapshots[sid] = snapshot
+
+        return snapshot
+
+    async def _step_min9(self, sid: int):
+        sid = int(sid)
+
+        # Prevent the normal step loop from repeatedly trying Trade 1 while
+        # the rank is valid but below the score threshold.
+        db = SessionLocal()
+        try:
+            s = db.get(TradingSession, sid)
+
+            if (
+                s
+                and s.running
+                and not s.paused
+                and int(s.current_trade or 0) == 0
+                and not s.open_contract_id
+            ):
+                snapshot = (
+                    (getattr(self, "digit_score_snapshots", {}) or {})
+                    .get(sid)
+                    or {}
+                )
+
+                if (
+                    snapshot.get("ready")
+                    and snapshot.get("target_eligible") is False
+                ):
+                    changed = (
+                        str(s.phase or "") != "WAITING_SCORE_GE_9"
+                        or s.candidate_digit is not None
+                        or s.last_error is not None
+                    )
+
+                    if changed:
+                        s.candidate_digit = None
+                        s.phase = "WAITING_SCORE_GE_9"
+                        s.last_error = None
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+
+                    return
+
+            waiting = (
+                (getattr(self, "_dms_score9_waiting", {}) or {})
+                .get(sid)
+            )
+
+            # Recovery waiting is driven only by canonical ticks in
+            # _handle_strategy_tick_min9(). Do not let step() bypass the gate.
+            if s and waiting and s.running and not s.paused:
+                return
+
+        finally:
+            db.close()
+
+        return await _original_step_v6(self, sid)
+
+    async def _buy_waiting_score9(
+        self,
+        *,
+        sid: int,
+        user_id: str,
+        account_id: str,
+        symbol: str,
+    ):
+        sid = int(sid)
+
+        waiting_map = getattr(self, "_dms_score9_waiting", {})
+        waiting = waiting_map.get(sid)
+
+        if not waiting:
+            return False
+
+        snapshot = (
+            (getattr(self, "digit_score_snapshots", {}) or {})
+            .get(sid)
+            or {}
+        )
+
+        if not snapshot.get("target_eligible"):
+            return False
+
+        digit = snapshot.get("selected_digit")
+        if digit is None:
+            return False
+
+        digit = int(digit)
+
+        async with self._lock(sid):
+            # Re-check after acquiring the session lock.
+            waiting = waiting_map.get(sid)
+            if not waiting:
+                return False
+
+            snapshot = (
+                (getattr(self, "digit_score_snapshots", {}) or {})
+                .get(sid)
+                or {}
+            )
+
+            if not snapshot.get("target_eligible"):
+                return False
+
+            digit = snapshot.get("selected_digit")
+            if digit is None:
+                return False
+
+            digit = int(digit)
+
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+
+                if (
+                    not s
+                    or not s.running
+                    or s.paused
+                    or int(s.current_trade or 0) >= int(s.max_trades or 0)
+                ):
+                    waiting_map.pop(sid, None)
+                    return False
+
+                expected_trade_no = int(s.current_trade or 0) + 1
+
+                if expected_trade_no != int(
+                    waiting.get("trade_no") or expected_trade_no
+                ):
+                    waiting_map.pop(sid, None)
+                    return False
+
+                # The stake was advanced exactly once when the previous fast
+                # loss entered WAITING_SCORE_GE_9.
+                s.candidate_digit = digit
+                self._set_live_next_target(sid, digit)
+
+                self.locked_target_snapshots[sid] = {
+                    "digit": digit,
+                    "snapshot": json.loads(json.dumps(snapshot)),
+                    "locked_at": datetime.utcnow().isoformat(),
+                }
+
+                s.phase = "SCORE_GE_9_ELIGIBLE"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                currency = await self._currency_for(db, s)
+                client = await self._client(user_id, account_id)
+
+                payload = await self._request_proposal_payload(
+                    client,
+                    symbol=s.symbol,
+                    digit=digit,
+                    stake=s.current_stake,
+                    trade_no=expected_trade_no,
+                    currency=currency,
+                )
+
+                ok = await self._execute_buy(
+                    db,
+                    s,
+                    client,
+                    payload,
+                    prearmed=True,
+                )
+
+                if ok:
+                    waiting_map.pop(sid, None)
+
+                return bool(ok)
+
+            finally:
+                db.close()
+
+    async def _handle_strategy_tick_min9(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        data,
+    ):
+        sid = int(sid)
+
+        active_before = (
+            (getattr(self, "fast_contracts", {}) or {})
+            .get(sid)
+        )
+
+        active_contract_before = (
+            str(active_before.get("contract_id") or "")
+            if isinstance(active_before, dict)
+            else ""
+        )
+
+        active_was_undecided = bool(
+            isinstance(active_before, dict)
+            and not active_before.get("decided")
+        )
+
+        await _original_handle_strategy_tick_v6(
+            self,
+            sid=sid,
+            user_id=user_id,
+            account_id=account_id,
+            symbol=symbol,
+            data=data,
+        )
+
+        snapshot = (
+            (getattr(self, "digit_score_snapshots", {}) or {})
+            .get(sid)
+            or {}
+        )
+
+        if not hasattr(self, "_dms_score9_waiting"):
+            self._dms_score9_waiting = {}
+
+        waiting_map = self._dms_score9_waiting
+
+        # If a current contract just fast-lost on a tick whose new top score is
+        # below 9, the underlying engine intentionally receives
+        # selected_digit=None. It therefore enters RERANK_NOT_READY. Convert
+        # that technical state into our deliberate "wait for >= 9" state.
+        active_after = (
+            (getattr(self, "fast_contracts", {}) or {})
+            .get(sid)
+        )
+
+        just_lost = bool(
+            active_was_undecided
+            and isinstance(active_after, dict)
+            and str(active_after.get("contract_id") or "")
+                == active_contract_before
+            and str(active_after.get("fast_result") or "").upper()
+                == "LOSS"
+        )
+
+        if (
+            just_lost
+            and snapshot.get("ready")
+            and snapshot.get("target_eligible") is False
+        ):
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+
+                if s and int(s.current_trade or 0) < int(s.max_trades or 0):
+                    # Advance martingale stake ONCE for the next trade.
+                    # The original engine calculates this value but does not
+                    # assign it when selected_digit is None.
+                    next_stake = round(
+                        float(s.current_stake)
+                        * float(s.multiplier),
+                        2,
+                    )
+
+                    s.current_stake = next_stake
+                    s.candidate_digit = None
+                    s.running = True
+                    s.paused = False
+                    s.phase = "WAITING_SCORE_GE_9"
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                    self.live_next_target.pop(sid, None)
+                    self.locked_target_snapshots.pop(sid, None)
+
+                    waiting_map[sid] = {
+                        "trade_no": int(s.current_trade or 0) + 1,
+                        "stake": next_stake,
+                        "entered_after_contract": active_contract_before,
+                        "minimum_score": MIN_TARGET_SCORE_V6,
+                    }
+
+            finally:
+                db.close()
+
+            return
+
+        # While waiting after a loss, every new canonical tick is ranked.
+        # The FIRST tick whose top V1 score reaches >= 9 becomes the next
+        # executable target.
+        if sid in waiting_map:
+            if snapshot.get("target_eligible"):
+                await self._buy_waiting_score9(
+                    sid=sid,
+                    user_id=user_id,
+                    account_id=account_id,
+                    symbol=symbol,
+                )
+
+    MultiUserEngine._score_all_digits = _score_all_digits_min9
+    MultiUserEngine.step = _step_min9
+    MultiUserEngine._buy_waiting_score9 = _buy_waiting_score9
+    MultiUserEngine._handle_strategy_tick = _handle_strategy_tick_min9
+    MultiUserEngine._dms_min_score_9_v6 = True

@@ -14,7 +14,8 @@
     '/passive-forward-readiness-v1.js?v=1.0',
     '/trade-alignment-export.js?v=1.0',
     '/tick-rank-sync-v1.1.js?v=1.1',
-    '/contract-timeline-ui.js?v=4.0'
+    '/contract-timeline-ui.js?v=4.0',
+    '/target-score-threshold-ui.js?v=6.0'
   ];
 
   function alreadyLoaded(src) {
@@ -52,7 +53,7 @@
     }
 
     console.info(
-      '[DMS Research Add-on] Rank sync + contract tick timeline V4 loaded.'
+      '[DMS Research Add-on] Rank sync + contract timeline + score>=9 target gate V6 loaded.'
     );
   }
 

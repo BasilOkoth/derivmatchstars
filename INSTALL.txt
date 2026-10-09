@@ -1,68 +1,64 @@
-DigitMatchStar Contract Tick Timeline V4
+DigitMatchStar Minimum Target Score 9.0 — V6
 
-Upload these THREE replacement/new files to the repository root structure:
+UPLOAD / REPLACE THESE FILES
 
 1. app/__init__.py
 2. research-suite-loader.js
-3. contract-timeline-ui.js   [NEW]
+3. target-score-threshold-ui.js   [NEW]
 
-No change to app/engine.py is required.
+Do not replace app/engine.py.
+Do not replace app/main.py.
 
-WHAT THIS ADDS
+RULE IMPLEMENTED
 
-The dashboard now distinguishes the exact trade lifecycle:
+A digit can become a NEW target only when:
 
-Prediction Source
-  The canonical tick/epoch whose completed history produced the target.
+    V1 rank #1 score >= 9.00
 
-Active Target
-  The digit actually attached to the purchased contract.
+Examples:
 
-Eligible Result Tick
-  The first SERVER tick whose epoch is later than the contract's armed epoch.
+    #1 digit 6, score 12.40  -> target 6, eligible
+    #1 digit 6, score 8.75   -> no target, wait
+    #1 digit 4, score 9.00   -> target 4, eligible
 
-Comparison
-  Example:
-      6 = 6  -> WIN
-      6 != 4 -> LOSS
+TRADE 1
 
-It also shows:
-- contract id
-- trade number
-- armed-after epoch
-- fast result
-- official Deriv result once the same contract settles
+If the current V1 #1 score is below 9:
+- bot stays running
+- no proposal is requested
+- no BUY is sent
+- ranking keeps updating on canonical server ticks
+- the first future rank with score >= 9 becomes the target
 
-WHY THIS MATTERS
+AFTER A LOSS
 
-A visible Current Tick digit is not automatically the result tick for the
-contract. The result tick must be the first eligible server tick AFTER the
-contract was armed.
+If the loss-tick V1 #1 score is >= 9:
+- normal fast rerank continues immediately
 
-This panel makes that distinction explicit.
+If the loss-tick V1 #1 score is below 9:
+- next stake is advanced once
+- bot enters WAITING_SCORE_GE_9
+- no proposal/BUY is sent
+- every future canonical tick reranks all digits
+- first V1 #1 with score >= 9 becomes the next target
+- that same waiting stake is used; it is NOT multiplied again while waiting
 
-EXPECTED EXAMPLE
+DISPLAY
 
-Prediction Source:
-  e:1791531000 · digit 4
+The full 0–9 ranking is still visible even when no target is eligible.
+The new Target Score Gate shows:
+- V1 #1 digit
+- V1 #1 score
+- minimum target score 9.00
+- ELIGIBLE / WAITING
+- executable target or —
 
-Active Target:
-  6
+UNCHANGED
 
-Eligible Result Tick:
-  e:1791531001 · digit 6
-
-Comparison:
-  6 = 6
-
-Verdict:
-  WIN · DERIV WIN
-
-If target 6 and the eligible result digit is 6 but the official Deriv result
-is LOSS, that is a genuine mismatch worth investigating.
-
-This package preserves:
-- Rank Stream Fix V3
-- rerank-after-every-loss
+- V1 scoring mathematics
+- full 0–9 ranking
 - FAST RANK V2
-- DEMO-only automated buy protection
+- rerank-after-every-loss when score is eligible
+- Contract Tick Timeline
+- Rank Recovery V5
+- automated REAL-money BUY remains disabled
