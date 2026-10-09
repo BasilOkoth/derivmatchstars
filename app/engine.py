@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
+from time import perf_counter_ns
 from collections import deque
 
 from .db import SessionLocal
@@ -65,6 +66,9 @@ class MultiUserEngine:
         self.digit_scorer = DigitScoreEngine(recycle_after=1, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
+        self.rank_latency = {}          # sid -> current tick/rank timings
+        self.research_score_snapshots = {}  # sid -> off-path full shadow result
+        self.research_shadow_tasks = {}     # sid -> asyncio.Task
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
         # Identifies this server process in persisted execution evidence.
@@ -239,6 +243,7 @@ class MultiUserEngine:
         trade_no,
         currency,
     ):
+        proposal_started_ns = perf_counter_ns()
         proposal = await client.proposal_digitmatch(
             symbol=symbol,
             digit=digit,
@@ -246,6 +251,9 @@ class MultiUserEngine:
             duration=1,
             currency=currency,
         )
+        proposal_latency_ms = (
+            perf_counter_ns() - proposal_started_ns
+        ) / 1_000_000.0
 
         p = proposal.get("proposal") or {}
         if not p.get("id"):
@@ -262,6 +270,7 @@ class MultiUserEngine:
             "stake": float(stake),
             "trade_no": int(trade_no),
             "currency": currency,
+            "proposal_latency_ms": round(proposal_latency_ms, 4),
         }
 
     @staticmethod
@@ -305,12 +314,132 @@ class MultiUserEngine:
         return history
 
     def _score_all_digits(self, sid: int, exclude_digit=None):
-        snapshot = self.digit_scorer.rank(
-            list(self._digit_history(sid)),
-            exclude_digit=exclude_digit,
-        )
+        """
+        FAST execution rank.
+
+        Uses the exact original V1 stable score math (_stable_rows), but skips
+        Trigger Fusion shadow analysis in the critical tick -> target path.
+        Full shadow analysis is refreshed separately in a worker thread.
+        """
+        started_ns = perf_counter_ns()
+        history = list(self._digit_history(sid))
+
+        if len(history) < self.digit_scorer.min_history:
+            snapshot = {
+                "version": self.digit_scorer.VERSION,
+                "ready": False,
+                "history_count": len(history),
+                "minimum_history": self.digit_scorer.min_history,
+                "selected_digit": None,
+                "ranking": [],
+                "top_margin": None,
+                "excluded_digit": exclude_digit,
+                "recycle_after": 1,
+                "shadow": (
+                    self.research_score_snapshots.get(sid, {})
+                    .get("shadow")
+                    or {
+                        "version": getattr(
+                            self.digit_scorer,
+                            "SHADOW_VERSION",
+                            "TRIGGER_FUSION_SHADOW_V1",
+                        ),
+                        "selected_digit": None,
+                        "ranking": [],
+                        "deferred": True,
+                    }
+                ),
+            }
+        else:
+            rows = self.digit_scorer._stable_rows(
+                history,
+                exclude_digit=exclude_digit,
+            )
+            top_margin = (
+                rows[0]["score"] - rows[1]["score"]
+                if len(rows) > 1
+                else None
+            )
+            snapshot = {
+                "version": self.digit_scorer.VERSION,
+                "ready": bool(rows),
+                "history_count": len(history),
+                "minimum_history": self.digit_scorer.min_history,
+                "selected_digit": rows[0]["digit"] if rows else None,
+                "ranking": rows,
+                "top_margin": (
+                    float(top_margin)
+                    if top_margin is not None
+                    else None
+                ),
+                "excluded_digit": exclude_digit,
+                "recycle_after": 1,
+                # Latest research result is attached for display/export only.
+                # It is never allowed to delay target selection.
+                "shadow": (
+                    self.research_score_snapshots.get(sid, {})
+                    .get("shadow")
+                    or {
+                        "version": getattr(
+                            self.digit_scorer,
+                            "SHADOW_VERSION",
+                            "TRIGGER_FUSION_SHADOW_V1",
+                        ),
+                        "selected_digit": None,
+                        "ranking": [],
+                        "deferred": True,
+                    }
+                ),
+                "execution_path": "FAST_STABLE_V2",
+            }
+
+        rank_compute_ms = (
+            perf_counter_ns() - started_ns
+        ) / 1_000_000.0
+        snapshot["rank_compute_ms"] = round(rank_compute_ms, 4)
+
+        self.rank_latency[sid] = {
+            "rank_compute_ms": round(rank_compute_ms, 4),
+            "history_count": len(history),
+            "selected_digit": snapshot.get("selected_digit"),
+        }
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
+
+    async def _refresh_full_research_score(self, sid: int):
+        """Run Trigger Fusion/shadow research off the event-loop path."""
+        try:
+            history = list(self._digit_history(sid))
+            full = await asyncio.to_thread(
+                self.digit_scorer.rank,
+                history,
+            )
+            self.research_score_snapshots[sid] = full
+
+            # Attach completed shadow to the current execution snapshot without
+            # changing its selected digit or stable ranking.
+            current = self.digit_score_snapshots.get(sid)
+            if isinstance(current, dict) and isinstance(full, dict):
+                current["shadow"] = full.get("shadow") or current.get("shadow")
+                current["shadow_deferred"] = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+        finally:
+            task = self.research_shadow_tasks.get(sid)
+            if task is asyncio.current_task():
+                self.research_shadow_tasks.pop(sid, None)
+
+    def _schedule_full_research_score(self, sid: int):
+        """At most one off-path shadow calculation per session."""
+        task = self.research_shadow_tasks.get(sid)
+        if task and not task.done():
+            return
+
+        self.research_shadow_tasks[sid] = asyncio.create_task(
+            self._refresh_full_research_score(sid)
+        )
 
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
         snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
@@ -414,6 +543,7 @@ class MultiUserEngine:
         symbol,
         data,
     ):
+        tick_received_ns = perf_counter_ns()
         tick = data.get("tick") or {}
         epoch = int(tick.get("epoch") or 0)
 
@@ -434,12 +564,41 @@ class MultiUserEngine:
                     history.append(int(digit))
                     if epoch:
                         self._last_scored_epoch[sid] = int(epoch)
+                    # Critical path: stable execution rank only.
                     live_snapshot = self._score_all_digits(sid)
+                    rank_ready_ns = perf_counter_ns()
+
+                    tick_to_rank_ms = (
+                        rank_ready_ns - tick_received_ns
+                    ) / 1_000_000.0
+                    live_snapshot["tick_to_rank_ms"] = round(
+                        tick_to_rank_ms,
+                        4,
+                    )
+                    live_snapshot["rank_epoch"] = int(epoch or 0) or None
+
+                    self.rank_latency[sid] = {
+                        **self.rank_latency.get(sid, {}),
+                        "tick_to_rank_ms": round(tick_to_rank_ms, 4),
+                        "epoch": int(epoch or 0),
+                        "selected_digit": live_snapshot.get(
+                            "selected_digit"
+                        ),
+                    }
+
                     if live_snapshot.get("ready"):
                         self._set_live_next_target(
                             sid,
                             live_snapshot.get("selected_digit"),
                         )
+
+                    # Research features are useful, but never block execution.
+                    # Refresh them periodically in a worker thread.
+                    if (
+                        len(history) == self.digit_scorer.min_history
+                        or (epoch and epoch % 5 == 0)
+                    ):
+                        self._schedule_full_research_score(sid)
 
         active = self.fast_contracts.get(sid)
 
@@ -515,20 +674,18 @@ class MultiUserEngine:
                     2,
                 )
 
-                # Anything prepared before this LOSS belongs to an older
-                # ranking snapshot. Never reuse it for the next trade.
+                # Never carry a proposal from an older rank into the next trade.
                 self.prefetched_recovery.pop(sid, None)
                 stale_prefetch_task = self.prefetch_tasks.pop(sid, None)
                 if stale_prefetch_task and not stale_prefetch_task.done():
                     stale_prefetch_task.cancel()
 
-                # The current loss tick has already been appended to canonical
-                # history at the top of _handle_strategy_tick(). Rerank NOW.
+                # IMPORTANT: the loss tick was already ranked at the very top
+                # of this SAME callback. Reuse that exact snapshot instead of
+                # recalculating the same history a second time.
                 old_digit = int(s.candidate_digit)
-                new_digit, fresh_snapshot = self._choose_scored_digit(
-                    sid,
-                    lock_target=True,
-                )
+                fresh_snapshot = self.digit_score_snapshots.get(sid) or {}
+                new_digit = fresh_snapshot.get("selected_digit")
 
                 if new_digit is None:
                     s.running = False
@@ -544,12 +701,17 @@ class MultiUserEngine:
                     return
 
                 new_digit = int(new_digit)
-                s.candidate_digit = new_digit
-                self._set_live_next_target(
-                    sid,
-                    new_digit,
-                )
 
+                # Freeze the already-computed same-tick ranking as the evidence
+                # for Trade N+1.
+                self.locked_target_snapshots[sid] = {
+                    "digit": new_digit,
+                    "snapshot": json.loads(json.dumps(fresh_snapshot)),
+                    "locked_at": datetime.utcnow().isoformat(),
+                }
+
+                s.candidate_digit = new_digit
+                self._set_live_next_target(sid, new_digit)
                 s.current_stake = expected_stake
                 s.phase = (
                     f"RERANK_AFTER_LOSS_{old_digit}_TO_{new_digit}"
@@ -558,13 +720,15 @@ class MultiUserEngine:
                 )
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
-                db.commit()
 
-                # Request a proposal only AFTER the fresh rerank so Trade N+1
-                # always uses the newest post-loss rank #1.
+                # Do NOT perform an extra database commit here. SQLAlchemy will
+                # flush these values when _claim_buy() runs. This removes one
+                # PostgreSQL round trip from loss -> next BUY.
+
                 currency = await self._currency_for(db, s)
                 client = await self._client(user_id, account_id)
 
+                proposal_start_ns = perf_counter_ns()
                 payload = await self._request_proposal_payload(
                     client,
                     symbol=s.symbol,
@@ -572,6 +736,10 @@ class MultiUserEngine:
                     stake=s.current_stake,
                     trade_no=expected_trade_no,
                     currency=currency,
+                )
+                payload["post_loss_proposal_ms"] = round(
+                    (perf_counter_ns() - proposal_start_ns) / 1_000_000.0,
+                    4,
                 )
 
                 client = await self._client(user_id, account_id)
@@ -828,9 +996,8 @@ class MultiUserEngine:
             client=client,
         )
 
-        s.updated_at = datetime.utcnow()
-        db.commit()
-
+        # _claim_buy() already persisted the execution claim. Avoid an
+        # additional database round trip before sending BUY.
         armed_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
         )
@@ -990,9 +1157,8 @@ class MultiUserEngine:
 
         s = db.get(TradingSession, row.id)
 
-        # No target-specific recovery proposal is pre-armed here.
-        # The next target is intentionally unknown until this trade loses and
-        # the newest canonical tick has been included in a fresh reranking.
+        # No target-specific proposal is pre-armed while this trade is open.
+        # The next target is intentionally chosen from the eventual loss tick.
 
         cached_tick = self.latest_ticks.get(s.id)
 
