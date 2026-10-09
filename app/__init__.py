@@ -773,3 +773,125 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
     MultiUserEngine._buy_waiting_score9 = _buy_waiting_score9
     MultiUserEngine._handle_strategy_tick = _handle_strategy_tick_min9
     MultiUserEngine._dms_min_score_9_v6 = True
+
+
+# ---------------------------------------------------------------------------
+# InvalidContractProposal Recovery V7
+#
+# Deriv can explicitly reject a proposal id with:
+#   InvalidContractProposal: Unknown contract proposal
+#
+# That response means the BUY was NOT created, so this is not a genuinely
+# uncertain purchase. Safely clear the abandoned BUY_CLAIM, request one fresh
+# proposal on the current socket, and retry exactly once (DEMO only).
+# ---------------------------------------------------------------------------
+
+if not getattr(MultiUserEngine, "_dms_invalid_proposal_retry_v7", False):
+
+    _original_execute_buy_v7 = MultiUserEngine._execute_buy
+
+    async def _execute_buy_retry_invalid_proposal(
+        self,
+        db,
+        s,
+        client,
+        payload,
+        *,
+        prearmed: bool,
+    ):
+        try:
+            return await _original_execute_buy_v7(
+                self,
+                db,
+                s,
+                client,
+                payload,
+                prearmed=prearmed,
+            )
+
+        except RuntimeError as exc:
+            text = str(exc)
+            lower = text.lower()
+
+            explicit_invalid = (
+                "invalidcontractproposal" in lower
+                or "unknown contract proposal" in lower
+            )
+
+            retry_count = int(
+                payload.get("_invalid_proposal_retry_count", 0)
+                or 0
+            )
+
+            # Only retry an explicit proposal rejection, once, and only for
+            # DEMO. REAL automated BUY remains disabled in deriv_ws.py.
+            if (
+                not explicit_invalid
+                or retry_count >= 1
+                or str(getattr(s, "account_mode", "")).upper() != "DEMO"
+            ):
+                raise
+
+            sid = int(s.id)
+
+            row = (
+                db.query(TradingSession)
+                .filter(TradingSession.id == sid)
+                .with_for_update()
+                .one_or_none()
+            )
+
+            if not row:
+                raise
+
+            # Core _execute_buy marks every BUY exception as BUY_UNCERTAIN.
+            # This specific Deriv error is different: it explicitly rejected
+            # the proposal id, so no contract was created.
+            row.pending_trade_json = None
+            row.running = True
+            row.paused = False
+            row.phase = "REFRESHING_INVALID_PROPOSAL"
+            row.last_error = None
+            row.updated_at = datetime.utcnow()
+            db.commit()
+
+            # Ensure we are using the current account socket, then request a
+            # completely fresh proposal for the same digit/stake/trade.
+            fresh_client = await self._client(
+                row.user_id,
+                row.account_id,
+            )
+
+            fresh_payload = await self._request_proposal_payload(
+                fresh_client,
+                symbol=row.symbol,
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
+                trade_no=int(payload["trade_no"]),
+                currency=str(payload.get("currency") or "USD"),
+            )
+
+            fresh_payload["_invalid_proposal_retry_count"] = 1
+            fresh_payload["replaces_proposal_id"] = payload.get(
+                "proposal_id"
+            )
+
+            row = db.get(TradingSession, sid)
+            if row:
+                row.phase = "RETRYING_FRESH_PROPOSAL"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+
+            return await _original_execute_buy_v7(
+                self,
+                db,
+                row,
+                fresh_client,
+                fresh_payload,
+                prearmed=prearmed,
+            )
+
+    MultiUserEngine._execute_buy = (
+        _execute_buy_retry_invalid_proposal
+    )
+    MultiUserEngine._dms_invalid_proposal_retry_v7 = True

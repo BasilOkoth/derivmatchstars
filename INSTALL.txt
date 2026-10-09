@@ -1,64 +1,24 @@
-DigitMatchStar Minimum Target Score 9.0 — V6
+DigitMatchStar Invalid Proposal Recovery V7
 
-UPLOAD / REPLACE THESE FILES
+Replace:
+  app/__init__.py
 
-1. app/__init__.py
-2. research-suite-loader.js
-3. target-score-threshold-ui.js   [NEW]
+This keeps V6 score>=9 targeting and adds a fix for:
 
-Do not replace app/engine.py.
-Do not replace app/main.py.
+  InvalidContractProposal: Unknown contract proposal
 
-RULE IMPLEMENTED
+What changes:
+- The current engine treats every BUY exception as BUY_UNCERTAIN.
+- Deriv's InvalidContractProposal is an explicit rejection of the proposal id.
+- No contract was created in that case.
+- V7 clears the abandoned BUY_CLAIM, requests a brand-new proposal, and retries exactly once.
+- Retry is DEMO only.
+- If the fresh proposal is also rejected, the normal stop behavior remains.
 
-A digit can become a NEW target only when:
-
-    V1 rank #1 score >= 9.00
-
-Examples:
-
-    #1 digit 6, score 12.40  -> target 6, eligible
-    #1 digit 6, score 8.75   -> no target, wait
-    #1 digit 4, score 9.00   -> target 4, eligible
-
-TRADE 1
-
-If the current V1 #1 score is below 9:
-- bot stays running
-- no proposal is requested
-- no BUY is sent
-- ranking keeps updating on canonical server ticks
-- the first future rank with score >= 9 becomes the target
-
-AFTER A LOSS
-
-If the loss-tick V1 #1 score is >= 9:
-- normal fast rerank continues immediately
-
-If the loss-tick V1 #1 score is below 9:
-- next stake is advanced once
-- bot enters WAITING_SCORE_GE_9
-- no proposal/BUY is sent
-- every future canonical tick reranks all digits
-- first V1 #1 with score >= 9 becomes the next target
-- that same waiting stake is used; it is NOT multiplied again while waiting
-
-DISPLAY
-
-The full 0–9 ranking is still visible even when no target is eligible.
-The new Target Score Gate shows:
-- V1 #1 digit
-- V1 #1 score
-- minimum target score 9.00
-- ELIGIBLE / WAITING
-- executable target or —
-
-UNCHANGED
-
-- V1 scoring mathematics
-- full 0–9 ranking
-- FAST RANK V2
-- rerank-after-every-loss when score is eligible
-- Contract Tick Timeline
+Preserved:
+- minimum V1 target score >= 9.00
 - Rank Recovery V5
+- Contract Tick Timeline V4
+- rerank-after-every-loss
+- FAST RANK V2
 - automated REAL-money BUY remains disabled
