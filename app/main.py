@@ -17,7 +17,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.8.0-live-v1-target-tracking",
+    version="3.8.1-canonical-rank-cache",
 )
 
 
@@ -26,12 +26,6 @@ def _normalise_origin(value: str) -> str:
 
 
 def _cors_origins():
-    """
-    Allow the configured frontend plus the canonical DigitMatchStar domains.
-
-    This prevents a www/non-www deployment mismatch from surfacing in the
-    browser as the opaque JavaScript error: TypeError: Failed to fetch.
-    """
     values = {
         _normalise_origin(settings.frontend_url),
         "https://digitmatchstar.com",
@@ -44,8 +38,6 @@ def _cors_origins():
 
     configured = _normalise_origin(settings.frontend_url)
 
-    # If FRONTEND_URL is a custom HTTPS hostname, also tolerate the www/non-www
-    # spelling of that same hostname.
     if configured:
         try:
             parsed = urlparse(configured)
@@ -97,13 +89,13 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.8.0-live-v1-target-tracking",
+        "version": "3.8.1-canonical-rank-cache",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
             "name": "DIGIT_SCORE_V1_LIVE_RANK_RECOVERY",
             "recycle_after_losses": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
+                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 1)
             ),
         },
     }
@@ -123,51 +115,55 @@ def owns_session(db, user_id, sid):
 
 def digit_score_for_session(session_id: int):
     """
-    Compatibility wrapper around the new full engine.
+    READ ONLY.
 
-    The replacement engine exposes _score_all_digits internally. Keeping the
-    API adapter here avoids reintroducing old TAE methods into the engine.
+    /sessions must never become a scoring event. The canonical Deriv tick
+    handler is the only place that advances ranking.
     """
-    scorer = getattr(engine, "_score_all_digits", None)
+    sid = int(session_id)
+    snapshot = (
+        getattr(engine, "digit_score_snapshots", {}) or {}
+    ).get(sid)
 
-    if not callable(scorer):
-        return {
-            "ready": False,
-            "ranking": [],
-            "selected_digit": None,
-            "history_count": 0,
-            "minimum_history": 10,
-            "recycle_after": 3,
-            "error": "Digit score engine is not available",
-        }
+    if isinstance(snapshot, dict) and snapshot:
+        return snapshot
 
-    try:
-        return scorer(int(session_id))
-    except Exception as exc:
-        return {
-            "ready": False,
-            "ranking": [],
-            "selected_digit": None,
-            "history_count": 0,
-            "minimum_history": 10,
-            "recycle_after": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
-            ),
-            "error": str(exc),
-        }
+    history = (
+        getattr(engine, "digit_history", {}) or {}
+    ).get(sid)
 
+    return {
+        "version": getattr(
+            getattr(engine, "digit_scorer", None),
+            "VERSION",
+            "DIGIT_SCORE_V1_STABLE",
+        ),
+        "ready": False,
+        "ranking": [],
+        "selected_digit": None,
+        "history_count": len(history) if history is not None else 0,
+        "minimum_history": int(
+            getattr(
+                getattr(engine, "digit_scorer", None),
+                "min_history",
+                10,
+            )
+        ),
+        "recycle_after": int(
+            getattr(
+                getattr(engine, "digit_scorer", None),
+                "recycle_after",
+                1,
+            )
+        ),
+        "status": "WAITING_FOR_CANONICAL_SERVER_TICK",
+    }
 
 
 @app.post("/accounts/refresh-balances")
 async def refresh_account_balances(
     user_id: str = Depends(current_user_id),
 ):
-    """
-    Pull the latest Options account balances from Deriv and persist them.
-
-    Fixes stale balances after deposits/withdrawals. The Deriv OAuth token
-    remains server-side and is never exposed to the browser.
-    """
     db = SessionLocal()
 
     try:
@@ -299,6 +295,10 @@ def sessions(user_id: str = Depends(current_user_id)):
                 .first()
             )
 
+            active = (
+                getattr(engine, "fast_contracts", {}) or {}
+            ).get(s.id) or {}
+
             result.append(
                 {
                     "id": s.id,
@@ -316,15 +316,19 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "candidate_digit": s.candidate_digit,
                     "live_next_target": engine.live_next_target.get(s.id),
                     "open_contract_id": s.open_contract_id,
+                    "open_contract_target": active.get("target_digit"),
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
+                    "rank_latency": (
+                        getattr(engine, "rank_latency", {}) or {}
+                    ).get(s.id),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),
                             "recycle_after",
-                            3,
+                            1,
                         )
                     ),
                     "last_settlement": engine.last_settlement_status(s.id),
@@ -337,17 +341,11 @@ def sessions(user_id: str = Depends(current_user_id)):
         db.close()
 
 
-
 @app.get("/sessions/{sid}/trigger-fusion/export")
 def export_trigger_fusion(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
-    """
-    Export persisted DigitScore V2 Trigger Fusion evidence from TradeLog.
-
-    Data comes from PostgreSQL/SQLAlchemy, not browser memory.
-    """
     db = SessionLocal()
 
     try:
@@ -380,7 +378,7 @@ def export_trigger_fusion(
             dominance = shadow.get("dominance") or {}
             signals = shadow_row.get("signals") or {}
 
-            record = {
+            records.append({
                 "trade_log_id": row.id,
                 "session_id": row.trading_session_id,
                 "trade_no": row.trade_no,
@@ -396,8 +394,6 @@ def export_trigger_fusion(
                 "settlement_profit": row.profit,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "settled_at": row.settled_at.isoformat() if row.settled_at else None,
-
-                # Ranking snapshot
                 "score_version": evidence.get("score_version"),
                 "history_count": evidence.get("history_count"),
                 "selected_digit": evidence.get("selected_digit"),
@@ -405,21 +401,12 @@ def export_trigger_fusion(
                 "executed_v1_score": candidate.get("score"),
                 "top_margin": evidence.get("top_margin"),
                 "excluded_digit": evidence.get("excluded_digit"),
-
-                # Shadow Trigger Fusion research — NEVER used for execution.
                 "shadow_version": shadow.get("version"),
                 "shadow_selected_digit": shadow.get("selected_digit"),
                 "shadow_score": shadow_row.get("shadow_score"),
                 "signal_agreement": shadow_row.get("signal_agreement"),
                 "signal_total": shadow_row.get("signal_total"),
                 "strength": shadow_row.get("strength"),
-
-                # Compatibility fields
-                "final_score": candidate.get("score"),
-                "base_score": candidate.get("score"),
-                "trigger_bonus": 0.0,
-
-                # Core features
                 "gap": candidate.get("gap"),
                 "freq5": candidate.get("freq5"),
                 "freq10": candidate.get("freq10"),
@@ -433,22 +420,13 @@ def export_trigger_fusion(
                 "short_long_divergence": candidate.get("short_long_divergence"),
                 "cluster_pressure": candidate.get("cluster_pressure"),
                 "safe_tick_like": candidate.get("safe_tick_like"),
-
-                # Trigger Fusion features
                 "trend_velocity": shadow_row.get("trend_velocity"),
                 "trend_blocks": shadow_row.get("trend_blocks"),
-                "trend_bonus": None,
                 "dominance_match": shadow_row.get("dominance_match"),
-                "dominance_bonus": None,
                 "dominance_window": dominance.get("window"),
                 "dominance_margin": dominance.get("dominance_margin"),
                 "break_digit_match": shadow_row.get("break_digit_match"),
-                "break_digit_bonus": None,
                 "alternating_pair_match": shadow_row.get("alternating_pair_match"),
-                "alternating_pair_bonus": None,
-                "digit9_setup": None,
-
-                # Individual agreement signals
                 "signal_transition1": signals.get("transition1_support"),
                 "signal_transition2": signals.get("transition2_support"),
                 "signal_velocity": signals.get("trend_velocity_positive"),
@@ -456,87 +434,16 @@ def export_trigger_fusion(
                 "signal_dominance": signals.get("dominant_digit_support"),
                 "signal_break_digit": signals.get("break_digit_support"),
                 "signal_alternating_pair": signals.get("alternating_pair_support"),
-
-                # Dominance snapshot
                 "dominant_digit": dominance.get("dominant_digit"),
                 "dominant_frequency": dominance.get("dominant_frequency"),
                 "second_frequency": dominance.get("second_frequency"),
-                "dominance_snapshot_margin": dominance.get("dominance_margin"),
                 "least_frequency_digit": dominance.get("least_frequency_digit"),
                 "least_frequency": dominance.get("least_frequency"),
-
-                # Execution integrity
-                "execution_instance_id": (
-                    (raw.get("execution_integrity") or {}).get("instance_id")
-                ),
-                "buy_claim_token": (
-                    (raw.get("execution_integrity") or {}).get("buy_claim_token")
-                ),
-                "execution_prearmed": (
-                    (raw.get("execution_integrity") or {}).get("prearmed")
-                ),
-
-                # Raw evidence retained for full reproducibility
                 "evidence": evidence,
-            }
-
-            records.append(record)
-
-        # Derive cycle boundaries from trade-number reset. Consecutive
-        # duplicate Trade 1 rows remain in the same derived cycle.
-        cycle_index = 0
-        previous_trade_no = None
-        seen_by_cycle = {}
-
-        for record in records:
-            trade_no = int(record.get("trade_no") or 0)
-
-            if cycle_index == 0:
-                cycle_index = 1
-            elif trade_no == 1 and previous_trade_no != 1:
-                cycle_index += 1
-
-            record["derived_cycle"] = cycle_index
-            seen = seen_by_cycle.setdefault(cycle_index, set())
-            record["duplicate_trade_in_cycle"] = trade_no in seen
-            seen.add(trade_no)
-            previous_trade_no = trade_no
-
-        clean_records = [
-            r for r in records
-            if not r.get("duplicate_trade_in_cycle")
-        ]
-        duplicate_records = [
-            r for r in records
-            if r.get("duplicate_trade_in_cycle")
-        ]
-
-        settled = [r for r in records if r.get("status") == "SETTLED"]
-        clean_settled = [
-            r for r in clean_records
-            if r.get("status") == "SETTLED"
-        ]
-        wins = [
-            r for r in clean_settled
-            if float(r.get("settlement_profit") or 0) > 0
-        ]
-        losses = [
-            r for r in clean_settled
-            if float(r.get("settlement_profit") or 0) <= 0
-        ]
-
-        total_profit = sum(
-            float(r.get("settlement_profit") or 0)
-            for r in clean_settled
-        )
+            })
 
         return {
             "schema": "DIGITMATCHSTAR_TRIGGER_FUSION_V2_EXPORT",
-            "score_version": getattr(
-                getattr(engine, "digit_scorer", None),
-                "VERSION",
-                "DIGIT_SCORE_V2_TRIGGER_FUSION",
-            ),
             "exported_at": datetime.utcnow().isoformat(),
             "session": {
                 "id": session.id,
@@ -544,18 +451,7 @@ def export_trigger_fusion(
                 "account_mode": session.account_mode,
                 "symbol": session.symbol,
             },
-            "summary": {
-                "records_count": len(records),
-                "clean_records_count": len(clean_records),
-                "duplicates_detected": len(duplicate_records),
-                "settled_count": len(clean_settled),
-                "wins": len(wins),
-                "losses": len(losses),
-                "settlement_net_pnl": total_profit,
-            },
             "records": records,
-            "clean_records": clean_records,
-            "duplicate_records": duplicate_records,
         }
 
     finally:
@@ -567,12 +463,6 @@ def removed_tae_export(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
-    """
-    Kept only so an old browser button does not crash the API.
-
-    TAE no longer controls execution in the unified Digit Score / Recycle-3
-    trading engine.
-    """
     db = SessionLocal()
     try:
         owns_session(db, user_id, sid)
@@ -580,11 +470,11 @@ def removed_tae_export(
         db.close()
 
     return {
-        "schema": "DIGITMATCHSTAR_DIGIT_SCORE_RECYCLE3",
+        "schema": "DIGITMATCHSTAR_RERANK_EVERY_LOSS",
         "session_id": sid,
         "message": (
-            "Target Attraction execution was retired. "
-            "The active system scores digits 0-9 and recycles after 3 losses."
+            "Target Attraction execution is retired. "
+            "The active system ranks 0-9 and reranks after every loss."
         ),
         "digit_score": digit_score_for_session(sid),
     }
@@ -617,13 +507,9 @@ def create_session(
         )
 
         if not acct:
-            raise HTTPException(
-                status_code=400,
-                detail="Deriv account does not belong to this user",
-            )
+            raise HTTPException(status_code=400, detail="Deriv account does not belong to this user")
 
-        account_type = str(acct.account_type or "").lower()
-        mode = "DEMO" if account_type == "demo" else "REAL"
+        mode = "DEMO" if str(acct.account_type or "").lower() == "demo" else "REAL"
 
         s = (
             db.query(TradingSession)
@@ -651,7 +537,6 @@ def create_session(
             s.updated_at = datetime.utcnow()
             db.commit()
             db.refresh(s)
-
             return {
                 "id": s.id,
                 "account_id": s.account_id,
@@ -687,7 +572,6 @@ def create_session(
         s.current_stake = float(body.base_stake)
         s.multiplier = float(body.multiplier)
         s.max_trades = int(body.max_trades)
-
         s.current_trade = 0
         s.pnl = 0.0
         s.running = False
@@ -698,8 +582,6 @@ def create_session(
         s.phase = "CONFIGURED"
         s.updated_at = datetime.utcnow()
 
-        # Candidate may remain from a previous idle session, but Trade 1 will
-        # be rescored by the server engine from canonical history.
         db.commit()
         db.refresh(s)
 
@@ -726,37 +608,21 @@ def candidate(
     user_id: str = Depends(current_user_id),
 ):
     if body.digit < 0 or body.digit > 9:
-        raise HTTPException(
-            status_code=400,
-            detail="digit must be 0..9",
-        )
+        raise HTTPException(status_code=400, detail="digit must be 0..9")
 
     db = SessionLocal()
-
     try:
         s = owns_session(db, user_id, sid)
 
-        if s.running:
-            return {
-                "ok": True,
-                "id": s.id,
-                "phase": s.phase,
-                "already_running": True,
-                "reconciling": bool(s.open_contract_id),
-                "open_contract_id": s.open_contract_id,
-                "candidate_digit": s.candidate_digit,
-            }
-
-        if s.open_contract_id:
+        if s.running or s.open_contract_id:
             return {
                 "ok": True,
                 "session_id": s.id,
                 "candidate_digit": s.candidate_digit,
-                "reconcile_required": True,
+                "reconcile_required": bool(s.open_contract_id),
+                "already_running": bool(s.running),
             }
 
-        # This sets the initial/fallback digit only. Once the server has enough
-        # canonical history, the unified engine scores 0-9 and chooses Trade 1.
         s.candidate_digit = int(body.digit)
         s.updated_at = datetime.utcnow()
         db.commit()
@@ -789,7 +655,6 @@ def start(
             s.last_error = None
             s.updated_at = datetime.utcnow()
             db.commit()
-
             return {
                 "ok": True,
                 "id": s.id,
@@ -798,9 +663,6 @@ def start(
                 "open_contract_id": s.open_contract_id,
             }
 
-        # A fallback digit is still accepted so START never fails merely because
-        # scoring history is warming. The engine replaces it with the ranked
-        # candidate as soon as scoring is ready.
         if s.candidate_digit is None:
             s.candidate_digit = 5
 
@@ -819,7 +681,7 @@ def start(
             "candidate_digit": s.candidate_digit,
             "max_trades": s.max_trades,
             "recycle_after": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
+                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 1)
             ),
         }
 
@@ -833,19 +695,13 @@ def pause(
     user_id: str = Depends(current_user_id),
 ):
     db = SessionLocal()
-
     try:
         s = owns_session(db, user_id, sid)
         s.paused = True
         s.phase = "PAUSED"
         s.updated_at = datetime.utcnow()
         db.commit()
-
-        return {
-            "ok": True,
-            "phase": s.phase,
-        }
-
+        return {"ok": True, "phase": s.phase}
     finally:
         db.close()
 
@@ -856,27 +712,22 @@ def stop(
     user_id: str = Depends(current_user_id),
 ):
     db = SessionLocal()
-
     try:
         s = owns_session(db, user_id, sid)
-
         s.running = False
         s.paused = False
-
-        if s.open_contract_id:
-            s.phase = "STOPPED_WAITING_SETTLEMENT"
-        else:
-            s.phase = "STOPPED"
-
+        s.phase = (
+            "STOPPED_WAITING_SETTLEMENT"
+            if s.open_contract_id
+            else "STOPPED"
+        )
         s.updated_at = datetime.utcnow()
         db.commit()
-
         return {
             "ok": True,
             "phase": s.phase,
             "open_contract_id": s.open_contract_id,
         }
-
     finally:
         db.close()
 
@@ -888,14 +739,6 @@ async def confirm_real(
 ):
     try:
         await engine.confirm_real(user_id, sid)
-
-        return {
-            "ok": True,
-            "session_id": sid,
-        }
-
+        return {"ok": True, "session_id": sid}
     except Exception as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        )
+        raise HTTPException(status_code=409, detail=str(exc))
