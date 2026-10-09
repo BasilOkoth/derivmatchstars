@@ -895,3 +895,208 @@ if not getattr(MultiUserEngine, "_dms_invalid_proposal_retry_v7", False):
         _execute_buy_retry_invalid_proposal
     )
     MultiUserEngine._dms_invalid_proposal_retry_v7 = True
+
+
+# ---------------------------------------------------------------------------
+# Score>=9 Initial-Trade None Guard V8
+#
+# Fixes:
+#   PROPOSAL [.../digit None]: int() argument must be ... NoneType
+#
+# Root cause:
+# The score>=9 gate can intentionally make selected_digit=None while the
+# engine's original Trade-1 step is still allowed to continue into the normal
+# proposal path. V8 takes full ownership of Trade 1 whenever current_trade=0:
+# it either waits, or explicitly freezes an eligible digit before requesting
+# a proposal. A None digit can never reach _request_proposal_payload().
+# ---------------------------------------------------------------------------
+
+if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
+
+    _previous_step_v8 = MultiUserEngine.step
+    _previous_request_proposal_v8 = MultiUserEngine._request_proposal_payload
+
+    async def _request_proposal_payload_no_none_v8(
+        self,
+        client,
+        *,
+        symbol,
+        digit,
+        stake,
+        trade_no,
+        currency,
+    ):
+        if digit is None:
+            raise RuntimeError(
+                "SCORE_GATE_WAIT: no eligible target digit yet"
+            )
+
+        return await _previous_request_proposal_v8(
+            self,
+            client,
+            symbol=symbol,
+            digit=int(digit),
+            stake=stake,
+            trade_no=trade_no,
+            currency=currency,
+        )
+
+    async def _step_score9_trade1_v8(self, sid: int):
+        sid = int(sid)
+
+        db = SessionLocal()
+
+        try:
+            s = db.get(TradingSession, sid)
+
+            if not s or not s.running or s.paused:
+                return
+
+            # Only take over the untouched first trade. Once a contract has
+            # actually been purchased, existing core/V6 recovery logic resumes.
+            if (
+                int(s.current_trade or 0) != 0
+                or s.open_contract_id
+            ):
+                return await _previous_step_v8(self, sid)
+
+            # Make sure the canonical server tick stream exists.
+            client = await self._client(
+                s.user_id,
+                s.account_id,
+            )
+
+            await self._ensure_tick_subscription(
+                sid=s.id,
+                user_id=s.user_id,
+                account_id=s.account_id,
+                symbol=s.symbol,
+                client=client,
+            )
+
+            snapshot = (
+                (getattr(self, "digit_score_snapshots", {}) or {})
+                .get(sid)
+                or {}
+            )
+
+            # No valid score yet: wait.
+            if not snapshot.get("ready"):
+                s.candidate_digit = None
+                s.phase = "DIGIT_SCORE_WARMING"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return
+
+            # V6 sets target_eligible and selected_digit only when top score>=9.
+            eligible = bool(snapshot.get("target_eligible"))
+            digit = snapshot.get("selected_digit")
+
+            if not eligible or digit is None:
+                s.candidate_digit = None
+                s.phase = "WAITING_SCORE_GE_9"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                self.live_next_target.pop(sid, None)
+                self.locked_target_snapshots.pop(sid, None)
+                return
+
+            digit = int(digit)
+
+            # Re-check that the selected row itself satisfies the threshold.
+            selected_row = None
+            for row in snapshot.get("ranking") or []:
+                try:
+                    if int(row.get("digit")) == digit:
+                        selected_row = row
+                        break
+                except Exception:
+                    continue
+
+            try:
+                selected_score = float(
+                    (selected_row or {}).get("score")
+                )
+            except Exception:
+                selected_score = None
+
+            minimum_score = float(
+                snapshot.get("target_min_score") or 9.0
+            )
+
+            if (
+                selected_score is None
+                or selected_score < minimum_score
+            ):
+                s.candidate_digit = None
+                s.phase = "WAITING_SCORE_GE_9"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                self.live_next_target.pop(sid, None)
+                self.locked_target_snapshots.pop(sid, None)
+                return
+
+            # Freeze exactly the snapshot that qualified.
+            s.candidate_digit = digit
+            self._set_live_next_target(sid, digit)
+
+            self.locked_target_snapshots[sid] = {
+                "digit": digit,
+                "snapshot": json.loads(json.dumps(snapshot)),
+                "locked_at": datetime.utcnow().isoformat(),
+            }
+
+            s.phase = "SCORE_GE_9_ELIGIBLE"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+
+            currency = await self._currency_for(db, s)
+
+            # Final DB re-read immediately before proposal so stale/None
+            # candidate state cannot leak into the request.
+            s = db.get(TradingSession, sid)
+
+            if (
+                not s
+                or not s.running
+                or s.paused
+                or s.candidate_digit is None
+            ):
+                return
+
+            proposal_digit = int(s.candidate_digit)
+
+            payload = await self._request_proposal_payload(
+                client,
+                symbol=s.symbol,
+                digit=proposal_digit,
+                stake=s.current_stake,
+                trade_no=1,
+                currency=currency,
+            )
+
+            # If a new canonical tick changed the live ranking while the
+            # proposal was being requested, the purchased target remains the
+            # already-frozen eligible Trade-1 target.
+            return await self._execute_buy(
+                db,
+                s,
+                client,
+                payload,
+                prearmed=False,
+            )
+
+        finally:
+            db.close()
+
+    MultiUserEngine._request_proposal_payload = (
+        _request_proposal_payload_no_none_v8
+    )
+    MultiUserEngine.step = _step_score9_trade1_v8
+    MultiUserEngine._dms_score9_none_guard_v8 = True

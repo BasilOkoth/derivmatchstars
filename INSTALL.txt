@@ -1,24 +1,32 @@
-DigitMatchStar Invalid Proposal Recovery V7
+DigitMatchStar Score>=9 None Guard V8
 
 Replace:
   app/__init__.py
 
-This keeps V6 score>=9 targeting and adds a fix for:
+Fixes the exact error:
+  PROPOSAL [R_10/USD/digit None]:
+  int() argument must be ... NoneType
 
-  InvalidContractProposal: Unknown contract proposal
+Cause:
+- V6 intentionally sets selected_digit=None when V1 #1 score is below 9.
+- The original Trade-1 step could still reach the proposal path in a timing
+  window and pass candidate_digit=None.
 
-What changes:
-- The current engine treats every BUY exception as BUY_UNCERTAIN.
-- Deriv's InvalidContractProposal is an explicit rejection of the proposal id.
-- No contract was created in that case.
-- V7 clears the abandoned BUY_CLAIM, requests a brand-new proposal, and retries exactly once.
-- Retry is DEMO only.
-- If the fresh proposal is also rejected, the normal stop behavior remains.
+V8 behavior for Trade 1:
+- rank not ready -> DIGIT_SCORE_WARMING
+- top score < 9 -> WAITING_SCORE_GE_9
+- top score >= 9 -> freeze exact digit and score snapshot
+- re-read DB candidate immediately before proposal
+- proposal request is impossible with digit=None
+
+Additional hard guard:
+_request_proposal_payload() now rejects None before calling Deriv.
 
 Preserved:
-- minimum V1 target score >= 9.00
+- V1 minimum target score >= 9.00
+- V7 InvalidContractProposal fresh-proposal retry
 - Rank Recovery V5
 - Contract Tick Timeline V4
-- rerank-after-every-loss
 - FAST RANK V2
-- automated REAL-money BUY remains disabled
+- rerank-after-every-loss
+- DEMO-only automated execution
