@@ -22,8 +22,10 @@ class MultiUserEngine:
          immediate strategy decision:
             target digit == tick last digit -> WIN -> stop immediately
             target digit != tick last digit -> LOSS -> advance immediately
-      3. The next recovery proposal is pre-armed while Trade N is open.
-      4. On a fast loss, BUY Trade N+1 immediately with that pre-armed proposal.
+      3. On every fast LOSS, rerank digits 0-9 from the newest canonical
+         tick history and lock the fresh rank #1 for Trade N+1.
+      4. Request a fresh proposal for that newly ranked digit and execute the
+         next DEMO recovery trade. No old/stale target proposal is reused.
       5. Deriv proposal_open_contract settlement runs in the background only
          for authoritative P/L/accounting/reconciliation.
       6. If the fast tick result disagrees with Deriv's eventual settlement,
@@ -60,7 +62,7 @@ class MultiUserEngine:
         self.live_next_target = {}  # sid -> digit
 
         # Unified 0-9 scoring + target recycling.
-        self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+        self.digit_scorer = DigitScoreEngine(recycle_after=1, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
@@ -478,57 +480,6 @@ class MultiUserEngine:
                 ):
                     return
 
-                # Persist the exact first eligible post-purchase tick that
-                # drove the fast result. This separates a T+0 coincidence from
-                # the paid contract's T+1 decision.
-                fast_log = (
-                    db.query(TradeLog)
-                    .filter(
-                        TradeLog.trading_session_id == sid,
-                        TradeLog.contract_id == contract_id,
-                    )
-                    .order_by(TradeLog.id.desc())
-                    .first()
-                )
-
-                if fast_log:
-                    try:
-                        fast_raw = json.loads(fast_log.raw_json or "{}")
-                        if not isinstance(fast_raw, dict):
-                            fast_raw = {"previous_raw": fast_raw}
-                    except Exception:
-                        fast_raw = {"previous_raw_text": fast_log.raw_json}
-
-                    fast_evidence = fast_raw.get("dms_score_evidence") or {}
-                    if not isinstance(fast_evidence, dict):
-                        fast_evidence = {}
-
-                    alignment = fast_evidence.get("alignment") or {}
-                    if not isinstance(alignment, dict):
-                        alignment = {}
-
-                    alignment["fast_decision"] = {
-                        "target_digit": int(target_digit),
-                        "armed_after_epoch": int(armed_after_epoch),
-                        "decision_epoch": int(epoch or 0),
-                        "observed_digit": int(digit),
-                        "observed_quote": tick.get("quote"),
-                        "observed_pip_size": tick.get("pip_size"),
-                        "result": "WIN" if is_win else "LOSS",
-                        "digit_matches_target": bool(is_win),
-                        "raw_tick": dict(tick),
-                    }
-                    alignment["verdict"] = (
-                        "FAST_WIN_WAITING_DERIV"
-                        if is_win
-                        else "FAST_LOSS_WAITING_DERIV"
-                    )
-
-                    fast_evidence["alignment"] = alignment
-                    fast_raw["dms_score_evidence"] = fast_evidence
-                    fast_log.raw_json = json.dumps(fast_raw)
-                    db.flush()
-
                 if is_win:
                     self.prefetched_recovery.pop(sid, None)
 
@@ -564,86 +515,64 @@ class MultiUserEngine:
                     2,
                 )
 
-                payload = self.prefetched_recovery.pop(sid, None)
+                # Anything prepared before this LOSS belongs to an older
+                # ranking snapshot. Never reuse it for the next trade.
+                self.prefetched_recovery.pop(sid, None)
+                stale_prefetch_task = self.prefetch_tasks.pop(sid, None)
+                if stale_prefetch_task and not stale_prefetch_task.done():
+                    stale_prefetch_task.cancel()
 
-                if not payload:
-                    prefetch_task = self.prefetch_tasks.get(sid)
-                    if prefetch_task and not prefetch_task.done():
-                        try:
-                            await asyncio.shield(prefetch_task)
-                        except Exception:
-                            pass
-                        payload = self.prefetched_recovery.pop(sid, None)
+                # The current loss tick has already been appended to canonical
+                # history at the top of _handle_strategy_tick(). Rerank NOW.
+                old_digit = int(s.candidate_digit)
+                new_digit, fresh_snapshot = self._choose_scored_digit(
+                    sid,
+                    lock_target=True,
+                )
 
-                desired_next = self.live_next_target.get(sid)
-
-                if desired_next is None:
-                    desired_next, _ = self._choose_scored_digit(
-                        sid,
-                        lock_target=True,
-                    )
-                    if desired_next is not None:
-                        self._set_live_next_target(
-                            sid,
-                            desired_next,
-                        )
-
-                if desired_next is not None:
-                    next_digit = int(desired_next)
-                    old_digit = int(s.candidate_digit)
-                    s.candidate_digit = next_digit
-                    s.phase = (
-                        f"LIVE_RANK_SWITCH_{old_digit}_TO_{next_digit}"
-                        if next_digit != old_digit
-                        else f"LIVE_RANK_KEEP_{next_digit}"
+                if new_digit is None:
+                    s.running = False
+                    s.paused = False
+                    s.phase = "RERANK_NOT_READY"
+                    s.last_error = (
+                        "Fresh post-loss DigitScore ranking was not ready "
+                        f"({fresh_snapshot.get('history_count', 0)}/"
+                        f"{fresh_snapshot.get('minimum_history', 10)})"
                     )
                     s.updated_at = datetime.utcnow()
                     db.commit()
+                    return
+
+                new_digit = int(new_digit)
+                s.candidate_digit = new_digit
+                self._set_live_next_target(
+                    sid,
+                    new_digit,
+                )
 
                 s.current_stake = expected_stake
-                s.phase = "FAST_RECOVERING"
+                s.phase = (
+                    f"RERANK_AFTER_LOSS_{old_digit}_TO_{new_digit}"
+                    if new_digit != old_digit
+                    else f"RERANK_AFTER_LOSS_KEEP_{new_digit}"
+                )
+                s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                valid_prefetch = bool(
-                    payload
-                    and int(payload.get("trade_no") or 0)
-                    == expected_trade_no
-                    and int(payload.get("digit"))
-                    == int(s.candidate_digit)
-                    and abs(
-                        float(payload.get("stake") or 0)
-                        - float(s.current_stake)
-                    ) <= 0.005
+                # Request a proposal only AFTER the fresh rerank so Trade N+1
+                # always uses the newest post-loss rank #1.
+                currency = await self._currency_for(db, s)
+                client = await self._client(user_id, account_id)
+
+                payload = await self._request_proposal_payload(
+                    client,
+                    symbol=s.symbol,
+                    digit=new_digit,
+                    stake=s.current_stake,
+                    trade_no=expected_trade_no,
+                    currency=currency,
                 )
-
-                if not valid_prefetch:
-                    s.phase = "FAST_RECOVERY_PREFETCH_MISSED"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-                    new_digit, _ = self._choose_scored_digit(
-                        sid,
-                        lock_target=True,
-                    )
-                    if new_digit is not None:
-                        s.candidate_digit = int(new_digit)
-                        self._set_live_next_target(
-                            sid,
-                            int(new_digit),
-                        )
-
-                    currency = await self._currency_for(db, s)
-                    client = await self._client(user_id, account_id)
-
-                    payload = await self._request_proposal_payload(
-                        client,
-                        symbol=s.symbol,
-                        digit=s.candidate_digit,
-                        stake=s.current_stake,
-                        trade_no=expected_trade_no,
-                        currency=currency,
-                    )
 
                 client = await self._client(user_id, account_id)
 
@@ -699,11 +628,7 @@ class MultiUserEngine:
                     and int(fast_owner.get("trade_no") or 0)
                     == int(s.current_trade)
                 ):
-                    s.phase = (
-                        "RECOVERY_PREARMED"
-                        if sid in self.prefetched_recovery
-                        else "PIPELINE_ACTIVE"
-                    )
+                    s.phase = "PIPELINE_ACTIVE"
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -725,11 +650,7 @@ class MultiUserEngine:
                             )
                         )
 
-                    s.phase = (
-                        "RECOVERY_PREARMED"
-                        if sid in self.prefetched_recovery
-                        else "PIPELINE_ACTIVE"
-                    )
+                    s.phase = "PIPELINE_ACTIVE"
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -914,17 +835,6 @@ class MultiUserEngine:
             self.latest_tick_epoch.get(s.id) or 0
         )
 
-        # Freeze the exact canonical market snapshot visible immediately before
-        # BUY. This is T+0 context only; it is never treated as the paid
-        # one-tick contract result.
-        purchase_t0_tick = dict(self.latest_ticks.get(s.id) or {})
-        purchase_t0_epoch = int(
-            purchase_t0_tick.get("epoch")
-            or armed_after_epoch
-            or 0
-        )
-        purchase_t0_digit = self._tick_last_digit(purchase_t0_tick)
-
         # Check account mode to pass to WebSocket buy call
         is_demo = str(s.account_mode).upper() == "DEMO"
 
@@ -1015,37 +925,6 @@ class MultiUserEngine:
             int(payload["digit"]),
         )
 
-        purchase_epoch = int(
-            buy.get("start_time")
-            or buy.get("purchase_time")
-            or armed_after_epoch
-            or 0
-        )
-
-        score_evidence["alignment"] = {
-            "purchase": {
-                "target_digit": int(payload["digit"]),
-                "armed_after_epoch": int(armed_after_epoch),
-                "purchase_epoch": int(purchase_epoch),
-                "t0_epoch": int(purchase_t0_epoch),
-                "t0_digit": (
-                    int(purchase_t0_digit)
-                    if purchase_t0_digit is not None
-                    else None
-                ),
-                "t0_quote": purchase_t0_tick.get("quote"),
-                "t0_pip_size": purchase_t0_tick.get("pip_size"),
-                "t0_matches_target": bool(
-                    purchase_t0_digit is not None
-                    and int(purchase_t0_digit) == int(payload["digit"])
-                ),
-                "note": "T+0 is pre-purchase context only; not a contract result",
-            },
-            "fast_decision": None,
-            "deriv_settlement": None,
-            "verdict": "OPEN_WAITING_FAST_DECISION",
-        }
-
         db.add(
             TradeLog(
                 user_id=row.user_id,
@@ -1076,6 +955,13 @@ class MultiUserEngine:
             )
         )
 
+        purchase_epoch = int(
+            buy.get("start_time")
+            or buy.get("purchase_time")
+            or armed_after_epoch
+            or 0
+        )
+
         decision_after_epoch = max(
             armed_after_epoch,
             purchase_epoch,
@@ -1104,50 +990,9 @@ class MultiUserEngine:
 
         s = db.get(TradingSession, row.id)
 
-        if s.current_trade < s.max_trades:
-            existing = self.prefetch_tasks.get(s.id)
-
-            if not existing or existing.done():
-                planned_digit = self.live_next_target.get(s.id)
-
-                if planned_digit is None:
-                    candidate, _snapshot = self._choose_scored_digit(
-                        s.id,
-                        lock_target=True,
-                    )
-                    if candidate is not None:
-                        planned_digit = int(candidate)
-                        self._set_live_next_target(
-                            s.id,
-                            planned_digit,
-                        )
-
-                if planned_digit is None:
-                    planned_digit = int(s.candidate_digit)
-
-                planned_digit = int(planned_digit)
-
-                next_stake = round(
-                    float(s.current_stake)
-                    * float(s.multiplier),
-                    2,
-                )
-                next_trade_no = int(s.current_trade) + 1
-
-                task = asyncio.create_task(
-                    self._prefetch_next_recovery(
-                        sid=s.id,
-                        user_id=s.user_id,
-                        account_id=s.account_id,
-                        symbol=s.symbol,
-                        digit=planned_digit,
-                        next_stake=next_stake,
-                        next_trade_no=next_trade_no,
-                        owner_contract_id=contract_id,
-                        owner_trade_no=int(s.current_trade),
-                    )
-                )
-                self.prefetch_tasks[s.id] = task
+        # No target-specific recovery proposal is pre-armed here.
+        # The next target is intentionally unknown until this trade loses and
+        # the newest canonical tick has been included in a fresh reranking.
 
         cached_tick = self.latest_ticks.get(s.id)
 
@@ -1515,98 +1360,6 @@ class MultiUserEngine:
                     existing_raw["settlement_result"] = (
                         "WIN" if profit > 0 else "LOSS"
                     )
-
-                    exit_tick_value = (
-                        poc.get("exit_tick_display_value")
-                        if poc.get("exit_tick_display_value") is not None
-                        else poc.get("exit_tick")
-                    )
-                    if exit_tick_value is None:
-                        exit_tick_value = (
-                            poc.get("current_spot_display_value")
-                            if poc.get("current_spot_display_value") is not None
-                            else poc.get("current_spot")
-                        )
-
-                    settlement_digit = None
-                    if exit_tick_value is not None:
-                        exit_text = str(exit_tick_value)
-                        exit_digits = [ch for ch in exit_text if ch.isdigit()]
-                        if exit_digits:
-                            settlement_digit = int(exit_digits[-1])
-
-                    settlement_epoch = int(
-                        poc.get("exit_tick_time")
-                        or poc.get("date_expiry")
-                        or poc.get("sell_time")
-                        or 0
-                    )
-
-                    settlement_evidence = existing_raw.get("dms_score_evidence") or {}
-                    if not isinstance(settlement_evidence, dict):
-                        settlement_evidence = {}
-
-                    alignment = settlement_evidence.get("alignment") or {}
-                    if not isinstance(alignment, dict):
-                        alignment = {}
-
-                    purchase_alignment = alignment.get("purchase") or {}
-                    fast_alignment = alignment.get("fast_decision") or {}
-
-                    official_result = "WIN" if profit > 0 else "LOSS"
-                    fast_result = str(
-                        fast_alignment.get("result") or ""
-                    ).upper()
-
-                    if fast_result == "WIN" and official_result == "WIN":
-                        verdict = "FAST_WIN_DERIV_WIN"
-                    elif fast_result == "WIN" and official_result == "LOSS":
-                        verdict = "FAST_WIN_DERIV_LOSS_MISMATCH"
-                    elif fast_result == "LOSS" and official_result == "WIN":
-                        verdict = "FAST_LOSS_DERIV_WIN_MISMATCH"
-                    elif fast_result == "LOSS" and official_result == "LOSS":
-                        verdict = (
-                            "T0_MATCH_ONLY_DERIV_LOSS"
-                            if bool(purchase_alignment.get("t0_matches_target"))
-                            else "FAST_LOSS_DERIV_LOSS"
-                        )
-                    elif official_result == "WIN":
-                        verdict = "DERIV_WIN_NO_FAST_DECISION"
-                    else:
-                        verdict = (
-                            "T0_MATCH_ONLY_DERIV_LOSS"
-                            if bool(purchase_alignment.get("t0_matches_target"))
-                            else "DERIV_LOSS_NO_FAST_DECISION"
-                        )
-
-                    alignment["deriv_settlement"] = {
-                        "target_digit": int(log.digit),
-                        "settlement_epoch": int(settlement_epoch),
-                        "exit_tick": exit_tick_value,
-                        "settlement_digit": settlement_digit,
-                        "profit": float(profit),
-                        "result": official_result,
-                        "digit_matches_target": (
-                            bool(settlement_digit == int(log.digit))
-                            if settlement_digit is not None
-                            else bool(profit > 0)
-                        ),
-                        "contract_type": poc.get("contract_type"),
-                        "barrier": poc.get("barrier"),
-                    }
-                    alignment["verdict"] = verdict
-
-                    fast_epoch = fast_alignment.get("decision_epoch")
-                    purchase_epoch_for_delta = purchase_alignment.get("purchase_epoch")
-                    if fast_epoch and purchase_epoch_for_delta:
-                        alignment["purchase_to_fast_epoch_delta"] = (
-                            int(fast_epoch) - int(purchase_epoch_for_delta)
-                        )
-                    else:
-                        alignment["purchase_to_fast_epoch_delta"] = None
-
-                    settlement_evidence["alignment"] = alignment
-                    existing_raw["dms_score_evidence"] = settlement_evidence
                     log.raw_json = json.dumps(existing_raw)
 
                 s.pnl = float(s.pnl or 0) + profit
@@ -1666,20 +1419,6 @@ class MultiUserEngine:
                         "profit": float(profit),
                         "result": official,
                         "settled_at": datetime.utcnow().isoformat(),
-                        "fast_decision_epoch": fast.get("decision_epoch"),
-                        "fast_observed_digit": fast.get("observed_digit"),
-                        "fast_result": fast.get("fast_result"),
-                        "deriv_settlement_epoch": int(
-                            poc.get("exit_tick_time")
-                            or poc.get("date_expiry")
-                            or poc.get("sell_time")
-                            or 0
-                        ),
-                        "deriv_exit_tick": (
-                            poc.get("exit_tick_display_value")
-                            if poc.get("exit_tick_display_value") is not None
-                            else poc.get("exit_tick")
-                        ),
                         "cycle_pnl_authoritative": bool(
                             cycle_summary.get("authoritative")
                         ),
