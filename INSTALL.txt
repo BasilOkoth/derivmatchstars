@@ -1,0 +1,68 @@
+DigitMatchStar Contract Tick Timeline V4
+
+Upload these THREE replacement/new files to the repository root structure:
+
+1. app/__init__.py
+2. research-suite-loader.js
+3. contract-timeline-ui.js   [NEW]
+
+No change to app/engine.py is required.
+
+WHAT THIS ADDS
+
+The dashboard now distinguishes the exact trade lifecycle:
+
+Prediction Source
+  The canonical tick/epoch whose completed history produced the target.
+
+Active Target
+  The digit actually attached to the purchased contract.
+
+Eligible Result Tick
+  The first SERVER tick whose epoch is later than the contract's armed epoch.
+
+Comparison
+  Example:
+      6 = 6  -> WIN
+      6 != 4 -> LOSS
+
+It also shows:
+- contract id
+- trade number
+- armed-after epoch
+- fast result
+- official Deriv result once the same contract settles
+
+WHY THIS MATTERS
+
+A visible Current Tick digit is not automatically the result tick for the
+contract. The result tick must be the first eligible server tick AFTER the
+contract was armed.
+
+This panel makes that distinction explicit.
+
+EXPECTED EXAMPLE
+
+Prediction Source:
+  e:1791531000 · digit 4
+
+Active Target:
+  6
+
+Eligible Result Tick:
+  e:1791531001 · digit 6
+
+Comparison:
+  6 = 6
+
+Verdict:
+  WIN · DERIV WIN
+
+If target 6 and the eligible result digit is 6 but the official Deriv result
+is LOSS, that is a genuine mismatch worth investigating.
+
+This package preserves:
+- Rank Stream Fix V3
+- rerank-after-every-loss
+- FAST RANK V2
+- DEMO-only automated buy protection

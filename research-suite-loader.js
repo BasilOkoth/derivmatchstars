@@ -1,6 +1,7 @@
 /*
  * DigitMatchStar Research Add-on Loader
- * Auto-loads passive forward readiness research plus canonical tick/rank sync.
+ * Auto-loads passive forward readiness research, canonical tick/rank sync,
+ * and contract-result tick timeline diagnostics.
  */
 (() => {
   'use strict';
@@ -12,7 +13,8 @@
     '/candidate-tick-dna-v3-shadow.js?v=3.7-exact-aligned-cloud',
     '/passive-forward-readiness-v1.js?v=1.0',
     '/trade-alignment-export.js?v=1.0',
-    '/tick-rank-sync-v1.1.js?v=1.1'
+    '/tick-rank-sync-v1.1.js?v=1.1',
+    '/contract-timeline-ui.js?v=4.0'
   ];
 
   function alreadyLoaded(src) {
@@ -50,7 +52,7 @@
     }
 
     console.info(
-      '[DMS Research Add-on] Passive research + canonical tick/rank sync v1.1 loaded.'
+      '[DMS Research Add-on] Rank sync + contract tick timeline V4 loaded.'
     );
   }
 

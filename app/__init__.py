@@ -1,12 +1,12 @@
 """
-DigitMatchStar canonical rank-stream fix V3.
+DigitMatchStar canonical rank-stream fix V3 + contract tick timeline V4.
 
 Goals:
 1. UI/API polling must NEVER recalculate or overwrite the authoritative rank.
-2. The server keeps a canonical tick/rank feed alive even while trading is idle.
-3. After a Render restart, ranking history is rebuilt from Deriv's latest
-   historical ticks before the live subscription continues.
-4. Trading mathematics and DEMO execution behavior are not changed.
+2. Keep the canonical tick/rank feed alive while trading is idle.
+3. Rebuild recent ranking history after a Render restart.
+4. Publish the exact prediction/target/result tick timeline for every open trade.
+5. Do not change the existing DEMO execution rule.
 """
 
 import asyncio
@@ -17,6 +17,10 @@ from .db import SessionLocal
 from .models import TradingSession
 from .deriv_ws import DerivWS
 
+
+# ---------------------------------------------------------------------------
+# Rank stream V3
+# ---------------------------------------------------------------------------
 
 if not hasattr(DerivWS, "ticks_history"):
 
@@ -418,3 +422,243 @@ if not getattr(MultiUserEngine, "_dms_passive_rank_feed_v3", False):
     )
     MultiUserEngine.start = _start_with_passive_rank_feed
     MultiUserEngine._dms_passive_rank_feed_v3 = True
+
+
+# ---------------------------------------------------------------------------
+# Contract tick timeline V4
+# ---------------------------------------------------------------------------
+
+if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
+
+    _original_execute_buy_v4 = MultiUserEngine._execute_buy
+    _original_handle_strategy_tick_v4 = MultiUserEngine._handle_strategy_tick
+    _original_last_settlement_status_v4 = MultiUserEngine.last_settlement_status
+
+    async def _execute_buy_with_timeline(
+        self,
+        db,
+        s,
+        client,
+        payload,
+        *,
+        prearmed: bool,
+    ):
+        sid = int(s.id)
+
+        locked = (
+            (getattr(self, "locked_target_snapshots", {}) or {})
+            .get(sid)
+            or {}
+        )
+        snap = locked.get("snapshot") or (
+            (getattr(self, "digit_score_snapshots", {}) or {})
+            .get(sid)
+            or {}
+        )
+        canonical = snap.get("canonical_tick") or {}
+
+        origin_epoch = int(
+            snap.get("rank_epoch")
+            or canonical.get("epoch")
+            or 0
+        )
+        origin_digit = canonical.get("digit")
+
+        ok = await _original_execute_buy_v4(
+            self,
+            db,
+            s,
+            client,
+            payload,
+            prearmed=prearmed,
+        )
+
+        if not ok:
+            return ok
+
+        active = (
+            (getattr(self, "fast_contracts", {}) or {})
+            .get(sid)
+        )
+
+        if not isinstance(active, dict):
+            return ok
+
+        if not hasattr(self, "trade_timeline_by_sid"):
+            self.trade_timeline_by_sid = {}
+
+        timeline = {
+            "contract_id": str(active.get("contract_id") or ""),
+            "trade_no": int(active.get("trade_no") or 0),
+            "symbol": str(active.get("symbol") or ""),
+            "prediction_origin_epoch": origin_epoch or None,
+            "prediction_origin_digit": (
+                int(origin_digit)
+                if origin_digit is not None
+                else None
+            ),
+            "target_digit": int(active.get("target_digit")),
+            "armed_after_epoch": int(
+                active.get("armed_after_epoch") or 0
+            ) or None,
+            "result_epoch": None,
+            "result_digit": None,
+            "fast_result": "WAITING",
+            "comparison": None,
+        }
+
+        self.trade_timeline_by_sid[sid] = timeline
+        active["prediction_origin_epoch"] = timeline[
+            "prediction_origin_epoch"
+        ]
+        active["prediction_origin_digit"] = timeline[
+            "prediction_origin_digit"
+        ]
+
+        return ok
+
+    async def _handle_strategy_tick_with_timeline(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        data,
+    ):
+        sid = int(sid)
+        tick = data.get("tick") or {}
+        epoch = int(tick.get("epoch") or 0)
+
+        active = (
+            (getattr(self, "fast_contracts", {}) or {})
+            .get(sid)
+        )
+
+        eligible = False
+        result_digit = None
+        target_digit = None
+        contract_id = None
+
+        if (
+            isinstance(active, dict)
+            and str(active.get("symbol")) == str(symbol)
+            and not active.get("decided")
+        ):
+            armed_after = int(
+                active.get("armed_after_epoch") or 0
+            )
+
+            if not epoch or not armed_after or epoch > armed_after:
+                try:
+                    result_digit = self._tick_last_digit(tick)
+                except Exception:
+                    result_digit = None
+
+                if result_digit is not None:
+                    eligible = True
+                    target_digit = int(active.get("target_digit"))
+                    contract_id = str(active.get("contract_id") or "")
+
+        if eligible:
+            if not hasattr(self, "trade_timeline_by_sid"):
+                self.trade_timeline_by_sid = {}
+
+            current = dict(
+                self.trade_timeline_by_sid.get(sid)
+                or {}
+            )
+
+            current.update({
+                "contract_id": contract_id,
+                "trade_no": int(active.get("trade_no") or 0),
+                "symbol": str(symbol),
+                "prediction_origin_epoch": (
+                    current.get("prediction_origin_epoch")
+                    or active.get("prediction_origin_epoch")
+                ),
+                "prediction_origin_digit": (
+                    current.get("prediction_origin_digit")
+                    if current.get("prediction_origin_digit") is not None
+                    else active.get("prediction_origin_digit")
+                ),
+                "target_digit": target_digit,
+                "armed_after_epoch": int(
+                    active.get("armed_after_epoch") or 0
+                ) or None,
+                "result_epoch": epoch or None,
+                "result_digit": int(result_digit),
+                "fast_result": (
+                    "WIN"
+                    if int(result_digit) == int(target_digit)
+                    else "LOSS"
+                ),
+                "comparison": (
+                    f"{int(target_digit)} = {int(result_digit)}"
+                    if int(result_digit) == int(target_digit)
+                    else f"{int(target_digit)} != {int(result_digit)}"
+                ),
+            })
+
+            self.trade_timeline_by_sid[sid] = current
+
+        return await _original_handle_strategy_tick_v4(
+            self,
+            sid=sid,
+            user_id=user_id,
+            account_id=account_id,
+            symbol=symbol,
+            data=data,
+        )
+
+    def _last_settlement_status_with_timeline(self, sid: int):
+        sid = int(sid)
+
+        base = _original_last_settlement_status_v4(
+            self,
+            sid,
+        )
+
+        timeline = (
+            (getattr(self, "trade_timeline_by_sid", {}) or {})
+            .get(sid)
+        )
+
+        if not timeline:
+            return base
+
+        payload = dict(base) if isinstance(base, dict) else {}
+        payload["trade_timeline"] = dict(timeline)
+
+        base_contract = str(payload.get("contract_id") or "")
+        timeline_contract = str(timeline.get("contract_id") or "")
+
+        if (
+            base_contract
+            and timeline_contract
+            and base_contract == timeline_contract
+        ):
+            payload["trade_timeline"][
+                "official_result"
+            ] = payload.get("result")
+            payload["trade_timeline"][
+                "official_profit"
+            ] = payload.get("profit")
+            payload["trade_timeline"][
+                "official_contract_match"
+            ] = True
+        else:
+            payload["trade_timeline"][
+                "official_contract_match"
+            ] = False
+
+        return payload
+
+    MultiUserEngine._execute_buy = _execute_buy_with_timeline
+    MultiUserEngine._handle_strategy_tick = (
+        _handle_strategy_tick_with_timeline
+    )
+    MultiUserEngine.last_settlement_status = (
+        _last_settlement_status_with_timeline
+    )
+    MultiUserEngine._dms_trade_timeline_v4 = True
