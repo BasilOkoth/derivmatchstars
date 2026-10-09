@@ -1,11 +1,11 @@
 /*
- * DigitMatchStar Target Score Gate V6
- * Display only. Execution enforcement is server-side in app/__init__.py.
+ * DigitMatchStar Target Score Gate V9
+ * Display-only synchronization fix.
  */
 (() => {
     'use strict';
 
-    const MIN_SCORE = 9.0;
+    const DEFAULT_MIN_SCORE = 9.0;
 
     function ensureBadge() {
         const host = document.getElementById('recycle-runtime-panel');
@@ -25,8 +25,41 @@
         } else {
             host.appendChild(el);
         }
-
         return el;
+    }
+
+    function currentRankState(score) {
+        const ranking = Array.isArray(score?.ranking)
+            ? [...score.ranking].sort(
+                (a, b) => Number(b?.score ?? -Infinity) - Number(a?.score ?? -Infinity)
+              )
+            : [];
+
+        const top = ranking[0] || null;
+
+        const topDigit =
+            top && Number.isInteger(Number(top.digit))
+                ? Number(top.digit)
+                : null;
+
+        const topScore =
+            top && Number.isFinite(Number(top.score))
+                ? Number(top.score)
+                : null;
+
+        const threshold =
+            Number.isFinite(Number(score?.target_min_score))
+                ? Number(score.target_min_score)
+                : DEFAULT_MIN_SCORE;
+
+        const eligible = Boolean(
+            score?.ready &&
+            topDigit !== null &&
+            topScore !== null &&
+            topScore >= threshold
+        );
+
+        return { topDigit, topScore, threshold, eligible };
     }
 
     function render() {
@@ -34,32 +67,25 @@
         const score = st?.digit_score || null;
         const badge = ensureBadge();
 
-        if (!badge || !score) return;
+        if (!badge) return;
 
-        const ranking = Array.isArray(score.ranking)
-            ? [...score.ranking].sort(
-                (a, b) => Number(b.score || 0) - Number(a.score || 0)
-              )
-            : [];
+        if (!score) {
+            badge.innerHTML = `
+                <div class="flex items-center justify-between gap-3">
+                    <div>
+                        <span class="text-amber-300 font-black">TARGET SCORE GATE</span>
+                        <span class="text-slate-400"> · waiting for server ranking</span>
+                    </div>
+                    <div class="text-yellow-300 font-black">WAITING</div>
+                </div>
+            `;
+            return;
+        }
 
-        const top = ranking[0] || null;
-        const topDigit = Number(
-            score.raw_selected_digit ?? top?.digit
-        );
-        const topScore = Number(
-            score.raw_top_score ?? top?.score
-        );
+        const { topDigit, topScore, threshold, eligible } = currentRankState(score);
 
-        const eligible =
-            score.target_eligible === true ||
-            (
-                Number.isFinite(topScore) &&
-                topScore >= Number(score.target_min_score ?? MIN_SCORE)
-            );
-
-        const threshold = Number(
-            score.target_min_score ?? MIN_SCORE
-        );
+        const openTarget = Number(st?.open_contract_target);
+        const hasOpenTarget = Number.isInteger(openTarget);
 
         badge.innerHTML = `
             <div class="flex items-center justify-between gap-3">
@@ -67,44 +93,65 @@
                     <span class="text-amber-300 font-black">TARGET SCORE GATE</span>
                     <span class="text-slate-400"> · V1 #1 must be ≥ ${threshold.toFixed(2)}</span>
                 </div>
-                <div class="${
-                    eligible ? 'text-emerald-300' : 'text-yellow-300'
-                } font-black">
+                <div class="${eligible ? 'text-emerald-300' : 'text-yellow-300'} font-black">
                     ${eligible ? 'ELIGIBLE ✓' : 'WAITING'}
                 </div>
             </div>
+
             <div class="mt-1 text-slate-300">
                 V1 #1:
-                <b>${Number.isInteger(topDigit) ? topDigit : '—'}</b>
+                <b>${topDigit !== null ? topDigit : '—'}</b>
                 · Score:
-                <b>${Number.isFinite(topScore) ? topScore.toFixed(2) : '—'}</b>
+                <b>${topScore !== null ? topScore.toFixed(2) : '—'}</b>
                 · Executable target:
-                <b>${eligible && Number.isInteger(topDigit) ? topDigit : '—'}</b>
+                <b>${eligible && topDigit !== null ? topDigit : '—'}</b>
             </div>
+
+            ${
+                hasOpenTarget
+                    ? `<div class="mt-1 text-cyan-300">
+                           Open contract target: <b>${openTarget}</b>
+                       </div>`
+                    : ''
+            }
         `;
 
         const next = document.getElementById('recycle-attempt');
-        if (next && !eligible && !st?.open_contract_id) {
-            next.textContent = '—';
+        if (next && !hasOpenTarget) {
+            next.textContent =
+                eligible && topDigit !== null
+                    ? String(topDigit)
+                    : '—';
         }
 
         const state = document.getElementById('score-engine-state');
-        if (state && !eligible) {
-            state.textContent =
-                `WAITING FOR SCORE ≥ ${threshold.toFixed(2)} · ` +
-                `V1 #1 ${Number.isInteger(topDigit) ? topDigit : '—'} ` +
-                `(${Number.isFinite(topScore) ? topScore.toFixed(2) : '—'})`;
+        if (state) {
+            const margin = Number(score?.top_margin);
+            const marginText = Number.isFinite(margin)
+                ? ` · V1 margin ${margin.toFixed(3)}`
+                : '';
+
+            if (eligible) {
+                state.textContent =
+                    `V1 #1 ${topDigit} · score ${topScore.toFixed(2)} · ELIGIBLE${marginText}`;
+            } else {
+                state.textContent =
+                    `WAITING FOR SCORE ≥ ${threshold.toFixed(2)} · ` +
+                    `V1 #1 ${topDigit !== null ? topDigit : '—'} ` +
+                    `(${topScore !== null ? topScore.toFixed(2) : '—'})${marginText}`;
+            }
         }
 
         const note = document.getElementById('digit-score-note');
         if (note) {
             note.textContent =
-                `Target Gate V6 · Only V1 rank #1 with score ≥ ${threshold.toFixed(2)} ` +
-                `can become a new target. Scores below threshold wait for the next canonical tick.`;
+                `Target Gate V9 · Eligibility now uses the exact same current ` +
+                `ranking array as DIGIT SCORE 0–9. Only V1 rank #1 with score ` +
+                `≥ ${threshold.toFixed(2)} can become a new target.`;
         }
     }
 
-    const timer = setInterval(render, 200);
+    const timer = setInterval(render, 150);
 
     window.addEventListener(
         'beforeunload',
