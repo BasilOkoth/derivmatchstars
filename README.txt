@@ -1,22 +1,19 @@
-DigitMatchStar Canonical Tick ↔ Rank Sync V2
+UPLOAD THROUGH GITHUB (NO LOCAL TERMINAL)
 
-Upload:
-1. app/__init__.py                         NEW FILE
-2. tick-rank-sync-v1.1.js                 NEW FILE
-3. research-suite-loader.js               REPLACE EXISTING FILE
+1. In BasilOkoth/derivmatchstars, click Add file > Create new file.
+2. Name the new file exactly:
+   .github/workflows/apply-digitmatchstar-fix.yml
+3. Paste the FULL contents of this ZIP's matching YAML file; commit on main.
+4. Go to Actions > Apply DigitMatchStar startup and REAL router fix > Run workflow.
+5. The workflow updates the COMPLETE current app/__init__.py and app/main.py in place and commits them.
+6. Once committed, Render deploys the updated main branch if autodeploy is enabled.
+7. Test /health, DEMO logic and REAL manual routes without risking real funds before placing any live order.
 
-Then redeploy/restart the backend and refresh the frontend.
+This deliberately preserves all current engine, V5-V8 ranking enhancements and DEMO-only
+unattended trading safeguards. It registers the already uploaded app/real_manual.py.
+REAL orders remain individually confirmed; no unattended REAL recovery is enabled.
 
-Expected panel when synchronized:
-Browser tick       digit X  e: N
-Server tick        digit X  e: N
-V1 #1              digit Y  e: N
-Shadow pick        digit Z  e: N
-NEXT target        digit Y  e: N
-Badge: EXACT SAME EPOCH ✓
-
-The open contract target remains frozen and is intentionally not required
-to equal the newest V1/NEXT target.
-
-This update changes provenance/reporting only; it does not place trades or
-change the execution strategy.
+IMPORTANT: This is an ACTIONS WORKFLOW, not a replacement copy of older files.
+It generates the full updated files directly from latest GitHub main.
+GitHub branch protection or Actions permissions may block automated push.
+If so, configure Actions workflow permissions for read/write or use a PR.
