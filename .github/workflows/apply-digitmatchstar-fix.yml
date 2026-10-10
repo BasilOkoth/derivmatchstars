@@ -1,0 +1,55 @@
+name: Apply DigitMatchStar startup and REAL router fix
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Update complete application files on current branch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          init = Path('app/__init__.py')
+          main = Path('app/main.py')
+          real = Path('app/real_manual.py')
+          for p in (init, main, real):
+              if not p.exists():
+                  raise SystemExit(f'Missing {p}; refusing partial update')
+          a = init.read_text()
+          a = a.replace('MultiUserEngine._execute_buy', 'MultiUserEngine._execute_demo_buy')
+          a = a.replace('self._execute_buy(', 'self._execute_demo_buy(')
+          b = main.read_text()
+          route = '\n\n# Explicitly confirmed, one-purchase-at-a-time REAL API.\nfrom .real_manual import router as real_manual_router\napp.include_router(real_manual_router)\n'
+          if 'app.include_router(real_manual_router)' not in b:
+              b += route
+          for path, code in ((init, a), (main, b)):
+              ast.parse(code, filename=str(path))
+          if 'MultiUserEngine._execute_buy' in a or 'self._execute_buy(' in a:
+              raise SystemExit('Legacy execution reference remains')
+          init.write_text(a)
+          main.write_text(b)
+          print('Updated complete current app/__init__.py and app/main.py')
+          PY
+          python -m compileall -q app
+      - name: Commit corrected complete files
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/__init__.py app/main.py
+          if git diff --cached --quiet; then
+            echo 'No updates required'
+          else
+            git commit -m 'Fix startup buy method hooks and register REAL manual router'
+            git push
+          fi
