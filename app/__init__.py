@@ -48,7 +48,7 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
 
         self._dms_last_tick_monotonic[int(sid)] = monotonic()
 
-        return await _original_handle_tick_v5(
+        result = await _original_handle_tick_v5(
             self,
             sid=int(sid),
             user_id=user_id,
@@ -56,6 +56,19 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
             symbol=symbol,
             data=data,
         )
+        tick = (data or {}).get("tick") or {}
+        epoch = int(tick.get("epoch") or 0)
+        snap = (getattr(self, "digit_score_snapshots", {}) or {}).get(int(sid))
+        if snap is not None and epoch and int(getattr(self, "_last_scored_epoch", {}).get(int(sid), 0)) == epoch:
+            snap["rank_epoch"] = epoch
+            snap["canonical_tick"] = {
+                "epoch": epoch,
+                "digit": self._tick_last_digit(tick),
+                "quote": tick.get("quote"),
+                "pip_size": tick.get("pip_size"),
+                "symbol": str(symbol),
+            }
+        return result
 
     async def _bootstrap_rank_history(
         self,

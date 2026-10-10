@@ -122,40 +122,38 @@ def owns_session(db, user_id, sid):
 
 
 def digit_score_for_session(session_id: int):
-    """
-    Compatibility wrapper around the new full engine.
+    """Read-only status view of the latest canonical tick ranking.
 
-    The replacement engine exposes _score_all_digits internally. Keeping the
-    API adapter here avoids reintroducing old TAE methods into the engine.
+    Never score during an API GET: re-scoring overwrote rank_epoch / canonical_tick,
+    and could display a stale selected digit from a different snapshot.
     """
-    scorer = getattr(engine, "_score_all_digits", None)
-
-    if not callable(scorer):
+    sid = int(session_id)
+    snapshot = dict((getattr(engine, "digit_score_snapshots", {}) or {}).get(sid) or {})
+    if not snapshot:
         return {
-            "ready": False,
-            "ranking": [],
-            "selected_digit": None,
-            "history_count": 0,
-            "minimum_history": 10,
-            "recycle_after": 3,
-            "error": "Digit score engine is not available",
+            "ready": False, "ranking": [], "selected_digit": None,
+            "target_eligible": False, "history_count": len(engine._digit_history(sid)),
+            "minimum_history": int(engine.digit_scorer.min_history),
+            "rank_epoch": None, "canonical_tick": None,
+            "feed_state": "WAITING_FOR_SERVER_RANK",
         }
-
+    ranked = snapshot.get("ranking") or []
+    top = ranked[0] if ranked else None
     try:
-        return scorer(int(session_id))
-    except Exception as exc:
-        return {
-            "ready": False,
-            "ranking": [],
-            "selected_digit": None,
-            "history_count": 0,
-            "minimum_history": 10,
-            "recycle_after": int(
-                getattr(getattr(engine, "digit_scorer", None), "recycle_after", 3)
-            ),
-            "error": str(exc),
-        }
-
+        score = float(top["score"]) if top else None
+        digit = int(top["digit"]) if top else None
+    except (ValueError, TypeError, KeyError):
+        score, digit = None, None
+    threshold = float(snapshot.get("target_min_score", 9.0))
+    eligible = bool(snapshot.get("ready") and score is not None and
+                    score >= threshold and digit is not None)
+    snapshot["raw_selected_digit"] = digit
+    snapshot["raw_top_score"] = score
+    snapshot["target_eligible"] = eligible
+    snapshot["selected_digit"] = digit if eligible else None
+    snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
+                              "RANK_MISSING_EPOCH")
+    return snapshot
 
 
 @app.post("/accounts/refresh-balances")
@@ -314,7 +312,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "max_trades": s.max_trades,
                     "current_stake": s.current_stake,
                     "candidate_digit": s.candidate_digit,
-                    "live_next_target": engine.live_next_target.get(s.id),
+                    "live_next_target": digit_score_for_session(s.id).get("selected_digit"),
                     "open_contract_id": s.open_contract_id,
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
