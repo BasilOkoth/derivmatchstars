@@ -799,6 +799,22 @@ if not getattr(MultiUserEngine, "_dms_invalid_proposal_retry_v7", False):
         *,
         prearmed: bool,
     ):
+        # Pre-armed DEMO quotes may expire/become invalid by the time a
+        # recovery buy is attempted. Fetch a NEW proposal on the same socket
+        # immediately before purchase, preserving the frozen digit and stake.
+        # REAL manual purchases are intentionally unaffected.
+        if prearmed and str(getattr(s, "account_mode", "")).upper() == "DEMO":
+            payload = dict(payload)
+            fresh = await self._request_proposal_payload(
+                client,
+                symbol=str(s.symbol),
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
+                trade_no=int(payload["trade_no"]),
+                currency=str(payload.get("currency") or await self._currency_for(db, s)),
+            )
+            payload.update(fresh)
+            payload["proposal_freshened_before_buy"] = True
         try:
             return await _original_execute_buy_v7(
                 self,
