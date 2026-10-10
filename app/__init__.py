@@ -250,7 +250,7 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
 # Contract timeline diagnostics. Display/telemetry only.
 if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
 
-    _original_execute_buy_v4 = MultiUserEngine._execute_buy
+    _original_execute_buy_v4 = MultiUserEngine._execute_demo_buy
     _original_handle_strategy_tick_v4 = MultiUserEngine._handle_strategy_tick
     _original_last_settlement_status_v4 = MultiUserEngine.last_settlement_status
 
@@ -389,7 +389,7 @@ if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
 
         return payload
 
-    MultiUserEngine._execute_buy = _execute_buy_with_timeline
+    MultiUserEngine._execute_demo_buy = _execute_buy_with_timeline
     MultiUserEngine._handle_strategy_tick = _handle_tick_with_timeline
     MultiUserEngine.last_settlement_status = _last_settlement_with_timeline
     MultiUserEngine._dms_trade_timeline_v4 = True
@@ -631,7 +631,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     currency=currency,
                 )
 
-                ok = await self._execute_buy(
+                ok = await self._execute_demo_buy(
                     db,
                     s,
                     client,
@@ -788,7 +788,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
 if not getattr(MultiUserEngine, "_dms_invalid_proposal_retry_v7", False):
 
-    _original_execute_buy_v7 = MultiUserEngine._execute_buy
+    _original_execute_buy_v7 = MultiUserEngine._execute_demo_buy
 
     async def _execute_buy_retry_invalid_proposal(
         self,
@@ -891,7 +891,7 @@ if not getattr(MultiUserEngine, "_dms_invalid_proposal_retry_v7", False):
                 prearmed=prearmed,
             )
 
-    MultiUserEngine._execute_buy = (
+    MultiUserEngine._execute_demo_buy = (
         _execute_buy_retry_invalid_proposal
     )
     MultiUserEngine._dms_invalid_proposal_retry_v7 = True
@@ -1084,7 +1084,7 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
             # If a new canonical tick changed the live ranking while the
             # proposal was being requested, the purchased target remains the
             # already-frozen eligible Trade-1 target.
-            return await self._execute_buy(
+            return await self._execute_demo_buy(
                 db,
                 s,
                 client,

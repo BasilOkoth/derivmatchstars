@@ -899,3 +899,8 @@ async def confirm_real(
             status_code=409,
             detail=str(exc),
         )
+
+
+# Explicitly confirmed, one-purchase-at-a-time REAL API.
+from .real_manual import router as real_manual_router
+app.include_router(real_manual_router)
