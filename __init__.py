@@ -190,6 +190,16 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     async def _rank_feed_watchdog(self):
         if not hasattr(self, "_dms_last_tick_monotonic"):
             self._dms_last_tick_monotonic = {}
+        if not hasattr(self, "_dms_feed_attempted_at"):
+            self._dms_feed_attempted_at = {}
+        if not hasattr(self, "_dms_feed_inflight"):
+            self._dms_feed_inflight = set()
+
+        async def refresh_feed(sid, user_id, account_id, symbol, force):
+            try:
+                await self._ensure_feed(sid, user_id, account_id, symbol, force=force)
+            finally:
+                self._dms_feed_inflight.discard(sid)
 
         while True:
             try:
@@ -214,27 +224,20 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
                     existing = self.tick_subscriptions.get(sid)
                     last_seen = self._dms_last_tick_monotonic.get(sid)
 
-                    stale = (
-                        existing is not None
-                        and last_seen is not None
-                        and (now - last_seen) > 12.0
-                    )
-
-                    missing = (
-                        not existing
-                        or str(existing.get("symbol")) != str(symbol)
-                    )
-
-                    if missing or stale:
-                        asyncio.create_task(
-                            self._ensure_feed(
-                                sid,
-                                user_id,
-                                account_id,
-                                symbol,
-                                force=bool(stale),
-                            )
-                        )
+                    # No callbacks after subscribing is also a stale feed.
+                    # Previous code only detected staleness after the first tick.
+                    attempted = self._dms_feed_attempted_at.get(sid, now)
+                    stale = bool(existing and (now - (last_seen or attempted)) > 12.0)
+                    missing = bool(not existing or str(existing.get("symbol")) != str(symbol))
+                    # Limit reconnect requests and prevent overlapping subscriptions.
+                    if ((missing or stale)
+                            and sid not in self._dms_feed_inflight
+                            and (now - self._dms_feed_attempted_at.get(sid, 0)) >= 5.0):
+                        self._dms_feed_inflight.add(sid)
+                        self._dms_feed_attempted_at[sid] = now
+                        asyncio.create_task(refresh_feed(
+                            sid, user_id, account_id, symbol, bool(stale)
+                        ))
 
             except asyncio.CancelledError:
                 raise
@@ -1021,6 +1024,18 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 .get(sid)
                 or {}
             )
+
+            # Never open a new DEMO contract using a stale market snapshot.
+            # This is separate from the >=9 strategy eligibility condition.
+            last_rank_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
+            market_age = (datetime.utcnow().timestamp() - last_rank_epoch) if last_rank_epoch else float("inf")
+            if market_age > 20.0:
+                s.candidate_digit = None
+                s.phase = "WAITING_FRESH_SERVER_TICK"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return
 
             # No valid score yet: wait.
             if not snapshot.get("ready"):

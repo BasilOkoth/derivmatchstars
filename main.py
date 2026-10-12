@@ -154,8 +154,21 @@ def digit_score_for_session(session_id: int):
     snapshot["display_digit"] = digit
     snapshot["display_score"] = score
     snapshot["ranking_status"] = ("WARMING" if not snapshot.get("ready") else ("ELIGIBLE" if eligible else "BELOW_THRESHOLD"))
-    snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
-                              "RANK_MISSING_EPOCH")
+    # Report the age of the server's canonical market tick, independently of
+    # whether score>=9 allows execution. No rank calculations on read.
+    from datetime import datetime, timezone
+    tick_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
+    age = max(0, int(datetime.now(timezone.utc).timestamp()) - tick_epoch) if tick_epoch else None
+    snapshot["server_tick_age_seconds"] = age
+    snapshot["feed_state"] = (
+        "WAITING_FOR_SERVER_RANK" if not tick_epoch else
+        "STALE_SERVER_TICK" if age is not None and age > 20 else
+        "LIVE_RANK"
+    )
+    snapshot["ranking_status"] = (
+        "WARMING" if not snapshot.get("ready") else
+        "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
+    )
     return snapshot
 
 

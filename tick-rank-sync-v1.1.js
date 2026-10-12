@@ -182,8 +182,9 @@
       } else if (!serverEpoch) {
         badge.textContent = 'WAITING FOR SERVER';
         badge.className = 'font-black text-amber-300';
-      } else if (browserEpoch && serverEpoch < browserEpoch) {
-        badge.textContent = 'SERVER CATCHING UP';
+      } else if (score.feed_state === 'STALE_SERVER_TICK' ||
+                 (browserEpoch && serverEpoch < browserEpoch - 20)) {
+        badge.textContent = 'SERVER FEED STALE';
         badge.className = 'font-black text-amber-300';
       } else if (serverEpoch !== rankEpoch) {
         badge.textContent = 'RANK EPOCH MISMATCH';
