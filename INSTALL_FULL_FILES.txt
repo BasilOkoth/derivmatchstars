@@ -1,0 +1,3 @@
+These are FULL replacement files, not a patch. Upload files to the same relative paths in GitHub.
+Files: app/engine.py, app/main.py, app/__init__.py, tick-rank-sync-v1.1.js, bot.html, research-suite-loader.js
+Back up existing files first. Redeploy Render after upload. Test DEMO before REAL manual confirmation. Score >=9 execution rule and REAL automation restriction are preserved. This package was statically checked; no live Deriv trade was performed.

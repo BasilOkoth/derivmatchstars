@@ -24,6 +24,7 @@
   const RETRIES_MS = [0, 35, 80, 150, 260, 420];
 
   const asInt = (v) => {
+    if (v === null || v === undefined || v === '') return 0;
     const n = Number(v);
     return Number.isInteger(n) ? n : 0;
   };
@@ -123,11 +124,16 @@
     const shadowEpoch = asInt(score.shadow_epoch ?? shadow.rank_epoch);
     const targetEpoch = asInt(score.target_epoch);
 
-    const browserDigit = Number(browser.digit);
-    const serverDigit = Number(serverTick.digit);
-    const rankDigit = Number(score.selected_digit);
-    const shadowDigit = Number(shadow.selected_digit);
-    const nextDigit = Number(st?.live_next_target ?? score.target_digit ?? score.selected_digit);
+    const validDigit = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isInteger(n) && n >= 0 && n <= 9 ? n : null;
+    };
+    const browserDigit = validDigit(browser.digit);
+    const serverDigit = validDigit(serverTick.digit);
+    const rankDigit = validDigit(score.display_digit ?? score.raw_selected_digit ?? score.ranking?.[0]?.digit);
+    const shadowDigit = validDigit(shadow.selected_digit);
+    const nextDigit = validDigit(st?.live_next_target ?? score.selected_digit);
 
     setText('dms-sync-browser',
       Number.isInteger(browserDigit) ? `digit ${browserDigit}` : '—');
@@ -159,7 +165,10 @@
       browserEpoch > 0 &&
       browserEpoch === serverEpoch;
 
+    // The browser feed may be ahead/behind a separate server connection.
+    // It is not an indication that the server-side ranking is broken.
     const aligned = serverInternalAligned && browserAligned;
+    const rankHealthy = serverEpoch > 0 && serverEpoch === rankEpoch;
 
     const badge = document.getElementById('dms-sync-badge');
 
@@ -167,6 +176,9 @@
       if (aligned) {
         badge.textContent = 'EXACT SAME EPOCH ✓';
         badge.className = 'font-black text-emerald-300';
+      } else if (rankHealthy && !browserAligned) {
+        badge.textContent = 'SERVER RANK LIVE · BROWSER OFFSET';
+        badge.className = 'font-black text-amber-300';
       } else if (!serverEpoch) {
         badge.textContent = 'WAITING FOR SERVER';
         badge.className = 'font-black text-amber-300';
@@ -201,15 +213,15 @@
       }
     }
 
-    setText(
-      'dms-sync-note',
-      aligned
-        ? `Tick, V1, shadow and NEXT target all belong to epoch ${serverEpoch}` +
-          (Number.isFinite(state.lastLatencyMs)
-            ? ` · catch-up ${state.lastLatencyMs} ms`
-            : '')
-        : 'Open contract target stays frozen; only NEXT target follows the newest canonical rank.'
-    );
+    const gateStatus = score.ranking_status === 'BELOW_THRESHOLD'
+      ? `Rank #1 ${rankDigit ?? '—'} displayed; execution waits for score >= ${score.target_min_score ?? 9}.`
+      : score.ready ? 'Rank available; execution eligibility is separate.'
+      : `Warming ranking history ${score.history_count ?? 0}/${score.minimum_history ?? 10}.`;
+    setText('dms-sync-note',
+      `${gateStatus} ` + (aligned ? `Browser/server epochs aligned (${serverEpoch}).` :
+        rankHealthy ? `Server rank current at epoch ${serverEpoch}; browser feed may differ.` :
+        'Waiting for current server rank.'));
+
 
     return aligned;
   }

@@ -12083,15 +12083,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const rankingEl = document.getElementById('digit-score-ranking');
 
             if (targetEl) {
-                targetEl.textContent = Number.isInteger(Number(st?.candidate_digit))
+                targetEl.textContent = st?.candidate_digit != null && Number.isInteger(Number(st.candidate_digit))
                     ? String(st.candidate_digit)
                     : '—';
             }
             if (attemptEl) {
-                const liveNext = Number(
-                    st?.live_next_target ?? score?.selected_digit
-                );
-                attemptEl.textContent = Number.isInteger(liveNext)
+                const liveNextRaw = st?.live_next_target ?? score?.selected_digit;
+                const liveNext = liveNextRaw == null ? null : Number(liveNextRaw);
+                attemptEl.textContent = liveNext !== null && Number.isInteger(liveNext)
                     ? String(liveNext)
                     : '—';
             }
@@ -12109,7 +12108,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
-            const selected = Number(score.selected_digit);
+            const selected = Number(score.display_digit ?? score.raw_selected_digit ?? score.ranking?.[0]?.digit);
 
             const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
             const activeTarget = Number(st?.candidate_digit);
