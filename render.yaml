@@ -3,7 +3,7 @@ services:
     name: digitmatchstar-api
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.rank_main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.rank_main_v9:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false

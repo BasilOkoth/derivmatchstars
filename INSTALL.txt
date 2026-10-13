@@ -1,77 +1,22 @@
-DigitMatchStar Clean Core + Rank Fix V10
+DigitMatchStars InvalidContractProposal Recovery V9
 
-Repository basis:
-  BasilOkoth/derivmatchstars
-  inspected current HEAD: b133030566306031a063c83f2732643d999b5ef3
+Upload/replace:
+  app/proposal_retry_v9.py   NEW
+  app/rank_main_v9.py        NEW
+  render.yaml                REPLACE
 
-UPLOAD / REPLACE
+Fixes:
+  BUY_UNCERTAIN trade 1: InvalidContractProposal: Unknown contract proposal
 
-Replace:
-  research-suite-loader.js
-  render.yaml
+The current V7 recovery retries one explicit invalid proposal once. V9 adds
+up to 3 additional fresh-proposal attempts only when Deriv explicitly says
+InvalidContractProposal/Unknown contract proposal.
 
-Add:
-  lean-core-ui-v10.js
-  rank-session-bootstrap-v10.js
-  app/rank_reliability_v10.py
-  app/rank_main.py
+It does NOT retry ambiguous network BUY failures. It is DEMO-only and leaves
+ranking/scoring logic unchanged.
 
-WHAT IS KEPT
+Render startup changes from:
+  uvicorn app.rank_main:app ...
 
-  - Main trading controls
-  - Server execution panel
-  - DIGIT SCORE 0–9 ranking
-  - Canonical Tick ↔ Rank Sync
-  - Target Score Gate
-  - Contract result timeline
-  - Cycle recorder/performance
-  - Trade/alignment export
-  - P/L, balance and live log
-
-WHAT IS REMOVED FROM ACTIVE RESEARCH LOADING / HIDDEN
-
-  - Market Edge Monitor
-  - SAFE-TICK V1 research panel
-  - Tail Risk research panel
-  - Tail Precursor Lab
-  - Post-Stop Depth Tracker
-  - Digit DNA panel
-  - Digit Feature Engine panel
-  - Randomness Auditor panel
-  - Next-Tick Edge Engine panel
-  - Continuous Research control
-
-DIGIT RANK FIX
-
-There were two important stuck-rank cases:
-
-1. Existing tick subscription with no first tick:
-   The old watchdog only considered a feed stale when last_seen had a value.
-   If the subscription existed but never produced even one tick,
-   last_seen stayed None forever and the feed was never restarted.
-
-2. Warm history but missing rank snapshot:
-   The old bootstrap returned immediately once history >= min_history.
-   If the process had warm history but the rank snapshot was missing,
-   DIGIT SCORE could remain at WAITING FOR SERVER.
-
-V10 repairs both conditions and prevents duplicate repair tasks.
-
-It also creates/reuses an IDLE server session after OAuth so the passive
-DigitScore feed can begin before START BOT. This session bootstrap DOES NOT
-start trading and DOES NOT submit a BUY.
-
-DEPLOYMENT
-
-Render now starts:
-  uvicorn app.rank_main:app --host 0.0.0.0 --port $PORT
-
-rank_main imports the reliability patch, then exposes the existing app.
-
-No change is made to:
-  app/engine.py
-  app/digit_score.py
-  bot.html
-  OAuth
-  V1 score formula
-  score >= 9 execution gate
+to:
+  uvicorn app.rank_main_v9:app ...
