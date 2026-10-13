@@ -1,32 +1,77 @@
-DigitMatchStar Score>=9 None Guard V8
+DigitMatchStar Clean Core + Rank Fix V10
+
+Repository basis:
+  BasilOkoth/derivmatchstars
+  inspected current HEAD: b133030566306031a063c83f2732643d999b5ef3
+
+UPLOAD / REPLACE
 
 Replace:
-  app/__init__.py
+  research-suite-loader.js
+  render.yaml
 
-Fixes the exact error:
-  PROPOSAL [R_10/USD/digit None]:
-  int() argument must be ... NoneType
+Add:
+  lean-core-ui-v10.js
+  rank-session-bootstrap-v10.js
+  app/rank_reliability_v10.py
+  app/rank_main.py
 
-Cause:
-- V6 intentionally sets selected_digit=None when V1 #1 score is below 9.
-- The original Trade-1 step could still reach the proposal path in a timing
-  window and pass candidate_digit=None.
+WHAT IS KEPT
 
-V8 behavior for Trade 1:
-- rank not ready -> DIGIT_SCORE_WARMING
-- top score < 9 -> WAITING_SCORE_GE_9
-- top score >= 9 -> freeze exact digit and score snapshot
-- re-read DB candidate immediately before proposal
-- proposal request is impossible with digit=None
+  - Main trading controls
+  - Server execution panel
+  - DIGIT SCORE 0–9 ranking
+  - Canonical Tick ↔ Rank Sync
+  - Target Score Gate
+  - Contract result timeline
+  - Cycle recorder/performance
+  - Trade/alignment export
+  - P/L, balance and live log
 
-Additional hard guard:
-_request_proposal_payload() now rejects None before calling Deriv.
+WHAT IS REMOVED FROM ACTIVE RESEARCH LOADING / HIDDEN
 
-Preserved:
-- V1 minimum target score >= 9.00
-- V7 InvalidContractProposal fresh-proposal retry
-- Rank Recovery V5
-- Contract Tick Timeline V4
-- FAST RANK V2
-- rerank-after-every-loss
-- DEMO-only automated execution
+  - Market Edge Monitor
+  - SAFE-TICK V1 research panel
+  - Tail Risk research panel
+  - Tail Precursor Lab
+  - Post-Stop Depth Tracker
+  - Digit DNA panel
+  - Digit Feature Engine panel
+  - Randomness Auditor panel
+  - Next-Tick Edge Engine panel
+  - Continuous Research control
+
+DIGIT RANK FIX
+
+There were two important stuck-rank cases:
+
+1. Existing tick subscription with no first tick:
+   The old watchdog only considered a feed stale when last_seen had a value.
+   If the subscription existed but never produced even one tick,
+   last_seen stayed None forever and the feed was never restarted.
+
+2. Warm history but missing rank snapshot:
+   The old bootstrap returned immediately once history >= min_history.
+   If the process had warm history but the rank snapshot was missing,
+   DIGIT SCORE could remain at WAITING FOR SERVER.
+
+V10 repairs both conditions and prevents duplicate repair tasks.
+
+It also creates/reuses an IDLE server session after OAuth so the passive
+DigitScore feed can begin before START BOT. This session bootstrap DOES NOT
+start trading and DOES NOT submit a BUY.
+
+DEPLOYMENT
+
+Render now starts:
+  uvicorn app.rank_main:app --host 0.0.0.0 --port $PORT
+
+rank_main imports the reliability patch, then exposes the existing app.
+
+No change is made to:
+  app/engine.py
+  app/digit_score.py
+  bot.html
+  OAuth
+  V1 score formula
+  score >= 9 execution gate
