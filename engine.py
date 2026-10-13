@@ -964,49 +964,48 @@ class MultiUserEngine:
             self.latest_tick_epoch.get(s.id) or 0
         )
 
-        # The tick subscription above can reconnect the socket. Proposal IDs
-        # from the old socket must not be submitted on the new socket.
-        # The BUY claim remains held; no other worker may buy this trade.
-        quoted_generation = payload.get("proposal_socket_generation")
-        live_generation = getattr(client, "socket_generation", None)
-        if quoted_generation is None or quoted_generation != live_generation:
-            try:
-                payload = await self._request_proposal_payload(
-                    client,
-                    symbol=str(s.symbol),
-                    digit=int(payload["digit"]),
-                    stake=float(payload["stake"]),
-                    trade_no=int(payload["trade_no"]),
-                    currency=str(payload.get("currency") or await self._currency_for(db, s)),
-                )
-            except Exception as exc:
-                # No BUY has been sent. Release only our own claim and stop.
-                row = db.query(TradingSession).filter(
-                    TradingSession.id == int(s.id)
-                ).with_for_update().one_or_none()
-                if row and self._claim_is_owned(row, claim):
-                    row.running = False
-                    row.paused = False
-                    row.phase = "PROPOSAL_REFRESH_FAILED"
-                    row.pending_trade_json = None
-                    row.last_error = f"PROPOSAL_REFRESH_FAILED trade {claim['trade_no']}: {exc}"
-                    row.updated_at = datetime.utcnow()
-                    db.commit()
-                raise RuntimeError(f"PROPOSAL_REFRESH_FAILED: {exc}") from exc
+        # Quote on the active socket IMMEDIATELY before purchase. Cached and
+        # prearmed quotes are never bought, even if the socket appears unchanged.
+        # The DB claim prevents another worker buying the same logical trade.
+        try:
+            await client.connect()
+            payload = await self._request_proposal_payload(
+                client,
+                symbol=str(s.symbol),
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
+                trade_no=int(payload["trade_no"]),
+                currency=str(payload.get("currency") or await self._currency_for(db, s)),
+            )
+            if payload.get("proposal_socket_generation") != getattr(client, "socket_generation", None):
+                raise RuntimeError("PROPOSAL_SOCKET_CHANGED: connection replaced during proposal")
+        except Exception as exc:
+            row = db.query(TradingSession).filter(
+                TradingSession.id == int(s.id)
+            ).with_for_update().one_or_none()
+            if row and self._claim_is_owned(row, claim):
+                row.running = False
+                row.paused = False
+                row.phase = "PROPOSAL_REFRESH_FAILED"
+                row.pending_trade_json = None
+                row.last_error = f"PROPOSAL_REFRESH_FAILED trade {claim['trade_no']}: {exc}"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(f"PROPOSAL_REFRESH_FAILED: {exc}") from exc
 
         try:
-            # No re-try on ambiguous BUY transport failures.
-            if payload.get("proposal_socket_generation") != getattr(client, "socket_generation", None):
-                raise RuntimeError("PROPOSAL_SOCKET_CHANGED: connection replaced before BUY")
             result = await client.buy(
                 payload["proposal_id"],
                 payload["ask_price"],
                 demo=True,
             )
         except Exception as exc:
-            # BUY is deliberately never auto-retried. Its outcome may be
-            # uncertain after a network failure, so stop rather than risking
-            # a duplicate contract.
+            # An explicit InvalidContractProposal response rejects this BUY.
+            # Unlike transport timeouts, it is NOT an uncertain purchase.
+            explicit_rejection = (
+                "invalidcontractproposal" in str(exc).lower()
+                or "unknown contract proposal" in str(exc).lower()
+            )
             row = (
                 db.query(TradingSession)
                 .filter(TradingSession.id == int(s.id))
@@ -1016,12 +1015,21 @@ class MultiUserEngine:
             if row and self._claim_is_owned(row, claim):
                 row.running = False
                 row.paused = False
-                row.phase = "BUY_UNCERTAIN_STOPPED"
+                row.phase = (
+                    "INVALID_PROPOSAL_REJECTED" if explicit_rejection
+                    else "BUY_UNCERTAIN_STOPPED"
+                )
                 row.last_error = (
+                    f"INVALID_PROPOSAL trade {claim['trade_no']}: {exc}"
+                    if explicit_rejection else
                     f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
                 )
                 row.updated_at = datetime.utcnow()
                 db.commit()
+            if explicit_rejection:
+                raise RuntimeError(
+                    f"INVALID_PROPOSAL trade {claim['trade_no']}: {exc}"
+                ) from exc
             raise RuntimeError(
                 f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
             ) from exc
