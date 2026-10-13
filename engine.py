@@ -249,6 +249,7 @@ class MultiUserEngine:
         trade_no,
         currency,
     ):
+        request_socket_generation = getattr(client, "socket_generation", None)
         proposal = await client.proposal_digitmatch(
             symbol=symbol,
             digit=digit,
@@ -256,6 +257,9 @@ class MultiUserEngine:
             duration=1,
             currency=currency,
         )
+
+        if request_socket_generation != getattr(client, "socket_generation", None):
+            raise RuntimeError("PROPOSAL_SOCKET_CHANGED: connection replaced during quote")
 
         p = proposal.get("proposal") or {}
         if not p.get("id"):
@@ -266,6 +270,7 @@ class MultiUserEngine:
 
         return {
             "proposal_id": p["id"],
+            "proposal_socket_generation": getattr(client, "socket_generation", None),
             "ask_price": float(p.get("ask_price") or stake),
             "payout": float(p.get("payout") or 0),
             "digit": int(digit),
@@ -321,25 +326,6 @@ class MultiUserEngine:
             list(self._digit_history(sid)),
             exclude_digit=exclude_digit,
         )
-        # Publish the canonical provenance with each score snapshot. The
-        # execution score gate is applied separately by app/__init__.py.
-        tick = self.latest_ticks.get(sid) or {}
-        epoch = int(tick.get("epoch") or 0)
-        if epoch and snapshot.get("ready"):
-            snapshot["canonical_tick"] = {
-                "epoch": epoch,
-                "digit": self._tick_last_digit(tick),
-                "quote": tick.get("quote"),
-                "pip_size": tick.get("pip_size"),
-                "symbol": tick.get("symbol"),
-            }
-            snapshot["rank_epoch"] = epoch
-            snapshot["shadow_epoch"] = epoch
-            # Target selection is made from this snapshot, but may be
-            # ineligible to execute when the configured score gate fails.
-            snapshot["target_epoch"] = epoch
-            if isinstance(snapshot.get("shadow"), dict):
-                snapshot["shadow"]["rank_epoch"] = epoch
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
@@ -978,7 +964,40 @@ class MultiUserEngine:
             self.latest_tick_epoch.get(s.id) or 0
         )
 
+        # The tick subscription above can reconnect the socket. Proposal IDs
+        # from the old socket must not be submitted on the new socket.
+        # The BUY claim remains held; no other worker may buy this trade.
+        quoted_generation = payload.get("proposal_socket_generation")
+        live_generation = getattr(client, "socket_generation", None)
+        if quoted_generation is None or quoted_generation != live_generation:
+            try:
+                payload = await self._request_proposal_payload(
+                    client,
+                    symbol=str(s.symbol),
+                    digit=int(payload["digit"]),
+                    stake=float(payload["stake"]),
+                    trade_no=int(payload["trade_no"]),
+                    currency=str(payload.get("currency") or await self._currency_for(db, s)),
+                )
+            except Exception as exc:
+                # No BUY has been sent. Release only our own claim and stop.
+                row = db.query(TradingSession).filter(
+                    TradingSession.id == int(s.id)
+                ).with_for_update().one_or_none()
+                if row and self._claim_is_owned(row, claim):
+                    row.running = False
+                    row.paused = False
+                    row.phase = "PROPOSAL_REFRESH_FAILED"
+                    row.pending_trade_json = None
+                    row.last_error = f"PROPOSAL_REFRESH_FAILED trade {claim['trade_no']}: {exc}"
+                    row.updated_at = datetime.utcnow()
+                    db.commit()
+                raise RuntimeError(f"PROPOSAL_REFRESH_FAILED: {exc}") from exc
+
         try:
+            # No re-try on ambiguous BUY transport failures.
+            if payload.get("proposal_socket_generation") != getattr(client, "socket_generation", None):
+                raise RuntimeError("PROPOSAL_SOCKET_CHANGED: connection replaced before BUY")
             result = await client.buy(
                 payload["proposal_id"],
                 payload["ask_price"],

@@ -190,16 +190,6 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     async def _rank_feed_watchdog(self):
         if not hasattr(self, "_dms_last_tick_monotonic"):
             self._dms_last_tick_monotonic = {}
-        if not hasattr(self, "_dms_feed_attempted_at"):
-            self._dms_feed_attempted_at = {}
-        if not hasattr(self, "_dms_feed_inflight"):
-            self._dms_feed_inflight = set()
-
-        async def refresh_feed(sid, user_id, account_id, symbol, force):
-            try:
-                await self._ensure_feed(sid, user_id, account_id, symbol, force=force)
-            finally:
-                self._dms_feed_inflight.discard(sid)
 
         while True:
             try:
@@ -224,20 +214,27 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
                     existing = self.tick_subscriptions.get(sid)
                     last_seen = self._dms_last_tick_monotonic.get(sid)
 
-                    # No callbacks after subscribing is also a stale feed.
-                    # Previous code only detected staleness after the first tick.
-                    attempted = self._dms_feed_attempted_at.get(sid, now)
-                    stale = bool(existing and (now - (last_seen or attempted)) > 12.0)
-                    missing = bool(not existing or str(existing.get("symbol")) != str(symbol))
-                    # Limit reconnect requests and prevent overlapping subscriptions.
-                    if ((missing or stale)
-                            and sid not in self._dms_feed_inflight
-                            and (now - self._dms_feed_attempted_at.get(sid, 0)) >= 5.0):
-                        self._dms_feed_inflight.add(sid)
-                        self._dms_feed_attempted_at[sid] = now
-                        asyncio.create_task(refresh_feed(
-                            sid, user_id, account_id, symbol, bool(stale)
-                        ))
+                    stale = (
+                        existing is not None
+                        and last_seen is not None
+                        and (now - last_seen) > 12.0
+                    )
+
+                    missing = (
+                        not existing
+                        or str(existing.get("symbol")) != str(symbol)
+                    )
+
+                    if missing or stale:
+                        asyncio.create_task(
+                            self._ensure_feed(
+                                sid,
+                                user_id,
+                                account_id,
+                                symbol,
+                                force=bool(stale),
+                            )
+                        )
 
             except asyncio.CancelledError:
                 raise
@@ -474,19 +471,6 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
         snapshot["target_min_score"] = MIN_TARGET_SCORE_V6
         snapshot["target_eligible"] = eligible
         snapshot["target_gate"] = "V1_TOP_SCORE_GE_9"
-        # Display the raw ranking regardless of execution eligibility.
-        snapshot["display_digit"] = raw_digit
-        snapshot["display_score"] = raw_score
-        snapshot["ranking_status"] = (
-            "WARMING" if not snapshot.get("ready") else
-            "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
-        )
-        # The previous rank/target epochs refer to this same scored tick.
-        if snapshot.get("rank_epoch"):
-            snapshot["shadow_epoch"] = snapshot["rank_epoch"]
-            snapshot["target_epoch"] = snapshot["rank_epoch"]
-            if isinstance(snapshot.get("shadow"), dict):
-                snapshot["shadow"]["rank_epoch"] = snapshot["rank_epoch"]
 
         # selected_digit is the EXECUTION selection. Preserve the full ranking
         # even when no digit is currently eligible.
@@ -1024,18 +1008,6 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 .get(sid)
                 or {}
             )
-
-            # Never open a new DEMO contract using a stale market snapshot.
-            # This is separate from the >=9 strategy eligibility condition.
-            last_rank_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
-            market_age = (datetime.utcnow().timestamp() - last_rank_epoch) if last_rank_epoch else float("inf")
-            if market_age > 20.0:
-                s.candidate_digit = None
-                s.phase = "WAITING_FRESH_SERVER_TICK"
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-                return
 
             # No valid score yet: wait.
             if not snapshot.get("ready"):

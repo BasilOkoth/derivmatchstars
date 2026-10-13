@@ -12,13 +12,11 @@ MessageCallback = Callable[[dict], Awaitable[None]]
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client for DEMO execution plus read-only
-    proposal/subscription support for REAL-account previews.
+    Event-driven Deriv WebSocket client for DEMO execution + read-only subscriptions.
 
-    Safety boundary:
+    Safety:
     - `buy(..., demo=True)` must be explicitly marked DEMO.
-    - REAL-money purchases are never submitted by this client.
-    - REAL mode may request/read proposals, but execution stays disabled.
+    - REAL purchase automation is not supported by this client.
     """
 
     def __init__(self, url: str):
@@ -46,6 +44,7 @@ class DerivWS:
         # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
+        self.socket_generation = 0  # Connection identity for proposal validity
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -75,6 +74,7 @@ class DerivWS:
                 max_queue=None,
             )
             self.reader_task = asyncio.create_task(self._reader())
+            self.socket_generation += 1
 
     async def close(self):
         if self.reader_task and not self.reader_task.done():
@@ -316,9 +316,8 @@ class DerivWS:
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
             raise RuntimeError(
-                "REAL-money execution is disabled. "
-                "Use proposal generation for REAL preview/review only; "
-                "this client only submits DEMO purchases."
+                "Automated REAL-money purchase is disabled. "
+                "This client only permits DEMO execution."
             )
 
         return await self.request(
