@@ -583,20 +583,26 @@ class MultiUserEngine:
                             pass
                         payload = self.prefetched_recovery.pop(sid, None)
 
-                # The latest V1 rank #1 is the authoritative NEXT target.
-                # A proposal armed for an older #1 is stale and is never bought.
-                desired_next = self.live_next_target.get(sid)
-
-                if desired_next is None:
-                    desired_next, _ = self._choose_scored_digit(
-                        sid,
-                        lock_target=True,
-                    )
-                    if desired_next is not None:
-                        self._set_live_next_target(
-                            sid,
-                            desired_next,
-                        )
+                # Use the latest canonical SERVER V1 #1 (not the last displayed
+                # browser target or a previously prefetched candidate).
+                desired_next, current_snapshot = self._choose_scored_digit(
+                    sid, lock_target=True
+                )
+                from time import time as _rank_now
+                rank_epoch = int(
+                    (current_snapshot or {}).get("rank_epoch")
+                    or self.latest_tick_epoch.get(sid)
+                    or 0
+                )
+                if (
+                    desired_next is None or rank_epoch <= 0
+                    or abs(_rank_now() - rank_epoch) > 15
+                ):
+                    s.phase = "WAITING_FRESH_RECOVERY_RANK"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+                self._set_live_next_target(sid, int(desired_next))
 
                 if desired_next is not None:
                     next_digit = int(desired_next)
@@ -658,9 +664,34 @@ class MultiUserEngine:
                         currency=currency,
                     )
 
-                # LOSS -> immediate next BUY.
-                #
-                # No proposal_open_contract.is_sold wait occurs here.
+                # A network proposal may finish after V1 #1 changes.
+                # Re-quote for the current rank; never buy an older target.
+                final_digit, final_snapshot = self._choose_scored_digit(
+                    sid, lock_target=True
+                )
+                from time import time as _rank_now
+                final_epoch = int(
+                    (final_snapshot or {}).get("rank_epoch")
+                    or self.latest_tick_epoch.get(sid)
+                    or 0
+                )
+                if (final_digit is None or final_epoch <= 0
+                        or abs(_rank_now() - final_epoch) > 15):
+                    s.phase = "WAITING_FRESH_RECOVERY_RANK"
+                    db.commit()
+                    return
+                if int(payload.get("digit", -1)) != int(final_digit):
+                    s.candidate_digit = int(final_digit)
+                    self._set_live_next_target(sid, int(final_digit))
+                    db.commit()
+                    client = await self._client(user_id, account_id)
+                    currency = await self._currency_for(db, s)
+                    payload = await self._request_proposal_payload(
+                        client, symbol=s.symbol, digit=int(final_digit),
+                        stake=s.current_stake, trade_no=expected_trade_no,
+                        currency=currency,
+                    )
+                # LOSS -> next DEMO BUY after verified fresh V1 alignment.
                 client = await self._client(user_id, account_id)
 
                 await self._execute_demo_buy(
@@ -998,6 +1029,31 @@ class MultiUserEngine:
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
+
+                # Bind every foreground DEMO purchase to the latest SERVER V1 #1.
+                # A browser display or a stale candidate_digit cannot authorize a buy.
+                ranked_digit, ranked_snapshot = self._choose_scored_digit(
+                    sid, lock_target=True
+                )
+                from time import time as _rank_now
+                rank_epoch = int(
+                    (ranked_snapshot or {}).get("rank_epoch")
+                    or self.latest_tick_epoch.get(sid)
+                    or 0
+                )
+                if (
+                    ranked_digit is None or rank_epoch <= 0
+                    or abs(_rank_now() - rank_epoch) > 15
+                ):
+                    s.phase = "WAITING_FRESH_EXECUTION_RANK"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+                s.candidate_digit = int(ranked_digit)
+                self._set_live_next_target(sid, int(ranked_digit))
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
 
                 currency = await self._currency_for(db, s)
 
