@@ -1,0 +1,9 @@
+UI controls restoration — 14 October 2026
+
+Restored the COMPLETE bot.html from the previous recovery-pipeline package.
+This removes frontend modifications from the stop-lifecycle package, and restores its prior button/minimization handlers.
+All other files are retained from the last stop-lifecycle release, including app/main.py backend STOP diagnostics.
+
+Important: because this restores the prior frontend, redundant stop requests from the older code may recur. Do not assume the underlying trade-recovery issue is solved. Keep testing in DEMO only.
+
+Publish the replacement bot.html to the website serving your trading dashboard and hard-refresh the page (Ctrl+Shift+R). Redeploy backend only if its files were not already deployed.
