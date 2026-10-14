@@ -502,6 +502,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
     async def _step_min9(self, sid: int):
         sid = int(sid)
+        should_retry_waiting = False
 
         # Prevent the normal step loop from repeatedly trying Trade 1 while
         # the rank is valid but below the score threshold.
@@ -546,14 +547,34 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                 .get(sid)
             )
 
-            # Recovery waiting is driven only by canonical ticks in
-            # _handle_strategy_tick_min9(). Do not let step() bypass the gate.
-            if s and waiting and s.running and not s.paused:
+            # Recovery waiting can be stranded when a canonical tick arrives
+            # during a Render reconnect. The normal loop will retry eligible
+            # waiting work outside this DB session, protected by the buy claim.
+            should_retry_waiting = bool(
+                s and waiting and s.running and not s.paused and
+                (self.digit_score_snapshots.get(sid) or {}).get("target_eligible")
+            )
+            if s and waiting and s.running and not s.paused and not should_retry_waiting:
                 return
 
         finally:
             db.close()
 
+        if should_retry_waiting:
+            # This routine obtains the per-session lock itself. Do not hold it
+            # while invoking the routine.
+            db2 = SessionLocal()
+            try:
+                row = db2.get(TradingSession, sid)
+                if row and row.running and not row.paused:
+                    return await self._buy_waiting_score9(
+                        sid=sid,
+                        user_id=row.user_id,
+                        account_id=row.account_id,
+                        symbol=row.symbol,
+                    )
+            finally:
+                db2.close()
         return await _original_step_v6(self, sid)
 
     async def _buy_waiting_score9(

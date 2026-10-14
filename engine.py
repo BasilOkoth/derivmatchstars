@@ -698,25 +698,110 @@ class MultiUserEngine:
                     client=client,
                 )
 
-                # The fast strategy contract, not settlement state, owns an
-                # in-cycle trade. Deriv may clear open_contract_id before the
-                # exact strategy tick callback finishes. Do not let the normal
-                # worker race ahead and request another proposal.
+                # Reconcile a decided fast loss rather than treating its old
+                # pipeline owner as a permanently active contract.
+                # Never infer settlement from browser ticks: advance only after
+                # Deriv's official settlement was persisted to TradeLog.
                 fast_owner = self.fast_contracts.get(sid)
                 if (
                     int(s.current_trade or 0) > 0
                     and fast_owner
-                    and int(fast_owner.get("trade_no") or 0)
-                    == int(s.current_trade)
+                    and int(fast_owner.get("trade_no") or 0) == int(s.current_trade)
                 ):
-                    s.phase = (
-                        "RECOVERY_PREARMED"
-                        if sid in self.prefetched_recovery
-                        else "PIPELINE_ACTIVE"
+                    if not fast_owner.get("decided"):
+                        s.phase = "PIPELINE_ACTIVE"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    fast_result = str(fast_owner.get("fast_result") or "").upper()
+                    if fast_result != "LOSS":
+                        # WIN/unknown decisions must not trigger recovery.
+                        if fast_result == "WIN":
+                            s.running = False
+                            s.phase = "FAST_WON"
+                        else:
+                            s.phase = "DECISION_RECONCILIATION_REQUIRED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    pending_claim = self._pending_json(s.pending_trade_json)
+                    if pending_claim.get("kind") == "BUY_CLAIM":
+                        # Another path may already have sent the next BUY.
+                        s.phase = "RECOVERY_BUY_RECONCILIATION_REQUIRED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    old_contract_id = str(fast_owner.get("contract_id") or "")
+                    previous = (
+                        db.query(TradeLog)
+                        .filter(
+                            TradeLog.trading_session_id == int(s.id),
+                            TradeLog.trade_no == int(s.current_trade),
+                            TradeLog.contract_id == old_contract_id,
+                        )
+                        .order_by(TradeLog.id.desc())
+                        .first()
                     )
+                    if (
+                        not previous
+                        or previous.settled_at is None
+                        or previous.profit is None
+                        or s.open_contract_id
+                    ):
+                        # Settlement callback may still be processing. Do not
+                        # duplicate purchases or clear ownership prematurely.
+                        s.phase = "WAITING_RECOVERY_RECONCILIATION"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if float(previous.profit) > 0:
+                        s.running = False
+                        s.phase = "OFFICIAL_WIN_RECONCILED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if int(s.current_trade or 0) >= int(s.max_trades or 0):
+                        s.running = False
+                        s.phase = "MAX_TRADES_REACHED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    ranked_digit, ranked_snapshot = self._choose_scored_digit(
+                        sid, lock_target=True
+                    )
+                    rank_epoch = int(
+                        (ranked_snapshot or {}).get("rank_epoch")
+                        or self.latest_tick_epoch.get(sid)
+                        or 0
+                    )
+                    from time import time as _wall_time
+                    if (
+                        ranked_digit is None
+                        or rank_epoch <= 0
+                        or abs(_wall_time() - rank_epoch) > 15
+                    ):
+                        s.phase = "WAITING_FRESH_RECOVERY_RANK"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    # Stake derived from the last purchased trade, NOT from
+                    # current_stake: never compound it twice after a restart.
+                    s.current_stake = round(
+                        float(previous.stake) * float(s.multiplier), 2
+                    )
+                    s.candidate_digit = int(ranked_digit)
+                    self._set_live_next_target(sid, int(ranked_digit))
+                    self.fast_contracts.pop(sid, None)
+                    self.prefetched_recovery.pop(sid, None)
+                    s.phase = "RECOVERY_RECONCILED_READY"
+                    s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
-                    return
 
                 # An open contract must never send the worker back into a
                 # foreground WAITING_SETTLEMENT state.
