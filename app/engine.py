@@ -889,6 +889,40 @@ class MultiUserEngine:
                     db.commit()
                     return
 
+                # Resolve the actual NEXT execution target from the canonical
+                # server-side V1 ranking, not from a cached browser candidate.
+                # Keep the purchased contract's target immutable; this changes
+                # only the new proposal's intended digit.
+                last_tick_age = time.monotonic() - self.latest_tick_received_at.get(
+                    sid, 0.0
+                )
+                if last_tick_age > 15.0:
+                    s.phase = "EXECUTION_FEED_STALE"
+                    s.last_error = (
+                        "No fresh server tick for next DIGITMATCH purchase; "
+                        "waiting for subscription recovery"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                target, snapshot = self._choose_scored_digit(sid, lock_target=True)
+                if target is None or not snapshot.get("ready"):
+                    s.phase = "EXECUTION_RANK_WARMING"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+                s.candidate_digit = int(target)
+                self._set_live_next_target(sid, int(target))
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                logger.info(
+                    "DMS_EXECUTION_TARGET sid=%s trade=%s v1_top=%s stake=%.2f age=%.1fs",
+                    sid, int(s.current_trade) + 1, int(target),
+                    float(s.current_stake), last_tick_age,
+                )
+
                 currency = await self._currency_for(db, s)
 
                 # Normal first trade of the cycle. Recovery trades normally use
@@ -912,6 +946,19 @@ class MultiUserEngine:
                         f"[{s.symbol}/{currency}/digit {s.candidate_digit}]: "
                         f"{exc}"
                     ) from exc
+
+                # The BUY must not use an obsolete target when the V1 #1
+                # changes during the Deriv proposal roundtrip. On a change,
+                # defer to the next step for a fresh proposal, never buy stale.
+                current_top, _ = self._choose_scored_digit(sid, lock_target=True)
+                if current_top is None or int(current_top) != int(payload["digit"]):
+                    if current_top is not None:
+                        s.candidate_digit = int(current_top)
+                        self._set_live_next_target(sid, int(current_top))
+                    s.phase = "EXECUTION_RANK_CHANGED_RETRY"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
 
                 await self._execute_demo_buy(
                     db,
