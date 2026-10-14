@@ -5,7 +5,7 @@
 (() => {
     'use strict';
 
-    const DEFAULT_MIN_SCORE = 9.0;
+    const DEFAULT_MIN_SCORE = -1000000000;
 
     function ensureBadge() {
         const host = document.getElementById('recycle-runtime-panel');
@@ -55,8 +55,7 @@
         const eligible = Boolean(
             score?.ready &&
             topDigit !== null &&
-            topScore !== null &&
-            topScore >= threshold
+            topScore !== null
         );
 
         return { topDigit, topScore, threshold, eligible };
@@ -73,7 +72,7 @@
             badge.innerHTML = `
                 <div class="flex items-center justify-between gap-3">
                     <div>
-                        <span class="text-amber-300 font-black">TARGET SCORE GATE</span>
+                        <span class="text-amber-300 font-black">TOP-DIGIT EXECUTION</span>
                         <span class="text-slate-400"> · waiting for server ranking</span>
                     </div>
                     <div class="text-yellow-300 font-black">WAITING</div>
@@ -90,8 +89,8 @@
         badge.innerHTML = `
             <div class="flex items-center justify-between gap-3">
                 <div>
-                    <span class="text-amber-300 font-black">TARGET SCORE GATE</span>
-                    <span class="text-slate-400"> · V1 #1 must be ≥ ${threshold.toFixed(2)}</span>
+                    <span class="text-amber-300 font-black">TOP-DIGIT EXECUTION</span>
+                    <span class="text-slate-400"> · executes current V1 #1 (no score threshold)</span>
                 </div>
                 <div class="${eligible ? 'text-emerald-300' : 'text-yellow-300'} font-black">
                     ${eligible ? 'ELIGIBLE ✓' : 'WAITING'}

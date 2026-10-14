@@ -427,7 +427,7 @@ if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
 
 if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
-    MIN_TARGET_SCORE_V6 = 9.0
+    MIN_TARGET_SCORE_V6 = -1000000000.0  # no score threshold
 
     _original_score_all_digits_v6 = MultiUserEngine._score_all_digits
     _original_handle_strategy_tick_v6 = MultiUserEngine._handle_strategy_tick
@@ -466,14 +466,13 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
             snapshot.get("ready")
             and raw_digit is not None
             and raw_score is not None
-            and raw_score >= MIN_TARGET_SCORE_V6
         )
 
         snapshot["raw_selected_digit"] = raw_digit
         snapshot["raw_top_score"] = raw_score
         snapshot["target_min_score"] = MIN_TARGET_SCORE_V6
         snapshot["target_eligible"] = eligible
-        snapshot["target_gate"] = "V1_TOP_SCORE_GE_9"
+        snapshot["target_gate"] = "V1_TOP_RANKED_DIGIT"
         # Display the raw ranking regardless of execution eligibility.
         snapshot["display_digit"] = raw_digit
         snapshot["display_score"] = raw_score
@@ -529,14 +528,14 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     and snapshot.get("target_eligible") is False
                 ):
                     changed = (
-                        str(s.phase or "") != "WAITING_SCORE_GE_9"
+                        str(s.phase or "") != "WAITING_TOP_RANK"
                         or s.candidate_digit is not None
                         or s.last_error is not None
                     )
 
                     if changed:
                         s.candidate_digit = None
-                        s.phase = "WAITING_SCORE_GE_9"
+                        s.phase = "WAITING_TOP_RANK"
                         s.last_error = None
                         s.updated_at = datetime.utcnow()
                         db.commit()
@@ -643,7 +642,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     "locked_at": datetime.utcnow().isoformat(),
                 }
 
-                s.phase = "SCORE_GE_9_ELIGIBLE"
+                s.phase = "TOP_RANK_ELIGIBLE"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -765,7 +764,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     s.candidate_digit = None
                     s.running = True
                     s.paused = False
-                    s.phase = "WAITING_SCORE_GE_9"
+                    s.phase = "WAITING_TOP_RANK"
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
@@ -777,7 +776,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                         "trade_no": int(s.current_trade or 0) + 1,
                         "stake": next_stake,
                         "entered_after_contract": active_contract_before,
-                        "minimum_score": MIN_TARGET_SCORE_V6,
+                        "minimum_score": None,
                     }
 
             finally:
@@ -1052,7 +1051,7 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
 
             if not eligible or digit is None:
                 s.candidate_digit = None
-                s.phase = "WAITING_SCORE_GE_9"
+                s.phase = "WAITING_TOP_RANK"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -1080,16 +1079,9 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
             except Exception:
                 selected_score = None
 
-            minimum_score = float(
-                snapshot.get("target_min_score") or 9.0
-            )
-
-            if (
-                selected_score is None
-                or selected_score < minimum_score
-            ):
+            if selected_score is None:
                 s.candidate_digit = None
-                s.phase = "WAITING_SCORE_GE_9"
+                s.phase = "WAITING_TOP_RANK"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -1108,7 +1100,7 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 "locked_at": datetime.utcnow().isoformat(),
             }
 
-            s.phase = "SCORE_GE_9_ELIGIBLE"
+            s.phase = "TOP_RANK_ELIGIBLE"
             s.last_error = None
             s.updated_at = datetime.utcnow()
             db.commit()

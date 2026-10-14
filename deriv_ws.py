@@ -48,6 +48,8 @@ class DerivWS:
     def is_open(self) -> bool:
         if not self.ws:
             return False
+        if self.reader_task is not None and self.reader_task.done():
+            return False
         closed = getattr(self.ws, "closed", None)
         if isinstance(closed, bool):
             return not closed

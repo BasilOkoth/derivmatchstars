@@ -391,7 +391,11 @@ class MultiUserEngine:
     ):
         existing = self.tick_subscriptions.get(sid)
 
-        if existing and existing.get("symbol") == str(symbol):
+        if (existing and existing.get("symbol") == str(symbol)
+                and existing.get("client_identity") == id(client)
+                and client.is_open()
+                and client.reader_task is not None
+                and not client.reader_task.done()):
             return
 
         if existing:
@@ -416,6 +420,7 @@ class MultiUserEngine:
         self.tick_subscriptions[sid] = {
             "subscription_id": sub_id,
             "symbol": str(symbol),
+            "client_identity": id(client),
         }
 
     async def _handle_strategy_tick(

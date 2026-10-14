@@ -1,6 +1,13 @@
-FULL replacement files for BasilOkoth/derivmatchstars.
-Replace each file at the same relative path in GitHub. Preserve other files.
-Change: reconnect stalled server feed when no first tick arrives, prevent overlapping reconnect tasks; classify stale server tick; show raw rank independent of >=9 execution gate.
-IMPORTANT: The score >=9 restriction is unchanged. Rank 5 at 4.40 will be shown, but NO DEMO trade should execute at that score. Do not mistake this for ranking failure.
-No changes to REAL automation or manual confirmation safeguards.
-Compile/JS syntax tested only. Test with DEMO and monitor live server tick age.
+DigitMatchStar complete server-feed recovery fix (V2)
+
+Replace your GitHub files with the contents of this ZIP, preserving folder structure.
+Changes: app/__init__.py, app/engine.py, app/deriv_ws.py.
+
+- On a stale feed, replace the actual WebSocket rather than resubscribe on a dead/half-open one.
+- Invalidate subscription records for sessions sharing that client.
+- Track transport identity per subscription to prevent treating an old subscription ID as active after reconnect.
+- Detect a completed WebSocket reader task even when the underlying TCP socket claims it is open.
+
+Existing V1 score >= 9 and recovery rules are unchanged. Test DEMO, and check Render logs for feed recovery warnings.
+The execution gap for pending trade 2 is a distinct problem; this release focuses on recurring ranking freezes.
+Python syntax tested, live Deriv integration not tested.
