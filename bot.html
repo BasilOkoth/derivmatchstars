@@ -12983,9 +12983,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 const state = s.state || {};
                 if (state.running || state.open_contract_id) return;
 
-                await serverExecRequest(`/sessions/${s.sessionId}/stop`, {
-                    method: 'POST'
-                });
+                // A completed cycle is already terminal on the server.
+                // Do NOT send a redundant stop request: a delayed poll or
+                // recycled session id could otherwise stop a newer cycle.
+                const phase = String(state.phase || '').toUpperCase();
+                if (!['WON', 'FAST_WON', 'OFFICIAL_WIN_RECONCILED',
+                      'MAX_TRADES_REACHED'].includes(phase)) return;
+                return;
             } catch (err) {
                 // Terminal WON / MAX_TRADES states can already be stopped;
                 // a redundant STOP failure should not prevent the next cycle.
@@ -13674,8 +13678,22 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         async function stopServerExecutionSession() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
-            if (!s.sessionId) return; await serverExecRequest(`/sessions/${s.sessionId}/stop`, {method:'POST'}); await pollServerExecutionState();
-            renderServerExecutionState();
+            if (!s.sessionId) return;
+            // At most one in-flight manual STOP per session.  Never send
+            // stop commands as part of normal state polling.
+            if (s.stopRequestPending) return;
+            s.stopRequestPending = true;
+            const stoppedId = s.sessionId;
+            try {
+                await serverExecRequest(`/sessions/${stoppedId}/stop`, {
+                    method: 'POST',
+                    headers: {'X-DMS-Stop-Source': 'manual-button'}
+                });
+                await pollServerExecutionState();
+                renderServerExecutionState();
+            } finally {
+                s.stopRequestPending = false;
+            }
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
 
