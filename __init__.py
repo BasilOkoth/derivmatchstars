@@ -8,6 +8,8 @@ Key rule:
 
 import asyncio
 import json
+import logging
+import time
 from datetime import datetime
 from collections import deque
 from time import monotonic
@@ -16,6 +18,8 @@ from .engine import MultiUserEngine
 from .db import SessionLocal
 from .models import TradingSession
 from .deriv_ws import DerivWS
+
+_feed_log = logging.getLogger("digitmatchstar.feed")
 
 
 if not hasattr(DerivWS, "ticks_history"):
@@ -78,7 +82,10 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     ):
         sid = int(sid)
 
-        if len(self._digit_history(sid)) >= int(self.digit_scorer.min_history):
+        # A populated but old history must not prevent a reconnect bootstrap.
+        last_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+        if (len(self._digit_history(sid)) >= int(self.digit_scorer.min_history)
+                and last_epoch and time.time() - last_epoch < 15):
             return
 
         data = await client.ticks_history(
@@ -185,63 +192,59 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
         except asyncio.CancelledError:
             raise
         except Exception:
+            _feed_log.exception("rank feed recovery failed: sid=%s symbol=%s", sid, symbol)
             return
 
     async def _rank_feed_watchdog(self):
+        # Exactly one recovery task per session, including before the first tick.
         if not hasattr(self, "_dms_last_tick_monotonic"):
             self._dms_last_tick_monotonic = {}
-
+        recovery = getattr(self, "_dms_feed_recovery_tasks", None)
+        if recovery is None:
+            recovery = self._dms_feed_recovery_tasks = {}
+        started = getattr(self, "_dms_feed_watch_started", None)
+        if started is None:
+            started = self._dms_feed_watch_started = {}
         while True:
             try:
                 db = SessionLocal()
                 try:
                     rows = db.query(TradingSession).all()
-                    sessions = [
-                        (
-                            int(r.id),
-                            str(r.user_id),
-                            str(r.account_id),
-                            str(r.symbol),
-                        )
-                        for r in rows
-                    ]
+                    sessions = [(int(r.id), str(r.user_id), str(r.account_id), str(r.symbol)) for r in rows]
                 finally:
                     db.close()
-
                 now = monotonic()
-
                 for sid, user_id, account_id, symbol in sessions:
+                    started.setdefault(sid, now)
                     existing = self.tick_subscriptions.get(sid)
                     last_seen = self._dms_last_tick_monotonic.get(sid)
-
-                    stale = (
-                        existing is not None
-                        and last_seen is not None
-                        and (now - last_seen) > 12.0
-                    )
-
-                    missing = (
-                        not existing
-                        or str(existing.get("symbol")) != str(symbol)
-                    )
-
+                    # Account for restart or stale epoch even when monotonic state is missing.
+                    epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+                    age = now - (last_seen if last_seen is not None else started[sid])
+                    stale = age > 15 or (epoch > 0 and time.time() - epoch > 15)
+                    missing = not existing or str(existing.get("symbol")) != symbol
+                    task = recovery.get(sid)
+                    if task is not None and not task.done():
+                        continue
                     if missing or stale:
-                        asyncio.create_task(
-                            self._ensure_feed(
-                                sid,
-                                user_id,
-                                account_id,
-                                symbol,
-                                force=bool(stale),
-                            )
-                        )
-
+                        _feed_log.warning("rank feed recovery sid=%s symbol=%s missing=%s stale=%s age=%.1f", sid, symbol, missing, stale, age)
+                        recovery[sid] = asyncio.create_task(self._ensure_feed(
+                            sid, user_id, account_id, symbol,
+                            force=bool(existing and (stale or missing)),
+                        ))
+                        # Avoid a busy-loop when recovery fails quickly.
+                        started[sid] = now
+                for sid in list(recovery):
+                    if sid not in {x[0] for x in sessions}:
+                        task = recovery.pop(sid)
+                        if not task.done():
+                            task.cancel()
+                        started.pop(sid, None)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
-
-            await asyncio.sleep(2.0)
+                _feed_log.exception("rank feed watchdog loop failed")
+            await asyncio.sleep(3.0)
 
     async def _start_rank_feed_v5(self):
         await _original_start_v5(self)
@@ -773,6 +776,9 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
         # The FIRST tick whose top V1 score reaches >= 9 becomes the next
         # executable target.
         if sid in waiting_map:
+            tick_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+            if not tick_epoch or time.time() - tick_epoch > 15:
+                return
             if snapshot.get("target_eligible"):
                 await self._buy_waiting_score9(
                     sid=sid,
@@ -1008,6 +1014,16 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 .get(sid)
                 or {}
             )
+
+            # Do not send orders from a stale canonical ranking.
+            feed_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+            if not feed_epoch or time.time() - feed_epoch > 15:
+                s.candidate_digit = None
+                s.phase = "SERVER_FEED_STALE"
+                s.last_error = "Canonical server tick is stale; awaiting feed recovery"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return
 
             # No valid score yet: wait.
             if not snapshot.get("ready"):

@@ -46,7 +46,6 @@ class DerivWS:
         # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
-        self.socket_generation = 0
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -76,7 +75,6 @@ class DerivWS:
                 max_queue=None,
             )
             self.reader_task = asyncio.create_task(self._reader())
-            self.socket_generation += 1
 
     async def close(self):
         if self.reader_task and not self.reader_task.done():
