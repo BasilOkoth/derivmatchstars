@@ -698,6 +698,98 @@ class MultiUserEngine:
                     client=client,
                 )
 
+                # Restore execution ownership after a Render worker restart.
+                # fast_contracts is process-local, whereas TradeLog is durable.
+                # NEVER start a replacement trade while the previous purchase
+                # lacks an authoritative, persisted settlement.
+                if int(s.current_trade or 0) > 0 and not self.fast_contracts.get(sid):
+                    last_trade = (
+                        db.query(TradeLog)
+                        .filter(
+                            TradeLog.trading_session_id == int(s.id),
+                            TradeLog.trade_no == int(s.current_trade),
+                        )
+                        .order_by(TradeLog.id.desc())
+                        .first()
+                    )
+                    if last_trade is None:
+                        s.phase = "RECOVERY_MISSING_TRADE_LOG"
+                        s.last_error = "Cannot resume without previous trade record"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if (
+                        str(last_trade.status or "").upper() != "SETTLED"
+                        or last_trade.profit is None
+                        or last_trade.settled_at is None
+                    ):
+                        # Recover official settlement subscription; no new BUY.
+                        contract_id = str(last_trade.contract_id or s.open_contract_id or "")
+                        if contract_id:
+                            key = (sid, contract_id)
+                            if (key not in self.contract_subscriptions
+                                    and key not in self.contract_poll_tasks):
+                                asyncio.create_task(
+                                    self._subscribe_open_contract(
+                                        sid=sid,
+                                        user_id=s.user_id,
+                                        account_id=s.account_id,
+                                        contract_id=contract_id,
+                                        client=client,
+                                    )
+                                )
+                        s.phase = "WAITING_OFFICIAL_SETTLEMENT_RESTORE"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if s.open_contract_id:
+                        if str(s.open_contract_id) != str(last_trade.contract_id):
+                            s.phase = "RECOVERY_CONTRACT_ID_CONFLICT"
+                            s.last_error = "Persisted open contract does not match latest TradeLog"
+                            s.updated_at = datetime.utcnow()
+                            db.commit()
+                            return
+                        s.open_contract_id = None
+                    if float(last_trade.profit) > 0:
+                        s.running = False
+                        s.phase = "OFFICIAL_WIN_RECONCILED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if int(s.current_trade) >= int(s.max_trades):
+                        s.running = False
+                        s.phase = "MAX_TRADES_REACHED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if self._pending_json(s.pending_trade_json).get("kind") == "BUY_CLAIM":
+                        s.phase = "RECOVERY_BUY_RECONCILIATION_REQUIRED"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    recovered_digit, recovered_snapshot = self._choose_scored_digit(
+                        sid, lock_target=True
+                    )
+                    from time import time as _recovery_now
+                    recovered_epoch = int(
+                        (recovered_snapshot or {}).get("rank_epoch")
+                        or self.latest_tick_epoch.get(sid)
+                        or 0
+                    )
+                    if (recovered_digit is None or recovered_epoch <= 0
+                            or abs(_recovery_now() - recovered_epoch) > 15):
+                        s.phase = "WAITING_FRESH_RECOVERY_RANK"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    s.current_stake = round(float(last_trade.stake) * float(s.multiplier), 2)
+                    s.candidate_digit = int(recovered_digit)
+                    self._set_live_next_target(sid, int(recovered_digit))
+                    s.phase = "RECOVERY_RESTORED_FROM_SETTLEMENT"
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                 # Reconcile a decided fast loss rather than treating its old
                 # pipeline owner as a permanently active contract.
                 # Never infer settlement from browser ticks: advance only after
