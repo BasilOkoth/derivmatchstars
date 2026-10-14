@@ -47,7 +47,7 @@ def pending(s):
 
 
 class QuoteRequest(BaseModel):
-    digit: int = Field(ge=0, le=9)
+    digit: int | None = Field(default=None, ge=0, le=9)  # None uses current server V1 #1
     stake: float = Field(gt=0)
 
 
@@ -67,23 +67,40 @@ async def quote(sid: int, body: QuoteRequest, user_id: str = Depends(current_use
         old = pending(s)
         if old.get("kind") in {"REAL_BUY_CLAIM", "REAL_BUY_UNCERTAIN", "REAL_PURCHASED"}:
             raise HTTPException(409, "Existing REAL order requires settlement/reconciliation")
+        # REAL quotes use the same canonical server V1 rank #1 as DEMO.
+        # Do not accept a stale tick or a browser-proposed override.
+        import time
+        tick = (getattr(engine, "latest_ticks", {}) or {}).get(s.id) or {}
+        tick_epoch = int(tick.get("epoch") or 0)
+        if not tick_epoch or abs(time.time() - tick_epoch) > 15:
+            raise HTTPException(409, "Server tick feed is stale; quote blocked")
+        rank = (getattr(engine, "digit_score_snapshots", {}) or {}).get(s.id) or {}
+        ranking = rank.get("ranking") or []
+        if not rank.get("ready") or not ranking:
+            raise HTTPException(409, "Server V1 ranking not ready")
+        rank_epoch = int(rank.get("rank_epoch") or 0)
+        if rank_epoch != tick_epoch:
+            raise HTTPException(409, "Ranking is not synchronized with latest server tick")
+        top_digit = int(ranking[0]["digit"])
+        if body.digit is not None and body.digit != top_digit:
+            raise HTTPException(409, "Selected digit is not current server V1 rank #1; refresh quote")
         client = await engine._client(s.user_id, s.account_id)
         payload = await engine._request_proposal_payload(
-            client, symbol=s.symbol, digit=body.digit, stake=body.stake,
+            client, symbol=s.symbol, digit=top_digit, stake=body.stake,
             trade_no=1, currency=await engine._currency_for(db, s),
         )
         token = secrets.token_urlsafe(32)
         expires = utcnow() + timedelta(seconds=30)
         snapshot = {
             "kind": "REAL_QUOTE", "token": token, "expires_at": utc_string(expires),
-            "symbol": str(s.symbol), "digit": body.digit, "stake": body.stake,
+            "symbol": str(s.symbol), "digit": top_digit, "stake": body.stake,
             "proposal_id": payload["proposal_id"], "ask_price": float(payload["ask_price"]),
             "account_id": str(s.account_id),
         }
         s.pending_trade_json = json.dumps(snapshot)
         s.updated_at = datetime.utcnow()
         db.commit()
-        return {"session_id": sid, "symbol": s.symbol, "digit": body.digit,
+        return {"session_id": sid, "symbol": s.symbol, "digit": top_digit,
                 "stake": body.stake, "ask_price": snapshot["ask_price"],
                 "account_id": s.account_id, "confirmation_token": token,
                 "expires_at": snapshot["expires_at"],

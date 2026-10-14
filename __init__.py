@@ -8,8 +8,6 @@ Key rule:
 
 import asyncio
 import json
-import logging
-import time
 from datetime import datetime
 from collections import deque
 from time import monotonic
@@ -18,8 +16,6 @@ from .engine import MultiUserEngine
 from .db import SessionLocal
 from .models import TradingSession
 from .deriv_ws import DerivWS
-
-_feed_log = logging.getLogger("digitmatchstar.feed")
 
 
 if not hasattr(DerivWS, "ticks_history"):
@@ -82,10 +78,7 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     ):
         sid = int(sid)
 
-        # A populated but old history must not prevent a reconnect bootstrap.
-        last_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
-        if (len(self._digit_history(sid)) >= int(self.digit_scorer.min_history)
-                and last_epoch and time.time() - last_epoch < 15):
+        if len(self._digit_history(sid)) >= int(self.digit_scorer.min_history):
             return
 
         data = await client.ticks_history(
@@ -169,15 +162,6 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     ):
         sid = int(sid)
         try:
-            # A subscription can cease delivering messages while its WebSocket
-            # still looks OPEN. Replace the transport on a stale-feed recovery.
-            if force:
-                _feed_log.warning("Replacing stale Deriv connection: sid=%s", sid)
-                await self._drop_client(user_id, account_id)
-                # All sessions sharing this account must rebind subscriptions.
-                for other_sid, sub in list(self.tick_subscriptions.items()):
-                    if getattr(self, "_dms_feed_account_by_sid", {}).get(other_sid) == (user_id, account_id):
-                        self.tick_subscriptions.pop(other_sid, None)
             client = await self._client(user_id, account_id)
             await self._bootstrap_rank_history(sid, symbol, client)
 
@@ -198,65 +182,69 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
                 symbol=symbol,
                 client=client,
             )
-            if not hasattr(self, "_dms_feed_account_by_sid"):
-                self._dms_feed_account_by_sid = {}
-            self._dms_feed_account_by_sid[sid] = (user_id, account_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            _feed_log.exception("rank feed recovery failed: sid=%s symbol=%s", sid, symbol)
             return
 
     async def _rank_feed_watchdog(self):
-        # Exactly one recovery task per session, including before the first tick.
         if not hasattr(self, "_dms_last_tick_monotonic"):
             self._dms_last_tick_monotonic = {}
-        recovery = getattr(self, "_dms_feed_recovery_tasks", None)
-        if recovery is None:
-            recovery = self._dms_feed_recovery_tasks = {}
-        started = getattr(self, "_dms_feed_watch_started", None)
-        if started is None:
-            started = self._dms_feed_watch_started = {}
+        if not hasattr(self, "_dms_feed_attempted_at"):
+            self._dms_feed_attempted_at = {}
+        if not hasattr(self, "_dms_feed_inflight"):
+            self._dms_feed_inflight = set()
+
+        async def refresh_feed(sid, user_id, account_id, symbol, force):
+            try:
+                await self._ensure_feed(sid, user_id, account_id, symbol, force=force)
+            finally:
+                self._dms_feed_inflight.discard(sid)
+
         while True:
             try:
                 db = SessionLocal()
                 try:
                     rows = db.query(TradingSession).all()
-                    sessions = [(int(r.id), str(r.user_id), str(r.account_id), str(r.symbol)) for r in rows]
+                    sessions = [
+                        (
+                            int(r.id),
+                            str(r.user_id),
+                            str(r.account_id),
+                            str(r.symbol),
+                        )
+                        for r in rows
+                    ]
                 finally:
                     db.close()
+
                 now = monotonic()
+
                 for sid, user_id, account_id, symbol in sessions:
-                    started.setdefault(sid, now)
                     existing = self.tick_subscriptions.get(sid)
                     last_seen = self._dms_last_tick_monotonic.get(sid)
-                    # Account for restart or stale epoch even when monotonic state is missing.
-                    epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
-                    age = now - (last_seen if last_seen is not None else started[sid])
-                    stale = age > 15 or (epoch > 0 and time.time() - epoch > 15)
-                    missing = not existing or str(existing.get("symbol")) != symbol
-                    task = recovery.get(sid)
-                    if task is not None and not task.done():
-                        continue
-                    if missing or stale:
-                        _feed_log.warning("rank feed recovery sid=%s symbol=%s missing=%s stale=%s age=%.1f", sid, symbol, missing, stale, age)
-                        recovery[sid] = asyncio.create_task(self._ensure_feed(
-                            sid, user_id, account_id, symbol,
-                            force=bool(existing and (stale or missing)),
+
+                    # No callbacks after subscribing is also a stale feed.
+                    # Previous code only detected staleness after the first tick.
+                    attempted = self._dms_feed_attempted_at.get(sid, now)
+                    stale = bool(existing and (now - (last_seen or attempted)) > 12.0)
+                    missing = bool(not existing or str(existing.get("symbol")) != str(symbol))
+                    # Limit reconnect requests and prevent overlapping subscriptions.
+                    if ((missing or stale)
+                            and sid not in self._dms_feed_inflight
+                            and (now - self._dms_feed_attempted_at.get(sid, 0)) >= 5.0):
+                        self._dms_feed_inflight.add(sid)
+                        self._dms_feed_attempted_at[sid] = now
+                        asyncio.create_task(refresh_feed(
+                            sid, user_id, account_id, symbol, bool(stale)
                         ))
-                        # Avoid a busy-loop when recovery fails quickly.
-                        started[sid] = now
-                for sid in list(recovery):
-                    if sid not in {x[0] for x in sessions}:
-                        task = recovery.pop(sid)
-                        if not task.done():
-                            task.cancel()
-                        started.pop(sid, None)
+
             except asyncio.CancelledError:
                 raise
             except Exception:
-                _feed_log.exception("rank feed watchdog loop failed")
-            await asyncio.sleep(3.0)
+                pass
+
+            await asyncio.sleep(2.0)
 
     async def _start_rank_feed_v5(self):
         await _original_start_v5(self)
@@ -485,6 +473,19 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
         snapshot["target_min_score"] = MIN_TARGET_SCORE_V6
         snapshot["target_eligible"] = eligible
         snapshot["target_gate"] = "V1_TOP_RANKED_DIGIT"
+        # Display the raw ranking regardless of execution eligibility.
+        snapshot["display_digit"] = raw_digit
+        snapshot["display_score"] = raw_score
+        snapshot["ranking_status"] = (
+            "WARMING" if not snapshot.get("ready") else
+            "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
+        )
+        # The previous rank/target epochs refer to this same scored tick.
+        if snapshot.get("rank_epoch"):
+            snapshot["shadow_epoch"] = snapshot["rank_epoch"]
+            snapshot["target_epoch"] = snapshot["rank_epoch"]
+            if isinstance(snapshot.get("shadow"), dict):
+                snapshot["shadow"]["rank_epoch"] = snapshot["rank_epoch"]
 
         # selected_digit is the EXECUTION selection. Preserve the full ranking
         # even when no digit is currently eligible.
@@ -502,7 +503,6 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
     async def _step_min9(self, sid: int):
         sid = int(sid)
-        should_retry_waiting = False
 
         # Prevent the normal step loop from repeatedly trying Trade 1 while
         # the rank is valid but below the score threshold.
@@ -547,34 +547,14 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                 .get(sid)
             )
 
-            # Recovery waiting can be stranded when a canonical tick arrives
-            # during a Render reconnect. The normal loop will retry eligible
-            # waiting work outside this DB session, protected by the buy claim.
-            should_retry_waiting = bool(
-                s and waiting and s.running and not s.paused and
-                (self.digit_score_snapshots.get(sid) or {}).get("target_eligible")
-            )
-            if s and waiting and s.running and not s.paused and not should_retry_waiting:
+            # Recovery waiting is driven only by canonical ticks in
+            # _handle_strategy_tick_min9(). Do not let step() bypass the gate.
+            if s and waiting and s.running and not s.paused:
                 return
 
         finally:
             db.close()
 
-        if should_retry_waiting:
-            # This routine obtains the per-session lock itself. Do not hold it
-            # while invoking the routine.
-            db2 = SessionLocal()
-            try:
-                row = db2.get(TradingSession, sid)
-                if row and row.running and not row.paused:
-                    return await self._buy_waiting_score9(
-                        sid=sid,
-                        user_id=row.user_id,
-                        account_id=row.account_id,
-                        symbol=row.symbol,
-                    )
-            finally:
-                db2.close()
         return await _original_step_v6(self, sid)
 
     async def _buy_waiting_score9(
@@ -808,9 +788,6 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
         # The FIRST tick whose top V1 score reaches >= 9 becomes the next
         # executable target.
         if sid in waiting_map:
-            tick_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
-            if not tick_epoch or time.time() - tick_epoch > 15:
-                return
             if snapshot.get("target_eligible"):
                 await self._buy_waiting_score9(
                     sid=sid,
@@ -1047,12 +1024,14 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 or {}
             )
 
-            # Do not send orders from a stale canonical ranking.
-            feed_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
-            if not feed_epoch or time.time() - feed_epoch > 15:
+            # Never open a new DEMO contract using a stale market snapshot.
+            # This is separate from the >=9 strategy eligibility condition.
+            last_rank_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
+            market_age = (datetime.utcnow().timestamp() - last_rank_epoch) if last_rank_epoch else float("inf")
+            if market_age > 20.0:
                 s.candidate_digit = None
-                s.phase = "SERVER_FEED_STALE"
-                s.last_error = "Canonical server tick is stale; awaiting feed recovery"
+                s.phase = "WAITING_FRESH_SERVER_TICK"
+                s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
                 return

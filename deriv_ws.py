@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import time
 from collections import defaultdict
 from typing import Awaitable, Callable, Optional
@@ -8,18 +7,18 @@ from typing import Awaitable, Callable, Optional
 import websockets
 
 
-ws_log = logging.getLogger("digitmatchstar.websocket")
-
 MessageCallback = Callable[[dict], Awaitable[None]]
 
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client for DEMO execution + read-only subscriptions.
+    Event-driven Deriv WebSocket client for DEMO execution plus read-only
+    proposal/subscription support for REAL-account previews.
 
-    Safety:
+    Safety boundary:
     - `buy(..., demo=True)` must be explicitly marked DEMO.
-    - REAL purchase automation is not supported by this client.
+    - REAL-money purchases are never submitted by this client.
+    - REAL mode may request/read proposals, but execution stays disabled.
     """
 
     def __init__(self, url: str):
@@ -33,8 +32,6 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
-        self.connection_generation = 0
-        self.last_message_at = 0.0
 
         # Proposal flow control.
         # Every proposal request on this account/socket is serialized here.
@@ -52,8 +49,6 @@ class DerivWS:
 
     def is_open(self) -> bool:
         if not self.ws:
-            return False
-        if self.reader_task is not None and self.reader_task.done():
             return False
         closed = getattr(self.ws, "closed", None)
         if isinstance(closed, bool):
@@ -79,8 +74,6 @@ class DerivWS:
                 open_timeout=15,
                 max_queue=None,
             )
-            self.connection_generation += 1
-            self.last_message_at = time.monotonic()
             self.reader_task = asyncio.create_task(self._reader())
 
     async def close(self):
@@ -145,7 +138,6 @@ class DerivWS:
     async def _reader(self):
         try:
             async for msg in self.ws:
-                self.last_message_at = time.monotonic()
                 data = json.loads(msg)
                 req_id = data.get("req_id")
 
@@ -171,21 +163,11 @@ class DerivWS:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            ws_log.exception("Deriv WebSocket reader failed")
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(exc)
             self.pending.clear()
             self.pending_subscription_callbacks.clear()
-        finally:
-            error = ConnectionError("Deriv WebSocket reader stopped; reconnect required")
-            for future in list(self.pending.values()):
-                if not future.done():
-                    future.set_exception(error)
-            self.pending.clear()
-            self.pending_subscription_callbacks.clear()
-            self.subscriptions.clear()
-            ws_log.warning("Deriv WebSocket reader stopped")
 
     async def request(
         self,
@@ -334,8 +316,9 @@ class DerivWS:
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
             raise RuntimeError(
-                "Automated REAL-money purchase is disabled. "
-                "This client only permits DEMO execution."
+                "REAL-money execution is disabled. "
+                "Use proposal generation for REAL preview/review only; "
+                "this client only submits DEMO purchases."
             )
 
         return await self.request(

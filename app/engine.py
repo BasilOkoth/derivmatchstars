@@ -389,52 +389,57 @@ class MultiUserEngine:
         }
 
     async def _ensure_tick_subscription(
-        self,
-        *,
-        sid,
-        user_id,
-        account_id,
-        symbol,
-        client,
+        self, *, sid, user_id, account_id, symbol, client,
     ):
+        """Keep subscriptions bound to their actual connection and receive time."""
         existing = self.tick_subscriptions.get(sid)
-
-        healthy = bool(
-            existing
-            and existing.get("symbol") == str(symbol)
-            and existing.get("client") is client
-            and client.is_open()
-            and (
-                time.monotonic() - self.latest_tick_received_at.get(sid, time.monotonic())
-            ) < 15.0
+        now = time.monotonic()
+        last_tick = self.latest_tick_received_at.get(sid)
+        age = (now - last_tick) if last_tick is not None else None
+        owner_matches = bool(
+            existing and existing.get("symbol") == str(symbol)
+            and existing.get("client") is client and client.is_open()
+        )
+        since_subscribe = now - float((existing or {}).get("subscribed_at", now))
+        healthy = owner_matches and (
+            (age is not None and age < 15.0)
+            or (age is None and since_subscribe < 15.0)
         )
         if healthy:
             return
 
+        # Rate-limit reconnections while the reader/feed is unhealthy.
+        next_retry = float(getattr(self, "_tick_retry_after", {}).get(sid, 0))
+        if existing and now < next_retry:
+            return
+        if not hasattr(self, "_tick_retry_after"):
+            self._tick_retry_after = {}
+        self._tick_retry_after[sid] = now + 5.0
+
         if existing:
             old_id = existing.get("subscription_id")
             old_client = existing.get("client")
-            if old_id and old_client and old_client.is_open():
-                asyncio.create_task(
-                    self._forget_quietly(old_client, old_id)
-                )
             self.tick_subscriptions.pop(sid, None)
+            if old_id and old_client and old_client.is_open():
+                asyncio.create_task(self._forget_quietly(old_client, old_id))
+            logger.warning(
+                "DMS_FEED_RECOVER sid=%s tick_age=%s previous_connection=%s",
+                sid, round(age, 1) if age is not None else "never",
+                old_client is client,
+            )
 
         async def on_tick(data: dict):
             await self._handle_strategy_tick(
-                sid=sid,
-                user_id=user_id,
-                account_id=account_id,
-                symbol=str(symbol),
-                data=data,
+                sid=sid, user_id=user_id, account_id=account_id,
+                symbol=str(symbol), data=data,
             )
 
         sub_id = await client.subscribe_ticks(str(symbol), on_tick)
-
         self.tick_subscriptions[sid] = {
             "subscription_id": sub_id,
             "symbol": str(symbol),
             "client": client,
+            "subscribed_at": time.monotonic(),
         }
 
     async def _handle_strategy_tick(
@@ -745,6 +750,18 @@ class MultiUserEngine:
                     client=client,
                 )
 
+                # The server ranking is not executable until its own stream is live.
+                # Never trust a fresh browser ranking as a substitute.
+                receive_age = (
+                    time.monotonic() - self.latest_tick_received_at[s.id]
+                    if s.id in self.latest_tick_received_at else float("inf")
+                )
+                if receive_age > 15.0:
+                    s.phase = "FEED_STALE_RECONNECTING"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
                 # Reconcile persisted contract state BEFORE attempting a new buy.
                 # Never release ownership purely because a feed is stale.
                 latest = (
@@ -923,6 +940,21 @@ class MultiUserEngine:
                     float(s.current_stake), last_tick_age,
                 )
 
+                # Freeze this purchase from the CURRENT server canonical V1 rank.
+                fresh_target, fresh_snapshot = self._choose_scored_digit(
+                    s.id, lock_target=True,
+                )
+                if fresh_target is None:
+                    s.phase = "RECOVERY_WAITING_RANK"
+                    db.commit()
+                    return
+                s.candidate_digit = int(fresh_target)
+                self._set_live_next_target(s.id, fresh_target)
+                logger.info(
+                    "DMS_EXECUTION_TARGET sid=%s trade=%s V1_top=%s age=%.2f",
+                    s.id, s.current_trade + 1, s.candidate_digit, receive_age,
+                )
+                db.commit()
                 currency = await self._currency_for(db, s)
 
                 # Normal first trade of the cycle. Recovery trades normally use

@@ -151,8 +151,24 @@ def digit_score_for_session(session_id: int):
     snapshot["raw_top_score"] = score
     snapshot["target_eligible"] = eligible
     snapshot["selected_digit"] = digit if eligible else None
-    snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
-                              "RANK_MISSING_EPOCH")
+    snapshot["display_digit"] = digit
+    snapshot["display_score"] = score
+    snapshot["ranking_status"] = ("WARMING" if not snapshot.get("ready") else ("ELIGIBLE" if eligible else "BELOW_THRESHOLD"))
+    # Report the age of the server's canonical market tick, independently of
+    # whether score>=9 allows execution. No rank calculations on read.
+    from datetime import datetime, timezone
+    tick_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
+    age = max(0, int(datetime.now(timezone.utc).timestamp()) - tick_epoch) if tick_epoch else None
+    snapshot["server_tick_age_seconds"] = age
+    snapshot["feed_state"] = (
+        "WAITING_FOR_SERVER_RANK" if not tick_epoch else
+        "STALE_SERVER_TICK" if age is not None and age > 20 else
+        "LIVE_RANK"
+    )
+    snapshot["ranking_status"] = (
+        "WARMING" if not snapshot.get("ready") else
+        "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
+    )
     return snapshot
 
 
@@ -857,19 +873,6 @@ def stop(
 
     try:
         s = owns_session(db, user_id, sid)
-        was_running = bool(s.running)
-        old_phase = str(s.phase or '')
-        # Deliberately do not trust client-provided stop source for authorization;
-        # useful as diagnostics only.  Server state decides the operation.
-        print(
-            f"DMS_STOP_REQUEST sid={sid} running_before={was_running} "
-            f"phase_before={old_phase} open_contract={bool(s.open_contract_id)}",
-            flush=True,
-        )
-        if not was_running:
-            # Duplicate STOP is a no-op; retain terminal/reconciliation phase.
-            return {"ok": True, "already_stopped": True,
-                    "phase": s.phase, "open_contract_id": s.open_contract_id}
 
         s.running = False
         s.paused = False

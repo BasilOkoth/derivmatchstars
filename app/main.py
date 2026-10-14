@@ -857,6 +857,19 @@ def stop(
 
     try:
         s = owns_session(db, user_id, sid)
+        was_running = bool(s.running)
+        old_phase = str(s.phase or '')
+        # Deliberately do not trust client-provided stop source for authorization;
+        # useful as diagnostics only.  Server state decides the operation.
+        print(
+            f"DMS_STOP_REQUEST sid={sid} running_before={was_running} "
+            f"phase_before={old_phase} open_contract={bool(s.open_contract_id)}",
+            flush=True,
+        )
+        if not was_running:
+            # Duplicate STOP is a no-op; retain terminal/reconciliation phase.
+            return {"ok": True, "already_stopped": True,
+                    "phase": s.phase, "open_contract_id": s.open_contract_id}
 
         s.running = False
         s.paused = False

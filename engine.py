@@ -1,8 +1,6 @@
 import asyncio
 import json
 import uuid
-import time
-import logging
 from datetime import datetime
 from collections import deque
 
@@ -12,9 +10,6 @@ from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
 from .digit_score import DigitScoreEngine
-
-
-logger = logging.getLogger(__name__)
 
 
 class MultiUserEngine:
@@ -48,9 +43,6 @@ class MultiUserEngine:
         self.tick_subscriptions = {}  # sid -> {subscription_id, symbol}
         self.latest_tick_epoch = {}
         self.latest_ticks = {}
-        self.latest_tick_received_at = {}
-        self.contract_probe_at = {}
-        self.contract_probe_tasks = {}
 
         # Only the newest strategy-active paid contract belongs here.
         # Older contracts can still settle in the background.
@@ -329,6 +321,25 @@ class MultiUserEngine:
             list(self._digit_history(sid)),
             exclude_digit=exclude_digit,
         )
+        # Publish the canonical provenance with each score snapshot. The
+        # execution score gate is applied separately by app/__init__.py.
+        tick = self.latest_ticks.get(sid) or {}
+        epoch = int(tick.get("epoch") or 0)
+        if epoch and snapshot.get("ready"):
+            snapshot["canonical_tick"] = {
+                "epoch": epoch,
+                "digit": self._tick_last_digit(tick),
+                "quote": tick.get("quote"),
+                "pip_size": tick.get("pip_size"),
+                "symbol": tick.get("symbol"),
+            }
+            snapshot["rank_epoch"] = epoch
+            snapshot["shadow_epoch"] = epoch
+            # Target selection is made from this snapshot, but may be
+            # ineligible to execute when the configured score gate fails.
+            snapshot["target_epoch"] = epoch
+            if isinstance(snapshot.get("shadow"), dict):
+                snapshot["shadow"]["rank_epoch"] = epoch
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
@@ -399,24 +410,14 @@ class MultiUserEngine:
     ):
         existing = self.tick_subscriptions.get(sid)
 
-        healthy = bool(
-            existing
-            and existing.get("symbol") == str(symbol)
-            and existing.get("client") is client
-            and client.is_open()
-            and (
-                time.monotonic() - self.latest_tick_received_at.get(sid, time.monotonic())
-            ) < 15.0
-        )
-        if healthy:
+        if existing and existing.get("symbol") == str(symbol):
             return
 
         if existing:
             old_id = existing.get("subscription_id")
-            old_client = existing.get("client")
-            if old_id and old_client and old_client.is_open():
+            if old_id:
                 asyncio.create_task(
-                    self._forget_quietly(old_client, old_id)
+                    self._forget_quietly(client, old_id)
                 )
             self.tick_subscriptions.pop(sid, None)
 
@@ -434,7 +435,6 @@ class MultiUserEngine:
         self.tick_subscriptions[sid] = {
             "subscription_id": sub_id,
             "symbol": str(symbol),
-            "client": client,
         }
 
     async def _handle_strategy_tick(
@@ -447,8 +447,6 @@ class MultiUserEngine:
         data,
     ):
         tick = data.get("tick") or {}
-        if tick:
-            self.latest_tick_received_at[sid] = time.monotonic()
         epoch = int(tick.get("epoch") or 0)
 
         if tick:
@@ -684,37 +682,6 @@ class MultiUserEngine:
         except Exception:
             pass
 
-    def _schedule_contract_probe(self, *, sid, user_id, account_id, contract_id, client):
-        """Schedule an authoritative check without waiting under the session lock."""
-        key = (sid, str(contract_id))
-        task = self.contract_probe_tasks.get(key)
-        if task and not task.done():
-            return
-        now = time.monotonic()
-        if now - self.contract_probe_at.get(key, 0) < 3.0:
-            return
-        self.contract_probe_at[key] = now
-
-        async def probe():
-            try:
-                result = await client.contract_status(str(contract_id))
-                poc = result.get("proposal_open_contract") or {}
-                if poc.get("is_sold"):
-                    logger.warning("DMS authoritative settlement recovered sid=%s contract=%s", sid, contract_id)
-                    await self._handle_contract_update(
-                        sid=sid, user_id=user_id,
-                        account_id=account_id,
-                        contract_id=str(contract_id), data=result,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("DMS contract reconciliation failed sid=%s contract=%s", sid, contract_id)
-            finally:
-                self.contract_probe_tasks.pop(key, None)
-
-        self.contract_probe_tasks[key] = asyncio.create_task(probe())
-
     async def step(self, sid: int):
         async with self._lock(sid):
             db = SessionLocal()
@@ -745,98 +712,51 @@ class MultiUserEngine:
                     client=client,
                 )
 
-                # Reconcile persisted contract state BEFORE attempting a new buy.
-                # Never release ownership purely because a feed is stale.
-                latest = (
-                    db.query(TradeLog)
-                    .filter(
-                        TradeLog.trading_session_id == sid,
-                        TradeLog.trade_no == s.current_trade,
-                    )
-                    .order_by(TradeLog.id.desc())
-                    .first()
-                ) if s.current_trade else None
+                # The fast strategy contract, not settlement state, owns an
+                # in-cycle trade. Deriv may clear open_contract_id before the
+                # exact strategy tick callback finishes. Do not let the normal
+                # worker race ahead and request another proposal.
                 fast_owner = self.fast_contracts.get(sid)
-                contract_id = str(
-                    s.open_contract_id
-                    or (fast_owner or {}).get("contract_id")
-                    or (latest.contract_id if latest else "")
-                    or ""
-                )
-
-                if latest and contract_id and str(latest.contract_id) != contract_id:
-                    s.running = False
-                    s.phase = "RECOVERY_CONTRACT_MISMATCH"
-                    s.last_error = "Active contract does not match the persisted trade log"
+                if (
+                    int(s.current_trade or 0) > 0
+                    and fast_owner
+                    and int(fast_owner.get("trade_no") or 0)
+                    == int(s.current_trade)
+                ):
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
+                    s.updated_at = datetime.utcnow()
                     db.commit()
                     return
 
-                if contract_id and (not latest or str(latest.status).upper() != "SETTLED"):
-                    # Subscription is best effort; bounded authoritative polling
-                    # continues even if a subscription ID exists but stopped firing.
-                    self._schedule_contract_probe(
-                        sid=sid, user_id=s.user_id,
-                        account_id=s.account_id, contract_id=contract_id,
-                        client=client,
+                # An open contract must never send the worker back into a
+                # foreground WAITING_SETTLEMENT state.
+                if s.open_contract_id:
+                    contract_key = (
+                        sid,
+                        str(s.open_contract_id),
                     )
-                    contract_key = (sid, contract_id)
+
                     if contract_key not in self.contract_subscriptions:
                         asyncio.create_task(
                             self._subscribe_open_contract(
-                                sid=sid, user_id=s.user_id,
+                                sid=sid,
+                                user_id=s.user_id,
                                 account_id=s.account_id,
-                                contract_id=contract_id, client=client,
+                                contract_id=str(s.open_contract_id),
+                                client=client,
                             )
                         )
-                    s.phase = "WAITING_OFFICIAL_SETTLEMENT"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
 
-                if latest and str(latest.status).upper() == "SETTLED":
-                    if latest.profit is None:
-                        s.running = False
-                        s.phase = "RECOVERY_MISSING_PROFIT"
-                        s.last_error = "SETTLED trade log has no authoritative profit"
-                        db.commit()
-                        return
-                    official_result = "WIN" if float(latest.profit) > 0 else "LOSS"
-                    if fast_owner and fast_owner.get("fast_result") and fast_owner["fast_result"] != official_result:
-                        s.running = False
-                        s.phase = "RECONCILE_MISMATCH"
-                        s.last_error = "Fast result disagrees with official Deriv settlement"
-                        db.commit()
-                        return
-                    if official_result == "WIN":
-                        s.running = False
-                        s.phase = "WON"
-                        self.fast_contracts.pop(sid, None)
-                        s.open_contract_id = None
-                        db.commit()
-                        return
-                    # Official LOSS: clear only this exact completed owner.
-                    if fast_owner and str(fast_owner.get("contract_id")) == str(latest.contract_id):
-                        self.fast_contracts.pop(sid, None)
-                    if str(s.open_contract_id or "") == str(latest.contract_id):
-                        s.open_contract_id = None
-                    expected_stake = round(float(latest.stake) * float(s.multiplier), 2)
-                    if float(s.current_stake or 0) < expected_stake - 0.005:
-                        s.current_stake = expected_stake
-                    fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
-                    if fresh_digit is None:
-                        s.phase = "RECOVERY_WAITING_RANK"
-                        db.commit()
-                        return
-                    s.candidate_digit = int(fresh_digit)
-                    self._set_live_next_target(sid, int(fresh_digit))
-                    s.phase = "RECOVERY_READY"
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
                     s.updated_at = datetime.utcnow()
-                    db.commit()
-                    # Fall through to the existing proposal/BUY claim path.
-                elif int(s.current_trade or 0) > 0:
-                    s.running = False
-                    s.phase = "RECOVERY_MISSING_TRADE_LOG"
-                    s.last_error = "Cannot verify previous purchase in trade log"
                     db.commit()
                     return
 
@@ -889,40 +809,6 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # Resolve the actual NEXT execution target from the canonical
-                # server-side V1 ranking, not from a cached browser candidate.
-                # Keep the purchased contract's target immutable; this changes
-                # only the new proposal's intended digit.
-                last_tick_age = time.monotonic() - self.latest_tick_received_at.get(
-                    sid, 0.0
-                )
-                if last_tick_age > 15.0:
-                    s.phase = "EXECUTION_FEED_STALE"
-                    s.last_error = (
-                        "No fresh server tick for next DIGITMATCH purchase; "
-                        "waiting for subscription recovery"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                target, snapshot = self._choose_scored_digit(sid, lock_target=True)
-                if target is None or not snapshot.get("ready"):
-                    s.phase = "EXECUTION_RANK_WARMING"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-                s.candidate_digit = int(target)
-                self._set_live_next_target(sid, int(target))
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-                logger.info(
-                    "DMS_EXECUTION_TARGET sid=%s trade=%s v1_top=%s stake=%.2f age=%.1fs",
-                    sid, int(s.current_trade) + 1, int(target),
-                    float(s.current_stake), last_tick_age,
-                )
-
                 currency = await self._currency_for(db, s)
 
                 # Normal first trade of the cycle. Recovery trades normally use
@@ -946,19 +832,6 @@ class MultiUserEngine:
                         f"[{s.symbol}/{currency}/digit {s.candidate_digit}]: "
                         f"{exc}"
                     ) from exc
-
-                # The BUY must not use an obsolete target when the V1 #1
-                # changes during the Deriv proposal roundtrip. On a change,
-                # defer to the next step for a fresh proposal, never buy stale.
-                current_top, _ = self._choose_scored_digit(sid, lock_target=True)
-                if current_top is None or int(current_top) != int(payload["digit"]):
-                    if current_top is not None:
-                        s.candidate_digit = int(current_top)
-                        self._set_live_next_target(sid, int(current_top))
-                    s.phase = "EXECUTION_RANK_CHANGED_RETRY"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
 
                 await self._execute_demo_buy(
                     db,

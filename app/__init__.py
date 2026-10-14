@@ -8,6 +8,8 @@ Key rule:
 
 import asyncio
 import json
+import logging
+import time
 from datetime import datetime
 from collections import deque
 from time import monotonic
@@ -16,6 +18,8 @@ from .engine import MultiUserEngine
 from .db import SessionLocal
 from .models import TradingSession
 from .deriv_ws import DerivWS
+
+_feed_log = logging.getLogger("digitmatchstar.feed")
 
 
 if not hasattr(DerivWS, "ticks_history"):
@@ -78,7 +82,10 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     ):
         sid = int(sid)
 
-        if len(self._digit_history(sid)) >= int(self.digit_scorer.min_history):
+        # A populated but old history must not prevent a reconnect bootstrap.
+        last_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+        if (len(self._digit_history(sid)) >= int(self.digit_scorer.min_history)
+                and last_epoch and time.time() - last_epoch < 15):
             return
 
         data = await client.ticks_history(
@@ -162,6 +169,15 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
     ):
         sid = int(sid)
         try:
+            # A subscription can cease delivering messages while its WebSocket
+            # still looks OPEN. Replace the transport on a stale-feed recovery.
+            if force:
+                _feed_log.warning("Replacing stale Deriv connection: sid=%s", sid)
+                await self._drop_client(user_id, account_id)
+                # All sessions sharing this account must rebind subscriptions.
+                for other_sid, sub in list(self.tick_subscriptions.items()):
+                    if getattr(self, "_dms_feed_account_by_sid", {}).get(other_sid) == (user_id, account_id):
+                        self.tick_subscriptions.pop(other_sid, None)
             client = await self._client(user_id, account_id)
             await self._bootstrap_rank_history(sid, symbol, client)
 
@@ -182,66 +198,65 @@ if not getattr(MultiUserEngine, "_dms_rank_feed_v5", False):
                 symbol=symbol,
                 client=client,
             )
+            if not hasattr(self, "_dms_feed_account_by_sid"):
+                self._dms_feed_account_by_sid = {}
+            self._dms_feed_account_by_sid[sid] = (user_id, account_id)
         except asyncio.CancelledError:
             raise
         except Exception:
+            _feed_log.exception("rank feed recovery failed: sid=%s symbol=%s", sid, symbol)
             return
 
     async def _rank_feed_watchdog(self):
+        # Exactly one recovery task per session, including before the first tick.
         if not hasattr(self, "_dms_last_tick_monotonic"):
             self._dms_last_tick_monotonic = {}
-
+        recovery = getattr(self, "_dms_feed_recovery_tasks", None)
+        if recovery is None:
+            recovery = self._dms_feed_recovery_tasks = {}
+        started = getattr(self, "_dms_feed_watch_started", None)
+        if started is None:
+            started = self._dms_feed_watch_started = {}
         while True:
             try:
                 db = SessionLocal()
                 try:
                     rows = db.query(TradingSession).all()
-                    sessions = [
-                        (
-                            int(r.id),
-                            str(r.user_id),
-                            str(r.account_id),
-                            str(r.symbol),
-                        )
-                        for r in rows
-                    ]
+                    sessions = [(int(r.id), str(r.user_id), str(r.account_id), str(r.symbol)) for r in rows]
                 finally:
                     db.close()
-
                 now = monotonic()
-
                 for sid, user_id, account_id, symbol in sessions:
+                    started.setdefault(sid, now)
                     existing = self.tick_subscriptions.get(sid)
                     last_seen = self._dms_last_tick_monotonic.get(sid)
-
-                    stale = (
-                        existing is not None
-                        and last_seen is not None
-                        and (now - last_seen) > 12.0
-                    )
-
-                    missing = (
-                        not existing
-                        or str(existing.get("symbol")) != str(symbol)
-                    )
-
+                    # Account for restart or stale epoch even when monotonic state is missing.
+                    epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+                    age = now - (last_seen if last_seen is not None else started[sid])
+                    stale = age > 15 or (epoch > 0 and time.time() - epoch > 15)
+                    missing = not existing or str(existing.get("symbol")) != symbol
+                    task = recovery.get(sid)
+                    if task is not None and not task.done():
+                        continue
                     if missing or stale:
-                        asyncio.create_task(
-                            self._ensure_feed(
-                                sid,
-                                user_id,
-                                account_id,
-                                symbol,
-                                force=bool(stale),
-                            )
-                        )
-
+                        _feed_log.warning("rank feed recovery sid=%s symbol=%s missing=%s stale=%s age=%.1f", sid, symbol, missing, stale, age)
+                        recovery[sid] = asyncio.create_task(self._ensure_feed(
+                            sid, user_id, account_id, symbol,
+                            force=bool(existing and (stale or missing)),
+                        ))
+                        # Avoid a busy-loop when recovery fails quickly.
+                        started[sid] = now
+                for sid in list(recovery):
+                    if sid not in {x[0] for x in sessions}:
+                        task = recovery.pop(sid)
+                        if not task.done():
+                            task.cancel()
+                        started.pop(sid, None)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
-
-            await asyncio.sleep(2.0)
+                _feed_log.exception("rank feed watchdog loop failed")
+            await asyncio.sleep(3.0)
 
     async def _start_rank_feed_v5(self):
         await _original_start_v5(self)
@@ -424,7 +439,7 @@ if not getattr(MultiUserEngine, "_dms_trade_timeline_v4", False):
 
 if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
-    MIN_TARGET_SCORE_V6 = 9.0
+    MIN_TARGET_SCORE_V6 = -1000000000.0  # no score threshold
 
     _original_score_all_digits_v6 = MultiUserEngine._score_all_digits
     _original_handle_strategy_tick_v6 = MultiUserEngine._handle_strategy_tick
@@ -463,14 +478,13 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
             snapshot.get("ready")
             and raw_digit is not None
             and raw_score is not None
-            and raw_score >= MIN_TARGET_SCORE_V6
         )
 
         snapshot["raw_selected_digit"] = raw_digit
         snapshot["raw_top_score"] = raw_score
         snapshot["target_min_score"] = MIN_TARGET_SCORE_V6
         snapshot["target_eligible"] = eligible
-        snapshot["target_gate"] = "V1_TOP_SCORE_GE_9"
+        snapshot["target_gate"] = "V1_TOP_RANKED_DIGIT"
 
         # selected_digit is the EXECUTION selection. Preserve the full ranking
         # even when no digit is currently eligible.
@@ -488,6 +502,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
 
     async def _step_min9(self, sid: int):
         sid = int(sid)
+        should_retry_waiting = False
 
         # Prevent the normal step loop from repeatedly trying Trade 1 while
         # the rank is valid but below the score threshold.
@@ -513,14 +528,14 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     and snapshot.get("target_eligible") is False
                 ):
                     changed = (
-                        str(s.phase or "") != "WAITING_SCORE_GE_9"
+                        str(s.phase or "") != "WAITING_TOP_RANK"
                         or s.candidate_digit is not None
                         or s.last_error is not None
                     )
 
                     if changed:
                         s.candidate_digit = None
-                        s.phase = "WAITING_SCORE_GE_9"
+                        s.phase = "WAITING_TOP_RANK"
                         s.last_error = None
                         s.updated_at = datetime.utcnow()
                         db.commit()
@@ -532,14 +547,34 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                 .get(sid)
             )
 
-            # Recovery waiting is driven only by canonical ticks in
-            # _handle_strategy_tick_min9(). Do not let step() bypass the gate.
-            if s and waiting and s.running and not s.paused:
+            # Recovery waiting can be stranded when a canonical tick arrives
+            # during a Render reconnect. The normal loop will retry eligible
+            # waiting work outside this DB session, protected by the buy claim.
+            should_retry_waiting = bool(
+                s and waiting and s.running and not s.paused and
+                (self.digit_score_snapshots.get(sid) or {}).get("target_eligible")
+            )
+            if s and waiting and s.running and not s.paused and not should_retry_waiting:
                 return
 
         finally:
             db.close()
 
+        if should_retry_waiting:
+            # This routine obtains the per-session lock itself. Do not hold it
+            # while invoking the routine.
+            db2 = SessionLocal()
+            try:
+                row = db2.get(TradingSession, sid)
+                if row and row.running and not row.paused:
+                    return await self._buy_waiting_score9(
+                        sid=sid,
+                        user_id=row.user_id,
+                        account_id=row.account_id,
+                        symbol=row.symbol,
+                    )
+            finally:
+                db2.close()
         return await _original_step_v6(self, sid)
 
     async def _buy_waiting_score9(
@@ -627,7 +662,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     "locked_at": datetime.utcnow().isoformat(),
                 }
 
-                s.phase = "SCORE_GE_9_ELIGIBLE"
+                s.phase = "TOP_RANK_ELIGIBLE"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -749,7 +784,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                     s.candidate_digit = None
                     s.running = True
                     s.paused = False
-                    s.phase = "WAITING_SCORE_GE_9"
+                    s.phase = "WAITING_TOP_RANK"
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
@@ -761,7 +796,7 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
                         "trade_no": int(s.current_trade or 0) + 1,
                         "stake": next_stake,
                         "entered_after_contract": active_contract_before,
-                        "minimum_score": MIN_TARGET_SCORE_V6,
+                        "minimum_score": None,
                     }
 
             finally:
@@ -773,6 +808,9 @@ if not getattr(MultiUserEngine, "_dms_min_score_9_v6", False):
         # The FIRST tick whose top V1 score reaches >= 9 becomes the next
         # executable target.
         if sid in waiting_map:
+            tick_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+            if not tick_epoch or time.time() - tick_epoch > 15:
+                return
             if snapshot.get("target_eligible"):
                 await self._buy_waiting_score9(
                     sid=sid,
@@ -1009,6 +1047,16 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 or {}
             )
 
+            # Do not send orders from a stale canonical ranking.
+            feed_epoch = int((getattr(self, "latest_tick_epoch", {}) or {}).get(sid) or 0)
+            if not feed_epoch or time.time() - feed_epoch > 15:
+                s.candidate_digit = None
+                s.phase = "SERVER_FEED_STALE"
+                s.last_error = "Canonical server tick is stale; awaiting feed recovery"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return
+
             # No valid score yet: wait.
             if not snapshot.get("ready"):
                 s.candidate_digit = None
@@ -1024,7 +1072,7 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
 
             if not eligible or digit is None:
                 s.candidate_digit = None
-                s.phase = "WAITING_SCORE_GE_9"
+                s.phase = "WAITING_TOP_RANK"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -1052,16 +1100,9 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
             except Exception:
                 selected_score = None
 
-            minimum_score = float(
-                snapshot.get("target_min_score") or 9.0
-            )
-
-            if (
-                selected_score is None
-                or selected_score < minimum_score
-            ):
+            if selected_score is None:
                 s.candidate_digit = None
-                s.phase = "WAITING_SCORE_GE_9"
+                s.phase = "WAITING_TOP_RANK"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -1080,7 +1121,7 @@ if not getattr(MultiUserEngine, "_dms_score9_none_guard_v8", False):
                 "locked_at": datetime.utcnow().isoformat(),
             }
 
-            s.phase = "SCORE_GE_9_ELIGIBLE"
+            s.phase = "TOP_RANK_ELIGIBLE"
             s.last_error = None
             s.updated_at = datetime.utcnow()
             db.commit()
