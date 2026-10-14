@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import time
 import uuid
 from datetime import datetime
 from collections import deque
@@ -10,6 +12,9 @@ from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
 from .digit_score import DigitScoreEngine
+
+
+worker_log = logging.getLogger("digitmatchstar.worker")
 
 
 class MultiUserEngine:
@@ -86,6 +91,9 @@ class MultiUserEngine:
         key = (user_id, account_id)
         client = self.clients.pop(key, None)
         if client:
+            # Old subscription identifiers are scoped to the discarded socket.
+            self.tick_subscriptions = {sid: sub for sid, sub in self.tick_subscriptions.items() if sub.get("client_identity") != id(client)}
+            self.contract_subscriptions.clear()
             try:
                 await client.close()
             except Exception:
@@ -395,7 +403,10 @@ class MultiUserEngine:
                 and existing.get("client_identity") == id(client)
                 and client.is_open()
                 and client.reader_task is not None
-                and not client.reader_task.done()):
+                and not client.reader_task.done()
+                and existing.get("generation") == client.connection_generation
+                and (not self.latest_tick_epoch.get(sid) or
+                     abs(time.time() - self.latest_tick_epoch[sid]) < 20)):
             return
 
         if existing:
@@ -421,6 +432,7 @@ class MultiUserEngine:
             "subscription_id": sub_id,
             "symbol": str(symbol),
             "client_identity": id(client),
+            "generation": client.connection_generation,
         }
 
     async def _handle_strategy_tick(
@@ -789,6 +801,21 @@ class MultiUserEngine:
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
+
+                # A lost settlement subscription can otherwise hold PIPELINE_ACTIVE
+                # indefinitely. Periodically query Deriv's authoritative contract
+                # status, and let the existing idempotent settlement handler persist it.
+                if s.open_contract_id:
+                    contract_id = str(s.open_contract_id)
+                    check_key = (sid, contract_id)
+                    last_check = getattr(self, "_contract_recheck_at", {}).get(check_key, 0)
+                    if time.monotonic() - last_check >= 4:
+                        if not hasattr(self, "_contract_recheck_at"):
+                            self._contract_recheck_at = {}
+                        self._contract_recheck_at[check_key] = time.monotonic()
+                        asyncio.create_task(self._recheck_open_contract(
+                            sid, s.user_id, s.account_id, contract_id
+                        ))
 
                 # Reconcile a decided fast loss rather than treating its old
                 # pipeline owner as a permanently active contract.
@@ -1485,6 +1512,23 @@ class MultiUserEngine:
 
             if current is asyncio.current_task():
                 self.prefetch_tasks.pop(sid, None)
+
+    async def _recheck_open_contract(self, sid, user_id, account_id, contract_id):
+        """Read-only Deriv verification: NEVER submits a purchase."""
+        try:
+            client = await self._client(user_id, account_id)
+            response = await client.contract_status(contract_id)
+            poc = response.get("proposal_open_contract") or {}
+            if poc.get("is_sold"):
+                worker_log.info("Authoritative sold contract recovered sid=%s contract=%s", sid, contract_id)
+                await self._handle_contract_update(
+                    sid=sid, user_id=user_id, account_id=account_id,
+                    contract_id=contract_id, data=response,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            worker_log.exception("Contract reconciliation retry failed sid=%s contract=%s", sid, contract_id)
 
     async def _subscribe_open_contract(
         self,

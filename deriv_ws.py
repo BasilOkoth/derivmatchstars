@@ -1,11 +1,14 @@
 import asyncio
 import json
+import logging
 import time
 from collections import defaultdict
 from typing import Awaitable, Callable, Optional
 
 import websockets
 
+
+ws_log = logging.getLogger("digitmatchstar.websocket")
 
 MessageCallback = Callable[[dict], Awaitable[None]]
 
@@ -30,6 +33,8 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
+        self.connection_generation = 0
+        self.last_message_at = 0.0
 
         # Proposal flow control.
         # Every proposal request on this account/socket is serialized here.
@@ -74,6 +79,8 @@ class DerivWS:
                 open_timeout=15,
                 max_queue=None,
             )
+            self.connection_generation += 1
+            self.last_message_at = time.monotonic()
             self.reader_task = asyncio.create_task(self._reader())
 
     async def close(self):
@@ -138,6 +145,7 @@ class DerivWS:
     async def _reader(self):
         try:
             async for msg in self.ws:
+                self.last_message_at = time.monotonic()
                 data = json.loads(msg)
                 req_id = data.get("req_id")
 
@@ -163,11 +171,21 @@ class DerivWS:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            ws_log.exception("Deriv WebSocket reader failed")
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(exc)
             self.pending.clear()
             self.pending_subscription_callbacks.clear()
+        finally:
+            error = ConnectionError("Deriv WebSocket reader stopped; reconnect required")
+            for future in list(self.pending.values()):
+                if not future.done():
+                    future.set_exception(error)
+            self.pending.clear()
+            self.pending_subscription_callbacks.clear()
+            self.subscriptions.clear()
+            ws_log.warning("Deriv WebSocket reader stopped")
 
     async def request(
         self,
