@@ -51,6 +51,10 @@ class MultiUserEngine:
         self.latest_tick_received_at = {}
         self.contract_probe_at = {}
         self.contract_probe_tasks = {}
+        # DEMO-only stale-contract recovery. A 1-tick contract must not keep a
+        # restarted worker permanently trapped in WAITING_OFFICIAL_SETTLEMENT.
+        self.contract_probe_unsold = {}   # (sid, contract_id) -> successful unsold probes
+        self.contract_probe_errors = {}   # (sid, contract_id) -> reconciliation errors
 
         # Only the newest strategy-active paid contract belongs here.
         # Older contracts can still settle in the background.
@@ -690,12 +694,187 @@ class MultiUserEngine:
         except Exception:
             pass
 
-    def _schedule_contract_probe(self, *, sid, user_id, account_id, contract_id, client):
-        """Schedule an authoritative check without waiting under the session lock."""
-        key = (sid, str(contract_id))
+    @staticmethod
+    def _explicit_missing_contract_error(exc) -> bool:
+        """
+        Return True only for errors that explicitly indicate Deriv cannot
+        resolve the supplied contract id. Generic auth/network/timeouts are
+        NOT treated as safe-to-clear conditions.
+        """
+        message = str(exc or "").lower()
+        needles = (
+            "contractnotfound",
+            "invalidcontract",
+            "invalid contract",
+            "unknown contract",
+            "contract does not exist",
+            "contract doesn't exist",
+            "contract id not found",
+            "contract_id not found",
+        )
+        return any(token in message for token in needles)
+
+    def _contract_log_age_seconds(self, db, sid: int, contract_id: str):
+        log = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.trading_session_id == int(sid),
+                TradeLog.contract_id == str(contract_id),
+            )
+            .order_by(TradeLog.id.desc())
+            .first()
+        )
+        if not log or not getattr(log, "created_at", None):
+            return None, log
+        try:
+            age = (datetime.utcnow() - log.created_at).total_seconds()
+        except Exception:
+            age = None
+        return age, log
+
+    async def _recover_stale_demo_contract(
+        self,
+        *,
+        sid,
+        contract_id,
+        reason,
+        minimum_age_seconds=15.0,
+    ):
+        """
+        Release ONLY a stale DEMO 1-tick contract.
+
+        Safety conditions:
+        - session still points at this exact contract id;
+        - account mode is DEMO;
+        - matching persisted TradeLog exists;
+        - contract is not already SETTLED;
+        - persisted contract is old enough that a 1-tick contract cannot
+          reasonably still be active.
+
+        This deliberately never clears REAL state.
+        """
+        async with self._lock(int(sid)):
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, int(sid))
+                if not s:
+                    return False
+
+                if str(s.account_mode or "").upper() != "DEMO":
+                    return False
+
+                if str(s.open_contract_id or "") != str(contract_id):
+                    return False
+
+                age, log = self._contract_log_age_seconds(
+                    db,
+                    int(sid),
+                    str(contract_id),
+                )
+
+                if not log:
+                    # Without persisted BUY evidence we cannot prove enough
+                    # about the contract to clear it automatically.
+                    return False
+
+                if str(log.status or "").upper() == "SETTLED":
+                    return False
+
+                if age is None or float(age) < float(minimum_age_seconds):
+                    return False
+
+                # Preserve forensic evidence instead of deleting the trade.
+                try:
+                    raw = json.loads(log.raw_json or "{}")
+                    if not isinstance(raw, dict):
+                        raw = {"previous_raw": raw}
+                except Exception:
+                    raw = {"previous_raw_text": log.raw_json}
+
+                raw["stale_demo_recovery"] = {
+                    "contract_id": str(contract_id),
+                    "reason": str(reason),
+                    "age_seconds": float(age),
+                    "recovered_at": datetime.utcnow().isoformat(),
+                    "instance_id": self.instance_id,
+                }
+                log.raw_json = json.dumps(raw)
+                log.status = "STALE_RECONCILED"
+
+                # Release only this exact persisted owner.
+                self.fast_contracts.pop(int(sid), None)
+                self.prefetched_recovery.pop(int(sid), None)
+
+                prefetch = self.prefetch_tasks.pop(int(sid), None)
+                if prefetch and not prefetch.done():
+                    prefetch.cancel()
+
+                key = (int(sid), str(contract_id))
+                self.contract_probe_unsold.pop(key, None)
+                self.contract_probe_errors.pop(key, None)
+                self.contract_probe_at.pop(key, None)
+
+                poll = self.contract_poll_tasks.pop(key, None)
+                if poll and poll is not asyncio.current_task() and not poll.done():
+                    poll.cancel()
+
+                sub_id = self.contract_subscriptions.pop(key, None)
+                client = self.clients.get((s.user_id, s.account_id))
+                if client and sub_id:
+                    asyncio.create_task(
+                        self._forget_quietly(client, sub_id)
+                    )
+
+                # Start a clean DEMO cycle. We do not pretend that the stale
+                # contract settled or add fabricated P/L.
+                s.open_contract_id = None
+                s.pending_trade_json = None
+                s.pending_real_confirmation = False
+                s.current_trade = 0
+                s.current_stake = float(s.base_stake or 1.0)
+                s.pnl = 0.0
+                s.running = True
+                s.paused = False
+                s.phase = "STALE_DEMO_CONTRACT_CLEARED"
+                s.last_error = (
+                    "Recovered stale DEMO contract "
+                    f"{contract_id}: {reason}"
+                )
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                logger.warning(
+                    "DMS stale DEMO contract cleared sid=%s contract=%s "
+                    "age=%.1fs reason=%s",
+                    sid,
+                    contract_id,
+                    float(age),
+                    reason,
+                )
+                return True
+            finally:
+                db.close()
+
+    def _schedule_contract_probe(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        client,
+    ):
+        """
+        Schedule one authoritative reconciliation check without waiting under
+        the session lock.
+
+        Normal settlement still wins. Stale release is DEMO-only and bounded.
+        """
+        key = (int(sid), str(contract_id))
         task = self.contract_probe_tasks.get(key)
         if task and not task.done():
             return
+
         now = time.monotonic()
         if now - self.contract_probe_at.get(key, 0) < 3.0:
             return
@@ -705,17 +884,81 @@ class MultiUserEngine:
             try:
                 result = await client.contract_status(str(contract_id))
                 poc = result.get("proposal_open_contract") or {}
+
                 if poc.get("is_sold"):
-                    logger.warning("DMS authoritative settlement recovered sid=%s contract=%s", sid, contract_id)
-                    await self._handle_contract_update(
-                        sid=sid, user_id=user_id,
-                        account_id=account_id,
-                        contract_id=str(contract_id), data=result,
+                    self.contract_probe_unsold.pop(key, None)
+                    self.contract_probe_errors.pop(key, None)
+                    logger.warning(
+                        "DMS authoritative settlement recovered "
+                        "sid=%s contract=%s",
+                        sid,
+                        contract_id,
                     )
+                    await self._handle_contract_update(
+                        sid=sid,
+                        user_id=user_id,
+                        account_id=account_id,
+                        contract_id=str(contract_id),
+                        data=result,
+                    )
+                    return
+
+                # Successful response, but still not sold. For a 1-tick DEMO
+                # contract this cannot continue indefinitely after restart.
+                count = int(self.contract_probe_unsold.get(key, 0)) + 1
+                self.contract_probe_unsold[key] = count
+
+                db = SessionLocal()
+                try:
+                    age, _log = self._contract_log_age_seconds(
+                        db,
+                        int(sid),
+                        str(contract_id),
+                    )
+                finally:
+                    db.close()
+
+                # Require several successful authoritative probes AND age >30s.
+                # This prevents a normal newly purchased contract being cleared.
+                if (
+                    count >= 5
+                    and age is not None
+                    and float(age) >= 30.0
+                ):
+                    await self._recover_stale_demo_contract(
+                        sid=sid,
+                        contract_id=str(contract_id),
+                        reason=(
+                            "Deriv continued to report a 1-tick contract "
+                            f"as unsold after {count} authoritative probes"
+                        ),
+                        minimum_age_seconds=30.0,
+                    )
+
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("DMS contract reconciliation failed sid=%s contract=%s", sid, contract_id)
+
+            except Exception as exc:
+                count = int(self.contract_probe_errors.get(key, 0)) + 1
+                self.contract_probe_errors[key] = count
+
+                logger.exception(
+                    "DMS contract reconciliation failed sid=%s contract=%s",
+                    sid,
+                    contract_id,
+                )
+
+                # Only explicit missing/invalid-contract responses are eligible
+                # for fast stale recovery. Generic WebSocket/auth/timeouts stay
+                # locked for safety and are retried on the next worker pass.
+                if self._explicit_missing_contract_error(exc):
+                    await self._recover_stale_demo_contract(
+                        sid=sid,
+                        contract_id=str(contract_id),
+                        reason=f"Deriv rejected persisted contract: {exc}",
+                        minimum_age_seconds=15.0,
+                    )
+
             finally:
                 self.contract_probe_tasks.pop(key, None)
 
@@ -794,7 +1037,20 @@ class MultiUserEngine:
                                 contract_id=contract_id, client=client,
                             )
                         )
-                    s.phase = "WAITING_OFFICIAL_SETTLEMENT"
+                    probe_key = (int(sid), str(contract_id))
+                    probe_count = int(
+                        self.contract_probe_unsold.get(probe_key, 0)
+                    )
+                    error_count = int(
+                        self.contract_probe_errors.get(probe_key, 0)
+                    )
+                    if probe_count or error_count:
+                        s.phase = (
+                            "WAITING_OFFICIAL_SETTLEMENT"
+                            f"_P{probe_count}_E{error_count}"
+                        )
+                    else:
+                        s.phase = "WAITING_OFFICIAL_SETTLEMENT"
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
