@@ -263,17 +263,6 @@ class DerivWS:
         }
 
         # ONE proposal lane per account/socket.
-        #
-        # The previous build allowed a prefetch request to remain in-flight and,
-        # after 800 ms, the engine could start a fallback proposal for the same
-        # recovery. Even though requests were serialized, that still generated
-        # too many proposal calls in a short period and triggered Deriv RateLimit.
-        #
-        # This client therefore:
-        #   1) serializes every proposal request,
-        #   2) enforces minimum spacing,
-        #   3) applies a shared adaptive cooldown after RateLimit,
-        #   4) treats RateLimit as recoverable instead of immediately failing.
         async with self._proposal_lock:
             timeout_retry_used = False
 
@@ -293,7 +282,6 @@ class DerivWS:
                     self._last_proposal_at = time.monotonic()
                     data = await self.request(payload)
 
-                    # Success: reset throttling state.
                     self._rate_limit_streak = 0
                     self._proposal_cooldown_until = 0.0
                     return data
@@ -302,13 +290,11 @@ class DerivWS:
                     text = str(exc).lower()
 
                     if "timed out" in text and not timeout_retry_used:
-                        # Proposal is read-only, so reconnecting once is safe.
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
-                        # Recoverable back-pressure from Deriv.
                         self._rate_limit_streak = min(
                             self._rate_limit_streak + 1,
                             6,
@@ -323,9 +309,6 @@ class DerivWS:
                             time.monotonic() + backoff
                         )
 
-                        # Hold the proposal lock during backoff. This is
-                        # intentional: no other prefetch/fallback should send
-                        # another proposal while Deriv is throttling us.
                         await asyncio.sleep(backoff)
                         continue
 
@@ -345,23 +328,37 @@ class DerivWS:
             }
         )
 
-    async def contract_status(self, contract_id: str):
+    @staticmethod
+    def _contract_id_value(contract_id):
+        """
+        Deriv's current proposal_open_contract schema requires contract_id to
+        be an integer. Keep DB/session storage free to use strings, but convert
+        at the WebSocket boundary.
+        """
+        try:
+            return int(contract_id)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid Deriv contract_id {contract_id!r}; expected integer"
+            ) from exc
+
+    async def contract_status(self, contract_id):
         return await self.request(
             {
                 "proposal_open_contract": 1,
-                "contract_id": str(contract_id),
+                "contract_id": self._contract_id_value(contract_id),
             }
         )
 
     async def subscribe_contract(
         self,
-        contract_id: str,
+        contract_id,
         callback: MessageCallback,
     ) -> Optional[str]:
         data = await self.request(
             {
                 "proposal_open_contract": 1,
-                "contract_id": str(contract_id),
+                "contract_id": self._contract_id_value(contract_id),
                 "subscribe": 1,
             },
             subscription_callback=callback,
