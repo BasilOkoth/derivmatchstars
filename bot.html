@@ -11819,8 +11819,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
 
-            // SERVER-AUTHORITATIVE START/STOP BUTTON
-            if (s.enabled && typeof st.running === 'boolean') {
+            // SERVER-AUTHORITATIVE START/STOP BUTTON.
+            // While START is in-flight, st can still be the previous completed
+            // cycle. Do not let that stale running=false cancel the handshake.
+            if (
+                s.enabled &&
+                s.startPending !== true &&
+                typeof st.running === 'boolean'
+            ) {
                 const serverRunning = st.running === true;
                 if (window.isBotRunning !== serverRunning) {
                     window.isBotRunning = serverRunning;
@@ -15194,6 +15200,9 @@ window.isBotRunning = true;
             const serverMode = window.SERVER_EXECUTION?.enabled === true;
 
             if (window.isBotRunning) {
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.startPending = false;
+                }
                 window.__dmsManualStopRequested = true;
 
                 if (window.SERVER_EXECUTION?.continuousRestartTimer) {
@@ -15229,12 +15238,18 @@ window.isBotRunning = true;
                 return;
             }
 
-            // Keep the local UI/research lifecycle, but browser trade placement is
-            // disabled by SERVER EXECUTION guards.
+            // Mark START pending BEFORE startBot() updates the button. The old
+            // completed server state must not overwrite this new user action.
+            window.SERVER_EXECUTION.startPending = true;
+
             log('🚀 START BOT clicked · preparing SERVER DEMO session', 'SYSTEM');
             startBot();
 
+            // startBot() can still reject a genuine local prerequisite such as
+            // a missing platform session. In that case release the handshake.
             if (!window.isBotRunning) {
+                window.SERVER_EXECUTION.startPending = false;
+                try { updateButtonState(); } catch (_) {}
                 log('❌ START aborted before server request', 'ERROR');
                 return;
             }
@@ -15242,6 +15257,15 @@ window.isBotRunning = true;
             try {
                 log('☁ Sending START to server worker…', 'SYSTEM');
                 await startServerExecutionSession();
+
+                window.SERVER_EXECUTION.startPending = false;
+
+                // Pull the new backend state immediately. A successful fresh
+                // cycle must now show Trade 0/1 progression, not the old
+                // completed Trade 13 snapshot.
+                await pollServerExecutionState();
+                try { updateButtonState(); } catch (_) {}
+
                 log('✅ Server START accepted', 'SYSTEM');
                 updateTradeStatus(
                     'SERVER ACTIVE',
@@ -15250,6 +15274,10 @@ window.isBotRunning = true;
                     'trade'
                 );
             } catch (e) {
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.startPending = false;
+                }
+                try { updateButtonState(); } catch (_) {}
                 log(`❌ Server START failed: ${e.message}`, 'ERROR');
                 stopBot('Server start failed');
                 alert(`Server START failed: ${e.message}`);
@@ -15401,26 +15429,42 @@ window.isBotRunning = true;
         function updateButtonState() {
             if (!toggleButton) return;
 
-            const serverState = window.SERVER_EXECUTION?.enabled
-                ? window.SERVER_EXECUTION?.state
+            const serverExecution = window.SERVER_EXECUTION || {};
+            const serverState = serverExecution.enabled
+                ? serverExecution.state
                 : null;
+            const startPending = serverExecution.startPending === true;
 
-            const authoritativeRunning = (
-                serverState &&
-                typeof serverState.running === 'boolean'
-            )
-                ? serverState.running === true
-                : window.isBotRunning === true;
+            // During a new SERVER START request, the most recent polled state
+            // still belongs to the previous completed cycle (for example
+            // Trade 13, running=false). Do not let that stale snapshot cancel
+            // the click before POST /sessions/{sid}/start is sent.
+            const authoritativeRunning = startPending
+                ? true
+                : (
+                    serverState &&
+                    typeof serverState.running === 'boolean'
+                )
+                    ? serverState.running === true
+                    : window.isBotRunning === true;
 
             window.isBotRunning = authoritativeRunning;
 
-            if (authoritativeRunning) {
+            if (startPending) {
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏳</span> STARTING...</span>';
+                toggleButton.disabled = true;
+                toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active', 'stop-button-active', 'hover:bg-red-700');
+                toggleButton.classList.add('bg-amber-600', 'opacity-80', 'cursor-wait');
+            } else if (authoritativeRunning) {
+                toggleButton.disabled = false;
+                toggleButton.classList.remove('bg-amber-600', 'opacity-80', 'cursor-wait');
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
                 toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
                 toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');
             } else {
+                toggleButton.disabled = false;
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">🚀</span> START BOT</span>';
-                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700');
+                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700', 'bg-amber-600', 'opacity-80', 'cursor-wait');
                 toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
             }
         
