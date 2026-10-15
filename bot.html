@@ -11462,7 +11462,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V1 live target tracking. ACTIVE/NEXT follows V1 rank #1; an already-open contract remains fixed until settlement.
+                    DigitScore V1 live target tracking. ACTIVE/NEXT follows V1 rank #1. Each purchased contract is judged on the next eligible tick; settlement reconciles in the background.
                 </div>
             `;
             host.appendChild(el);
@@ -11814,6 +11814,16 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
+
+            // SERVER-AUTHORITATIVE START/STOP BUTTON
+            if (s.enabled && typeof st.running === 'boolean') {
+                const serverRunning = st.running === true;
+                if (window.isBotRunning !== serverRunning) {
+                    window.isBotRunning = serverRunning;
+                    try { updateButtonState(); } catch (_) {}
+                }
+            }
+
             try { renderRecycleRuntimePanel(st); } catch (_) {}
             try { publishFastWinToTelegram(st); } catch (_) {}
 
@@ -15371,8 +15381,21 @@ window.isBotRunning = true;
         
         function updateButtonState() {
             if (!toggleButton) return;
-            
-            if (window.isBotRunning) {
+
+            const serverState = window.SERVER_EXECUTION?.enabled
+                ? window.SERVER_EXECUTION?.state
+                : null;
+
+            const authoritativeRunning = (
+                serverState &&
+                typeof serverState.running === 'boolean'
+            )
+                ? serverState.running === true
+                : window.isBotRunning === true;
+
+            window.isBotRunning = authoritativeRunning;
+
+            if (authoritativeRunning) {
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
                 toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
                 toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');

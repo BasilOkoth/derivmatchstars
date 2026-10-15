@@ -1020,6 +1020,48 @@ class MultiUserEngine:
                     db.commit()
                     return
 
+                # ----------------------------------------------------------
+                # LIVE DEMO PIPELINE IS TICK-OWNED, NOT SETTLEMENT-OWNED
+                # ----------------------------------------------------------
+                # While this process still owns the active paid contract,
+                # the first eligible NEXT market tick drives WIN/LOSS and
+                # immediate recovery. Deriv settlement remains background-only.
+                if (
+                    fast_owner
+                    and contract_id
+                    and str(fast_owner.get("contract_id") or "") == contract_id
+                ):
+                    if not latest or str(latest.status).upper() != "SETTLED":
+                        self._schedule_contract_probe(
+                            sid=sid,
+                            user_id=s.user_id,
+                            account_id=s.account_id,
+                            contract_id=contract_id,
+                            client=client,
+                        )
+                        contract_key = (sid, contract_id)
+                        if contract_key not in self.contract_subscriptions:
+                            asyncio.create_task(
+                                self._subscribe_open_contract(
+                                    sid=sid,
+                                    user_id=s.user_id,
+                                    account_id=s.account_id,
+                                    contract_id=contract_id,
+                                    client=client,
+                                )
+                            )
+
+                    s.phase = (
+                        "FAST_DECISION_APPLYING"
+                        if fast_owner.get("decided")
+                        else "AWAITING_NEXT_TICK"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                # No live in-memory owner means restart/recovery state.
+                # Only this path is allowed to wait for official settlement.
                 if contract_id and (not latest or str(latest.status).upper() != "SETTLED"):
                     # Subscription is best effort; bounded authoritative polling
                     # continues even if a subscription ID exists but stopped firing.
