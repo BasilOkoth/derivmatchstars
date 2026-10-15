@@ -11792,22 +11792,26 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         function isTop4ExecutionOwner() {
             const s = window.SERVER_EXECUTION || {};
             const rr = s.top4RealRecovery || null;
-            const top4Latest = s.topNLatest || null;
-            const top4Cycle = s.top4Cycle || null;
 
+            // Only a LIVE Top-4 operation owns execution.
+            // Historical Top-4 result objects must never block the normal
+            // single-target START BOT button.
             const recoveryActive =
-                rr &&
+                !!rr &&
                 Number(rr.rounds_completed || 0) > 0 &&
                 rr.won !== true &&
-                rr.final_loss !== true;
+                rr.final_loss !== true &&
+                (
+                    rr.waiting_for_settlement === true ||
+                    rr.running === true ||
+                    rr.active === true
+                );
 
             const top4InFlight =
                 s.topNExecutionInFlight === true ||
                 s.top4AutoCycleRunning === true;
 
-            const latestTop4Known = !!top4Latest || !!top4Cycle;
-
-            return top4InFlight || recoveryActive || latestTop4Known;
+            return top4InFlight || recoveryActive;
         }
 
 
@@ -14913,12 +14917,20 @@ function toggleServerContinuousResearch() {
 
         // START BOT - CRITICAL FUNCTION
         function startBot() {
+            // Hidden/finished Top-4 history must not block normal START.
+            // Only a genuinely active Top-4 operation is allowed to own execution.
             if (isTop4ExecutionOwner()) {
-                alert(
-                    'Top-4 recovery currently owns REAL execution. ' +
-                    'Finish or stop the Top-4 trade before starting the single-target bot.'
-                );
-                return;
+                const s = window.SERVER_EXECUTION || {};
+                const actualTop4Active =
+                    s.topNExecutionInFlight === true ||
+                    s.top4AutoCycleRunning === true;
+
+                if (actualTop4Active) {
+                    alert(
+                        'A Top-4 trade is currently active. Finish or stop it before starting the single-target bot.'
+                    );
+                    return;
+                }
             }
 
             window.__dmsManualStopRequested = false;
@@ -15219,11 +15231,18 @@ window.isBotRunning = true;
 
             // Keep the local UI/research lifecycle, but browser trade placement is
             // disabled by SERVER EXECUTION guards.
+            log('🚀 START BOT clicked · preparing SERVER DEMO session', 'SYSTEM');
             startBot();
-            if (!window.isBotRunning) return;
+
+            if (!window.isBotRunning) {
+                log('❌ START aborted before server request', 'ERROR');
+                return;
+            }
 
             try {
+                log('☁ Sending START to server worker…', 'SYSTEM');
                 await startServerExecutionSession();
+                log('✅ Server START accepted', 'SYSTEM');
                 updateTradeStatus(
                     'SERVER ACTIVE',
                     'Server worker owns execution',
