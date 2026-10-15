@@ -49,6 +49,9 @@ class MultiUserEngine:
         self.latest_tick_epoch = {}
         self.latest_ticks = {}
         self.latest_tick_received_at = {}
+        # Exact callback sequence for next-tick execution. Deriv tick epochs are
+        # whole seconds, so multiple consecutive ticks can share one epoch.
+        self.tick_sequence = {}  # sid -> monotonically increasing tick number
         self.contract_probe_at = {}
         self.contract_probe_tasks = {}
         # DEMO-only stale-contract recovery. A 1-tick contract must not keep a
@@ -608,12 +611,19 @@ class MultiUserEngine:
         data,
     ):
         tick = data.get("tick") or {}
+
+        tick_seq = int(self.tick_sequence.get(sid, 0))
         if tick:
+            tick_seq += 1
+            self.tick_sequence[sid] = tick_seq
             self.latest_tick_received_at[sid] = time.monotonic()
+
         epoch = int(tick.get("epoch") or 0)
 
         if tick:
-            self.latest_ticks[sid] = dict(tick)
+            cached = dict(tick)
+            cached["_dms_seq"] = int(tick_seq)
+            self.latest_ticks[sid] = cached
 
         if epoch:
             previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
@@ -622,20 +632,24 @@ class MultiUserEngine:
         digit = self._tick_last_digit(tick)
         if digit is not None:
             history = self._digit_history(sid)
-            # Only append a new canonical market epoch once.
-            if not epoch or int(epoch) >= int(self.latest_tick_epoch.get(sid) or 0):
-                if not history or not epoch or int(epoch) > int(getattr(self, '_last_scored_epoch', {}).get(sid, 0)):
-                    if not hasattr(self, '_last_scored_epoch'):
-                        self._last_scored_epoch = {}
-                    history.append(int(digit))
-                    if epoch:
-                        self._last_scored_epoch[sid] = int(epoch)
-                    live_snapshot = self._score_all_digits(sid)
-                    if live_snapshot.get("ready"):
-                        self._set_live_next_target(
-                            sid,
-                            live_snapshot.get("selected_digit"),
-                        )
+
+            if not hasattr(self, "_last_scored_seq"):
+                self._last_scored_seq = {}
+
+            last_scored_seq = int(self._last_scored_seq.get(sid, 0))
+
+            # Score every distinct tick callback, not every distinct second.
+            if not tick_seq or tick_seq > last_scored_seq:
+                history.append(int(digit))
+                if tick_seq:
+                    self._last_scored_seq[sid] = int(tick_seq)
+
+                live_snapshot = self._score_all_digits(sid)
+                if live_snapshot.get("ready"):
+                    self._set_live_next_target(
+                        sid,
+                        live_snapshot.get("selected_digit"),
+                    )
 
         active = self.fast_contracts.get(sid)
 
@@ -648,11 +662,23 @@ class MultiUserEngine:
         if active.get("decided"):
             return
 
+        armed_after_seq = int(active.get("armed_after_seq") or 0)
+        incoming_seq = int(tick.get("_dms_seq") or tick_seq or 0)
         armed_after_epoch = int(active.get("armed_after_epoch") or 0)
 
-        # The strategy only considers a tick newer than the tick/purchase epoch
-        # that existed when BUY was armed.
-        if epoch and armed_after_epoch and epoch <= armed_after_epoch:
+        # Primary next-tick gate: exact callback sequence.
+        # This accepts the very next tick even when it shares the same
+        # whole-second epoch as the purchase/previous tick.
+        if armed_after_seq and incoming_seq and incoming_seq <= armed_after_seq:
+            return
+
+        # Fallback only for legacy/cached messages that do not carry a sequence.
+        if (
+            not incoming_seq
+            and epoch
+            and armed_after_epoch
+            and epoch <= armed_after_epoch
+        ):
             return
 
         if digit is None:
@@ -662,6 +688,7 @@ class MultiUserEngine:
         # advance this same contract twice.
         active["decided"] = True
         active["decision_epoch"] = epoch
+        active["decision_seq"] = incoming_seq
         active["observed_digit"] = digit
 
         target_digit = int(active["target_digit"])
@@ -1513,6 +1540,9 @@ class MultiUserEngine:
         armed_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
         )
+        armed_after_seq = int(
+            self.tick_sequence.get(s.id, 0)
+        )
 
         # A prefetched proposal can become invalid if its authenticated
         # WebSocket reconnects before BUY. Refresh it before sending anything.
@@ -1704,6 +1734,7 @@ class MultiUserEngine:
             "symbol": str(row.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
+            "armed_after_seq": int(armed_after_seq),
             "score_evidence": score_evidence,
             "buy_claim_token": claim["token"],
             "instance_id": self.instance_id,
@@ -1773,8 +1804,16 @@ class MultiUserEngine:
         cached_tick = self.latest_ticks.get(s.id)
 
         if cached_tick:
+            cached_seq = int(cached_tick.get("_dms_seq") or 0)
             cached_epoch = int(cached_tick.get("epoch") or 0)
-            if cached_epoch > decision_after_epoch:
+
+            cached_is_newer = (
+                cached_seq > int(armed_after_seq)
+                if cached_seq
+                else cached_epoch > decision_after_epoch
+            )
+
+            if cached_is_newer:
                 asyncio.create_task(
                     self._handle_strategy_tick(
                         sid=s.id,
