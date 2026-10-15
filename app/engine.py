@@ -280,6 +280,12 @@ class MultiUserEngine:
             "stake": float(stake),
             "trade_no": int(trade_no),
             "currency": currency,
+            # Proposal IDs belong to the authenticated WebSocket session that
+            # created them. If the socket reconnects before BUY, refresh rather
+            # than sending an ID that Deriv no longer knows.
+            "connection_generation": int(
+                getattr(client, "connection_generation", 0) or 0
+            ),
         }
 
     @staticmethod
@@ -389,57 +395,52 @@ class MultiUserEngine:
         }
 
     async def _ensure_tick_subscription(
-        self, *, sid, user_id, account_id, symbol, client,
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        client,
     ):
-        """Keep subscriptions bound to their actual connection and receive time."""
         existing = self.tick_subscriptions.get(sid)
-        now = time.monotonic()
-        last_tick = self.latest_tick_received_at.get(sid)
-        age = (now - last_tick) if last_tick is not None else None
-        owner_matches = bool(
-            existing and existing.get("symbol") == str(symbol)
-            and existing.get("client") is client and client.is_open()
-        )
-        since_subscribe = now - float((existing or {}).get("subscribed_at", now))
-        healthy = owner_matches and (
-            (age is not None and age < 15.0)
-            or (age is None and since_subscribe < 15.0)
+
+        healthy = bool(
+            existing
+            and existing.get("symbol") == str(symbol)
+            and existing.get("client") is client
+            and client.is_open()
+            and (
+                time.monotonic() - self.latest_tick_received_at.get(sid, time.monotonic())
+            ) < 15.0
         )
         if healthy:
             return
 
-        # Rate-limit reconnections while the reader/feed is unhealthy.
-        next_retry = float(getattr(self, "_tick_retry_after", {}).get(sid, 0))
-        if existing and now < next_retry:
-            return
-        if not hasattr(self, "_tick_retry_after"):
-            self._tick_retry_after = {}
-        self._tick_retry_after[sid] = now + 5.0
-
         if existing:
             old_id = existing.get("subscription_id")
             old_client = existing.get("client")
-            self.tick_subscriptions.pop(sid, None)
             if old_id and old_client and old_client.is_open():
-                asyncio.create_task(self._forget_quietly(old_client, old_id))
-            logger.warning(
-                "DMS_FEED_RECOVER sid=%s tick_age=%s previous_connection=%s",
-                sid, round(age, 1) if age is not None else "never",
-                old_client is client,
-            )
+                asyncio.create_task(
+                    self._forget_quietly(old_client, old_id)
+                )
+            self.tick_subscriptions.pop(sid, None)
 
         async def on_tick(data: dict):
             await self._handle_strategy_tick(
-                sid=sid, user_id=user_id, account_id=account_id,
-                symbol=str(symbol), data=data,
+                sid=sid,
+                user_id=user_id,
+                account_id=account_id,
+                symbol=str(symbol),
+                data=data,
             )
 
         sub_id = await client.subscribe_ticks(str(symbol), on_tick)
+
         self.tick_subscriptions[sid] = {
             "subscription_id": sub_id,
             "symbol": str(symbol),
             "client": client,
-            "subscribed_at": time.monotonic(),
         }
 
     async def _handle_strategy_tick(
@@ -750,18 +751,6 @@ class MultiUserEngine:
                     client=client,
                 )
 
-                # The server ranking is not executable until its own stream is live.
-                # Never trust a fresh browser ranking as a substitute.
-                receive_age = (
-                    time.monotonic() - self.latest_tick_received_at[s.id]
-                    if s.id in self.latest_tick_received_at else float("inf")
-                )
-                if receive_age > 15.0:
-                    s.phase = "FEED_STALE_RECONNECTING"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
                 # Reconcile persisted contract state BEFORE attempting a new buy.
                 # Never release ownership purely because a feed is stale.
                 latest = (
@@ -906,55 +895,6 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # Resolve the actual NEXT execution target from the canonical
-                # server-side V1 ranking, not from a cached browser candidate.
-                # Keep the purchased contract's target immutable; this changes
-                # only the new proposal's intended digit.
-                last_tick_age = time.monotonic() - self.latest_tick_received_at.get(
-                    sid, 0.0
-                )
-                if last_tick_age > 15.0:
-                    s.phase = "EXECUTION_FEED_STALE"
-                    s.last_error = (
-                        "No fresh server tick for next DIGITMATCH purchase; "
-                        "waiting for subscription recovery"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                target, snapshot = self._choose_scored_digit(sid, lock_target=True)
-                if target is None or not snapshot.get("ready"):
-                    s.phase = "EXECUTION_RANK_WARMING"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-                s.candidate_digit = int(target)
-                self._set_live_next_target(sid, int(target))
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-                logger.info(
-                    "DMS_EXECUTION_TARGET sid=%s trade=%s v1_top=%s stake=%.2f age=%.1fs",
-                    sid, int(s.current_trade) + 1, int(target),
-                    float(s.current_stake), last_tick_age,
-                )
-
-                # Freeze this purchase from the CURRENT server canonical V1 rank.
-                fresh_target, fresh_snapshot = self._choose_scored_digit(
-                    s.id, lock_target=True,
-                )
-                if fresh_target is None:
-                    s.phase = "RECOVERY_WAITING_RANK"
-                    db.commit()
-                    return
-                s.candidate_digit = int(fresh_target)
-                self._set_live_next_target(s.id, fresh_target)
-                logger.info(
-                    "DMS_EXECUTION_TARGET sid=%s trade=%s V1_top=%s age=%.2f",
-                    s.id, s.current_trade + 1, s.candidate_digit, receive_age,
-                )
-                db.commit()
                 currency = await self._currency_for(db, s)
 
                 # Normal first trade of the cycle. Recovery trades normally use
@@ -978,19 +918,6 @@ class MultiUserEngine:
                         f"[{s.symbol}/{currency}/digit {s.candidate_digit}]: "
                         f"{exc}"
                     ) from exc
-
-                # The BUY must not use an obsolete target when the V1 #1
-                # changes during the Deriv proposal roundtrip. On a change,
-                # defer to the next step for a fresh proposal, never buy stale.
-                current_top, _ = self._choose_scored_digit(sid, lock_target=True)
-                if current_top is None or int(current_top) != int(payload["digit"]):
-                    if current_top is not None:
-                        s.candidate_digit = int(current_top)
-                        self._set_live_next_target(sid, int(current_top))
-                    s.phase = "EXECUTION_RANK_CHANGED_RETRY"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
 
                 await self._execute_demo_buy(
                     db,
@@ -1137,6 +1064,26 @@ class MultiUserEngine:
             self.latest_tick_epoch.get(s.id) or 0
         )
 
+        # A prefetched proposal can become invalid if its authenticated
+        # WebSocket reconnects before BUY. Refresh it before sending anything.
+        proposal_generation = int(payload.get("connection_generation") or 0)
+        current_generation = int(
+            getattr(client, "connection_generation", 0) or 0
+        )
+        if (
+            proposal_generation
+            and current_generation
+            and proposal_generation != current_generation
+        ):
+            payload = await self._request_proposal_payload(
+                client,
+                symbol=s.symbol,
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
+                trade_no=int(payload["trade_no"]),
+                currency=str(payload.get("currency") or "USD"),
+            )
+
         try:
             result = await client.buy(
                 payload["proposal_id"],
@@ -1144,27 +1091,54 @@ class MultiUserEngine:
                 demo=True,
             )
         except Exception as exc:
-            # BUY is deliberately never auto-retried. Its outcome may be
-            # uncertain after a network failure, so stop rather than risking
-            # a duplicate contract.
-            row = (
-                db.query(TradingSession)
-                .filter(TradingSession.id == int(s.id))
-                .with_for_update()
-                .one_or_none()
+            text = str(exc).lower()
+
+            # Explicit stale proposal rejection means no contract was bought.
+            # Refresh once. Generic timeout/network errors remain non-retriable.
+            stale_proposal = (
+                "invalidcontractproposal" in text
+                or "unknown contract proposal" in text
             )
-            if row and self._claim_is_owned(row, claim):
-                row.running = False
-                row.paused = False
-                row.phase = "BUY_UNCERTAIN_STOPPED"
-                row.last_error = (
-                    f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+
+            if stale_proposal:
+                try:
+                    payload = await self._request_proposal_payload(
+                        client,
+                        symbol=s.symbol,
+                        digit=int(payload["digit"]),
+                        stake=float(payload["stake"]),
+                        trade_no=int(payload["trade_no"]),
+                        currency=str(payload.get("currency") or "USD"),
+                    )
+                    result = await client.buy(
+                        payload["proposal_id"],
+                        payload["ask_price"],
+                        demo=True,
+                    )
+                except Exception as retry_exc:
+                    exc = retry_exc
+                else:
+                    exc = None
+
+            if exc is not None:
+                row = (
+                    db.query(TradingSession)
+                    .filter(TradingSession.id == int(s.id))
+                    .with_for_update()
+                    .one_or_none()
                 )
-                row.updated_at = datetime.utcnow()
-                db.commit()
-            raise RuntimeError(
-                f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
-            ) from exc
+                if row and self._claim_is_owned(row, claim):
+                    row.running = False
+                    row.paused = False
+                    row.phase = "BUY_UNCERTAIN_STOPPED"
+                    row.last_error = (
+                        f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+                    )
+                    row.updated_at = datetime.utcnow()
+                    db.commit()
+                raise RuntimeError(
+                    f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+                ) from exc
 
         buy = result.get("buy") or {}
 
