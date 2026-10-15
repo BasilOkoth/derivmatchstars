@@ -382,6 +382,18 @@ class DerivWS:
         # None tells the engine to use the contract-status polling fallback.
         return None
 
+    async def ticks_history(self, symbol: str, count: int = 100):
+        """Fetch recent market ticks for score warm-up after process restart."""
+        count = max(10, min(int(count or 100), 1000))
+        return await self.request(
+            {
+                "ticks_history": str(symbol),
+                "count": count,
+                "end": "latest",
+                "style": "ticks",
+            }
+        )
+
     async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:
         data = await self.request(
             {

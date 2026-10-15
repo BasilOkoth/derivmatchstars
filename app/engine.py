@@ -77,6 +77,10 @@ class MultiUserEngine:
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
+        # Process memory is lost on Render restart. Rebuild DigitScore from
+        # Deriv's recent ticks_history before the next cycle starts.
+        self.history_bootstrap_tasks = {}   # sid -> asyncio.Task
+        self.history_bootstrap_generation = {}  # sid -> client connection generation
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
         # Identifies this server process in persisted execution evidence.
@@ -398,6 +402,143 @@ class MultiUserEngine:
             },
         }
 
+    async def _bootstrap_digit_history(
+        self,
+        *,
+        sid,
+        symbol,
+        client,
+        count=100,
+    ):
+        """
+        Rebuild the server-side DigitScore window from Deriv recent tick history.
+
+        This is essential after a Render restart because TradingSession/TradeLog
+        are persisted in PostgreSQL while digit_history is intentionally
+        in-memory. Without this bootstrap the dashboard can show 0/10 even
+        though the market has been running for hundreds of browser ticks.
+        """
+        sid = int(sid)
+        history = self._digit_history(sid)
+        minimum = int(getattr(self.digit_scorer, "min_history", 10) or 10)
+
+        if len(history) >= minimum:
+            return True
+
+        generation = int(
+            getattr(client, "connection_generation", 0) or 0
+        )
+
+        existing = self.history_bootstrap_tasks.get(sid)
+        if existing and not existing.done():
+            try:
+                await asyncio.shield(existing)
+            except Exception:
+                pass
+            return len(self._digit_history(sid)) >= minimum
+
+        async def do_bootstrap():
+            try:
+                result = await client.ticks_history(
+                    str(symbol),
+                    count=max(50, int(count or 100)),
+                )
+
+                payload = result.get("history") or {}
+                prices = list(payload.get("prices") or [])
+                times = list(payload.get("times") or [])
+                pip_size = result.get("pip_size")
+
+                if not prices:
+                    return False
+
+                # Replace an incomplete process-local window with the canonical
+                # recent history returned by Deriv, preserving chronological order.
+                rebuilt = deque(maxlen=100)
+
+                usable_times = len(times) == len(prices)
+                last_epoch = 0
+
+                for idx, price in enumerate(prices[-100:]):
+                    tick = {
+                        "quote": price,
+                    }
+                    if pip_size is not None:
+                        tick["pip_size"] = pip_size
+
+                    digit = self._tick_last_digit(tick)
+                    if digit is None:
+                        continue
+
+                    rebuilt.append(int(digit))
+
+                    if usable_times:
+                        try:
+                            epoch = int(times[-len(prices[-100:]) + idx])
+                            last_epoch = max(last_epoch, epoch)
+                        except Exception:
+                            pass
+
+                if not rebuilt:
+                    return False
+
+                self.digit_history[sid] = rebuilt
+
+                if last_epoch:
+                    self.latest_tick_epoch[sid] = max(
+                        int(self.latest_tick_epoch.get(sid) or 0),
+                        int(last_epoch),
+                    )
+                    if not hasattr(self, "_last_scored_epoch"):
+                        self._last_scored_epoch = {}
+                    self._last_scored_epoch[sid] = max(
+                        int(self._last_scored_epoch.get(sid) or 0),
+                        int(last_epoch),
+                    )
+
+                snapshot = self._score_all_digits(sid)
+
+                if snapshot.get("ready"):
+                    selected = snapshot.get("selected_digit")
+                    if selected is not None:
+                        self._set_live_next_target(
+                            sid,
+                            int(selected),
+                        )
+
+                self.history_bootstrap_generation[sid] = generation
+
+                logger.warning(
+                    "DMS DigitScore history bootstrapped sid=%s symbol=%s "
+                    "ticks=%s ready=%s",
+                    sid,
+                    symbol,
+                    len(rebuilt),
+                    bool(snapshot.get("ready")),
+                )
+
+                return bool(snapshot.get("ready"))
+
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "DMS DigitScore history bootstrap failed sid=%s symbol=%s",
+                    sid,
+                    symbol,
+                )
+                return False
+
+        task = asyncio.create_task(do_bootstrap())
+        self.history_bootstrap_tasks[sid] = task
+
+        try:
+            return bool(await task)
+        finally:
+            current = self.history_bootstrap_tasks.get(sid)
+            if current is task:
+                self.history_bootstrap_tasks.pop(sid, None)
+
     async def _ensure_tick_subscription(
         self,
         *,
@@ -407,6 +548,16 @@ class MultiUserEngine:
         symbol,
         client,
     ):
+        # Warm canonical server scoring immediately after process restart.
+        # This does not place a trade; it only fetches public market history.
+        if len(self._digit_history(int(sid))) < int(self.digit_scorer.min_history):
+            await self._bootstrap_digit_history(
+                sid=int(sid),
+                symbol=str(symbol),
+                client=client,
+                count=100,
+            )
+
         existing = self.tick_subscriptions.get(sid)
 
         healthy = bool(
@@ -1162,7 +1313,8 @@ class MultiUserEngine:
                         s.last_error = (
                             "Scoring digits 0-9 from canonical ticks "
                             f"({snapshot.get('history_count', 0)}/"
-                            f"{snapshot.get('minimum_history', 10)})"
+                            f"{snapshot.get('minimum_history', 10)}). "
+                            "Deriv history bootstrap/live feed is warming."
                         )
                         s.updated_at = datetime.utcnow()
                         db.commit()
