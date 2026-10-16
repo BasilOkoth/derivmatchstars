@@ -764,6 +764,7 @@ class MultiUserEngine:
                     # Settlement remains active in the background.
                     s.running = False
                     s.paused = False
+                    s.pending_real_confirmation = False
                     s.phase = "FAST_WON"
                     self.locked_target_snapshots.pop(sid, None)
                     s.last_error = None
@@ -777,6 +778,7 @@ class MultiUserEngine:
                 # Deriv settlement of Trade N is NOT awaited.
                 if int(s.current_trade) >= int(s.max_trades):
                     s.running = False
+                    s.pending_real_confirmation = False
                     s.phase = "MAX_TRADES_REACHED"
                     s.updated_at = datetime.utcnow()
                     db.commit()
@@ -828,6 +830,20 @@ class MultiUserEngine:
                 s.phase = "FAST_RECOVERING"
                 s.updated_at = datetime.utcnow()
                 db.commit()
+
+                # REAL follows the same recovery calculation as DEMO, but the
+                # next purchase is left in a ready state for explicit
+                # authorization. Do not wait for settlement of the previous
+                # 1-tick contract; that reconciliation remains background-only.
+                if str(s.account_mode).upper() == "REAL":
+                    s.running = False
+                    s.paused = False
+                    s.pending_real_confirmation = True
+                    s.phase = "REAL_NEXT_TRADE_READY"
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
 
                 client = await self._client(user_id, account_id)
                 currency = await self._currency_for(db, s)
@@ -1396,13 +1412,31 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # Keep unattended execution DEMO-only.
-                if str(s.account_mode).upper() != "DEMO":
-                    s.running = False
-                    s.phase = "REAL_AUTOMATION_DISABLED"
-                    s.last_error = (
-                        "REAL account connection is supported, but automated REAL-money execution is disabled in this build."
+                # REAL uses the SAME canonical strategy engine as DEMO.
+                # The only difference is purchase authorization: the engine
+                # prepares the exact target/stake/trade state, then waits for
+                # the explicit REAL purchase endpoint to submit the order.
+                if str(s.account_mode).upper() == "REAL":
+                    scored_digit, snapshot = self._choose_scored_digit(
+                        s.id,
+                        lock_target=True,
                     )
+                    if scored_digit is None:
+                        s.phase = "DIGIT_SCORE_WARMING"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
+                    s.candidate_digit = int(scored_digit)
+                    self._set_live_next_target(
+                        s.id,
+                        int(scored_digit),
+                    )
+                    s.running = False
+                    s.paused = False
+                    s.pending_real_confirmation = True
+                    s.phase = "REAL_TRADE_READY"
+                    s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
