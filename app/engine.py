@@ -61,32 +61,16 @@ class MultiUserEngine:
 
         # Only the newest strategy-active paid contract belongs here.
         # Older contracts can still settle in the background.
-        self.fast_contracts = {}  # sid -> contract metadata
+        self.fast_contracts = {}  # sid -> newest strategy-active contract
+
+        # A decided contract can be retired from the active execution slot
+        # while its official Deriv settlement is still pending. This preserves
+        # fast-vs-official reconciliation without blocking the next trade.
+        self.retired_fast_contracts = {}  # (sid, contract_id) -> metadata
 
         # Settlement bookkeeping keyed per individual contract.
         self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
         self.contract_poll_tasks = {}  # fallback only
-
-        # Legacy single-digit prefetch remains as a fallback only.
-        self.prefetched_recovery = {}  # sid -> payload
-        self.prefetch_tasks = {}  # sid -> asyncio.Task
-
-        # 0-9 streaming proposal cache for the NEXT logical trade.
-        #
-        # Each cache is stake-specific and connection-generation-specific:
-        # {
-        #   "trade_no": int,
-        #   "stake": float,
-        #   "symbol": str,
-        #   "currency": str,
-        #   "generation": int,
-        #   "entries": {digit: payload},
-        #   "subscriptions": {digit: subscription_id},
-        #   "ready_event": asyncio.Event(),
-        # }
-        self.proposal_caches = {}
-        self.proposal_cache_tasks = {}
-        self.proposal_cache_specs = {}
 
         # Latest live V1 rank #1 for the NEXT trade.
         # This may change while a purchased contract is open; the purchased
@@ -364,13 +348,6 @@ class MultiUserEngine:
         digit = int(digit)
         previous = self.live_next_target.get(sid)
         self.live_next_target[sid] = digit
-
-        # Completed proposal for another digit must never be consumed after
-        # V1 rank #1 has changed.
-        payload = self.prefetched_recovery.get(sid)
-        if payload and int(payload.get("digit", -1)) != digit:
-            self.prefetched_recovery.pop(sid, None)
-
         return previous != digit
 
     def _digit_history(self, sid: int):
@@ -443,372 +420,6 @@ class MultiUserEngine:
                 "alternating_pair_targets": shadow.get("alternating_pair_targets"),
             },
         }
-
-    @staticmethod
-    def _proposal_cache_payload(data, *, digit, stake, trade_no, currency, generation):
-        p = (data or {}).get("proposal") or {}
-        proposal_id = p.get("id")
-        if not proposal_id:
-            return None
-
-        ask_price = p.get("ask_price")
-        payout = p.get("payout")
-
-        try:
-            ask_price = float(ask_price)
-            payout = float(payout)
-        except (TypeError, ValueError):
-            return None
-
-        if ask_price <= 0 or payout <= 0:
-            return None
-
-        return {
-            "proposal_id": str(proposal_id),
-            "ask_price": ask_price,
-            "payout": payout,
-            "digit": int(digit),
-            "stake": round(float(stake), 2),
-            "trade_no": int(trade_no),
-            "currency": str(currency or "USD").upper(),
-            "connection_generation": int(generation or 0),
-            "cached_at": time.monotonic(),
-            "cache_source": "STREAM_0_9",
-        }
-
-    def _proposal_cache_matches(
-        self,
-        cache,
-        *,
-        trade_no,
-        stake,
-        symbol,
-        currency,
-        generation,
-    ):
-        if not cache:
-            return False
-
-        return bool(
-            int(cache.get("trade_no") or 0) == int(trade_no)
-            and abs(float(cache.get("stake") or 0) - round(float(stake), 2)) <= 0.005
-            and str(cache.get("symbol") or "") == str(symbol)
-            and str(cache.get("currency") or "").upper() == str(currency or "USD").upper()
-            and int(cache.get("generation") or 0) == int(generation or 0)
-        )
-
-    async def _forget_proposal_cache(self, sid: int, client=None):
-        cache = self.proposal_caches.pop(int(sid), None)
-        self.proposal_cache_specs.pop(int(sid), None)
-
-        if not cache:
-            return
-
-        if client is None:
-            user_id = cache.get("user_id")
-            account_id = cache.get("account_id")
-            if user_id and account_id:
-                client = self.clients.get((user_id, account_id))
-
-        if client:
-            for sub_id in list((cache.get("subscriptions") or {}).values()):
-                if sub_id:
-                    asyncio.create_task(
-                        self._forget_quietly(client, str(sub_id))
-                    )
-
-    async def _build_proposal_cache(
-        self,
-        *,
-        sid,
-        user_id,
-        account_id,
-        symbol,
-        stake,
-        trade_no,
-        currency,
-        client,
-    ):
-        """
-        Build ten live proposal streams (digits 0-9) for one exact
-        trade_no/stake combination.
-
-        Proposal updates continuously replace entries[digit], so selecting a
-        different V1 rank #1 does not require a new proposal request.
-        """
-        sid = int(sid)
-        generation = int(
-            getattr(client, "connection_generation", 0) or 0
-        )
-        spec = (
-            int(trade_no),
-            round(float(stake), 2),
-            str(symbol),
-            str(currency or "USD").upper(),
-            generation,
-        )
-
-        existing = self.proposal_caches.get(sid)
-        if self._proposal_cache_matches(
-            existing,
-            trade_no=trade_no,
-            stake=stake,
-            symbol=symbol,
-            currency=currency,
-            generation=generation,
-        ):
-            return existing
-
-        await self._forget_proposal_cache(sid, client=client)
-
-        cache = {
-            "trade_no": int(trade_no),
-            "stake": round(float(stake), 2),
-            "symbol": str(symbol),
-            "currency": str(currency or "USD").upper(),
-            "generation": generation,
-            "entries": {},
-            "subscriptions": {},
-            "ready_event": asyncio.Event(),
-            "created_at": time.monotonic(),
-            "user_id": user_id,
-            "account_id": account_id,
-        }
-        self.proposal_caches[sid] = cache
-        self.proposal_cache_specs[sid] = spec
-
-        async def subscribe_digit(digit: int):
-            async def on_proposal(data: dict):
-                current = self.proposal_caches.get(sid)
-                if current is not cache:
-                    return
-
-                # Ignore updates from a replaced/reconnected socket.
-                if int(
-                    getattr(client, "connection_generation", 0) or 0
-                ) != generation:
-                    return
-
-                payload = self._proposal_cache_payload(
-                    data,
-                    digit=digit,
-                    stake=stake,
-                    trade_no=trade_no,
-                    currency=currency,
-                    generation=generation,
-                )
-                if not payload:
-                    return
-
-                current["entries"][int(digit)] = payload
-
-                if len(current["entries"]) >= 10:
-                    current["ready_event"].set()
-
-            sub_id, initial = await client.subscribe_proposal_digitmatch(
-                symbol=str(symbol),
-                digit=int(digit),
-                amount=float(stake),
-                duration=1,
-                currency=str(currency or "USD").upper(),
-                callback=on_proposal,
-            )
-
-            current = self.proposal_caches.get(sid)
-            if current is not cache:
-                asyncio.create_task(
-                    self._forget_quietly(client, sub_id)
-                )
-                return
-
-            current["subscriptions"][int(digit)] = str(sub_id)
-
-            # The first response is returned directly by request(); subscription
-            # callbacks handle subsequent streamed updates.
-            await on_proposal(initial)
-
-        results = await asyncio.gather(
-            *(subscribe_digit(d) for d in range(10)),
-            return_exceptions=True,
-        )
-
-        errors = [
-            str(result)
-            for result in results
-            if isinstance(result, Exception)
-        ]
-
-        current = self.proposal_caches.get(sid)
-        if current is cache:
-            cache["build_errors"] = errors
-            cache["ready_count"] = len(cache["entries"])
-            if len(cache["entries"]) >= 10:
-                cache["ready_event"].set()
-
-        logger.warning(
-            "DMS proposal cache built sid=%s trade=%s stake=%.2f "
-            "ready=%s/10 errors=%s",
-            sid,
-            trade_no,
-            float(stake),
-            len(cache["entries"]),
-            len(errors),
-        )
-
-        return cache
-
-    def _start_proposal_cache_warm(
-        self,
-        *,
-        sid,
-        user_id,
-        account_id,
-        symbol,
-        stake,
-        trade_no,
-        currency,
-        client,
-    ):
-        """
-        Start warming the full 0-9 cache without blocking the current contract.
-        """
-        sid = int(sid)
-        generation = int(
-            getattr(client, "connection_generation", 0) or 0
-        )
-        spec = (
-            int(trade_no),
-            round(float(stake), 2),
-            str(symbol),
-            str(currency or "USD").upper(),
-            generation,
-        )
-
-        cache = self.proposal_caches.get(sid)
-        if self._proposal_cache_matches(
-            cache,
-            trade_no=trade_no,
-            stake=stake,
-            symbol=symbol,
-            currency=currency,
-            generation=generation,
-        ):
-            return self.proposal_cache_tasks.get(sid)
-
-        current_task = self.proposal_cache_tasks.get(sid)
-        if (
-            current_task
-            and not current_task.done()
-            and self.proposal_cache_specs.get(sid) == spec
-        ):
-            return current_task
-
-        if current_task and not current_task.done():
-            current_task.cancel()
-
-        self.proposal_cache_specs[sid] = spec
-
-        task = asyncio.create_task(
-            self._build_proposal_cache(
-                sid=sid,
-                user_id=user_id,
-                account_id=account_id,
-                symbol=symbol,
-                stake=stake,
-                trade_no=trade_no,
-                currency=currency,
-                client=client,
-            )
-        )
-        self.proposal_cache_tasks[sid] = task
-
-        def _cleanup(_):
-            if self.proposal_cache_tasks.get(sid) is task:
-                self.proposal_cache_tasks.pop(sid, None)
-
-        task.add_done_callback(_cleanup)
-        return task
-
-    async def _cached_proposal_for_digit(
-        self,
-        *,
-        sid,
-        digit,
-        trade_no,
-        stake,
-        symbol,
-        currency,
-        client,
-        wait_seconds=0.18,
-    ):
-        """
-        Return the freshest cached proposal for rank #1.
-
-        A very short wait is allowed only when the cache build is already in
-        flight. No long proposal request is put on the tick-critical path.
-        """
-        sid = int(sid)
-        generation = int(
-            getattr(client, "connection_generation", 0) or 0
-        )
-
-        cache = self.proposal_caches.get(sid)
-        if not self._proposal_cache_matches(
-            cache,
-            trade_no=trade_no,
-            stake=stake,
-            symbol=symbol,
-            currency=currency,
-            generation=generation,
-        ):
-            task = self._start_proposal_cache_warm(
-                sid=sid,
-                user_id=None,
-                account_id=None,
-                symbol=symbol,
-                stake=stake,
-                trade_no=trade_no,
-                currency=currency,
-                client=client,
-            )
-            if task and wait_seconds > 0:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(task),
-                        timeout=float(wait_seconds),
-                    )
-                except (asyncio.TimeoutError, Exception):
-                    pass
-            cache = self.proposal_caches.get(sid)
-
-        if not self._proposal_cache_matches(
-            cache,
-            trade_no=trade_no,
-            stake=stake,
-            symbol=symbol,
-            currency=currency,
-            generation=generation,
-        ):
-            return None
-
-        payload = (cache.get("entries") or {}).get(int(digit))
-        if not payload:
-            event = cache.get("ready_event")
-            if event and wait_seconds > 0:
-                try:
-                    await asyncio.wait_for(
-                        event.wait(),
-                        timeout=float(wait_seconds),
-                    )
-                except asyncio.TimeoutError:
-                    pass
-            payload = (cache.get("entries") or {}).get(int(digit))
-
-        if not payload:
-            return None
-
-        # Copy: streaming callbacks may update the cache while BUY proceeds.
-        return dict(payload)
 
     async def _bootstrap_digit_history(
         self,
@@ -1125,13 +736,6 @@ class MultiUserEngine:
                     #
                     # Stop immediately. Do not wait for official settlement.
                     # Settlement remains active in the background.
-                    self.prefetched_recovery.pop(sid, None)
-                    await self._forget_proposal_cache(sid)
-
-                    prefetch_task = self.prefetch_tasks.pop(sid, None)
-                    if prefetch_task and not prefetch_task.done():
-                        prefetch_task.cancel()
-
                     s.running = False
                     s.paused = False
                     s.phase = "FAST_WON"
@@ -1146,13 +750,6 @@ class MultiUserEngine:
                 # This is the point where the next recovery advances. Official
                 # Deriv settlement of Trade N is NOT awaited.
                 if int(s.current_trade) >= int(s.max_trades):
-                    self.prefetched_recovery.pop(sid, None)
-                    await self._forget_proposal_cache(sid)
-
-                    prefetch_task = self.prefetch_tasks.pop(sid, None)
-                    if prefetch_task and not prefetch_task.done():
-                        prefetch_task.cancel()
-
                     s.running = False
                     s.phase = "MAX_TRADES_REACHED"
                     s.updated_at = datetime.utcnow()
@@ -1160,9 +757,8 @@ class MultiUserEngine:
                     return
 
                 # LIVE V1 RECOVERY:
-                # the next-loss proposal is prepared while the current contract
-                # is still active using the latest V1 rank #1 digit. The current
-                # purchased contract remains fixed; only the NEXT trade changes.
+                # the purchased contract remains fixed. After its loss, use the
+                # freshest current V1 rank #1 for the next direct DEMO BUY.
                 expected_trade_no = int(s.current_trade) + 1
                 expected_stake = round(
                     float(s.current_stake) * float(s.multiplier),
@@ -1356,12 +952,10 @@ class MultiUserEngine:
 
                 # Release only this exact persisted owner.
                 self.fast_contracts.pop(int(sid), None)
-                self.prefetched_recovery.pop(int(sid), None)
-                await self._forget_proposal_cache(int(sid))
-
-                prefetch = self.prefetch_tasks.pop(int(sid), None)
-                if prefetch and not prefetch.done():
-                    prefetch.cancel()
+                self.retired_fast_contracts.pop(
+                    (int(sid), str(contract_id)),
+                    None,
+                )
 
                 key = (int(sid), str(contract_id))
                 self.contract_probe_unsold.pop(key, None)
@@ -1882,6 +1476,7 @@ class MultiUserEngine:
         payload,
         *,
         prearmed: bool,
+        rate_retry_used: bool = False,
     ):
         if str(s.account_mode).upper() != "DEMO":
             raise RuntimeError(
@@ -1968,9 +1563,8 @@ class MultiUserEngine:
         except Exception as exc:
             text = str(exc).lower()
 
-            # RateLimit is an explicit Deriv rejection, not an ambiguous
-            # timeout. No contract_id was returned, so release this exact
-            # database claim and keep the DEMO session alive for a later tick.
+            # RateLimit is an explicit rejection, not an ambiguous timeout:
+            # no contract was purchased. Release the exact BUY claim.
             if "ratelimit" in text or "rate limit" in text:
                 row = (
                     db.query(TradingSession)
@@ -1978,6 +1572,7 @@ class MultiUserEngine:
                     .with_for_update()
                     .one_or_none()
                 )
+
                 if row and self._claim_is_owned(row, claim):
                     row.pending_trade_json = None
                     row.running = True
@@ -1988,11 +1583,79 @@ class MultiUserEngine:
                     )
                     row.updated_at = datetime.utcnow()
                     db.commit()
-                # Small bounded pause prevents immediate hammering. The same
-                # logical trade number remains available because current_trade
-                # was never incremented.
-                await asyncio.sleep(0.75)
-                return False
+
+                # The previous trade has already been decided locally. Move it
+                # out of the active strategy slot so it cannot strand the
+                # session in FAST_DECISION_APPLYING while settlement catches up.
+                prior = self.fast_contracts.get(int(s.id))
+                if prior and prior.get("decided"):
+                    prior_contract_id = str(prior.get("contract_id") or "")
+                    if prior_contract_id:
+                        self.retired_fast_contracts[
+                            (int(s.id), prior_contract_id)
+                        ] = dict(prior)
+                    self.fast_contracts.pop(int(s.id), None)
+
+                # Never hammer indefinitely. One explicit RateLimit can make one
+                # bounded retry after a short cooldown using the freshest V1 #1.
+                if rate_retry_used:
+                    return False
+
+                await asyncio.sleep(0.80)
+
+                fresh = (
+                    db.query(TradingSession)
+                    .filter(TradingSession.id == int(s.id))
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if (
+                    not fresh
+                    or not fresh.running
+                    or fresh.paused
+                    or int(fresh.current_trade or 0) + 1
+                    != int(claim["trade_no"])
+                ):
+                    if fresh:
+                        db.rollback()
+                    return False
+
+                fresh_digit, _ = self._choose_scored_digit(
+                    int(fresh.id),
+                    lock_target=True,
+                )
+                if fresh_digit is None:
+                    fresh.phase = "BUY_RATE_LIMIT_WAITING_RANK"
+                    fresh.updated_at = datetime.utcnow()
+                    db.commit()
+                    return False
+
+                fresh.candidate_digit = int(fresh_digit)
+                self._set_live_next_target(
+                    int(fresh.id),
+                    int(fresh_digit),
+                )
+                fresh.phase = "BUY_RATE_LIMIT_RETRY"
+                fresh.last_error = None
+                fresh.updated_at = datetime.utcnow()
+                db.commit()
+
+                retry_payload = self._direct_buy_payload(
+                    symbol=fresh.symbol,
+                    digit=int(fresh.candidate_digit),
+                    stake=float(fresh.current_stake),
+                    trade_no=int(claim["trade_no"]),
+                    currency=str(payload.get("currency") or "USD"),
+                )
+
+                return await self._execute_demo_buy(
+                    db,
+                    fresh,
+                    client,
+                    retry_payload,
+                    prearmed=prearmed,
+                    rate_retry_used=True,
+                )
 
             # Explicit stale proposal rejection means no contract was bought.
             # Refresh once. Generic timeout/network errors remain non-retriable.
@@ -2214,115 +1877,6 @@ class MultiUserEngine:
         )
 
         return True
-
-    async def _prefetch_next_recovery(
-        self,
-        *,
-        sid,
-        user_id,
-        account_id,
-        symbol,
-        digit,
-        next_stake,
-        next_trade_no,
-        owner_contract_id,
-        owner_trade_no,
-    ):
-        try:
-            client = await self._client(
-                user_id,
-                account_id,
-            )
-
-            db = SessionLocal()
-
-            try:
-                s = db.get(TradingSession, sid)
-
-                fast_owner = self.fast_contracts.get(sid)
-                if (
-                    not s
-                    or not s.running
-                    or not fast_owner
-                    or str(fast_owner.get("contract_id"))
-                    != str(owner_contract_id)
-                    or int(fast_owner.get("trade_no") or 0)
-                    != int(owner_trade_no)
-                    or int(s.current_trade or 0)
-                    != int(owner_trade_no)
-                ):
-                    return
-
-                currency = await self._currency_for(
-                    db,
-                    s,
-                )
-
-            finally:
-                db.close()
-
-            payload = await self._request_proposal_payload(
-                client,
-                symbol=symbol,
-                digit=digit,
-                stake=next_stake,
-                trade_no=next_trade_no,
-                currency=currency,
-            )
-
-            db = SessionLocal()
-
-            try:
-                s = db.get(TradingSession, sid)
-
-                # Keep the proposal while the same strategy-active trade
-                # still owns this session. Do NOT require open_contract_id:
-                # authoritative settlement may legitimately clear it before
-                # the local result path consumes this prefetch.
-                fast_owner = self.fast_contracts.get(sid)
-                if (
-                    s
-                    and s.running
-                    and fast_owner
-                    and str(fast_owner.get("contract_id"))
-                    == str(owner_contract_id)
-                    and int(fast_owner.get("trade_no") or 0)
-                    == int(owner_trade_no)
-                    and int(s.current_trade) + 1
-                    == int(next_trade_no)
-                ):
-                    payload["owner_contract_id"] = str(owner_contract_id)
-                    payload["owner_trade_no"] = int(owner_trade_no)
-                    self.prefetched_recovery[sid] = payload
-                    s.phase = "RECOVERY_PREARMED"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-            finally:
-                db.close()
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as exc:
-            # Prefetch failure is non-fatal, but keep it visible. Recovery stays
-            # in the fast pipeline and may make one serialized fallback request.
-            self.prefetched_recovery.pop(sid, None)
-            db = SessionLocal()
-            try:
-                s = db.get(TradingSession, sid)
-                if s and s.running:
-                    s.last_error = f"PREFETCH: {exc}"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-            finally:
-                db.close()
-
-        finally:
-            current = self.prefetch_tasks.get(sid)
-
-            if current is asyncio.current_task():
-                self.prefetch_tasks.pop(sid, None)
 
     async def _subscribe_open_contract(
         self,
@@ -2616,12 +2170,16 @@ class MultiUserEngine:
                 # Official settlement does NOT advance the strategy.
                 # It only verifies the already-made fast decision.
                 fast = self.fast_contracts.get(sid)
-
-                if (
+                if not (
                     fast
                     and str(fast.get("contract_id"))
                     == str(contract_id)
                 ):
+                    fast = self.retired_fast_contracts.get(
+                        (int(sid), str(contract_id))
+                    )
+
+                if fast:
                     official = (
                         "WIN"
                         if profit > 0
@@ -2710,6 +2268,13 @@ class MultiUserEngine:
 
                 s.updated_at = datetime.utcnow()
                 db.commit()
+
+                # Official settlement is now recorded; any retired fast-decision
+                # evidence for this exact contract is no longer needed.
+                self.retired_fast_contracts.pop(
+                    (int(sid), str(contract_id)),
+                    None,
+                )
 
             finally:
                 db.close()

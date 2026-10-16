@@ -11137,40 +11137,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-purple-300';
                     break;
 
-                case 'TOP4_REAL_PREPARING':
-                case 'TOP4_DEMO_PREPARING':
-                    result = 'TOP-4 PREPARING ⚡';
-                    status = 'Preparing four simultaneous DigitMatch contracts';
-                    action = phase.includes('REAL')
-                        ? 'REAL basket confirmed · preparing proposals and purchases'
-                        : 'Preparing DEMO Top-4 basket';
-                    resultClass = 'text-lg font-black text-amber-300';
-                    break;
-
-                case 'TOP4_REAL_OPEN':
-                case 'TOP4_DEMO_OPEN':
-                    result = 'TOP-4 OPEN ⚡';
-                    status = 'Four simultaneous DigitMatch contracts are open';
-                    action = 'Waiting for basket settlement';
-                    resultClass = 'text-lg font-black text-amber-300';
-                    break;
-
-                case 'TOP4_REAL_BASKET_WIN':
-                case 'TOP4_DEMO_BASKET_WIN':
-                    result = 'WIN ✅';
-                    status = 'Top-4 basket settled profitably';
-                    action = 'Basket complete';
-                    resultClass = 'text-lg font-black text-emerald-400';
-                    break;
-
-                case 'TOP4_REAL_BASKET_LOSS':
-                case 'TOP4_DEMO_BASKET_LOSS':
-                    result = 'LOSS ❌';
-                    status = 'Top-4 basket settled at a loss';
-                    action = 'Next recovery round is prepared · confirm it to continue';
-                    resultClass = 'text-lg font-black text-rose-400';
-                    break;
-
                 case 'WAITING_REAL_CONFIRMATION':
                     result = 'CONFIRM REQUIRED';
                     status = hasDigit
@@ -12678,7 +12644,7 @@ pollServerExecutionState();
         }
 
 
-        // Top-N / Top-4 execution removed from single-target build.
+        // Single-target server execution only.
 
 
         // In SERVER mode, the browser must never submit proposals/buys.
@@ -13353,7 +13319,7 @@ window.isBotRunning = true;
         document.addEventListener('click', (event) => {
             try {
                 const target = event.target?.closest?.(
-                    '#toggleButton, #soundToggle, #serverRealConfirmBtn, button'
+                    '#toggleButton, #soundToggle, button'
                 );
                 if (!target || !window.soundEnabled) return;
                 initTone();
@@ -14790,36 +14756,6 @@ window.isBotRunning = true;
 })();
 </script>
 
-
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    const topNInput = document.getElementById('serverTopNCount');
-    const stakeInput = document.getElementById('serverTopNStake');
-
-    topNInput?.addEventListener('input', () => {
-        const stakeInput = document.getElementById('serverTopNStake');
-        if (stakeInput) {
-            stakeInput.readOnly = Number(topNInput.value || 4) === 4;
-        }
-        try { syncServerTopNMinimumStake(); } catch (_) {}
-        try { renderServerTopNReadiness(); } catch (_) {}
-        try {
-            renderServerTopNRecovery(
-                window.SERVER_EXECUTION?.topNRecovery || null
-            );
-        } catch (_) {}
-    });
-
-    stakeInput?.addEventListener('input', () => {
-        try { renderServerTopNReadiness(); } catch (_) {}
-    });
-
-    setTimeout(() => {
-        try { syncServerTopNMinimumStake(); } catch (_) {}
-        try { renderServerTopNReadiness(); } catch (_) {}
-    }, 500);
-});
-</script>
 
 </body>
 </html>
