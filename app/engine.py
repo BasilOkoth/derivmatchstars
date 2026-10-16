@@ -22,9 +22,10 @@ class MultiUserEngine:
     DigitMatchStar DEMO low-latency engine.
 
     Strategy invariant:
-      1. Buy Trade N.
-      2. The first eligible live tick after the trade is armed drives the
-         immediate strategy decision:
+      1. Rank and submit BUY for Trade N.
+      2. Arm Trade N only after Deriv acknowledges the BUY.
+      3. The first genuinely new server tick after that BUY acknowledgment
+         drives the immediate strategy decision:
             target digit == tick last digit -> WIN -> stop immediately
             target digit != tick last digit -> LOSS -> advance immediately
       3. After each tick, the freshest V1 rank #1 is selected.
@@ -628,15 +629,31 @@ class MultiUserEngine:
     ):
         tick = data.get("tick") or {}
 
-        tick_seq = int(self.tick_sequence.get(sid, 0))
-        if tick:
-            tick_seq += 1
+        # Replayed cached ticks already carry _dms_seq and MUST NOT allocate
+        # a second market sequence number. Only a genuinely new websocket
+        # callback advances tick_sequence.
+        existing_seq = int(tick.get("_dms_seq") or 0) if tick else 0
+        current_seq = int(self.tick_sequence.get(sid, 0))
+
+        if tick and existing_seq:
+            tick_seq = int(existing_seq)
+            if tick_seq > current_seq:
+                self.tick_sequence[sid] = tick_seq
+            is_replay = True
+        elif tick:
+            tick_seq = current_seq + 1
             self.tick_sequence[sid] = tick_seq
+            tick["_dms_seq"] = int(tick_seq)
             self.latest_tick_received_at[sid] = time.monotonic()
+            is_replay = False
+        else:
+            tick_seq = current_seq
+            is_replay = False
 
         epoch = int(tick.get("epoch") or 0)
 
-        if tick:
+        # Only a new market callback may replace latest_ticks.
+        if tick and not is_replay:
             cached = dict(tick)
             cached["_dms_seq"] = int(tick_seq)
             self.latest_ticks[sid] = cached
@@ -654,8 +671,11 @@ class MultiUserEngine:
 
             last_scored_seq = int(self._last_scored_seq.get(sid, 0))
 
-            # Score every distinct tick callback, not every distinct second.
-            if not tick_seq or tick_seq > last_scored_seq:
+            # Score each real market sequence exactly once.
+            if (
+                not is_replay
+                and (not tick_seq or tick_seq > last_scored_seq)
+            ):
                 history.append(int(digit))
                 if tick_seq:
                     self._last_scored_seq[sid] = int(tick_seq)
@@ -1512,10 +1532,10 @@ class MultiUserEngine:
         s.updated_at = datetime.utcnow()
         db.commit()
 
-        armed_after_epoch = int(
+        buy_sent_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
         )
-        armed_after_seq = int(
+        buy_sent_after_seq = int(
             self.tick_sequence.get(s.id, 0)
         )
 
@@ -1726,6 +1746,11 @@ class MultiUserEngine:
 
         contract_id = str(buy["contract_id"])
 
+        # Arm only AFTER Deriv acknowledges the BUY. Any ticks received while
+        # the BUY request was in flight are excluded from local WIN/LOSS.
+        buy_ack_seq = int(self.tick_sequence.get(s.id, 0))
+        buy_ack_epoch = int(self.latest_tick_epoch.get(s.id) or 0)
+
         # Lock the row again and prove that this process still owns the exact
         # claim before committing the purchased contract into the cycle.
         row = (
@@ -1799,6 +1824,11 @@ class MultiUserEngine:
                         "buy_claim_token": claim["token"],
                         "claimed_trade_no": claim["trade_no"],
                         "prearmed": bool(prearmed),
+                        "buy_sent_after_seq": int(buy_sent_after_seq),
+                        "buy_sent_after_epoch": int(buy_sent_after_epoch),
+                        "buy_ack_seq": int(buy_ack_seq),
+                        "buy_ack_epoch": int(buy_ack_epoch),
+                        "arming_policy": "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK",
                     },
                 }),
             )
@@ -1807,12 +1837,13 @@ class MultiUserEngine:
         purchase_epoch = int(
             buy.get("start_time")
             or buy.get("purchase_time")
-            or armed_after_epoch
+            or buy_ack_epoch
             or 0
         )
 
+        # Exact callback sequence is authoritative for local fast ownership.
         decision_after_epoch = max(
-            armed_after_epoch,
+            buy_ack_epoch,
             purchase_epoch,
         )
 
@@ -1822,7 +1853,9 @@ class MultiUserEngine:
             "symbol": str(row.symbol),
             "trade_no": int(payload["trade_no"]),
             "armed_after_epoch": decision_after_epoch,
-            "armed_after_seq": int(armed_after_seq),
+            "armed_after_seq": int(buy_ack_seq),
+            "buy_sent_after_seq": int(buy_sent_after_seq),
+            "buy_ack_seq": int(buy_ack_seq),
             "score_evidence": score_evidence,
             "buy_claim_token": claim["token"],
             "instance_id": self.instance_id,
@@ -1843,28 +1876,9 @@ class MultiUserEngine:
 
         # Direct-buy build: no per-trade proposal cache to rebuild.
 
-        cached_tick = self.latest_ticks.get(s.id)
-
-        if cached_tick:
-            cached_seq = int(cached_tick.get("_dms_seq") or 0)
-            cached_epoch = int(cached_tick.get("epoch") or 0)
-
-            cached_is_newer = (
-                cached_seq > int(armed_after_seq)
-                if cached_seq
-                else cached_epoch > decision_after_epoch
-            )
-
-            if cached_is_newer:
-                asyncio.create_task(
-                    self._handle_strategy_tick(
-                        sid=s.id,
-                        user_id=s.user_id,
-                        account_id=s.account_id,
-                        symbol=str(s.symbol),
-                        data={"tick": dict(cached_tick)},
-                    )
-                )
+        # Do not replay ticks received while BUY was in flight.
+        # The first genuinely new live server tick after buy_ack_seq is the
+        # only tick eligible to decide this locally armed contract.
 
         asyncio.create_task(
             self._subscribe_open_contract(
