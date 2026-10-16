@@ -67,9 +67,26 @@ class MultiUserEngine:
         self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
         self.contract_poll_tasks = {}  # fallback only
 
-        # One pre-armed recovery proposal per session.
+        # Legacy single-digit prefetch remains as a fallback only.
         self.prefetched_recovery = {}  # sid -> payload
         self.prefetch_tasks = {}  # sid -> asyncio.Task
+
+        # 0-9 streaming proposal cache for the NEXT logical trade.
+        #
+        # Each cache is stake-specific and connection-generation-specific:
+        # {
+        #   "trade_no": int,
+        #   "stake": float,
+        #   "symbol": str,
+        #   "currency": str,
+        #   "generation": int,
+        #   "entries": {digit: payload},
+        #   "subscriptions": {digit: subscription_id},
+        #   "ready_event": asyncio.Event(),
+        # }
+        self.proposal_caches = {}
+        self.proposal_cache_tasks = {}
+        self.proposal_cache_specs = {}
 
         # Latest live V1 rank #1 for the NEXT trade.
         # This may change while a purchased contract is open; the purchased
@@ -405,6 +422,372 @@ class MultiUserEngine:
             },
         }
 
+    @staticmethod
+    def _proposal_cache_payload(data, *, digit, stake, trade_no, currency, generation):
+        p = (data or {}).get("proposal") or {}
+        proposal_id = p.get("id")
+        if not proposal_id:
+            return None
+
+        ask_price = p.get("ask_price")
+        payout = p.get("payout")
+
+        try:
+            ask_price = float(ask_price)
+            payout = float(payout)
+        except (TypeError, ValueError):
+            return None
+
+        if ask_price <= 0 or payout <= 0:
+            return None
+
+        return {
+            "proposal_id": str(proposal_id),
+            "ask_price": ask_price,
+            "payout": payout,
+            "digit": int(digit),
+            "stake": round(float(stake), 2),
+            "trade_no": int(trade_no),
+            "currency": str(currency or "USD").upper(),
+            "connection_generation": int(generation or 0),
+            "cached_at": time.monotonic(),
+            "cache_source": "STREAM_0_9",
+        }
+
+    def _proposal_cache_matches(
+        self,
+        cache,
+        *,
+        trade_no,
+        stake,
+        symbol,
+        currency,
+        generation,
+    ):
+        if not cache:
+            return False
+
+        return bool(
+            int(cache.get("trade_no") or 0) == int(trade_no)
+            and abs(float(cache.get("stake") or 0) - round(float(stake), 2)) <= 0.005
+            and str(cache.get("symbol") or "") == str(symbol)
+            and str(cache.get("currency") or "").upper() == str(currency or "USD").upper()
+            and int(cache.get("generation") or 0) == int(generation or 0)
+        )
+
+    async def _forget_proposal_cache(self, sid: int, client=None):
+        cache = self.proposal_caches.pop(int(sid), None)
+        self.proposal_cache_specs.pop(int(sid), None)
+
+        if not cache:
+            return
+
+        if client is None:
+            user_id = cache.get("user_id")
+            account_id = cache.get("account_id")
+            if user_id and account_id:
+                client = self.clients.get((user_id, account_id))
+
+        if client:
+            for sub_id in list((cache.get("subscriptions") or {}).values()):
+                if sub_id:
+                    asyncio.create_task(
+                        self._forget_quietly(client, str(sub_id))
+                    )
+
+    async def _build_proposal_cache(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        stake,
+        trade_no,
+        currency,
+        client,
+    ):
+        """
+        Build ten live proposal streams (digits 0-9) for one exact
+        trade_no/stake combination.
+
+        Proposal updates continuously replace entries[digit], so selecting a
+        different V1 rank #1 does not require a new proposal request.
+        """
+        sid = int(sid)
+        generation = int(
+            getattr(client, "connection_generation", 0) or 0
+        )
+        spec = (
+            int(trade_no),
+            round(float(stake), 2),
+            str(symbol),
+            str(currency or "USD").upper(),
+            generation,
+        )
+
+        existing = self.proposal_caches.get(sid)
+        if self._proposal_cache_matches(
+            existing,
+            trade_no=trade_no,
+            stake=stake,
+            symbol=symbol,
+            currency=currency,
+            generation=generation,
+        ):
+            return existing
+
+        await self._forget_proposal_cache(sid, client=client)
+
+        cache = {
+            "trade_no": int(trade_no),
+            "stake": round(float(stake), 2),
+            "symbol": str(symbol),
+            "currency": str(currency or "USD").upper(),
+            "generation": generation,
+            "entries": {},
+            "subscriptions": {},
+            "ready_event": asyncio.Event(),
+            "created_at": time.monotonic(),
+            "user_id": user_id,
+            "account_id": account_id,
+        }
+        self.proposal_caches[sid] = cache
+        self.proposal_cache_specs[sid] = spec
+
+        async def subscribe_digit(digit: int):
+            async def on_proposal(data: dict):
+                current = self.proposal_caches.get(sid)
+                if current is not cache:
+                    return
+
+                # Ignore updates from a replaced/reconnected socket.
+                if int(
+                    getattr(client, "connection_generation", 0) or 0
+                ) != generation:
+                    return
+
+                payload = self._proposal_cache_payload(
+                    data,
+                    digit=digit,
+                    stake=stake,
+                    trade_no=trade_no,
+                    currency=currency,
+                    generation=generation,
+                )
+                if not payload:
+                    return
+
+                current["entries"][int(digit)] = payload
+
+                if len(current["entries"]) >= 10:
+                    current["ready_event"].set()
+
+            sub_id, initial = await client.subscribe_proposal_digitmatch(
+                symbol=str(symbol),
+                digit=int(digit),
+                amount=float(stake),
+                duration=1,
+                currency=str(currency or "USD").upper(),
+                callback=on_proposal,
+            )
+
+            current = self.proposal_caches.get(sid)
+            if current is not cache:
+                asyncio.create_task(
+                    self._forget_quietly(client, sub_id)
+                )
+                return
+
+            current["subscriptions"][int(digit)] = str(sub_id)
+
+            # The first response is returned directly by request(); subscription
+            # callbacks handle subsequent streamed updates.
+            await on_proposal(initial)
+
+        results = await asyncio.gather(
+            *(subscribe_digit(d) for d in range(10)),
+            return_exceptions=True,
+        )
+
+        errors = [
+            str(result)
+            for result in results
+            if isinstance(result, Exception)
+        ]
+
+        current = self.proposal_caches.get(sid)
+        if current is cache:
+            cache["build_errors"] = errors
+            cache["ready_count"] = len(cache["entries"])
+            if len(cache["entries"]) >= 10:
+                cache["ready_event"].set()
+
+        logger.warning(
+            "DMS proposal cache built sid=%s trade=%s stake=%.2f "
+            "ready=%s/10 errors=%s",
+            sid,
+            trade_no,
+            float(stake),
+            len(cache["entries"]),
+            len(errors),
+        )
+
+        return cache
+
+    def _start_proposal_cache_warm(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        stake,
+        trade_no,
+        currency,
+        client,
+    ):
+        """
+        Start warming the full 0-9 cache without blocking the current contract.
+        """
+        sid = int(sid)
+        generation = int(
+            getattr(client, "connection_generation", 0) or 0
+        )
+        spec = (
+            int(trade_no),
+            round(float(stake), 2),
+            str(symbol),
+            str(currency or "USD").upper(),
+            generation,
+        )
+
+        cache = self.proposal_caches.get(sid)
+        if self._proposal_cache_matches(
+            cache,
+            trade_no=trade_no,
+            stake=stake,
+            symbol=symbol,
+            currency=currency,
+            generation=generation,
+        ):
+            return self.proposal_cache_tasks.get(sid)
+
+        current_task = self.proposal_cache_tasks.get(sid)
+        if (
+            current_task
+            and not current_task.done()
+            and self.proposal_cache_specs.get(sid) == spec
+        ):
+            return current_task
+
+        if current_task and not current_task.done():
+            current_task.cancel()
+
+        self.proposal_cache_specs[sid] = spec
+
+        task = asyncio.create_task(
+            self._build_proposal_cache(
+                sid=sid,
+                user_id=user_id,
+                account_id=account_id,
+                symbol=symbol,
+                stake=stake,
+                trade_no=trade_no,
+                currency=currency,
+                client=client,
+            )
+        )
+        self.proposal_cache_tasks[sid] = task
+
+        def _cleanup(_):
+            if self.proposal_cache_tasks.get(sid) is task:
+                self.proposal_cache_tasks.pop(sid, None)
+
+        task.add_done_callback(_cleanup)
+        return task
+
+    async def _cached_proposal_for_digit(
+        self,
+        *,
+        sid,
+        digit,
+        trade_no,
+        stake,
+        symbol,
+        currency,
+        client,
+        wait_seconds=0.18,
+    ):
+        """
+        Return the freshest cached proposal for rank #1.
+
+        A very short wait is allowed only when the cache build is already in
+        flight. No long proposal request is put on the tick-critical path.
+        """
+        sid = int(sid)
+        generation = int(
+            getattr(client, "connection_generation", 0) or 0
+        )
+
+        cache = self.proposal_caches.get(sid)
+        if not self._proposal_cache_matches(
+            cache,
+            trade_no=trade_no,
+            stake=stake,
+            symbol=symbol,
+            currency=currency,
+            generation=generation,
+        ):
+            task = self._start_proposal_cache_warm(
+                sid=sid,
+                user_id=None,
+                account_id=None,
+                symbol=symbol,
+                stake=stake,
+                trade_no=trade_no,
+                currency=currency,
+                client=client,
+            )
+            if task and wait_seconds > 0:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=float(wait_seconds),
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            cache = self.proposal_caches.get(sid)
+
+        if not self._proposal_cache_matches(
+            cache,
+            trade_no=trade_no,
+            stake=stake,
+            symbol=symbol,
+            currency=currency,
+            generation=generation,
+        ):
+            return None
+
+        payload = (cache.get("entries") or {}).get(int(digit))
+        if not payload:
+            event = cache.get("ready_event")
+            if event and wait_seconds > 0:
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=float(wait_seconds),
+                    )
+                except asyncio.TimeoutError:
+                    pass
+            payload = (cache.get("entries") or {}).get(int(digit))
+
+        if not payload:
+            return None
+
+        # Copy: streaming callbacks may update the cache while BUY proceeds.
+        return dict(payload)
+
     async def _bootstrap_digit_history(
         self,
         *,
@@ -721,6 +1104,7 @@ class MultiUserEngine:
                     # Stop immediately. Do not wait for official settlement.
                     # Settlement remains active in the background.
                     self.prefetched_recovery.pop(sid, None)
+                    await self._forget_proposal_cache(sid)
 
                     prefetch_task = self.prefetch_tasks.pop(sid, None)
                     if prefetch_task and not prefetch_task.done():
@@ -741,6 +1125,7 @@ class MultiUserEngine:
                 # Deriv settlement of Trade N is NOT awaited.
                 if int(s.current_trade) >= int(s.max_trades):
                     self.prefetched_recovery.pop(sid, None)
+                    await self._forget_proposal_cache(sid)
 
                     prefetch_task = self.prefetch_tasks.pop(sid, None)
                     if prefetch_task and not prefetch_task.done():
@@ -762,18 +1147,11 @@ class MultiUserEngine:
                     2,
                 )
 
-                payload = self.prefetched_recovery.pop(sid, None)
-
-                # Wait only for the single already-started prefetch. Never launch
-                # a duplicate proposal in parallel.
-                if not payload:
-                    prefetch_task = self.prefetch_tasks.get(sid)
-                    if prefetch_task and not prefetch_task.done():
-                        try:
-                            await asyncio.shield(prefetch_task)
-                        except Exception:
-                            pass
-                        payload = self.prefetched_recovery.pop(sid, None)
+                # The 0-9 cache was warmed while the current contract was open.
+                # Selection happens AFTER this decision tick is scored, so the
+                # freshest live V1 rank #1 can be bought without requesting a
+                # new proposal on the critical path.
+                payload = None
 
                 # The latest V1 rank #1 is the authoritative NEXT target.
                 # A proposal armed for an older #1 is stale and is never bought.
@@ -807,45 +1185,44 @@ class MultiUserEngine:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                valid_prefetch = bool(
-                    payload
-                    and int(payload.get("trade_no") or 0)
-                    == expected_trade_no
-                    and int(payload.get("digit"))
-                    == int(s.candidate_digit)
-                    and abs(
-                        float(payload.get("stake") or 0)
-                        - float(s.current_stake)
-                    ) <= 0.005
+                client = await self._client(user_id, account_id)
+                currency = await self._currency_for(db, s)
+
+                payload = await self._cached_proposal_for_digit(
+                    sid=sid,
+                    digit=int(s.candidate_digit),
+                    trade_no=expected_trade_no,
+                    stake=float(s.current_stake),
+                    symbol=s.symbol,
+                    currency=currency,
+                    client=client,
+                    wait_seconds=0.18,
                 )
 
-                if not valid_prefetch:
-                    # Exceptional fallback: rescore NOW and use the current live
-                    # V1 rank #1. This is the only path allowed to make a fresh
-                    # proposal after a loss.
-                    s.phase = "FAST_RECOVERY_PREFETCH_MISSED"
+                if payload:
+                    s.phase = "CACHE_HIT_BUYING"
+                    s.last_error = None
                     s.updated_at = datetime.utcnow()
                     db.commit()
-
-                    new_digit, _ = self._choose_scored_digit(
-                        sid,
-                        lock_target=True,
+                else:
+                    # The cache should normally be ready because all 10 streams
+                    # were started immediately after the previous BUY. If Deriv
+                    # rate-limits or a socket reconnect occurs, preserve
+                    # correctness by requesting rank #1 directly rather than
+                    # buying a stale/wrong-digit proposal.
+                    s.phase = "CACHE_MISS_FALLBACK"
+                    s.last_error = (
+                        f"0-9 proposal cache miss for trade {expected_trade_no} "
+                        f"digit {s.candidate_digit}; using serialized fallback"
                     )
-                    if new_digit is not None:
-                        s.candidate_digit = int(new_digit)
-                        self._set_live_next_target(
-                            sid,
-                            int(new_digit),
-                        )
-
-                    currency = await self._currency_for(db, s)
-                    client = await self._client(user_id, account_id)
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
 
                     payload = await self._request_proposal_payload(
                         client,
                         symbol=s.symbol,
-                        digit=s.candidate_digit,
-                        stake=s.current_stake,
+                        digit=int(s.candidate_digit),
+                        stake=float(s.current_stake),
                         trade_no=expected_trade_no,
                         currency=currency,
                     )
@@ -982,6 +1359,7 @@ class MultiUserEngine:
                 # Release only this exact persisted owner.
                 self.fast_contracts.pop(int(sid), None)
                 self.prefetched_recovery.pop(int(sid), None)
+                await self._forget_proposal_cache(int(sid))
 
                 prefetch = self.prefetch_tasks.pop(int(sid), None)
                 if prefetch and not prefetch.done():
@@ -1374,27 +1752,72 @@ class MultiUserEngine:
 
                 currency = await self._currency_for(db, s)
 
-                # Normal first trade of the cycle. Recovery trades normally use
-                # the pre-armed path directly from _handle_strategy_tick().
-                s.phase = "REQUESTING_PROPOSAL"
+                # First trade: warm the full 0-9 cache once, then consume the
+                # proposal matching the current rank #1. This can take a moment
+                # only at cycle start; subsequent recovery caches are warmed
+                # while the previous 1-tick contract is open.
+                s.phase = "WARMING_0_9_PROPOSAL_CACHE"
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                try:
+                task = self._start_proposal_cache_warm(
+                    sid=s.id,
+                    user_id=s.user_id,
+                    account_id=s.account_id,
+                    symbol=s.symbol,
+                    stake=float(s.current_stake),
+                    trade_no=int(s.current_trade) + 1,
+                    currency=currency,
+                    client=client,
+                )
+
+                if task:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(task),
+                            timeout=3.0,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+
+                # Re-score at the last possible moment so Trade 1 also uses the
+                # freshest rank #1 after cache warming.
+                scored_digit, snapshot = self._choose_scored_digit(
+                    s.id,
+                    lock_target=True,
+                )
+                if scored_digit is not None:
+                    s.candidate_digit = int(scored_digit)
+                    self._set_live_next_target(
+                        s.id,
+                        int(scored_digit),
+                    )
+                    db.commit()
+
+                payload = await self._cached_proposal_for_digit(
+                    sid=s.id,
+                    digit=int(s.candidate_digit),
+                    trade_no=int(s.current_trade) + 1,
+                    stake=float(s.current_stake),
+                    symbol=s.symbol,
+                    currency=currency,
+                    client=client,
+                    wait_seconds=0.25,
+                )
+
+                if not payload:
+                    s.phase = "CACHE_MISS_FIRST_TRADE"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                     payload = await self._request_proposal_payload(
                         client,
                         symbol=s.symbol,
-                        digit=s.candidate_digit,
-                        stake=s.current_stake,
-                        trade_no=s.current_trade + 1,
+                        digit=int(s.candidate_digit),
+                        stake=float(s.current_stake),
+                        trade_no=int(s.current_trade) + 1,
                         currency=currency,
                     )
-                except Exception as exc:
-                    raise RuntimeError(
-                        "PROPOSAL "
-                        f"[{s.symbol}/{currency}/digit {s.candidate_digit}]: "
-                        f"{exc}"
-                    ) from exc
 
                 await self._execute_demo_buy(
                     db,
@@ -1753,53 +2176,28 @@ class MultiUserEngine:
         # Rebind local reference after commit.
         s = db.get(TradingSession, row.id)
 
-        # PRE-ARM FIRST: always use the freshest V1 rank #1 as the NEXT
-        # target if the current contract loses. This keeps the network proposal
-        # outside the result-critical path while allowing target changes every loss.
+        # The cache used for this BUY is no longer needed. Forget all of
+        # its proposal streams, then immediately warm 0-9 for the NEXT trade.
+        await self._forget_proposal_cache(s.id, client=client)
+
         if s.current_trade < s.max_trades:
-            existing = self.prefetch_tasks.get(s.id)
+            next_stake = round(
+                float(s.current_stake) * float(s.multiplier),
+                2,
+            )
+            next_trade_no = int(s.current_trade) + 1
+            currency = await self._currency_for(db, s)
 
-            if not existing or existing.done():
-                planned_digit = self.live_next_target.get(s.id)
-
-                if planned_digit is None:
-                    candidate, _snapshot = self._choose_scored_digit(
-                        s.id,
-                        lock_target=True,
-                    )
-                    if candidate is not None:
-                        planned_digit = int(candidate)
-                        self._set_live_next_target(
-                            s.id,
-                            planned_digit,
-                        )
-
-                if planned_digit is None:
-                    planned_digit = int(s.candidate_digit)
-
-                planned_digit = int(planned_digit)
-
-                next_stake = round(
-                    float(s.current_stake)
-                    * float(s.multiplier),
-                    2,
-                )
-                next_trade_no = int(s.current_trade) + 1
-
-                task = asyncio.create_task(
-                    self._prefetch_next_recovery(
-                        sid=s.id,
-                        user_id=s.user_id,
-                        account_id=s.account_id,
-                        symbol=s.symbol,
-                        digit=planned_digit,
-                        next_stake=next_stake,
-                        next_trade_no=next_trade_no,
-                        owner_contract_id=contract_id,
-                        owner_trade_no=int(s.current_trade),
-                    )
-                )
-                self.prefetch_tasks[s.id] = task
+            self._start_proposal_cache_warm(
+                sid=s.id,
+                user_id=s.user_id,
+                account_id=s.account_id,
+                symbol=s.symbol,
+                stake=next_stake,
+                trade_no=next_trade_no,
+                currency=currency,
+                client=client,
+            )
 
         cached_tick = self.latest_ticks.get(s.id)
 

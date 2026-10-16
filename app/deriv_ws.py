@@ -314,6 +314,53 @@ class DerivWS:
 
                     raise
 
+    async def subscribe_proposal_digitmatch(
+        self,
+        symbol: str,
+        digit: int,
+        amount: float,
+        callback: MessageCallback,
+        duration: int = 1,
+        currency: str = "USD",
+    ):
+        """
+        Stream a live DIGITMATCH proposal for one digit/stake.
+
+        Unlike proposal_digitmatch(), this is intentionally subscription-based:
+        the server keeps sending fresh proposal IDs/prices until `forget()` is
+        called. The engine uses one stream per digit to maintain a 0-9 cache.
+
+        This method does not bypass BUY safety: buy() remains DEMO-only.
+        """
+        payload = {
+            "proposal": 1,
+            "amount": round(float(amount), 2),
+            "basis": "stake",
+            "contract_type": "DIGITMATCH",
+            "currency": str(currency or "USD").upper(),
+            "duration": int(duration),
+            "duration_unit": "t",
+            "barrier": str(int(digit)),
+            "underlying_symbol": str(symbol),
+            "subscribe": 1,
+        }
+
+        data = await self.request(
+            payload,
+            subscription_callback=callback,
+        )
+
+        sub_id = (data.get("subscription") or {}).get("id")
+        if not sub_id:
+            req_id = data.get("req_id")
+            if req_id is not None:
+                self.pending_subscription_callbacks.pop(req_id, None)
+            raise RuntimeError(
+                f"Deriv returned no proposal subscription id for digit {digit}"
+            )
+
+        return str(sub_id), data
+
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
             raise RuntimeError(
