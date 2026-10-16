@@ -92,6 +92,12 @@ class MultiUserEngine:
         # Useful for detecting overlapping Render instances during deploy/restart.
         self.instance_id = uuid.uuid4().hex[:12]
 
+        # BUY RateLimit protection. The worker loop runs very frequently, so a
+        # rejected BUY must create a real cooldown barrier; otherwise the next
+        # worker pass can immediately hammer the same logical trade again.
+        self.buy_rate_limit_until = {}   # sid -> monotonic deadline
+        self.buy_rate_limit_streak = {}  # sid -> consecutive explicit rejects
+
     async def start(self):
         if not self.task or self.task.done():
             self.task = asyncio.create_task(self.run_forever())
@@ -1142,6 +1148,22 @@ class MultiUserEngine:
                 if not s or not s.running or s.paused:
                     return
 
+                # Explicit Deriv RateLimit means no contract was purchased.
+                # Hold the SAME logical next trade/stake until the cooldown
+                # expires. This prevents the 20ms worker loop from immediately
+                # re-entering BUY and extending the throttle.
+                rate_until = float(
+                    self.buy_rate_limit_until.get(int(sid), 0.0) or 0.0
+                )
+                now_mono = time.monotonic()
+                if rate_until > now_mono:
+                    s.phase = "BUY_RATE_LIMIT_BACKOFF"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+                elif rate_until:
+                    self.buy_rate_limit_until.pop(int(sid), None)
+
                 if s.last_error:
                     # Clear ordinary stale errors once the worker is healthy.
                     # Keep reconciliation mismatches visible.
@@ -1639,66 +1661,33 @@ class MultiUserEngine:
                         ] = dict(prior)
                     self.fast_contracts.pop(int(s.id), None)
 
-                # Never hammer indefinitely. One explicit RateLimit can make one
-                # bounded retry after a short cooldown using the freshest V1 #1.
-                if rate_retry_used:
-                    return False
-
-                await asyncio.sleep(0.80)
-
-                fresh = (
-                    db.query(TradingSession)
-                    .filter(TradingSession.id == int(s.id))
-                    .with_for_update()
-                    .one_or_none()
+                # Create a real cooldown barrier. Do NOT recurse into another
+                # BUY here: the worker loop itself will resume the SAME logical
+                # trade once the deadline expires, using the freshest V1 #1.
+                sid_int = int(s.id)
+                streak = min(
+                    int(self.buy_rate_limit_streak.get(sid_int, 0)) + 1,
+                    5,
                 )
-                if (
-                    not fresh
-                    or not fresh.running
-                    or fresh.paused
-                    or int(fresh.current_trade or 0) + 1
-                    != int(claim["trade_no"])
-                ):
-                    if fresh:
-                        db.rollback()
-                    return False
+                self.buy_rate_limit_streak[sid_int] = streak
 
-                fresh_digit, _ = self._choose_scored_digit(
-                    int(fresh.id),
-                    lock_target=True,
+                backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0)
+                cooldown = float(backoff_table[streak - 1])
+                self.buy_rate_limit_until[sid_int] = (
+                    time.monotonic() + cooldown
                 )
-                if fresh_digit is None:
-                    fresh.phase = "BUY_RATE_LIMIT_WAITING_RANK"
-                    fresh.updated_at = datetime.utcnow()
+
+                row = db.get(TradingSession, sid_int)
+                if row:
+                    row.phase = "BUY_RATE_LIMIT_BACKOFF"
+                    row.last_error = (
+                        f"BUY_RATE_LIMIT trade {claim['trade_no']}: "
+                        f"retry after {cooldown:.1f}s · {exc}"
+                    )
+                    row.updated_at = datetime.utcnow()
                     db.commit()
-                    return False
 
-                fresh.candidate_digit = int(fresh_digit)
-                self._set_live_next_target(
-                    int(fresh.id),
-                    int(fresh_digit),
-                )
-                fresh.phase = "BUY_RATE_LIMIT_RETRY"
-                fresh.last_error = None
-                fresh.updated_at = datetime.utcnow()
-                db.commit()
-
-                retry_payload = self._direct_buy_payload(
-                    symbol=fresh.symbol,
-                    digit=int(fresh.candidate_digit),
-                    stake=float(fresh.current_stake),
-                    trade_no=int(claim["trade_no"]),
-                    currency=str(payload.get("currency") or "USD"),
-                )
-
-                return await self._execute_demo_buy(
-                    db,
-                    fresh,
-                    client,
-                    retry_payload,
-                    prearmed=prearmed,
-                    rate_retry_used=True,
-                )
+                return False
 
             # Explicit stale proposal rejection means no contract was bought.
             # Refresh once. Generic timeout/network errors remain non-retriable.
@@ -1768,6 +1757,10 @@ class MultiUserEngine:
             )
 
         contract_id = str(buy["contract_id"])
+
+        # A confirmed BUY proves the throttle window has cleared.
+        self.buy_rate_limit_until.pop(int(s.id), None)
+        self.buy_rate_limit_streak.pop(int(s.id), None)
 
         # Arm only AFTER Deriv acknowledges the BUY. Any ticks received while
         # the BUY request was in flight are excluded from local WIN/LOSS.
