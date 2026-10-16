@@ -2155,10 +2155,15 @@ class MultiUserEngine:
                     and str(log.status).upper() == "SETTLED"
                 ):
                     active_fast = self.fast_contracts.get(sid)
+
+                    # Settlement can arrive before the market-tick callback
+                    # gets CPU time. Keep an UNDECIDED fast owner alive so the
+                    # exact strategy tick can still register WIN/LOSS.
                     if (
                         active_fast
                         and str(active_fast.get("contract_id") or "")
                         == str(contract_id)
+                        and bool(active_fast.get("decided"))
                     ):
                         self.fast_contracts.pop(sid, None)
 
@@ -2330,14 +2335,17 @@ class MultiUserEngine:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                # Official settlement is now recorded. Release process-local
-                # ownership for this exact contract. A newer active contract,
-                # if any, must never be removed by an older settlement.
+                # Official settlement is now recorded. Do NOT remove a
+                # matching active fast owner until its local next-tick decision
+                # has actually been made. Settlement and tick callbacks are
+                # asynchronous; settlement can otherwise win the scheduling
+                # race and suppress a genuine digit match.
                 active_fast = self.fast_contracts.get(sid)
                 if (
                     active_fast
                     and str(active_fast.get("contract_id") or "")
                     == str(contract_id)
+                    and bool(active_fast.get("decided"))
                 ):
                     self.fast_contracts.pop(sid, None)
 
