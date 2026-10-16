@@ -50,6 +50,12 @@ class DerivWS:
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
 
+        # Direct-buy pacing. The bot normally sees ~1-2 ticks/sec; 480 ms keeps
+        # BUY bursts bounded without materially slowing R_10.
+        self._buy_lock = asyncio.Lock()
+        self._last_buy_at = 0.0
+        self._buy_min_interval = 0.48
+
     def is_open(self) -> bool:
         if not self.ws:
             return False
@@ -360,6 +366,58 @@ class DerivWS:
             )
 
         return str(sub_id), data
+
+    async def buy_digitmatch_direct(
+        self,
+        *,
+        symbol: str,
+        digit: int,
+        amount: float,
+        currency: str = "USD",
+        duration: int = 1,
+        demo: bool = False,
+    ):
+        """
+        Buy DIGITMATCH directly from contract parameters.
+
+        This removes the proposal request from the tick-critical path and is
+        DEMO-only. A small pacing guard prevents BUY bursts from colliding with
+        Deriv's shared trading-request budget.
+        """
+        if not demo:
+            raise RuntimeError(
+                "Automated REAL-money purchase is disabled. "
+                "Direct buy is DEMO-only."
+            )
+
+        params = {
+            "amount": round(float(amount), 2),
+            "basis": "stake",
+            "contract_type": "DIGITMATCH",
+            "currency": str(currency or "USD").upper(),
+            "duration": int(duration),
+            "duration_unit": "t",
+            "barrier": str(int(digit)),
+            "underlying_symbol": str(symbol),
+        }
+
+        async with self._buy_lock:
+            now = time.monotonic()
+            wait = self._buy_min_interval - (now - self._last_buy_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+            self._last_buy_at = time.monotonic()
+
+            # price is the maximum acceptable purchase price. With basis=stake,
+            # the requested stake is the natural cap.
+            return await self.request(
+                {
+                    "buy": "1",
+                    "price": round(float(amount), 2),
+                    "parameters": params,
+                }
+            )
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:

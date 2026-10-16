@@ -27,8 +27,8 @@ class MultiUserEngine:
          immediate strategy decision:
             target digit == tick last digit -> WIN -> stop immediately
             target digit != tick last digit -> LOSS -> advance immediately
-      3. The next recovery proposal is pre-armed while Trade N is open.
-      4. On a fast loss, BUY Trade N+1 immediately with that pre-armed proposal.
+      3. After each tick, the freshest V1 rank #1 is selected.
+      4. On a fast loss, BUY Trade N+1 directly from contract parameters.
       5. Deriv proposal_open_contract settlement runs in the background only
          for authoritative P/L/accounting/reconciliation.
       6. If the fast tick result disagrees with Deriv's eventual settlement,
@@ -274,6 +274,28 @@ class MultiUserEngine:
             if account and account.currency
             else "USD"
         )
+
+    @staticmethod
+    def _direct_buy_payload(
+        *,
+        symbol,
+        digit,
+        stake,
+        trade_no,
+        currency,
+    ):
+        return {
+            "execution_mode": "DIRECT_PARAMETERS",
+            "symbol": str(symbol),
+            "digit": int(digit),
+            "stake": round(float(stake), 2),
+            "trade_no": int(trade_no),
+            "currency": str(currency or "USD").upper(),
+            # Kept for TradeLog compatibility; authoritative values are
+            # overwritten from Deriv's buy response when available.
+            "ask_price": round(float(stake), 2),
+            "payout": None,
+        }
 
     async def _request_proposal_payload(
         self,
@@ -1188,44 +1210,20 @@ class MultiUserEngine:
                 client = await self._client(user_id, account_id)
                 currency = await self._currency_for(db, s)
 
-                payload = await self._cached_proposal_for_digit(
-                    sid=sid,
-                    digit=int(s.candidate_digit),
-                    trade_no=expected_trade_no,
-                    stake=float(s.current_stake),
+                # Direct-parameter BUY: the selected V1 rank #1 can be used
+                # immediately without waiting for a proposal ID.
+                payload = self._direct_buy_payload(
                     symbol=s.symbol,
+                    digit=int(s.candidate_digit),
+                    stake=float(s.current_stake),
+                    trade_no=expected_trade_no,
                     currency=currency,
-                    client=client,
-                    wait_seconds=0.18,
                 )
 
-                if payload:
-                    s.phase = "CACHE_HIT_BUYING"
-                    s.last_error = None
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                else:
-                    # The cache should normally be ready because all 10 streams
-                    # were started immediately after the previous BUY. If Deriv
-                    # rate-limits or a socket reconnect occurs, preserve
-                    # correctness by requesting rank #1 directly rather than
-                    # buying a stale/wrong-digit proposal.
-                    s.phase = "CACHE_MISS_FALLBACK"
-                    s.last_error = (
-                        f"0-9 proposal cache miss for trade {expected_trade_no} "
-                        f"digit {s.candidate_digit}; using serialized fallback"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-                    payload = await self._request_proposal_payload(
-                        client,
-                        symbol=s.symbol,
-                        digit=int(s.candidate_digit),
-                        stake=float(s.current_stake),
-                        trade_no=expected_trade_no,
-                        currency=currency,
-                    )
+                s.phase = "DIRECT_BUY_READY"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
 
                 # LOSS -> immediate next BUY.
                 #
@@ -1752,36 +1750,8 @@ class MultiUserEngine:
 
                 currency = await self._currency_for(db, s)
 
-                # First trade: warm the full 0-9 cache once, then consume the
-                # proposal matching the current rank #1. This can take a moment
-                # only at cycle start; subsequent recovery caches are warmed
-                # while the previous 1-tick contract is open.
-                s.phase = "WARMING_0_9_PROPOSAL_CACHE"
-                s.updated_at = datetime.utcnow()
-                db.commit()
-
-                task = self._start_proposal_cache_warm(
-                    sid=s.id,
-                    user_id=s.user_id,
-                    account_id=s.account_id,
-                    symbol=s.symbol,
-                    stake=float(s.current_stake),
-                    trade_no=int(s.current_trade) + 1,
-                    currency=currency,
-                    client=client,
-                )
-
-                if task:
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(task),
-                            timeout=3.0,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-
-                # Re-score at the last possible moment so Trade 1 also uses the
-                # freshest rank #1 after cache warming.
+                # First trade uses the freshest V1 rank #1 and buys
+                # directly from parameters. No proposal request/cache is needed.
                 scored_digit, snapshot = self._choose_scored_digit(
                     s.id,
                     lock_target=True,
@@ -1792,32 +1762,19 @@ class MultiUserEngine:
                         s.id,
                         int(scored_digit),
                     )
-                    db.commit()
 
-                payload = await self._cached_proposal_for_digit(
-                    sid=s.id,
-                    digit=int(s.candidate_digit),
-                    trade_no=int(s.current_trade) + 1,
-                    stake=float(s.current_stake),
+                s.phase = "DIRECT_BUY_READY"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                payload = self._direct_buy_payload(
                     symbol=s.symbol,
+                    digit=int(s.candidate_digit),
+                    stake=float(s.current_stake),
+                    trade_no=int(s.current_trade) + 1,
                     currency=currency,
-                    client=client,
-                    wait_seconds=0.25,
                 )
-
-                if not payload:
-                    s.phase = "CACHE_MISS_FIRST_TRADE"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-                    payload = await self._request_proposal_payload(
-                        client,
-                        symbol=s.symbol,
-                        digit=int(s.candidate_digit),
-                        stake=float(s.current_stake),
-                        trade_no=int(s.current_trade) + 1,
-                        currency=currency,
-                    )
 
                 await self._execute_demo_buy(
                     db,
@@ -1967,34 +1924,75 @@ class MultiUserEngine:
             self.tick_sequence.get(s.id, 0)
         )
 
-        # A prefetched proposal can become invalid if its authenticated
-        # WebSocket reconnects before BUY. Refresh it before sending anything.
-        proposal_generation = int(payload.get("connection_generation") or 0)
-        current_generation = int(
-            getattr(client, "connection_generation", 0) or 0
-        )
-        if (
-            proposal_generation
-            and current_generation
-            and proposal_generation != current_generation
-        ):
-            payload = await self._request_proposal_payload(
-                client,
-                symbol=s.symbol,
-                digit=int(payload["digit"]),
-                stake=float(payload["stake"]),
-                trade_no=int(payload["trade_no"]),
-                currency=str(payload.get("currency") or "USD"),
+        execution_mode = str(
+            payload.get("execution_mode") or "PROPOSAL_ID"
+        ).upper()
+
+        # Legacy proposal IDs can become invalid across a reconnect. Direct
+        # parameter BUY has no proposal-generation dependency.
+        if execution_mode != "DIRECT_PARAMETERS":
+            proposal_generation = int(payload.get("connection_generation") or 0)
+            current_generation = int(
+                getattr(client, "connection_generation", 0) or 0
             )
+            if (
+                proposal_generation
+                and current_generation
+                and proposal_generation != current_generation
+            ):
+                payload = await self._request_proposal_payload(
+                    client,
+                    symbol=s.symbol,
+                    digit=int(payload["digit"]),
+                    stake=float(payload["stake"]),
+                    trade_no=int(payload["trade_no"]),
+                    currency=str(payload.get("currency") or "USD"),
+                )
 
         try:
-            result = await client.buy(
-                payload["proposal_id"],
-                payload["ask_price"],
-                demo=True,
-            )
+            if execution_mode == "DIRECT_PARAMETERS":
+                result = await client.buy_digitmatch_direct(
+                    symbol=s.symbol,
+                    digit=int(payload["digit"]),
+                    amount=float(payload["stake"]),
+                    currency=str(payload.get("currency") or "USD"),
+                    duration=1,
+                    demo=True,
+                )
+            else:
+                result = await client.buy(
+                    payload["proposal_id"],
+                    payload["ask_price"],
+                    demo=True,
+                )
         except Exception as exc:
             text = str(exc).lower()
+
+            # RateLimit is an explicit Deriv rejection, not an ambiguous
+            # timeout. No contract_id was returned, so release this exact
+            # database claim and keep the DEMO session alive for a later tick.
+            if "ratelimit" in text or "rate limit" in text:
+                row = (
+                    db.query(TradingSession)
+                    .filter(TradingSession.id == int(s.id))
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if row and self._claim_is_owned(row, claim):
+                    row.pending_trade_json = None
+                    row.running = True
+                    row.paused = False
+                    row.phase = "BUY_RATE_LIMIT_BACKOFF"
+                    row.last_error = (
+                        f"BUY_RATE_LIMIT trade {claim['trade_no']}: {exc}"
+                    )
+                    row.updated_at = datetime.utcnow()
+                    db.commit()
+                # Small bounded pause prevents immediate hammering. The same
+                # logical trade number remains available because current_trade
+                # was never incremented.
+                await asyncio.sleep(0.75)
+                return False
 
             # Explicit stale proposal rejection means no contract was bought.
             # Refresh once. Generic timeout/network errors remain non-retriable.
@@ -2003,7 +2001,7 @@ class MultiUserEngine:
                 or "unknown contract proposal" in text
             )
 
-            if stale_proposal:
+            if stale_proposal and execution_mode != "DIRECT_PARAMETERS":
                 try:
                     payload = await self._request_proposal_payload(
                         client,
@@ -2125,7 +2123,11 @@ class MultiUserEngine:
                     buy.get("buy_price")
                     or payload["ask_price"]
                 ),
-                payout=payload["payout"],
+                payout=(
+                    float(buy.get("payout"))
+                    if buy.get("payout") is not None
+                    else payload.get("payout")
+                ),
                 raw_json=json.dumps({
                     "deriv_buy": result,
                     "dms_score_evidence": score_evidence,
@@ -2176,28 +2178,7 @@ class MultiUserEngine:
         # Rebind local reference after commit.
         s = db.get(TradingSession, row.id)
 
-        # The cache used for this BUY is no longer needed. Forget all of
-        # its proposal streams, then immediately warm 0-9 for the NEXT trade.
-        await self._forget_proposal_cache(s.id, client=client)
-
-        if s.current_trade < s.max_trades:
-            next_stake = round(
-                float(s.current_stake) * float(s.multiplier),
-                2,
-            )
-            next_trade_no = int(s.current_trade) + 1
-            currency = await self._currency_for(db, s)
-
-            self._start_proposal_cache_warm(
-                sid=s.id,
-                user_id=s.user_id,
-                account_id=s.account_id,
-                symbol=s.symbol,
-                stake=next_stake,
-                trade_no=next_trade_no,
-                currency=currency,
-                client=client,
-            )
+        # Direct-buy build: no per-trade proposal cache to rebuild.
 
         cached_tick = self.latest_ticks.get(s.id)
 
