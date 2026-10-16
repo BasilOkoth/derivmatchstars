@@ -1173,7 +1173,30 @@ class MultiUserEngine:
                     .order_by(TradeLog.id.desc())
                     .first()
                 ) if s.current_trade else None
+
                 fast_owner = self.fast_contracts.get(sid)
+
+                # A freshly configured/restarted cycle at trade 0 cannot own a
+                # previously purchased in-memory contract. If persistent state
+                # says there is no open contract, retire that stale process-local
+                # owner so it cannot strand the new cycle in
+                # FAST_DECISION_APPLYING.
+                if (
+                    int(s.current_trade or 0) == 0
+                    and not s.open_contract_id
+                    and fast_owner
+                ):
+                    stale_contract_id = str(
+                        fast_owner.get("contract_id") or ""
+                    )
+                    self.fast_contracts.pop(sid, None)
+                    if stale_contract_id:
+                        self.retired_fast_contracts.pop(
+                            (int(sid), stale_contract_id),
+                            None,
+                        )
+                    fast_owner = None
+
                 contract_id = str(
                     s.open_contract_id
                     or (fast_owner or {}).get("contract_id")
@@ -2123,11 +2146,35 @@ class MultiUserEngine:
                 )
 
                 # Subscription/fallback responses may repeat the sold state.
-                # Account each contract exactly once.
+                # Account settlement P/L exactly once, but still clean any
+                # lingering process-local owner for this already-settled
+                # contract. Otherwise a new cycle can be stranded in
+                # FAST_DECISION_APPLYING forever.
                 if (
                     log
                     and str(log.status).upper() == "SETTLED"
                 ):
+                    active_fast = self.fast_contracts.get(sid)
+                    if (
+                        active_fast
+                        and str(active_fast.get("contract_id") or "")
+                        == str(contract_id)
+                    ):
+                        self.fast_contracts.pop(sid, None)
+
+                    self.retired_fast_contracts.pop(
+                        (int(sid), str(contract_id)),
+                        None,
+                    )
+
+                    if (
+                        str(s.open_contract_id or "")
+                        == str(contract_id)
+                    ):
+                        s.open_contract_id = None
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+
                     return
 
                 profit = float(
@@ -2283,8 +2330,17 @@ class MultiUserEngine:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                # Official settlement is now recorded; any retired fast-decision
-                # evidence for this exact contract is no longer needed.
+                # Official settlement is now recorded. Release process-local
+                # ownership for this exact contract. A newer active contract,
+                # if any, must never be removed by an older settlement.
+                active_fast = self.fast_contracts.get(sid)
+                if (
+                    active_fast
+                    and str(active_fast.get("contract_id") or "")
+                    == str(contract_id)
+                ):
+                    self.fast_contracts.pop(sid, None)
+
                 self.retired_fast_contracts.pop(
                     (int(sid), str(contract_id)),
                     None,
