@@ -11319,11 +11319,59 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             if (stateEl) {
                 const margin = Number(score.top_margin);
-                const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
+                const marginText = Number.isFinite(margin)
+                    ? ` · V1 margin ${margin.toFixed(3)}`
+                    : '';
+
+                // The browser market stream and Render strategy stream are
+                // separate Deriv WebSockets. Only label them synchronized when
+                // the exact epoch + canonical formatted quote match.
+                const canonicalTick = score?.canonical_tick || {};
+                const serverEpoch = Number(
+                    canonicalTick?.epoch ?? score?.rank_epoch ?? 0
+                );
+                const serverQuote = String(
+                    canonicalTick?.formatted_quote ?? ''
+                );
+                const serverDigitRaw = canonicalTick?.digit;
+                const serverDigit = (
+                    serverDigitRaw !== null &&
+                    serverDigitRaw !== undefined &&
+                    Number.isInteger(Number(serverDigitRaw))
+                ) ? Number(serverDigitRaw) : null;
+                const rankSeq = Number(
+                    score?.rank_seq ?? canonicalTick?.seq ?? 0
+                );
+
+                const browserEpoch = Number(
+                    window.lastTick?.raw?.epoch ?? 0
+                );
+                const browserQuote = String(
+                    window.lastTick?.formattedPrice ?? ''
+                );
+
+                const syncKnown = (
+                    serverEpoch > 0 &&
+                    browserEpoch > 0 &&
+                    serverQuote.length > 0 &&
+                    browserQuote.length > 0
+                );
+                const exactSync = (
+                    syncKnown &&
+                    serverEpoch === browserEpoch &&
+                    serverQuote === browserQuote
+                );
+
+                const syncText = exactSync
+                    ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC ✓`
+                    : syncKnown
+                        ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC WAIT`
+                        : ` · SERVER D${serverDigit ?? '—'} · SYNC —`;
+
                 stateEl.textContent =
                     `OPEN ${activeTarget !== null ? activeTarget : '—'} · ` +
                     `ACTIVE/NEXT ${liveNextTarget !== null ? liveNextTarget : selected} · ` +
-                    `V1 #1 ${selected}${marginText}`;
+                    `V1 #1 ${selected}${marginText}${syncText}`;
             }
 
             if (rankingEl) {

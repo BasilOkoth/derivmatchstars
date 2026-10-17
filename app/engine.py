@@ -53,6 +53,10 @@ class MultiUserEngine:
         # Exact callback sequence for next-tick execution. Deriv tick epochs are
         # whole seconds, so multiple consecutive ticks can share one epoch.
         self.tick_sequence = {}  # sid -> monotonically increasing tick number
+        # Last known decimal precision for each session's selected symbol.
+        # Used when a live tick omits pip_size so trailing-zero digits remain
+        # identical to Deriv/browser formatting.
+        self.tick_precision = {}  # sid -> decimal places
         self.contract_probe_at = {}
         self.contract_probe_tasks = {}
         # DEMO-only stale-contract recovery. A 1-tick contract must not keep a
@@ -330,20 +334,58 @@ class MultiUserEngine:
         }
 
     @staticmethod
-    def _tick_last_digit(tick: dict):
+    def _pip_decimals(pip_size):
+        """Normalize Deriv pip_size into decimal places.
+
+        Live ticks commonly expose pip_size as an integer decimal count
+        (for example 3), while metadata can expose a step (for example 0.001).
+        Support both forms so browser/server digit extraction stays identical.
+        """
+        if pip_size is None:
+            return None
+        try:
+            p = float(pip_size)
+        except (TypeError, ValueError):
+            return None
+
+        if p.is_integer() and 0 <= p <= 10:
+            return int(p)
+
+        if 0 < p < 1:
+            text = f"{p:.12f}".rstrip("0")
+            if "." in text:
+                return len(text.split(".", 1)[1])
+
+        return None
+
+    @classmethod
+    def _canonical_tick_text(cls, tick: dict, fallback_decimals=None):
         quote = tick.get("quote")
         if quote is None:
             return None
 
-        pip_size = tick.get("pip_size")
+        decimals = cls._pip_decimals(tick.get("pip_size"))
+        if decimals is None and fallback_decimals is not None:
+            try:
+                decimals = int(fallback_decimals)
+            except (TypeError, ValueError):
+                decimals = None
 
         try:
-            if pip_size is not None:
-                text = f"{float(quote):.{int(pip_size)}f}"
-            else:
-                text = str(quote)
+            if decimals is not None and 0 <= int(decimals) <= 10:
+                return f"{float(quote):.{int(decimals)}f}"
+            return str(quote)
         except Exception:
-            text = str(quote)
+            return str(quote)
+
+    @classmethod
+    def _tick_last_digit(cls, tick: dict, fallback_decimals=None):
+        text = cls._canonical_tick_text(
+            tick,
+            fallback_decimals=fallback_decimals,
+        )
+        if not text:
+            return None
 
         digits = [ch for ch in text if ch.isdigit()]
         return int(digits[-1]) if digits else None
@@ -369,6 +411,58 @@ class MultiUserEngine:
             list(self._digit_history(sid)),
             exclude_digit=exclude_digit,
         )
+
+        # Stamp every ranking with the exact canonical SERVER tick that
+        # produced it. This makes browser/server stream skew visible instead
+        # of making two different ticks look like a mapping error.
+        latest = dict(self.latest_ticks.get(int(sid)) or {})
+        if latest:
+            fallback_decimals = self.tick_precision.get(int(sid))
+            canonical_text = self._canonical_tick_text(
+                latest,
+                fallback_decimals=fallback_decimals,
+            )
+            canonical_digit = self._tick_last_digit(
+                latest,
+                fallback_decimals=fallback_decimals,
+            )
+            rank_seq = int(
+                latest.get("_dms_seq")
+                or self.tick_sequence.get(int(sid), 0)
+                or 0
+            )
+            rank_epoch = int(
+                latest.get("epoch")
+                or self.latest_tick_epoch.get(int(sid), 0)
+                or 0
+            )
+            tick_decimals = self._pip_decimals(latest.get("pip_size"))
+            if tick_decimals is None:
+                tick_decimals = fallback_decimals
+
+            snapshot["rank_seq"] = rank_seq or None
+            snapshot["rank_epoch"] = rank_epoch or None
+            snapshot["canonical_tick"] = {
+                "seq": rank_seq or None,
+                "epoch": rank_epoch or None,
+                "quote": latest.get("quote"),
+                "formatted_quote": canonical_text,
+                "digit": (
+                    int(canonical_digit)
+                    if canonical_digit is not None
+                    else None
+                ),
+                "pip_size": latest.get("pip_size"),
+                "decimals": tick_decimals,
+                "symbol": latest.get("symbol"),
+            }
+            snapshot["feed_state"] = "LIVE_RANK"
+        else:
+            snapshot["rank_seq"] = None
+            snapshot["rank_epoch"] = None
+            snapshot["canonical_tick"] = None
+            snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
+
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
@@ -415,6 +509,9 @@ class MultiUserEngine:
             "selected_digit": snapshot.get("selected_digit"),
             "top_margin": snapshot.get("top_margin"),
             "excluded_digit": snapshot.get("excluded_digit"),
+            "rank_seq": snapshot.get("rank_seq"),
+            "rank_epoch": snapshot.get("rank_epoch"),
+            "canonical_tick": snapshot.get("canonical_tick"),
             "candidate": row,
             "locked_target_digit": int(digit),
             "locked_at": locked.get("locked_at"),
@@ -634,6 +731,13 @@ class MultiUserEngine:
         data,
     ):
         tick = data.get("tick") or {}
+
+        # Cache the selected market's precision from live server ticks.
+        # Later callbacks may omit pip_size; the fallback prevents values such
+        # as 86.700 from being interpreted as digit 7 instead of digit 0.
+        live_decimals = self._pip_decimals(tick.get("pip_size"))
+        if live_decimals is not None:
+            self.tick_precision[int(sid)] = int(live_decimals)
 
         # Replayed cached ticks already carry _dms_seq and MUST NOT allocate
         # a second market sequence number. Only a genuinely new websocket
