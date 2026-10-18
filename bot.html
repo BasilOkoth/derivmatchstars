@@ -11217,13 +11217,17 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     </div>
                 </div>
 
-                <div class="grid grid-cols-4 gap-2 mb-3">
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Open Contract Target</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Purchased Target</div>
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
+                    <div class="rounded-lg bg-rose-950/30 border border-rose-500/20 p-2">
+                        <div class="text-[9px] uppercase text-rose-400 font-bold">Decision Digit</div>
+                        <div id="recycle-decision-digit" class="text-lg font-black text-white">—</div>
+                    </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Active / Next Target</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next V1 Target</div>
                         <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
@@ -11238,7 +11242,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    DigitScore V1 live target tracking. ACTIVE/NEXT follows V1 rank #1. Each purchased contract is judged on the next eligible tick; settlement reconciles in the background.
+                    Purchased Target is the immutable contract barrier. Decision Digit is the exact digit used for local WIN/LOSS. Next V1 Target is for the next purchase. ALIGNMENT OFFICIAL means a tick occurred while BUY was in flight, so Deriv settlement is used instead of falsely judging a later tick.
                 </div>
             `;
             host.appendChild(el);
@@ -11254,6 +11258,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             const targetEl = document.getElementById('recycle-current-target');
             const attemptEl = document.getElementById('recycle-attempt');
+            const decisionEl = document.getElementById('recycle-decision-digit');
             const tradeEl = document.getElementById('recycle-trade');
             const stakeEl = document.getElementById('recycle-stake');
             const stateEl = document.getElementById('score-engine-state');
@@ -11262,19 +11267,22 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             // Never coerce null/undefined to digit 0. In JavaScript,
             // Number(null) === 0, which previously rendered a missing target
             // as both "null" and "0" in this panel.
-            const rawCandidate = st?.candidate_digit;
-            const candidateTarget = (
-                rawCandidate !== null &&
-                rawCandidate !== undefined &&
-                rawCandidate !== '' &&
-                Number.isInteger(Number(rawCandidate))
-            ) ? Number(rawCandidate) : null;
+            const execution = score?.execution_contract || null;
+            const rawPurchasedTarget = execution?.target_digit;
+            const purchasedTarget = (
+                rawPurchasedTarget !== null &&
+                rawPurchasedTarget !== undefined &&
+                rawPurchasedTarget !== '' &&
+                Number.isInteger(Number(rawPurchasedTarget))
+            ) ? Number(rawPurchasedTarget) : null;
 
-            const hasOpenContract = (
-                st?.open_contract_id !== null &&
-                st?.open_contract_id !== undefined &&
-                String(st.open_contract_id).trim() !== ''
-            );
+            const rawDecisionDigit = execution?.decision_digit;
+            const decisionDigit = (
+                rawDecisionDigit !== null &&
+                rawDecisionDigit !== undefined &&
+                rawDecisionDigit !== '' &&
+                Number.isInteger(Number(rawDecisionDigit))
+            ) ? Number(rawDecisionDigit) : null;
 
             const rawLiveNext = st?.live_next_target ?? score?.selected_digit;
             const liveNextTarget = (
@@ -11285,9 +11293,16 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             ) ? Number(rawLiveNext) : null;
 
             if (targetEl) {
-                targetEl.textContent = hasOpenContract && candidateTarget !== null
-                    ? String(candidateTarget)
+                targetEl.textContent = purchasedTarget !== null
+                    ? String(purchasedTarget)
                     : '—';
+            }
+            if (decisionEl) {
+                const mode = String(execution?.decision_mode || '');
+                decisionEl.textContent = decisionDigit !== null
+                    ? String(decisionDigit)
+                    : (mode === 'OFFICIAL_ONLY_INFLIGHT_TICK' ? 'OFFICIAL' : '—');
+                decisionEl.title = mode || '';
             }
             if (attemptEl) {
                 attemptEl.textContent = liveNextTarget !== null
@@ -11311,7 +11326,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const selected = Number(score.selected_digit);
 
             const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
-            const activeTarget = hasOpenContract ? candidateTarget : null;
+            const activeTarget = purchasedTarget;
             const shadow = score?.shadow || {};
             const shadowSelected = Number(shadow?.selected_digit);
             const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
@@ -11368,10 +11383,23 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC WAIT`
                         : ` · SERVER D${serverDigit ?? '—'} · SYNC —`;
 
+                const executionMode = String(
+                    execution?.decision_mode || ''
+                );
+                const decisionText = decisionDigit !== null
+                    ? String(decisionDigit)
+                    : (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK'
+                        ? 'OFFICIAL'
+                        : '—');
+
                 stateEl.textContent =
-                    `OPEN ${activeTarget !== null ? activeTarget : '—'} · ` +
-                    `ACTIVE/NEXT ${liveNextTarget !== null ? liveNextTarget : selected} · ` +
-                    `V1 #1 ${selected}${marginText}${syncText}`;
+                    `PURCHASED ${activeTarget !== null ? activeTarget : '—'} · ` +
+                    `DECISION ${decisionText} · ` +
+                    `NEXT V1 ${liveNextTarget !== null ? liveNextTarget : selected} · ` +
+                    `V1 #1 ${selected}${marginText}${syncText}` +
+                    (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK'
+                        ? ' · ALIGNMENT OFFICIAL'
+                        : '');
             }
 
             if (rankingEl) {

@@ -367,26 +367,74 @@ async def confirm(
                         "buy_sent_after_epoch": int(old["buy_sent_after_epoch"]),
                         "buy_ack_seq": buy_ack_seq,
                         "buy_ack_epoch": buy_ack_epoch,
-                        "arming_policy": "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK",
+                        "inflight_tick_count": max(
+                            0,
+                            int(buy_ack_seq) - int(old["buy_sent_after_seq"]),
+                        ),
+                        "arming_policy": (
+                            "OFFICIAL_ONLY_INFLIGHT_TICK"
+                            if int(buy_ack_seq) > int(old["buy_sent_after_seq"])
+                            else "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK"
+                        ),
                     },
                 }, default=str),
             )
         )
 
-        engine.fast_contracts[int(s.id)] = {
+        inflight_tick_count = max(
+            0,
+            int(buy_ack_seq) - int(old["buy_sent_after_seq"]),
+        )
+        official_only_inflight = inflight_tick_count > 0
+
+        execution_state = {
             "contract_id": contract_id,
             "target_digit": int(old["digit"]),
             "symbol": str(s.symbol),
             "trade_no": int(old["trade_no"]),
-            "armed_after_epoch": decision_after_epoch,
-            "armed_after_seq": buy_ack_seq,
             "buy_sent_after_seq": int(old["buy_sent_after_seq"]),
-            "buy_ack_seq": buy_ack_seq,
-            "score_evidence": score_evidence,
-            "buy_claim_token": "REAL_EXPLICIT_CONFIRM",
-            "instance_id": engine.instance_id,
+            "buy_sent_after_epoch": int(old["buy_sent_after_epoch"]),
+            "buy_ack_seq": int(buy_ack_seq),
+            "buy_ack_epoch": int(buy_ack_epoch),
+            "purchase_epoch": int(purchase_epoch or 0) or None,
+            "inflight_tick_count": int(inflight_tick_count),
+            "decision_mode": (
+                "OFFICIAL_ONLY_INFLIGHT_TICK"
+                if official_only_inflight
+                else "FAST_NEXT_TICK"
+            ),
+            "decision_seq": None,
+            "decision_epoch": None,
+            "decision_digit": None,
+            "local_result": None,
+            "official_result": None,
             "decided": False,
         }
+        engine.execution_contract_state[int(s.id)] = execution_state
+
+        if official_only_inflight:
+            engine.fast_contracts.pop(int(s.id), None)
+        else:
+            engine.fast_contracts[int(s.id)] = {
+                "contract_id": contract_id,
+                "target_digit": int(old["digit"]),
+                "symbol": str(s.symbol),
+                "trade_no": int(old["trade_no"]),
+                "armed_after_epoch": decision_after_epoch,
+                "armed_after_seq": buy_ack_seq,
+                "buy_sent_after_seq": int(old["buy_sent_after_seq"]),
+                "buy_ack_seq": buy_ack_seq,
+                "score_evidence": score_evidence,
+                "buy_claim_token": "REAL_EXPLICIT_CONFIRM",
+                "instance_id": engine.instance_id,
+                "decided": False,
+            }
+
+        snapshot = engine.digit_score_snapshots.get(int(s.id))
+        if isinstance(snapshot, dict):
+            snapshot["execution_contract"] = json.loads(
+                json.dumps(execution_state)
+            )
 
         s.open_contract_id = contract_id
         s.current_trade = int(old["trade_no"])
@@ -395,7 +443,11 @@ async def confirm(
         s.paused = False
         s.pending_real_confirmation = False
         s.pending_trade_json = None
-        s.phase = "PIPELINE_ACTIVE"
+        s.phase = (
+            "WAITING_OFFICIAL_SETTLEMENT_INFLIGHT_TICK"
+            if official_only_inflight
+            else "PIPELINE_ACTIVE"
+        )
         s.last_error = None
         s.updated_at = datetime.utcnow()
         db.commit()
