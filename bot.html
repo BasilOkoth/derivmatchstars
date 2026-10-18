@@ -11207,6 +11207,37 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     break;
                 }
 
+                case 'WAITING_V1_MARGIN':
+                case 'RECOVERY_WAITING_MARGIN': {
+                    const scoreRows = Array.isArray(st?.digit_score?.ranking)
+                        ? st.digit_score.ranking
+                        : [];
+                    const liveV1 = (
+                        scoreRows.length &&
+                        scoreRows[0]?.digit !== null &&
+                        scoreRows[0]?.digit !== undefined &&
+                        Number.isInteger(Number(scoreRows[0].digit))
+                    ) ? Number(scoreRows[0].digit) : null;
+                    const liveMargin = Number(st?.digit_score?.top_margin);
+                    const minMargin = Number(
+                        st?.digit_score?.minimum_v1_margin ??
+                        getConfiguredMinimumV1Margin()
+                    );
+
+                    result = 'WAITING ⏸';
+                    status = phase === 'RECOVERY_WAITING_MARGIN'
+                        ? 'Recovery paused until the V1 margin qualifies'
+                        : 'Entry paused until the V1 margin qualifies';
+                    action = (
+                        Number.isFinite(liveMargin) &&
+                        Number.isFinite(minMargin)
+                    )
+                        ? `V1 ${liveV1 ?? '—'} · margin ${liveMargin.toFixed(2)} / ${minMargin.toFixed(2)} required`
+                        : 'Waiting for a qualifying V1 margin';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+                }
+
                 case 'PAUSED':
                     result = 'PAUSED';
                     status = `Cycle paused after trade ${tradeNo}`;
@@ -11405,8 +11436,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             if (marginGateEl) {
                 marginGateEl.textContent = Number.isFinite(liveMargin)
-                    ? `${liveMargin.toFixed(2)} ${marginReady ? 'READY' : 'WAIT'}`
-                    : '—';
+                    ? `${liveMargin.toFixed(2)} / ${minimumMargin.toFixed(2)} ${marginReady ? 'READY' : 'WAIT'}`
+                    : `— / ${minimumMargin.toFixed(2)}`;
                 marginGateEl.title = Number.isFinite(minimumMargin)
                     ? `Minimum required margin: ${minimumMargin.toFixed(2)}`
                     : '';

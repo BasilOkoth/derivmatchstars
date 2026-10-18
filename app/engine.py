@@ -1752,6 +1752,49 @@ class MultiUserEngine:
         stake = round(float(payload.get("stake") or 0), 2)
         expected_trade_no = int(row.current_trade or 0) + 1
 
+        # STRICT V1 MARGIN GATE — final authoritative pre-BUY barrier.
+        # A target may have qualified a fraction of a second earlier and then
+        # lost its lead on a newer tick before the network BUY was sent.
+        # Re-score HERE, immediately before claiming the paid purchase.
+        gate_snapshot = self._score_all_digits(int(sid))
+        gate_margin = gate_snapshot.get("top_margin")
+        gate_minimum = self.get_minimum_v1_margin(int(sid))
+        gate_top = gate_snapshot.get("selected_digit")
+        gate_ok = bool(
+            gate_snapshot.get("ready")
+            and gate_snapshot.get("margin_eligible")
+            and gate_top is not None
+            and int(gate_top) == int(digit)
+        )
+
+        if not gate_ok:
+            row.pending_trade_json = None
+            row.running = True
+            row.paused = False
+            row.phase = (
+                "RECOVERY_WAITING_MARGIN"
+                if int(row.current_trade or 0) > 0
+                else "WAITING_V1_MARGIN"
+            )
+            row.candidate_digit = (
+                int(gate_top) if gate_top is not None else row.candidate_digit
+            )
+            row.last_error = None
+            row.updated_at = datetime.utcnow()
+            db.commit()
+            return None
+
+        # Freeze the exact gate evidence used to authorize this BUY.
+        payload["margin_gate"] = {
+            "top_margin": float(gate_margin) if gate_margin is not None else None,
+            "minimum_v1_margin": float(gate_minimum),
+            "selected_digit": int(gate_top),
+            "eligible": True,
+            "rank_seq": gate_snapshot.get("rank_seq"),
+            "rank_epoch": gate_snapshot.get("rank_epoch"),
+            "checked_at": datetime.utcnow().isoformat(),
+        }
+
         # A stale or competing continuation is never allowed to BUY.
         if trade_no != expected_trade_no:
             db.rollback()
@@ -2117,6 +2160,7 @@ class MultiUserEngine:
                 raw_json=json.dumps({
                     "deriv_buy": result,
                     "dms_score_evidence": score_evidence,
+                    "margin_gate": payload.get("margin_gate"),
                     "execution_integrity": {
                         "instance_id": self.instance_id,
                         "buy_claim_token": claim["token"],
