@@ -68,6 +68,11 @@ class MultiUserEngine:
         # Older contracts can still settle in the background.
         self.fast_contracts = {}  # sid -> newest strategy-active contract
 
+        # Exact contract execution evidence exposed to the dashboard. Unlike
+        # TradingSession.candidate_digit, target_digit here is immutable for
+        # the purchased contract and is never replaced by the NEXT V1 target.
+        self.execution_contract_state = {}  # sid -> current/most recent contract evidence
+
         # A decided contract can be retired from the active execution slot
         # while its official Deriv settlement is still pending. This preserves
         # fast-vs-official reconciliation without blocking the next trade.
@@ -463,6 +468,13 @@ class MultiUserEngine:
             snapshot["canonical_tick"] = None
             snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
 
+        execution_state = self.execution_contract_state.get(int(sid))
+        snapshot["execution_contract"] = (
+            json.loads(json.dumps(execution_state))
+            if isinstance(execution_state, dict)
+            else None
+        )
+
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
@@ -842,6 +854,25 @@ class MultiUserEngine:
         is_win = digit == target_digit
 
         active["fast_result"] = "WIN" if is_win else "LOSS"
+
+        execution_state = self.execution_contract_state.get(int(sid))
+        if (
+            isinstance(execution_state, dict)
+            and str(execution_state.get("contract_id") or "") == contract_id
+        ):
+            execution_state["decision_seq"] = int(incoming_seq or 0) or None
+            execution_state["decision_epoch"] = int(epoch or 0) or None
+            execution_state["decision_digit"] = int(digit)
+            execution_state["local_result"] = "WIN" if is_win else "LOSS"
+            execution_state["decided"] = True
+            execution_state["decision_source"] = "SERVER_MARKET_TICK"
+            self.execution_contract_state[int(sid)] = execution_state
+
+            snapshot = self.digit_score_snapshots.get(int(sid))
+            if isinstance(snapshot, dict):
+                snapshot["execution_contract"] = json.loads(
+                    json.dumps(execution_state)
+                )
 
         async with self._lock(sid):
             db = SessionLocal()
@@ -1900,10 +1931,18 @@ class MultiUserEngine:
         self.buy_rate_limit_until.pop(int(s.id), None)
         self.buy_rate_limit_streak.pop(int(s.id), None)
 
-        # Arm only AFTER Deriv acknowledges the BUY. Any ticks received while
-        # the BUY request was in flight are excluded from local WIN/LOSS.
+        # Capture the callback sequence at BUY acknowledgement. If the market
+        # advanced while the BUY request was in flight, we cannot prove which
+        # of those ticks Deriv used for the 1-tick contract from market-stream
+        # timing alone. In that rare case, do NOT falsely judge a later tick;
+        # wait for authoritative contract settlement for this trade.
         buy_ack_seq = int(self.tick_sequence.get(s.id, 0))
         buy_ack_epoch = int(self.latest_tick_epoch.get(s.id) or 0)
+        inflight_tick_count = max(
+            0,
+            int(buy_ack_seq) - int(buy_sent_after_seq),
+        )
+        official_only_inflight = inflight_tick_count > 0
 
         # Lock the row again and prove that this process still owns the exact
         # claim before committing the purchased contract into the cycle.
@@ -1982,7 +2021,12 @@ class MultiUserEngine:
                         "buy_sent_after_epoch": int(buy_sent_after_epoch),
                         "buy_ack_seq": int(buy_ack_seq),
                         "buy_ack_epoch": int(buy_ack_epoch),
-                        "arming_policy": "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK",
+                        "inflight_tick_count": int(inflight_tick_count),
+                        "arming_policy": (
+                            "OFFICIAL_ONLY_INFLIGHT_TICK"
+                            if official_only_inflight
+                            else "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK"
+                        ),
                     },
                 }),
             )
@@ -2001,23 +2045,61 @@ class MultiUserEngine:
             purchase_epoch,
         )
 
-        self.fast_contracts[row.id] = {
+        execution_state = {
             "contract_id": contract_id,
             "target_digit": int(payload["digit"]),
             "symbol": str(row.symbol),
             "trade_no": int(payload["trade_no"]),
-            "armed_after_epoch": decision_after_epoch,
-            "armed_after_seq": int(buy_ack_seq),
             "buy_sent_after_seq": int(buy_sent_after_seq),
+            "buy_sent_after_epoch": int(buy_sent_after_epoch),
             "buy_ack_seq": int(buy_ack_seq),
-            "score_evidence": score_evidence,
-            "buy_claim_token": claim["token"],
-            "instance_id": self.instance_id,
+            "buy_ack_epoch": int(buy_ack_epoch),
+            "purchase_epoch": int(purchase_epoch or 0) or None,
+            "inflight_tick_count": int(inflight_tick_count),
+            "decision_mode": (
+                "OFFICIAL_ONLY_INFLIGHT_TICK"
+                if official_only_inflight
+                else "FAST_NEXT_TICK"
+            ),
+            "decision_seq": None,
+            "decision_epoch": None,
+            "decision_digit": None,
+            "local_result": None,
+            "official_result": None,
             "decided": False,
         }
+        self.execution_contract_state[int(row.id)] = execution_state
+
+        if official_only_inflight:
+            self.fast_contracts.pop(int(row.id), None)
+        else:
+            self.fast_contracts[row.id] = {
+                "contract_id": contract_id,
+                "target_digit": int(payload["digit"]),
+                "symbol": str(row.symbol),
+                "trade_no": int(payload["trade_no"]),
+                "armed_after_epoch": decision_after_epoch,
+                "armed_after_seq": int(buy_ack_seq),
+                "buy_sent_after_seq": int(buy_sent_after_seq),
+                "buy_ack_seq": int(buy_ack_seq),
+                "score_evidence": score_evidence,
+                "buy_claim_token": claim["token"],
+                "instance_id": self.instance_id,
+                "decided": False,
+            }
+
+        snapshot = self.digit_score_snapshots.get(int(row.id))
+        if isinstance(snapshot, dict):
+            snapshot["execution_contract"] = json.loads(
+                json.dumps(execution_state)
+            )
 
         row.open_contract_id = contract_id
-        row.phase = "PIPELINE_ACTIVE"
+        row.phase = (
+            "WAITING_OFFICIAL_SETTLEMENT_INFLIGHT_TICK"
+            if official_only_inflight
+            else "PIPELINE_ACTIVE"
+        )
         row.current_trade = int(payload["trade_no"])
         row.pending_trade_json = None
         row.pending_real_confirmation = False
@@ -2030,9 +2112,10 @@ class MultiUserEngine:
 
         # Direct-buy build: no per-trade proposal cache to rebuild.
 
-        # Do not replay ticks received while BUY was in flight.
-        # The first genuinely new live server tick after buy_ack_seq is the
-        # only tick eligible to decide this locally armed contract.
+        # Normal case: no market tick occurred while BUY was in flight, so
+        # the first genuinely new server tick after BUY ACK can decide locally.
+        # Ambiguous case: one or more in-flight ticks occurred; no fast owner
+        # exists and step() waits for authoritative Deriv settlement instead.
 
         asyncio.create_task(
             self._subscribe_open_contract(
@@ -2308,9 +2391,28 @@ class MultiUserEngine:
                         == str(contract_id)
                     ):
                         s.open_contract_id = None
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
 
+                    execution_state = self.execution_contract_state.get(int(sid))
+                    if (
+                        isinstance(execution_state, dict)
+                        and str(execution_state.get("contract_id") or "")
+                        == str(contract_id)
+                        and log.profit is not None
+                    ):
+                        official = "WIN" if float(log.profit) > 0 else "LOSS"
+                        execution_state["official_result"] = official
+                        if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
+                            execution_state["decided"] = True
+                            execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                        self.execution_contract_state[int(sid)] = execution_state
+                        snapshot = self.digit_score_snapshots.get(int(sid))
+                        if isinstance(snapshot, dict):
+                            snapshot["execution_contract"] = json.loads(
+                                json.dumps(execution_state)
+                            )
+
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
                     return
 
                 profit = float(
@@ -2376,13 +2478,31 @@ class MultiUserEngine:
                         (int(sid), str(contract_id))
                     )
 
-                if fast:
-                    official = (
-                        "WIN"
-                        if profit > 0
-                        else "LOSS"
-                    )
+                official = (
+                    "WIN"
+                    if profit > 0
+                    else "LOSS"
+                )
 
+                execution_state = self.execution_contract_state.get(int(sid))
+                if (
+                    isinstance(execution_state, dict)
+                    and str(execution_state.get("contract_id") or "")
+                    == str(contract_id)
+                ):
+                    execution_state["official_result"] = official
+                    if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
+                        execution_state["decided"] = True
+                        execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                        execution_state["local_result"] = None
+                    self.execution_contract_state[int(sid)] = execution_state
+                    snapshot = self.digit_score_snapshots.get(int(sid))
+                    if isinstance(snapshot, dict):
+                        snapshot["execution_contract"] = json.loads(
+                            json.dumps(execution_state)
+                        )
+
+                if fast:
                     fast["official_result"] = official
 
                     # Expose the exact authoritative settlement used for
