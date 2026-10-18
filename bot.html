@@ -11146,26 +11146,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-amber-300';
                     break;
 
-                case 'BUY_RATE_LIMIT_BACKOFF': {
-                    const rows = Array.isArray(st?.digit_score?.ranking)
-                        ? st.digit_score.ranking
-                        : [];
-                    const liveV1 = (
-                        rows.length &&
-                        rows[0]?.digit !== null &&
-                        rows[0]?.digit !== undefined &&
-                        Number.isInteger(Number(rows[0].digit))
-                    ) ? Number(rows[0].digit) : null;
-
-                    result = 'RATE LIMIT';
-                    status = 'Deriv temporarily throttled the BUY request';
-                    action = liveV1 !== null
-                        ? `Holding trade ${tradeNo}/${maxTrades || '—'} · next V1 ${liveV1} · stake $${stake.toFixed(2)}`
-                        : `Holding trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`;
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-                }
-
                 case 'PAUSED':
                     result = 'PAUSED';
                     status = `Cycle paused after trade ${tradeNo}`;
@@ -11196,19 +11176,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     if (st.running) {
                         result = 'TRADING ⚡';
                         status = `Server worker active · phase ${phase}`;
-                        const scoreRows = Array.isArray(st?.digit_score?.ranking)
-                            ? st.digit_score.ranking
-                            : [];
-                        const liveV1 = (
-                            scoreRows.length &&
-                            scoreRows[0]?.digit !== null &&
-                            scoreRows[0]?.digit !== undefined &&
-                            Number.isInteger(Number(scoreRows[0].digit))
-                        ) ? Number(scoreRows[0].digit) : null;
-
-                        action = liveV1 !== null
-                            ? `Next V1 ${liveV1} · trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`
-                            : `Trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`;
+                        action = hasDigit
+                            ? `Candidate ${digit} · trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`
+                            : 'Waiting for server progress…';
                         resultClass = 'text-xs font-bold text-yellow-300';
                     } else {
                         result = phase || 'READY';
@@ -11236,22 +11206,24 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             el.id = 'recycle-runtime-panel';
             el.className = 'mt-3 rounded-xl border border-cyan-500/30 bg-slate-950/70 p-3 text-xs';
             el.innerHTML = `
-                <div class="mb-3">
-                    <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
-                    <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
+                <div class="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
+                        <div id="score-engine-state" class="text-sm font-black text-white">Waiting for server score…</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[10px] uppercase text-amber-400 font-bold">Recovery rule</div>
+                        <div class="text-sm font-black text-white">V1 #1 after every loss</div>
+                    </div>
                 </div>
 
-                <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
+                <div class="grid grid-cols-4 gap-2 mb-3">
                     <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Purchased Target</div>
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Open Contract Target</div>
                         <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
                     </div>
-                    <div class="rounded-lg bg-rose-950/30 border border-rose-500/20 p-2">
-                        <div class="text-[9px] uppercase text-rose-400 font-bold">Decision Digit</div>
-                        <div id="recycle-decision-digit" class="text-lg font-black text-white">—</div>
-                    </div>
                     <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next V1 Target</div>
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Active / Next Target</div>
                         <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
                     </div>
                     <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
@@ -11266,7 +11238,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    Purchased Target = contract digit. Decision Digit = digit used to judge that contract. Next V1 Target = current leader for the next purchase.
+                    DigitScore V1 live target tracking. ACTIVE/NEXT follows V1 rank #1. Each purchased contract is judged on the next eligible tick; settlement reconciles in the background.
                 </div>
             `;
             host.appendChild(el);
@@ -11282,7 +11254,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             const targetEl = document.getElementById('recycle-current-target');
             const attemptEl = document.getElementById('recycle-attempt');
-            const decisionEl = document.getElementById('recycle-decision-digit');
             const tradeEl = document.getElementById('recycle-trade');
             const stakeEl = document.getElementById('recycle-stake');
             const stateEl = document.getElementById('score-engine-state');
@@ -11291,55 +11262,32 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             // Never coerce null/undefined to digit 0. In JavaScript,
             // Number(null) === 0, which previously rendered a missing target
             // as both "null" and "0" in this panel.
-            const execution = score?.execution_contract || null;
-            const rawPurchasedTarget = execution?.target_digit;
-            const purchasedTarget = (
-                rawPurchasedTarget !== null &&
-                rawPurchasedTarget !== undefined &&
-                rawPurchasedTarget !== '' &&
-                Number.isInteger(Number(rawPurchasedTarget))
-            ) ? Number(rawPurchasedTarget) : null;
+            const rawCandidate = st?.candidate_digit;
+            const candidateTarget = (
+                rawCandidate !== null &&
+                rawCandidate !== undefined &&
+                rawCandidate !== '' &&
+                Number.isInteger(Number(rawCandidate))
+            ) ? Number(rawCandidate) : null;
 
-            const rawDecisionDigit = execution?.decision_digit;
-            const decisionDigit = (
-                rawDecisionDigit !== null &&
-                rawDecisionDigit !== undefined &&
-                rawDecisionDigit !== '' &&
-                Number.isInteger(Number(rawDecisionDigit))
-            ) ? Number(rawDecisionDigit) : null;
+            const hasOpenContract = (
+                st?.open_contract_id !== null &&
+                st?.open_contract_id !== undefined &&
+                String(st.open_contract_id).trim() !== ''
+            );
 
-            const rankingTopDigit = (
-                Array.isArray(score?.ranking) &&
-                score.ranking.length &&
-                score.ranking[0]?.digit !== null &&
-                score.ranking[0]?.digit !== undefined &&
-                Number.isInteger(Number(score.ranking[0].digit))
-            ) ? Number(score.ranking[0].digit) : null;
-
-            const rawLiveNext = (
-                st?.live_next_target !== null &&
-                st?.live_next_target !== undefined &&
-                st?.live_next_target !== ''
-            ) ? st.live_next_target : rankingTopDigit;
-
+            const rawLiveNext = st?.live_next_target ?? score?.selected_digit;
             const liveNextTarget = (
                 rawLiveNext !== null &&
                 rawLiveNext !== undefined &&
                 rawLiveNext !== '' &&
                 Number.isInteger(Number(rawLiveNext))
-            ) ? Number(rawLiveNext) : rankingTopDigit;
+            ) ? Number(rawLiveNext) : null;
 
             if (targetEl) {
-                targetEl.textContent = purchasedTarget !== null
-                    ? String(purchasedTarget)
+                targetEl.textContent = hasOpenContract && candidateTarget !== null
+                    ? String(candidateTarget)
                     : '—';
-            }
-            if (decisionEl) {
-                const mode = String(execution?.decision_mode || '');
-                decisionEl.textContent = decisionDigit !== null
-                    ? String(decisionDigit)
-                    : (mode === 'OFFICIAL_ONLY_INFLIGHT_TICK' ? 'OFFICIAL' : '—');
-                decisionEl.title = mode || '';
             }
             if (attemptEl) {
                 attemptEl.textContent = liveNextTarget !== null
@@ -11360,20 +11308,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+            const selected = Number(score.selected_digit);
 
-            // V1 #1 is always the actual first ranked digit.
-            // Never use Number(score.selected_digit): Number(null) becomes 0
-            // and previously manufactured a fake V1 target.
-            const topRow = ranked[0] || null;
-            const selected = (
-                topRow &&
-                topRow.digit !== null &&
-                topRow.digit !== undefined &&
-                Number.isInteger(Number(topRow.digit))
-            ) ? Number(topRow.digit) : null;
-
-            const selectedRow = topRow;
-            const activeTarget = purchasedTarget;
+            const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
+            const activeTarget = hasOpenContract ? candidateTarget : null;
             const shadow = score?.shadow || {};
             const shadowSelected = Number(shadow?.selected_digit);
             const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
@@ -11430,25 +11368,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC WAIT`
                         : ` · SERVER D${serverDigit ?? '—'} · SYNC —`;
 
-                const executionMode = String(
-                    execution?.decision_mode || ''
-                );
-                const decisionText = decisionDigit !== null
-                    ? String(decisionDigit)
-                    : (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK'
-                        ? 'OFFICIAL'
-                        : '—');
-
-                // Keep the main trading panel intentionally simple.
-                // Detailed SERVER/SYNC/margin diagnostics are not needed here;
-                // the cards below are the authoritative execution view.
-                if (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK') {
-                    stateEl.textContent = 'Deriv settlement confirming alignment';
-                } else if (selected !== null) {
-                    stateEl.textContent = `Live V1 #1: ${selected}`;
-                } else {
-                    stateEl.textContent = 'Waiting for V1 ranking';
-                }
+                stateEl.textContent =
+                    `OPEN ${activeTarget !== null ? activeTarget : '—'} · ` +
+                    `ACTIVE/NEXT ${liveNextTarget !== null ? liveNextTarget : selected} · ` +
+                    `V1 #1 ${selected}${marginText}${syncText}`;
             }
 
             if (rankingEl) {
