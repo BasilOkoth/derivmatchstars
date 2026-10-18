@@ -11313,35 +11313,34 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
                 </div>
 
-                                <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
-                    <div class="grid grid-cols-3 md:grid-cols-6 divide-x divide-slate-700/50">
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Purchased</div>
-                            <div id="recycle-current-target" class="mt-0.5 text-base font-black text-white leading-none">—</div>
-                        </div>
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Decision</div>
-                            <div id="recycle-decision-digit" class="mt-0.5 text-base font-black text-white leading-none">—</div>
-                        </div>
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Next V1</div>
-                            <div id="recycle-attempt" class="mt-0.5 text-base font-black text-white leading-none">—</div>
-                        </div>
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Trade</div>
-                            <div id="recycle-trade" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
-                        </div>
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Stake</div>
-                            <div id="recycle-stake" class="mt-0.5 text-sm font-black text-white leading-none">$0.00</div>
-                        </div>
-                        <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Margin</div>
-                            <div id="recycle-margin-gate" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
-                        </div>
+                <div class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
+                    <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
+                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Purchased Target</div>
+                        <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-rose-950/30 border border-rose-500/20 p-2">
+                        <div class="text-[9px] uppercase text-rose-400 font-bold">Decision Digit</div>
+                        <div id="recycle-decision-digit" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
+                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next V1 Target</div>
+                        <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
+                        <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
+                        <div id="recycle-trade" class="text-lg font-black text-white">—</div>
+                    </div>
+                    <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/20 p-2">
+                        <div class="text-[9px] uppercase text-emerald-400 font-bold">Stake</div>
+                        <div id="recycle-stake" class="text-lg font-black text-white">$0.00</div>
+                    </div>
+                    <div class="rounded-lg bg-sky-950/30 border border-sky-500/20 p-2">
+                        <div class="text-[9px] uppercase text-sky-400 font-bold">Margin Gate</div>
+                        <div id="recycle-margin-gate" class="text-lg font-black text-white">—</div>
                     </div>
                 </div>
-<div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+
+                <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
                     The bot buys only when V1 rank #1 leads rank #2 by your configured Minimum V1 Margin. Below the threshold it keeps watching ticks without buying.
                 </div>
@@ -11443,8 +11442,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? `Minimum required margin: ${minimumMargin.toFixed(2)}`
                     : '';
                 marginGateEl.className = marginReady
-                    ? 'mt-0.5 text-sm font-black text-green-400 leading-none'
-                    : 'mt-0.5 text-sm font-black text-amber-300 leading-none';
+                    ? 'text-lg font-black text-green-400'
+                    : 'text-lg font-black text-amber-300';
             }
 
             if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
