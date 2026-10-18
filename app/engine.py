@@ -91,10 +91,10 @@ class MultiUserEngine:
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
 
         # V1 MARGIN GATE
-        # A digit is executable only when rank #1 leads rank #2 by at least
-        # this amount. Ticks continue to update the ranking while the engine
-        # waits. This applies to Trade 1 and every recovery trade.
-        self.minimum_v1_margin = 2.0
+        # Rank #1 is executable only when its lead over rank #2 reaches the
+        # user-configured minimum. Shared by DEMO and REAL target selection.
+        self.minimum_v1_margin_default = 3.0
+        self.minimum_v1_margin_by_sid = {}
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         # Process memory is lost on Render restart. Rebuild DigitScore from
@@ -116,6 +116,45 @@ class MultiUserEngine:
     async def start(self):
         if not self.task or self.task.done():
             self.task = asyncio.create_task(self.run_forever())
+
+    def get_minimum_v1_margin(self, sid: int) -> float:
+        try:
+            value = float(
+                self.minimum_v1_margin_by_sid.get(
+                    int(sid),
+                    self.minimum_v1_margin_default,
+                )
+            )
+        except (TypeError, ValueError):
+            value = float(self.minimum_v1_margin_default)
+        return max(0.0, min(50.0, value))
+
+    def set_minimum_v1_margin(self, sid: int, value: float) -> float:
+        value = max(0.0, min(50.0, float(value)))
+        self.minimum_v1_margin_by_sid[int(sid)] = value
+
+        snapshot = self.digit_score_snapshots.get(int(sid))
+        if isinstance(snapshot, dict):
+            margin = snapshot.get("top_margin")
+            try:
+                margin_value = float(margin) if margin is not None else None
+            except (TypeError, ValueError):
+                margin_value = None
+
+            eligible = bool(
+                snapshot.get("ready")
+                and margin_value is not None
+                and margin_value >= value
+            )
+            snapshot["minimum_v1_margin"] = value
+            snapshot["margin_eligible"] = eligible
+            snapshot["margin_status"] = (
+                "READY" if eligible
+                else "WAITING_MARGIN" if snapshot.get("ready")
+                else "WARMING"
+            )
+
+        return value
 
     def _lock(self, sid: int) -> asyncio.Lock:
         lock = self.session_locks.get(sid)
@@ -487,7 +526,7 @@ class MultiUserEngine:
         except (TypeError, ValueError):
             margin_value = None
 
-        minimum_margin = float(self.minimum_v1_margin)
+        minimum_margin = self.get_minimum_v1_margin(sid)
         margin_eligible = bool(
             snapshot.get("ready")
             and margin_value is not None

@@ -40,6 +40,13 @@ def utc_string(dt):
     return dt.isoformat()
 
 
+def owned_session(db, user_id, sid):
+    s = db.get(TradingSession, sid)
+    if s is None or str(s.user_id) != str(user_id):
+        raise HTTPException(404, "Session not found")
+    return s
+
+
 def real_session(db, user_id, sid):
     s = db.get(TradingSession, sid)
     if s is None or str(s.user_id) != str(user_id):
@@ -70,6 +77,45 @@ class QuoteRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     confirmation_token: str = Field(min_length=20)
     confirm: bool = Field(description="Must be true for this individual purchase")
+
+
+class MarginGateRequest(BaseModel):
+    minimum_margin: float = Field(ge=0.0, le=50.0)
+
+
+@router.post("/sessions/{sid}/margin-gate")
+def set_margin_gate(
+    sid: int,
+    body: MarginGateRequest,
+    user_id: str = Depends(current_user_id),
+):
+    """Update V1 execution margin only; this endpoint never submits a BUY."""
+    db = SessionLocal()
+    try:
+        s = owned_session(db, user_id, sid)
+        value = engine.set_minimum_v1_margin(
+            int(s.id),
+            float(body.minimum_margin),
+        )
+
+        try:
+            snapshot = engine._score_all_digits(int(s.id))
+        except Exception:
+            snapshot = (
+                getattr(engine, "digit_score_snapshots", {}) or {}
+            ).get(int(s.id)) or {}
+
+        return {
+            "ok": True,
+            "session_id": int(s.id),
+            "account_mode": str(s.account_mode),
+            "minimum_v1_margin": float(value),
+            "top_margin": snapshot.get("top_margin"),
+            "margin_eligible": snapshot.get("margin_eligible"),
+            "margin_status": snapshot.get("margin_status"),
+        }
+    finally:
+        db.close()
 
 
 @router.post("/sessions/{sid}/quote")
