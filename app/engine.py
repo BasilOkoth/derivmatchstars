@@ -68,6 +68,11 @@ class MultiUserEngine:
         # Older contracts can still settle in the background.
         self.fast_contracts = {}  # sid -> newest strategy-active contract
 
+        # Exact contract execution evidence exposed to the dashboard. Unlike
+        # TradingSession.candidate_digit, target_digit here is immutable for
+        # the purchased contract and is never replaced by the NEXT V1 target.
+        self.execution_contract_state = {}  # sid -> current/most recent contract evidence
+
         # A decided contract can be retired from the active execution slot
         # while its official Deriv settlement is still pending. This preserves
         # fast-vs-official reconciliation without blocking the next trade.
@@ -84,6 +89,12 @@ class MultiUserEngine:
 
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+
+        # V1 MARGIN GATE
+        # A digit is executable only when rank #1 leads rank #2 by at least
+        # this amount. Ticks continue to update the ranking while the engine
+        # waits. This applies to Trade 1 and every recovery trade.
+        self.minimum_v1_margin = 2.0
         self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
         # Process memory is lost on Render restart. Rebuild DigitScore from
@@ -463,12 +474,45 @@ class MultiUserEngine:
             snapshot["canonical_tick"] = None
             snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
 
+        execution_state = self.execution_contract_state.get(int(sid))
+        snapshot["execution_contract"] = (
+            json.loads(json.dumps(execution_state))
+            if isinstance(execution_state, dict)
+            else None
+        )
+
+        margin = snapshot.get("top_margin")
+        try:
+            margin_value = float(margin) if margin is not None else None
+        except (TypeError, ValueError):
+            margin_value = None
+
+        minimum_margin = float(self.minimum_v1_margin)
+        margin_eligible = bool(
+            snapshot.get("ready")
+            and margin_value is not None
+            and margin_value >= minimum_margin
+        )
+
+        snapshot["minimum_v1_margin"] = minimum_margin
+        snapshot["margin_eligible"] = margin_eligible
+        snapshot["margin_status"] = (
+            "READY" if margin_eligible
+            else "WAITING_MARGIN" if snapshot.get("ready")
+            else "WARMING"
+        )
+
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
         snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
         digit = snapshot.get("selected_digit")
+
+        # Execution gate: rank #1 is visible continuously, but it is not
+        # executable until the separation from rank #2 reaches the minimum.
+        if not snapshot.get("margin_eligible"):
+            return None, snapshot
 
         if lock_target and digit is not None:
             self.locked_target_snapshots[sid] = {
@@ -508,6 +552,9 @@ class MultiUserEngine:
             "history_count": snapshot.get("history_count"),
             "selected_digit": snapshot.get("selected_digit"),
             "top_margin": snapshot.get("top_margin"),
+            "minimum_v1_margin": snapshot.get("minimum_v1_margin"),
+            "margin_eligible": snapshot.get("margin_eligible"),
+            "margin_status": snapshot.get("margin_status"),
             "excluded_digit": snapshot.get("excluded_digit"),
             "rank_seq": snapshot.get("rank_seq"),
             "rank_epoch": snapshot.get("rank_epoch"),
@@ -843,6 +890,25 @@ class MultiUserEngine:
 
         active["fast_result"] = "WIN" if is_win else "LOSS"
 
+        execution_state = self.execution_contract_state.get(int(sid))
+        if (
+            isinstance(execution_state, dict)
+            and str(execution_state.get("contract_id") or "") == contract_id
+        ):
+            execution_state["decision_seq"] = int(incoming_seq or 0) or None
+            execution_state["decision_epoch"] = int(epoch or 0) or None
+            execution_state["decision_digit"] = int(digit)
+            execution_state["local_result"] = "WIN" if is_win else "LOSS"
+            execution_state["decided"] = True
+            execution_state["decision_source"] = "SERVER_MARKET_TICK"
+            self.execution_contract_state[int(sid)] = execution_state
+
+            snapshot = self.digit_score_snapshots.get(int(sid))
+            if isinstance(snapshot, dict):
+                snapshot["execution_contract"] = json.loads(
+                    json.dumps(execution_state)
+                )
+
         async with self._lock(sid):
             db = SessionLocal()
 
@@ -903,20 +969,28 @@ class MultiUserEngine:
                 # new proposal on the critical path.
                 payload = None
 
-                # The latest V1 rank #1 is the authoritative NEXT target.
-                # A proposal armed for an older #1 is stale and is never bought.
-                desired_next = self.live_next_target.get(sid)
+                # The latest V1 rank #1 is the authoritative NEXT target,
+                # but it is executable only when the V1 margin gate is open.
+                current_snapshot = self._score_all_digits(sid)
+                margin_ok = bool(current_snapshot.get("margin_eligible"))
 
-                if desired_next is None:
-                    desired_next, _ = self._choose_scored_digit(
+                if not margin_ok:
+                    s.current_stake = expected_stake
+                    s.phase = "RECOVERY_WAITING_MARGIN"
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                desired_next, current_snapshot = self._choose_scored_digit(
+                    sid,
+                    lock_target=True,
+                )
+                if desired_next is not None:
+                    self._set_live_next_target(
                         sid,
-                        lock_target=True,
+                        desired_next,
                     )
-                    if desired_next is not None:
-                        self._set_live_next_target(
-                            sid,
-                            desired_next,
-                        )
 
                 if desired_next is not None:
                     next_digit = int(desired_next)
@@ -1461,7 +1535,12 @@ class MultiUserEngine:
                         s.current_stake = expected_stake
                     fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
                     if fresh_digit is None:
-                        s.phase = "RECOVERY_WAITING_RANK"
+                        s.phase = (
+                            "RECOVERY_WAITING_MARGIN"
+                            if snapshot.get("ready") and not snapshot.get("margin_eligible")
+                            else "RECOVERY_WAITING_RANK"
+                        )
+                        s.updated_at = datetime.utcnow()
                         db.commit()
                         return
                     s.candidate_digit = int(fresh_digit)
@@ -1491,13 +1570,17 @@ class MultiUserEngine:
                 if int(s.current_trade) == 0:
                     scored_digit, snapshot = self._choose_scored_digit(s.id, lock_target=True)
                     if scored_digit is None:
-                        s.phase = "DIGIT_SCORE_WARMING"
-                        s.last_error = (
-                            "Scoring digits 0-9 from canonical ticks "
-                            f"({snapshot.get('history_count', 0)}/"
-                            f"{snapshot.get('minimum_history', 10)}). "
-                            "Deriv history bootstrap/live feed is warming."
-                        )
+                        if snapshot.get("ready") and not snapshot.get("margin_eligible"):
+                            s.phase = "WAITING_V1_MARGIN"
+                            s.last_error = None
+                        else:
+                            s.phase = "DIGIT_SCORE_WARMING"
+                            s.last_error = (
+                                "Scoring digits 0-9 from canonical ticks "
+                                f"({snapshot.get('history_count', 0)}/"
+                                f"{snapshot.get('minimum_history', 10)}). "
+                                "Deriv history bootstrap/live feed is warming."
+                            )
                         s.updated_at = datetime.utcnow()
                         db.commit()
                         return
@@ -1526,7 +1609,11 @@ class MultiUserEngine:
                         lock_target=True,
                     )
                     if scored_digit is None:
-                        s.phase = "DIGIT_SCORE_WARMING"
+                        s.phase = (
+                            "WAITING_V1_MARGIN"
+                            if snapshot.get("ready") and not snapshot.get("margin_eligible")
+                            else "DIGIT_SCORE_WARMING"
+                        )
                         s.updated_at = datetime.utcnow()
                         db.commit()
                         return
@@ -1553,12 +1640,22 @@ class MultiUserEngine:
                     s.id,
                     lock_target=True,
                 )
-                if scored_digit is not None:
-                    s.candidate_digit = int(scored_digit)
-                    self._set_live_next_target(
-                        s.id,
-                        int(scored_digit),
+                if scored_digit is None:
+                    s.phase = (
+                        "WAITING_V1_MARGIN"
+                        if snapshot.get("ready") and not snapshot.get("margin_eligible")
+                        else "DIGIT_SCORE_WARMING"
                     )
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                s.candidate_digit = int(scored_digit)
+                self._set_live_next_target(
+                    s.id,
+                    int(scored_digit),
+                )
 
                 s.phase = "DIRECT_BUY_READY"
                 s.last_error = None
@@ -1900,10 +1997,18 @@ class MultiUserEngine:
         self.buy_rate_limit_until.pop(int(s.id), None)
         self.buy_rate_limit_streak.pop(int(s.id), None)
 
-        # Arm only AFTER Deriv acknowledges the BUY. Any ticks received while
-        # the BUY request was in flight are excluded from local WIN/LOSS.
+        # Capture the callback sequence at BUY acknowledgement. If the market
+        # advanced while the BUY request was in flight, we cannot prove which
+        # of those ticks Deriv used for the 1-tick contract from market-stream
+        # timing alone. In that rare case, do NOT falsely judge a later tick;
+        # wait for authoritative contract settlement for this trade.
         buy_ack_seq = int(self.tick_sequence.get(s.id, 0))
         buy_ack_epoch = int(self.latest_tick_epoch.get(s.id) or 0)
+        inflight_tick_count = max(
+            0,
+            int(buy_ack_seq) - int(buy_sent_after_seq),
+        )
+        official_only_inflight = inflight_tick_count > 0
 
         # Lock the row again and prove that this process still owns the exact
         # claim before committing the purchased contract into the cycle.
@@ -1982,7 +2087,12 @@ class MultiUserEngine:
                         "buy_sent_after_epoch": int(buy_sent_after_epoch),
                         "buy_ack_seq": int(buy_ack_seq),
                         "buy_ack_epoch": int(buy_ack_epoch),
-                        "arming_policy": "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK",
+                        "inflight_tick_count": int(inflight_tick_count),
+                        "arming_policy": (
+                            "OFFICIAL_ONLY_INFLIGHT_TICK"
+                            if official_only_inflight
+                            else "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK"
+                        ),
                     },
                 }),
             )
@@ -2001,23 +2111,61 @@ class MultiUserEngine:
             purchase_epoch,
         )
 
-        self.fast_contracts[row.id] = {
+        execution_state = {
             "contract_id": contract_id,
             "target_digit": int(payload["digit"]),
             "symbol": str(row.symbol),
             "trade_no": int(payload["trade_no"]),
-            "armed_after_epoch": decision_after_epoch,
-            "armed_after_seq": int(buy_ack_seq),
             "buy_sent_after_seq": int(buy_sent_after_seq),
+            "buy_sent_after_epoch": int(buy_sent_after_epoch),
             "buy_ack_seq": int(buy_ack_seq),
-            "score_evidence": score_evidence,
-            "buy_claim_token": claim["token"],
-            "instance_id": self.instance_id,
+            "buy_ack_epoch": int(buy_ack_epoch),
+            "purchase_epoch": int(purchase_epoch or 0) or None,
+            "inflight_tick_count": int(inflight_tick_count),
+            "decision_mode": (
+                "OFFICIAL_ONLY_INFLIGHT_TICK"
+                if official_only_inflight
+                else "FAST_NEXT_TICK"
+            ),
+            "decision_seq": None,
+            "decision_epoch": None,
+            "decision_digit": None,
+            "local_result": None,
+            "official_result": None,
             "decided": False,
         }
+        self.execution_contract_state[int(row.id)] = execution_state
+
+        if official_only_inflight:
+            self.fast_contracts.pop(int(row.id), None)
+        else:
+            self.fast_contracts[row.id] = {
+                "contract_id": contract_id,
+                "target_digit": int(payload["digit"]),
+                "symbol": str(row.symbol),
+                "trade_no": int(payload["trade_no"]),
+                "armed_after_epoch": decision_after_epoch,
+                "armed_after_seq": int(buy_ack_seq),
+                "buy_sent_after_seq": int(buy_sent_after_seq),
+                "buy_ack_seq": int(buy_ack_seq),
+                "score_evidence": score_evidence,
+                "buy_claim_token": claim["token"],
+                "instance_id": self.instance_id,
+                "decided": False,
+            }
+
+        snapshot = self.digit_score_snapshots.get(int(row.id))
+        if isinstance(snapshot, dict):
+            snapshot["execution_contract"] = json.loads(
+                json.dumps(execution_state)
+            )
 
         row.open_contract_id = contract_id
-        row.phase = "PIPELINE_ACTIVE"
+        row.phase = (
+            "WAITING_OFFICIAL_SETTLEMENT_INFLIGHT_TICK"
+            if official_only_inflight
+            else "PIPELINE_ACTIVE"
+        )
         row.current_trade = int(payload["trade_no"])
         row.pending_trade_json = None
         row.pending_real_confirmation = False
@@ -2030,9 +2178,10 @@ class MultiUserEngine:
 
         # Direct-buy build: no per-trade proposal cache to rebuild.
 
-        # Do not replay ticks received while BUY was in flight.
-        # The first genuinely new live server tick after buy_ack_seq is the
-        # only tick eligible to decide this locally armed contract.
+        # Normal case: no market tick occurred while BUY was in flight, so
+        # the first genuinely new server tick after BUY ACK can decide locally.
+        # Ambiguous case: one or more in-flight ticks occurred; no fast owner
+        # exists and step() waits for authoritative Deriv settlement instead.
 
         asyncio.create_task(
             self._subscribe_open_contract(
@@ -2308,9 +2457,28 @@ class MultiUserEngine:
                         == str(contract_id)
                     ):
                         s.open_contract_id = None
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
 
+                    execution_state = self.execution_contract_state.get(int(sid))
+                    if (
+                        isinstance(execution_state, dict)
+                        and str(execution_state.get("contract_id") or "")
+                        == str(contract_id)
+                        and log.profit is not None
+                    ):
+                        official = "WIN" if float(log.profit) > 0 else "LOSS"
+                        execution_state["official_result"] = official
+                        if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
+                            execution_state["decided"] = True
+                            execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                        self.execution_contract_state[int(sid)] = execution_state
+                        snapshot = self.digit_score_snapshots.get(int(sid))
+                        if isinstance(snapshot, dict):
+                            snapshot["execution_contract"] = json.loads(
+                                json.dumps(execution_state)
+                            )
+
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
                     return
 
                 profit = float(
@@ -2376,13 +2544,31 @@ class MultiUserEngine:
                         (int(sid), str(contract_id))
                     )
 
-                if fast:
-                    official = (
-                        "WIN"
-                        if profit > 0
-                        else "LOSS"
-                    )
+                official = (
+                    "WIN"
+                    if profit > 0
+                    else "LOSS"
+                )
 
+                execution_state = self.execution_contract_state.get(int(sid))
+                if (
+                    isinstance(execution_state, dict)
+                    and str(execution_state.get("contract_id") or "")
+                    == str(contract_id)
+                ):
+                    execution_state["official_result"] = official
+                    if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
+                        execution_state["decided"] = True
+                        execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                        execution_state["local_result"] = None
+                    self.execution_contract_state[int(sid)] = execution_state
+                    snapshot = self.digit_score_snapshots.get(int(sid))
+                    if isinstance(snapshot, dict):
+                        snapshot["execution_contract"] = json.loads(
+                            json.dumps(execution_state)
+                        )
+
+                if fast:
                     fast["official_result"] = official
 
                     # Expose the exact authoritative settlement used for
