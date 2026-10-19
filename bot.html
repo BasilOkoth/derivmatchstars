@@ -798,6 +798,26 @@
 <button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
 
 </div>
+<div id="realTradeConfirmBar"
+     class="hidden mt-2 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="min-w-0">
+            <div class="text-[9px] uppercase tracking-[0.16em] text-amber-400 font-black">
+                REAL trade ready
+            </div>
+            <div id="realTradeConfirmSummary" class="text-xs font-semibold text-white mt-0.5">
+                Waiting for eligible V1 target…
+            </div>
+        </div>
+        <button id="confirmRealTradeButton"
+                type="button"
+                onclick="confirmPreparedRealTrade()"
+                class="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-xs font-black tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
+            CONFIRM REAL TRADE
+        </button>
+    </div>
+</div>
+
 </div>
 </div>
 </div>
@@ -10830,10 +10850,138 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             lastAutoRestartPhase: null,
             lastCompletedServerCycleTrade: 0,
             marginSyncPending: false,
-            lastMarginSyncAt: 0
+            lastMarginSyncAt: 0,
+            realConfirmPending: false,
+            realLastQuote: null
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
+
+        function renderRealTradeConfirmation(st) {
+            const bar = document.getElementById('realTradeConfirmBar');
+            const summary = document.getElementById('realTradeConfirmSummary');
+            const button = document.getElementById('confirmRealTradeButton');
+            if (!bar || !summary || !button) return;
+
+            const phase = String(st?.phase || '').toUpperCase();
+            const mode = String(st?.account_mode || '').toUpperCase();
+            const ready = (
+                mode === 'REAL' &&
+                ['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(phase)
+            );
+
+            if (!ready) {
+                bar.classList.add('hidden');
+                button.disabled = false;
+                button.textContent = 'CONFIRM REAL TRADE';
+                return;
+            }
+
+            const tradeNo = Number(st?.current_trade || 0) + 1;
+            const digit = st?.candidate_digit;
+            const stake = Number(st?.current_stake || 0);
+            const margin = Number(st?.digit_score?.top_margin);
+            const required = Number(
+                st?.digit_score?.minimum_v1_margin ??
+                getConfiguredMinimumV1Margin()
+            );
+
+            summary.textContent =
+                `Trade ${tradeNo} · digit ${digit ?? '—'} · stake $${stake.toFixed(2)}` +
+                (
+                    Number.isFinite(margin) && Number.isFinite(required)
+                        ? ` · margin ${margin.toFixed(2)} / ${required.toFixed(2)}`
+                        : ''
+                );
+
+            bar.classList.remove('hidden');
+
+            const pending = window.SERVER_EXECUTION?.realConfirmPending === true;
+            button.disabled = pending;
+            button.textContent = pending
+                ? 'CONFIRMING…'
+                : 'CONFIRM REAL TRADE';
+        }
+
+        async function confirmPreparedRealTrade() {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.enabled || !s.sessionId || s.realConfirmPending) return;
+
+            const st = s.state || {};
+            const phase = String(st.phase || '').toUpperCase();
+            const mode = String(st.account_mode || '').toUpperCase();
+
+            if (mode !== 'REAL') {
+                alert('REAL account mode is not active.');
+                return;
+            }
+
+            if (!['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(phase)) {
+                alert(`REAL strategy is not ready for purchase yet (phase ${phase || 'UNKNOWN'}).`);
+                return;
+            }
+
+            s.realConfirmPending = true;
+            renderRealTradeConfirmation(st);
+
+            try {
+                const quote = await serverExecRequest(
+                    `/real-manual/sessions/${s.sessionId}/quote`,
+                    {
+                        method: 'POST',
+                        body: {}
+                    }
+                );
+
+                s.realLastQuote = quote;
+
+                const ok = window.confirm(
+                    `CONFIRM REAL PURCHASE\n\n` +
+                    `Trade: ${quote.trade_no}/${quote.max_trades}\n` +
+                    `Target digit: ${quote.digit}\n` +
+                    `Stake: $${Number(quote.stake).toFixed(2)}\n` +
+                    `Ask price: $${Number(quote.ask_price).toFixed(2)}\n` +
+                    `Account: ${quote.account_id}\n\n` +
+                    `This will submit ONE real-money DIGITMATCH purchase.`
+                );
+
+                if (!ok) {
+                    log('REAL purchase confirmation cancelled by user', 'SYSTEM');
+                    await pollServerExecutionState();
+                    return;
+                }
+
+                const result = await serverExecRequest(
+                    `/real-manual/sessions/${s.sessionId}/confirm`,
+                    {
+                        method: 'POST',
+                        body: {
+                            confirmation_token: quote.confirmation_token,
+                            confirm: true
+                        }
+                    }
+                );
+
+                log(
+                    `✅ REAL purchase submitted · trade ${result.trade_no}/${result.max_trades} · digit ${result.digit} · $${Number(result.stake).toFixed(2)}`,
+                    'TRADE'
+                );
+
+                await pollServerExecutionState();
+                renderServerExecutionState();
+                try { updateButtonState(); } catch (_) {}
+
+            } catch (err) {
+                log(`❌ REAL confirmation failed: ${err.message}`, 'ERROR');
+                alert(`REAL trade not submitted: ${err.message}`);
+                try { await pollServerExecutionState(); } catch (_) {}
+            } finally {
+                s.realConfirmPending = false;
+                renderRealTradeConfirmation(s.state || {});
+            }
+        }
+
+        window.confirmPreparedRealTrade = confirmPreparedRealTrade;
 
         function formatServerMoney(value) {
             const n = Number(value);
@@ -11178,6 +11326,25 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-purple-300';
                     break;
 
+                case 'REAL_TRADE_READY':
+                case 'REAL_NEXT_TRADE_READY':
+                    result = 'REAL READY';
+                    status = hasDigit
+                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
+                        : 'REAL strategy target is ready';
+                    action = 'Review the target and press CONFIRM REAL TRADE for this one purchase';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
+                case 'REAL_QUOTED':
+                    result = 'REAL QUOTED';
+                    status = hasDigit
+                        ? `Fresh REAL quote prepared · digit ${digit} · Stake $${stake.toFixed(2)}`
+                        : 'Fresh REAL quote prepared';
+                    action = 'Complete the explicit confirmation while the quote is valid';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
                 case 'WAITING_REAL_CONFIRMATION':
                     result = 'CONFIRM REQUIRED';
                     status = hasDigit
@@ -11313,34 +11480,35 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
                 </div>
 
-                <div class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
-                    <div class="rounded-lg bg-cyan-950/30 border border-cyan-500/20 p-2">
-                        <div class="text-[9px] uppercase text-cyan-400 font-bold">Purchased Target</div>
-                        <div id="recycle-current-target" class="text-lg font-black text-white">—</div>
-                    </div>
-                    <div class="rounded-lg bg-rose-950/30 border border-rose-500/20 p-2">
-                        <div class="text-[9px] uppercase text-rose-400 font-bold">Decision Digit</div>
-                        <div id="recycle-decision-digit" class="text-lg font-black text-white">—</div>
-                    </div>
-                    <div class="rounded-lg bg-amber-950/30 border border-amber-500/20 p-2">
-                        <div class="text-[9px] uppercase text-amber-400 font-bold">Next V1 Target</div>
-                        <div id="recycle-attempt" class="text-lg font-black text-white">—</div>
-                    </div>
-                    <div class="rounded-lg bg-violet-950/30 border border-violet-500/20 p-2">
-                        <div class="text-[9px] uppercase text-violet-400 font-bold">Trade</div>
-                        <div id="recycle-trade" class="text-lg font-black text-white">—</div>
-                    </div>
-                    <div class="rounded-lg bg-emerald-950/30 border border-emerald-500/20 p-2">
-                        <div class="text-[9px] uppercase text-emerald-400 font-bold">Stake</div>
-                        <div id="recycle-stake" class="text-lg font-black text-white">$0.00</div>
-                    </div>
-                    <div class="rounded-lg bg-sky-950/30 border border-sky-500/20 p-2">
-                        <div class="text-[9px] uppercase text-sky-400 font-bold">Margin Gate</div>
-                        <div id="recycle-margin-gate" class="text-lg font-black text-white">—</div>
+                                <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
+                    <div class="grid grid-cols-3 md:grid-cols-6 divide-x divide-slate-700/50">
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Purchased</div>
+                            <div id="recycle-current-target" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Decision</div>
+                            <div id="recycle-decision-digit" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Next V1</div>
+                            <div id="recycle-attempt" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Trade</div>
+                            <div id="recycle-trade" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Stake</div>
+                            <div id="recycle-stake" class="mt-0.5 text-sm font-black text-white leading-none">$0.00</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Margin</div>
+                            <div id="recycle-margin-gate" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
+                        </div>
                     </div>
                 </div>
-
-                <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+<div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
                     The bot buys only when V1 rank #1 leads rank #2 by your configured Minimum V1 Margin. Below the threshold it keeps watching ticks without buying.
                 </div>
@@ -11442,8 +11610,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? `Minimum required margin: ${minimumMargin.toFixed(2)}`
                     : '';
                 marginGateEl.className = marginReady
-                    ? 'text-lg font-black text-green-400'
-                    : 'text-lg font-black text-amber-300';
+                    ? 'mt-0.5 text-sm font-black text-green-400 leading-none'
+                    : 'mt-0.5 text-sm font-black text-amber-300 leading-none';
             }
 
             if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
@@ -12035,6 +12203,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 }
             }
             renderServerTradeNarrative(st);
+            renderRealTradeConfirmation(st);
             if (
                 st?.last_settlement?.settled_at &&
                 Date.now() - Number(
@@ -13391,13 +13560,35 @@ window.isBotRunning = true;
                 await pollServerExecutionState();
                 try { updateButtonState(); } catch (_) {}
 
-                log('✅ Server START accepted', 'SYSTEM');
-                updateTradeStatus(
-                    'SERVER ACTIVE',
-                    'Server worker owns execution',
-                    'Dashboard may be closed; worker continues',
-                    'trade'
+                const startedMode = String(
+                    window.SERVER_EXECUTION?.state?.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                log(
+                    startedMode === 'REAL'
+                        ? '✅ REAL strategy START accepted · waiting for eligible margin/confirmation'
+                        : '✅ Server START accepted',
+                    'SYSTEM'
                 );
+
+                if (startedMode === 'REAL') {
+                    updateTradeStatus(
+                        'REAL STRATEGY ACTIVE',
+                        'Server is scoring V1 and enforcing the margin gate',
+                        'When eligible, CONFIRM REAL TRADE will appear for one purchase',
+                        'trade'
+                    );
+                } else {
+                    updateTradeStatus(
+                        'SERVER ACTIVE',
+                        'Server worker owns execution',
+                        'Dashboard may be closed; worker continues',
+                        'trade'
+                    );
+                }
             } catch (e) {
                 if (window.SERVER_EXECUTION) {
                     window.SERVER_EXECUTION.startPending = false;
@@ -13564,14 +13755,24 @@ window.isBotRunning = true;
             // still belongs to the previous completed cycle (for example
             // Trade 13, running=false). Do not let that stale snapshot cancel
             // the click before POST /sessions/{sid}/start is sent.
+            const realReadyPhase = (
+                serverState &&
+                String(serverState.account_mode || '').toUpperCase() === 'REAL' &&
+                ['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(
+                    String(serverState.phase || '').toUpperCase()
+                )
+            );
+
             const authoritativeRunning = startPending
                 ? true
-                : (
-                    serverState &&
-                    typeof serverState.running === 'boolean'
-                )
-                    ? serverState.running === true
-                    : window.isBotRunning === true;
+                : realReadyPhase
+                    ? true
+                    : (
+                        serverState &&
+                        typeof serverState.running === 'boolean'
+                    )
+                        ? serverState.running === true
+                        : window.isBotRunning === true;
 
             window.isBotRunning = authoritativeRunning;
 
@@ -13580,16 +13781,26 @@ window.isBotRunning = true;
                 toggleButton.disabled = true;
                 toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active', 'stop-button-active', 'hover:bg-red-700');
                 toggleButton.classList.add('bg-amber-600', 'opacity-80', 'cursor-wait');
+            } else if (realReadyPhase) {
+                toggleButton.disabled = true;
+                toggleButton.classList.remove(
+                    'bg-green-600', 'hover:bg-green-700', 'start-button-active',
+                    'stop-button-active', 'hover:bg-red-700', 'bg-amber-600',
+                    'cursor-wait'
+                );
+                toggleButton.classList.add('bg-slate-700', 'opacity-70', 'cursor-default');
+                toggleButton.innerHTML =
+                    '<span class="flex items-center justify-center"><span class="mr-2">🔐</span> REAL READY</span>';
             } else if (authoritativeRunning) {
                 toggleButton.disabled = false;
-                toggleButton.classList.remove('bg-amber-600', 'opacity-80', 'cursor-wait');
+                toggleButton.classList.remove('bg-amber-600', 'opacity-80', 'cursor-wait', 'bg-slate-700', 'cursor-default');
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
                 toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
                 toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');
             } else {
                 toggleButton.disabled = false;
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">🚀</span> START BOT</span>';
-                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700', 'bg-amber-600', 'opacity-80', 'cursor-wait');
+                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700', 'bg-amber-600', 'opacity-80', 'cursor-wait', 'bg-slate-700', 'cursor-default');
                 toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
             }
         
