@@ -803,17 +803,17 @@
     <div class="flex items-center justify-between gap-3 flex-wrap">
         <div class="min-w-0">
             <div class="text-[9px] uppercase tracking-[0.16em] text-amber-400 font-black">
-                REAL trade ready
+                REAL purchase ready
             </div>
-            <div id="realTradeConfirmSummary" class="text-xs font-semibold text-white mt-0.5">
+            <div><div id="realTradeConfirmSummary" class="text-xs font-semibold text-white mt-0.5">
                 Waiting for eligible V1 target…
-            </div>
+            </div><div class="text-[9px] text-slate-400 mt-1">Your click authorizes this one REAL purchase.</div></div>
         </div>
         <button id="confirmRealTradeButton"
                 type="button"
                 onclick="confirmPreparedRealTrade()"
                 class="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-xs font-black tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
-            CONFIRM REAL TRADE
+            BUY REAL TRADE
         </button>
     </div>
 </div>
@@ -10873,7 +10873,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (!ready) {
                 bar.classList.add('hidden');
                 button.disabled = false;
-                button.textContent = 'CONFIRM REAL TRADE';
+                button.textContent = 'BUY REAL TRADE';
                 return;
             }
 
@@ -10899,8 +10899,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const pending = window.SERVER_EXECUTION?.realConfirmPending === true;
             button.disabled = pending;
             button.textContent = pending
-                ? 'CONFIRMING…'
-                : 'CONFIRM REAL TRADE';
+                ? 'BUYING…'
+                : 'BUY REAL TRADE';
         }
 
         async function confirmPreparedRealTrade() {
@@ -10925,6 +10925,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             renderRealTradeConfirmation(st);
 
             try {
+                // ONE-CLICK REAL FLOW:
+                // The user's click on BUY REAL TRADE is the explicit
+                // authorization for this single purchase. We request a fresh
+                // canonical quote and immediately submit that exact quote.
                 const quote = await serverExecRequest(
                     `/real-manual/sessions/${s.sessionId}/quote`,
                     {
@@ -10934,22 +10938,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 );
 
                 s.realLastQuote = quote;
-
-                const ok = window.confirm(
-                    `CONFIRM REAL PURCHASE\n\n` +
-                    `Trade: ${quote.trade_no}/${quote.max_trades}\n` +
-                    `Target digit: ${quote.digit}\n` +
-                    `Stake: $${Number(quote.stake).toFixed(2)}\n` +
-                    `Ask price: $${Number(quote.ask_price).toFixed(2)}\n` +
-                    `Account: ${quote.account_id}\n\n` +
-                    `This will submit ONE real-money DIGITMATCH purchase.`
-                );
-
-                if (!ok) {
-                    log('REAL purchase confirmation cancelled by user', 'SYSTEM');
-                    await pollServerExecutionState();
-                    return;
-                }
 
                 const result = await serverExecRequest(
                     `/real-manual/sessions/${s.sessionId}/confirm`,
@@ -11332,7 +11320,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     status = hasDigit
                         ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
                         : 'REAL strategy target is ready';
-                    action = 'Review the target and press CONFIRM REAL TRADE for this one purchase';
+                    action = 'Press BUY REAL TRADE once to submit this prepared purchase';
                     resultClass = 'text-xs font-bold text-amber-300';
                     break;
 
@@ -13578,7 +13566,7 @@ window.isBotRunning = true;
                     updateTradeStatus(
                         'REAL STRATEGY ACTIVE',
                         'Server is scoring V1 and enforcing the margin gate',
-                        'When eligible, CONFIRM REAL TRADE will appear for one purchase',
+                        'When eligible, BUY REAL TRADE appears; one click submits that purchase',
                         'trade'
                     );
                 } else {
