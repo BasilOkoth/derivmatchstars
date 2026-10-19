@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import SessionLocal
@@ -17,7 +17,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.8.0-live-v1-target-tracking",
+    version="3.9.0-shared-account-execution",
 )
 
 
@@ -88,6 +88,10 @@ class Candidate(BaseModel):
     digit: int
 
 
+class MarginGateRequest(BaseModel):
+    minimum_margin: float = Field(ge=0.0, le=50.0)
+
+
 @app.on_event("startup")
 async def startup():
     await engine.start()
@@ -97,7 +101,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.8.0-live-v1-target-tracking",
+        "version": "3.9.0-shared-account-execution",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -622,6 +626,11 @@ def create_session(
 
         account_type = str(acct.account_type or "").lower()
         mode = "DEMO" if account_type == "demo" else "REAL"
+        if mode == "REAL" and not settings.allow_real_mode:
+            raise HTTPException(
+                status_code=403,
+                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
+            )
 
         s = (
             db.query(TradingSession)
@@ -770,6 +779,45 @@ def candidate(
         db.close()
 
 
+@app.post("/sessions/{sid}/margin-gate")
+def set_margin_gate(
+    sid: int,
+    body: MarginGateRequest,
+    user_id: str = Depends(current_user_id),
+):
+    if body.minimum_margin < 0 or body.minimum_margin > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="minimum_margin must be between 0 and 50",
+        )
+
+    db = SessionLocal()
+    try:
+        s = owns_session(db, user_id, sid)
+        value = engine.set_minimum_v1_margin(
+            int(s.id),
+            float(body.minimum_margin),
+        )
+        try:
+            snapshot = engine._score_all_digits(int(s.id))
+        except Exception:
+            snapshot = (
+                getattr(engine, "digit_score_snapshots", {}) or {}
+            ).get(int(s.id)) or {}
+
+        return {
+            "ok": True,
+            "session_id": int(s.id),
+            "account_mode": str(s.account_mode),
+            "minimum_v1_margin": float(value),
+            "top_margin": snapshot.get("top_margin"),
+            "margin_eligible": snapshot.get("margin_eligible"),
+            "margin_status": snapshot.get("margin_status"),
+        }
+    finally:
+        db.close()
+
+
 @app.post("/sessions/{sid}/start")
 def start(
     sid: int,
@@ -779,6 +827,14 @@ def start(
 
     try:
         s = owns_session(db, user_id, sid)
+        if (
+            str(s.account_mode or "").upper() == "REAL"
+            and not settings.allow_real_mode
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
+            )
 
         if s.open_contract_id:
             s.running = True
@@ -892,26 +948,3 @@ def stop(
         db.close()
 
 
-@app.post("/sessions/{sid}/real/confirm")
-async def confirm_real(
-    sid: int,
-    user_id: str = Depends(current_user_id),
-):
-    try:
-        await engine.confirm_real(user_id, sid)
-
-        return {
-            "ok": True,
-            "session_id": sid,
-        }
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        )
-
-
-# Explicitly confirmed, one-purchase-at-a-time REAL API.
-from .real_manual import router as real_manual_router
-app.include_router(real_manual_router)

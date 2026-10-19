@@ -8,6 +8,7 @@ from collections import deque
 
 from .db import SessionLocal
 from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
+from .config import settings
 from .security import decrypt_token
 from .deriv_rest import get_ws_url
 from .deriv_ws import DerivWS
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class MultiUserEngine:
     """
-    DigitMatchStar DEMO low-latency engine.
+    DigitMatchStar low-latency engine for the selected Deriv account.
 
     Strategy invariant:
       1. Rank and submit BUY for Trade N.
@@ -35,7 +36,9 @@ class MultiUserEngine:
       6. If the fast tick result disagrees with Deriv's eventual settlement,
          stop with RECONCILE_MISMATCH rather than silently continuing.
 
-    Automated execution remains DEMO-only.
+    DEMO and REAL sessions use the same strategy, purchase claims, tick
+    decisions, recovery progression and settlement reconciliation. The session
+    account_id determines which Deriv account receives each purchase.
     """
 
     def __init__(self):
@@ -995,7 +998,7 @@ class MultiUserEngine:
 
                 # LIVE V1 RECOVERY:
                 # the purchased contract remains fixed. After its loss, use the
-                # freshest current V1 rank #1 for the next direct DEMO BUY.
+                # freshest current V1 rank #1 for the next account-bound BUY.
                 expected_trade_no = int(s.current_trade) + 1
                 expected_stake = round(
                     float(s.current_stake) * float(s.multiplier),
@@ -1048,20 +1051,6 @@ class MultiUserEngine:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                # REAL follows the same recovery calculation as DEMO, but the
-                # next purchase is left in a ready state for explicit
-                # authorization. Do not wait for settlement of the previous
-                # 1-tick contract; that reconciliation remains background-only.
-                if str(s.account_mode).upper() == "REAL":
-                    s.running = False
-                    s.paused = False
-                    s.pending_real_confirmation = True
-                    s.phase = "REAL_NEXT_TRADE_READY"
-                    s.last_error = None
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
                 client = await self._client(user_id, account_id)
                 currency = await self._currency_for(db, s)
 
@@ -1085,7 +1074,7 @@ class MultiUserEngine:
                 # No proposal_open_contract.is_sold wait occurs here.
                 client = await self._client(user_id, account_id)
 
-                await self._execute_demo_buy(
+                await self._execute_account_buy(
                     db,
                     s,
                     client,
@@ -1467,7 +1456,7 @@ class MultiUserEngine:
                     return
 
                 # ----------------------------------------------------------
-                # LIVE DEMO PIPELINE IS TICK-OWNED, NOT SETTLEMENT-OWNED
+                # SHARED ACCOUNT PIPELINE IS TICK-OWNED, NOT SETTLEMENT-OWNED
                 # ----------------------------------------------------------
                 # While this process still owns the active paid contract,
                 # the first eligible NEXT market tick drives WIN/LOSS and
@@ -1595,11 +1584,6 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                if s.pending_real_confirmation:
-                    s.phase = "WAITING_REAL_CONFIRMATION"
-                    db.commit()
-                    return
-
                 if s.current_trade >= s.max_trades:
                     s.running = False
                     s.phase = "MAX_TRADES_REACHED"
@@ -1635,39 +1619,6 @@ class MultiUserEngine:
 
                 if s.candidate_digit is None:
                     s.phase = "WAITING_CANDIDATE"
-                    db.commit()
-                    return
-
-                # REAL uses the SAME canonical strategy engine as DEMO.
-                # The only difference is purchase authorization: the engine
-                # prepares the exact target/stake/trade state, then waits for
-                # the explicit REAL purchase endpoint to submit the order.
-                if str(s.account_mode).upper() == "REAL":
-                    scored_digit, snapshot = self._choose_scored_digit(
-                        s.id,
-                        lock_target=True,
-                    )
-                    if scored_digit is None:
-                        s.phase = (
-                            "WAITING_V1_MARGIN"
-                            if snapshot.get("ready") and not snapshot.get("margin_eligible")
-                            else "DIGIT_SCORE_WARMING"
-                        )
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                        return
-
-                    s.candidate_digit = int(scored_digit)
-                    self._set_live_next_target(
-                        s.id,
-                        int(scored_digit),
-                    )
-                    s.running = False
-                    s.paused = False
-                    s.pending_real_confirmation = True
-                    s.phase = "REAL_TRADE_READY"
-                    s.last_error = None
-                    s.updated_at = datetime.utcnow()
                     db.commit()
                     return
 
@@ -1709,7 +1660,7 @@ class MultiUserEngine:
                     currency=currency,
                 )
 
-                await self._execute_demo_buy(
+                await self._execute_account_buy(
                     db,
                     s,
                     client,
@@ -1728,7 +1679,7 @@ class MultiUserEngine:
         except Exception:
             return {}
 
-    def _claim_demo_buy(self, db, sid: int, payload: dict):
+    def _claim_account_buy(self, db, sid: int, payload: dict):
         """
         Atomically claim one BUY through the shared database.
 
@@ -1850,7 +1801,7 @@ class MultiUserEngine:
             == int(claim.get("trade_no") or 0)
         )
 
-    async def _execute_demo_buy(
+    async def _execute_account_buy(
         self,
         db,
         s,
@@ -1860,9 +1811,14 @@ class MultiUserEngine:
         prearmed: bool,
         rate_retry_used: bool = False,
     ):
-        if str(s.account_mode).upper() != "DEMO":
+        account_mode = str(s.account_mode or "").upper()
+        if account_mode not in {"DEMO", "REAL"}:
             raise RuntimeError(
-                "Automated purchase blocked outside DEMO mode"
+                f"Automated purchase blocked for unsupported account mode {account_mode!r}"
+            )
+        if account_mode == "REAL" and not settings.allow_real_mode:
+            raise RuntimeError(
+                "REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it"
             )
 
         # ------------------------------------------------------------------
@@ -1870,7 +1826,7 @@ class MultiUserEngine:
         # ------------------------------------------------------------------
         # This is the cross-process idempotency barrier. Every code path,
         # including Trade 1, recovery, recycle and fallback, must pass here.
-        claim = self._claim_demo_buy(db, s.id, payload)
+        claim = self._claim_account_buy(db, s.id, payload)
 
         if not claim:
             # Another process/path already owns or advanced this logical trade.
@@ -1934,13 +1890,13 @@ class MultiUserEngine:
                     amount=float(payload["stake"]),
                     currency=str(payload.get("currency") or "USD"),
                     duration=1,
-                    demo=True,
+                    account_mode=account_mode,
                 )
             else:
                 result = await client.buy(
                     payload["proposal_id"],
                     payload["ask_price"],
-                    demo=True,
+                    account_mode=account_mode,
                 )
         except Exception as exc:
             text = str(exc).lower()
@@ -2026,7 +1982,7 @@ class MultiUserEngine:
                     result = await client.buy(
                         payload["proposal_id"],
                         payload["ask_price"],
-                        demo=True,
+                        account_mode=account_mode,
                     )
                 except Exception as retry_exc:
                     exc = retry_exc
@@ -2790,12 +2746,5 @@ class MultiUserEngine:
         """Return the latest authoritative Deriv settlement for this session."""
         value = self.last_settlement_by_sid.get(int(sid))
         return dict(value) if isinstance(value, dict) else None
-
-    async def confirm_real(self, user_id: str, session_id: int):
-        raise RuntimeError(
-            "REAL account connection is supported. Automated REAL-money execution is disabled "
-            "in this low-latency build."
-        )
-
 
 engine = MultiUserEngine()

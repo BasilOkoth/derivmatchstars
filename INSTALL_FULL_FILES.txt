@@ -1,3 +1,3 @@
-These are FULL replacement files, not a patch. Upload files to the same relative paths in GitHub.
-Files: app/engine.py, app/main.py, app/__init__.py, tick-rank-sync-v1.1.js, bot.html, research-suite-loader.js
-Back up existing files first. Redeploy Render after upload. Test DEMO before REAL manual confirmation. Score >=9 execution rule and REAL automation restriction are preserved. This package was statically checked; no live Deriv trade was performed.
+The active Render service starts with `uvicorn app.main:app`; use the `app/` package files and `bot.html` as the runtime sources. Root-level Python files in this export are older snapshots.
+
+The shared server engine supports DEMO and REAL sessions. Set `ALLOW_REAL_MODE=true` in the deployed service to enable REAL sessions. Start Bot runs the selected session; no per-trade REAL confirmation route is exposed. Test the full flow with a DEMO account before using REAL funds.

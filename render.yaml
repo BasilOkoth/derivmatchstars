@@ -26,4 +26,4 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: ALLOW_REAL_MODE
-        value: "false"
+        value: "true"

@@ -1,9 +1,7 @@
-# DigitMatchStar top-ranked digit in DEMO and REAL
+# Shared DEMO and REAL execution
 
-DEMO continues the top-ranked V1 selection without a score-9 threshold, using the existing automated demo engine.
+DEMO and REAL sessions use the same server-side rank selection, V1 margin gate, direct-parameter purchase, per-trade database claim, tick-driven result handling, recovery progression, trade-count stop, and settlement reconciliation. The configured Deriv account on the session determines where a purchase is sent.
 
-REAL already supports explicit individual trade approvals through `/real-manual/sessions/{sid}/quote` and `/real-manual/sessions/{sid}/confirm`. The REAL quote endpoint now selects the **current server-side V1 rank #1** automatically when `digit` is omitted (e.g. `{"stake": 1.00}`). If a `digit` is supplied it must match the current V1 #1. It rejects stale ticks and unsynchronized rankings. It retains the one-time confirmation token, stake cap, durable DB buy claim, and no-retry behavior for uncertain purchases.
+Start Bot begins execution; there is no separate per-trade REAL confirmation button or independent REAL stake cap. The user-configured base stake, multiplier, and maximum trade count control the server session. The dashboard's dollar-exposure estimate is browser-side only and does not cap server purchases.
 
-REAL trading is **not** unattended automation: each purchase still needs confirmation. The bot's normal START action is DEMO-oriented. No automatic REAL loss-recovery sequence is enabled. Avoid REAL trading before testing end-to-end, including backend quote+confirm and UI compatibility.
-
-Trade outcomes and prediction accuracy are not guaranteed; score rank is not a validated probability.
+The engine does not guarantee trade outcomes or prediction accuracy. V1 rank is a strategy signal, not a validated probability. Verify new behavior in DEMO before using a REAL account.

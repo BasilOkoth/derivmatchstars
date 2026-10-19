@@ -15,11 +15,11 @@ MessageCallback = Callable[[dict], Awaitable[None]]
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client for DEMO execution + read-only subscriptions.
+    Event-driven Deriv WebSocket client for the selected Deriv account.
 
-    Safety:
-    - `buy(..., demo=True)` must be explicitly marked DEMO.
-    - REAL purchase automation is not supported by this client.
+    The WebSocket URL is created for the session's account_id. Both DEMO and
+    REAL purchases use that account-bound connection; account_mode is required
+    at each buy call so callers cannot silently omit the intended mode.
     """
 
     def __init__(self, url: str):
@@ -328,19 +328,19 @@ class DerivWS:
         amount: float,
         currency: str = "USD",
         duration: int = 1,
-        demo: bool = False,
+        account_mode: str,
     ):
         """
         Buy DIGITMATCH directly from contract parameters.
 
-        This removes the proposal request from the tick-critical path and is
-        DEMO-only. A small pacing guard prevents BUY bursts from colliding with
-        Deriv's shared trading-request budget.
+        This removes the proposal request from the tick-critical path. Deriv
+        executes on the account bound to this WebSocket connection. A small
+        pacing guard prevents BUY bursts from colliding with Deriv's shared
+        trading-request budget.
         """
-        if not demo:
+        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
             raise RuntimeError(
-                "Automated REAL-money purchase is disabled. "
-                "Direct buy is DEMO-only."
+                "An explicit DEMO or REAL account mode is required for BUY"
             )
 
         params = {
@@ -372,11 +372,16 @@ class DerivWS:
                 }
             )
 
-    async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
-        if not demo:
+    async def buy(
+        self,
+        proposal_id: str,
+        price: float,
+        *,
+        account_mode: str,
+    ):
+        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
             raise RuntimeError(
-                "Automated REAL-money purchase is disabled. "
-                "This client only permits DEMO execution."
+                "An explicit DEMO or REAL account mode is required for BUY"
             )
 
         return await self.request(

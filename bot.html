@@ -798,26 +798,6 @@
 <button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
 
 </div>
-<div id="realTradeConfirmBar"
-     class="hidden mt-2 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2">
-    <div class="flex items-center justify-between gap-3 flex-wrap">
-        <div class="min-w-0">
-            <div class="text-[9px] uppercase tracking-[0.16em] text-amber-400 font-black">
-                REAL purchase ready
-            </div>
-            <div><div id="realTradeConfirmSummary" class="text-xs font-semibold text-white mt-0.5">
-                Waiting for eligible V1 target…
-            </div><div class="text-[9px] text-slate-400 mt-1">Your click authorizes this one REAL purchase.</div></div>
-        </div>
-        <button id="confirmRealTradeButton"
-                type="button"
-                onclick="confirmPreparedRealTrade()"
-                class="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-xs font-black tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
-            BUY REAL TRADE
-        </button>
-    </div>
-</div>
-
 </div>
 </div>
 </div>
@@ -10284,8 +10264,9 @@ function rotateHybridDigit(reason = '') {
                 </div>
 
                 <div class="mt-2 text-gray-400">
-                    Stops before the next recovery purchase if either the hard
-                    trade cap or dollar exposure cap would be exceeded.
+                    <span id="tail-risk-mode-note">
+                        Browser mode applies the trade and dollar exposure stops.
+                    </span>
                 </div>
             `;
 
@@ -10324,7 +10305,21 @@ function rotateHybridDigit(reason = '') {
             }
 
             const state = document.getElementById('tail-cap-state');
-            if (state) state.textContent = window.TAIL_RISK_CONFIG.enabled ? 'ACTIVE' : 'OFF';
+            const serverExecution = window.SERVER_EXECUTION?.enabled === true;
+            if (state) {
+                state.textContent = serverExecution
+                    ? 'CLIENT ONLY'
+                    : window.TAIL_RISK_CONFIG.enabled ? 'ACTIVE' : 'OFF';
+                state.className = serverExecution
+                    ? 'font-bold text-yellow-300'
+                    : 'font-bold text-green-300';
+            }
+            const modeNote = document.getElementById('tail-risk-mode-note');
+            if (modeNote) {
+                modeNote.textContent = serverExecution
+                    ? 'Server mode: Max Trades is enforced by the worker; this browser-side dollar estimate does not block server purchases.'
+                    : 'Browser mode: blocks the next recovery purchase at the selected trade or dollar exposure limit.';
+            }
         }
 
         // Flexible Max Trades: ignore/remove any legacy fixed cycle-dollar cap.
@@ -10659,8 +10654,7 @@ window.executionLock = true;
 
         // ============================================================================
         // SERVER EXECUTION BRIDGE V1
-        // DEMO may continue unattended on the server.
-        // REAL remains server-resident but requires explicit confirmation per purchase.
+        // Server execution uses the selected account for both DEMO and REAL.
         // ============================================================================
         
         window.DMS_BALANCE_REFRESH = window.DMS_BALANCE_REFRESH || {
@@ -10850,126 +10844,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             lastAutoRestartPhase: null,
             lastCompletedServerCycleTrade: 0,
             marginSyncPending: false,
-            lastMarginSyncAt: 0,
-            realConfirmPending: false,
-            realLastQuote: null
+            lastMarginSyncAt: 0
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
-
-        function renderRealTradeConfirmation(st) {
-            const bar = document.getElementById('realTradeConfirmBar');
-            const summary = document.getElementById('realTradeConfirmSummary');
-            const button = document.getElementById('confirmRealTradeButton');
-            if (!bar || !summary || !button) return;
-
-            const phase = String(st?.phase || '').toUpperCase();
-            const mode = String(st?.account_mode || '').toUpperCase();
-            const ready = (
-                mode === 'REAL' &&
-                ['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(phase)
-            );
-
-            if (!ready) {
-                bar.classList.add('hidden');
-                button.disabled = false;
-                button.textContent = 'BUY REAL TRADE';
-                return;
-            }
-
-            const tradeNo = Number(st?.current_trade || 0) + 1;
-            const digit = st?.candidate_digit;
-            const stake = Number(st?.current_stake || 0);
-            const margin = Number(st?.digit_score?.top_margin);
-            const required = Number(
-                st?.digit_score?.minimum_v1_margin ??
-                getConfiguredMinimumV1Margin()
-            );
-
-            summary.textContent =
-                `Trade ${tradeNo} · digit ${digit ?? '—'} · stake $${stake.toFixed(2)}` +
-                (
-                    Number.isFinite(margin) && Number.isFinite(required)
-                        ? ` · margin ${margin.toFixed(2)} / ${required.toFixed(2)}`
-                        : ''
-                );
-
-            bar.classList.remove('hidden');
-
-            const pending = window.SERVER_EXECUTION?.realConfirmPending === true;
-            button.disabled = pending;
-            button.textContent = pending
-                ? 'BUYING…'
-                : 'BUY REAL TRADE';
-        }
-
-        async function confirmPreparedRealTrade() {
-            const s = window.SERVER_EXECUTION;
-            if (!s?.enabled || !s.sessionId || s.realConfirmPending) return;
-
-            const st = s.state || {};
-            const phase = String(st.phase || '').toUpperCase();
-            const mode = String(st.account_mode || '').toUpperCase();
-
-            if (mode !== 'REAL') {
-                alert('REAL account mode is not active.');
-                return;
-            }
-
-            if (!['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(phase)) {
-                alert(`REAL strategy is not ready for purchase yet (phase ${phase || 'UNKNOWN'}).`);
-                return;
-            }
-
-            s.realConfirmPending = true;
-            renderRealTradeConfirmation(st);
-
-            try {
-                // ONE-CLICK REAL FLOW:
-                // The user's click on BUY REAL TRADE is the explicit
-                // authorization for this single purchase. We request a fresh
-                // canonical quote and immediately submit that exact quote.
-                const quote = await serverExecRequest(
-                    `/real-manual/sessions/${s.sessionId}/quote`,
-                    {
-                        method: 'POST',
-                        body: {}
-                    }
-                );
-
-                s.realLastQuote = quote;
-
-                const result = await serverExecRequest(
-                    `/real-manual/sessions/${s.sessionId}/confirm`,
-                    {
-                        method: 'POST',
-                        body: {
-                            confirmation_token: quote.confirmation_token,
-                            confirm: true
-                        }
-                    }
-                );
-
-                log(
-                    `✅ REAL purchase submitted · trade ${result.trade_no}/${result.max_trades} · digit ${result.digit} · $${Number(result.stake).toFixed(2)}`,
-                    'TRADE'
-                );
-
-                await pollServerExecutionState();
-                renderServerExecutionState();
-                try { updateButtonState(); } catch (_) {}
-
-            } catch (err) {
-                log(`❌ REAL confirmation failed: ${err.message}`, 'ERROR');
-                alert(`REAL trade not submitted: ${err.message}`);
-                try { await pollServerExecutionState(); } catch (_) {}
-            } finally {
-                s.realConfirmPending = false;
-                renderRealTradeConfirmation(s.state || {});
-            }
-        }
-
-        window.confirmPreparedRealTrade = confirmPreparedRealTrade;
 
         function formatServerMoney(value) {
             const n = Number(value);
@@ -11312,34 +11190,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         : 'Reconciling the previous server contract';
                     action = 'Waiting for authoritative settlement before any new trade…';
                     resultClass = 'text-xs font-bold text-purple-300';
-                    break;
-
-                case 'REAL_TRADE_READY':
-                case 'REAL_NEXT_TRADE_READY':
-                    result = 'REAL READY';
-                    status = hasDigit
-                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
-                        : 'REAL strategy target is ready';
-                    action = 'Press BUY REAL TRADE once to submit this prepared purchase';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
-                case 'REAL_QUOTED':
-                    result = 'REAL QUOTED';
-                    status = hasDigit
-                        ? `Fresh REAL quote prepared · digit ${digit} · Stake $${stake.toFixed(2)}`
-                        : 'Fresh REAL quote prepared';
-                    action = 'Complete the explicit confirmation while the quote is valid';
-                    resultClass = 'text-xs font-bold text-amber-300';
-                    break;
-
-                case 'WAITING_REAL_CONFIRMATION':
-                    result = 'CONFIRM REQUIRED';
-                    status = hasDigit
-                        ? `REAL trade ${tradeNo + 1} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
-                        : 'REAL purchase is waiting';
-                    action = 'Explicit confirmation is required before this purchase';
-                    resultClass = 'text-xs font-bold text-amber-300';
                     break;
 
                 case 'BUY_RATE_LIMIT_BACKOFF': {
@@ -12055,8 +11905,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const badge = serverExecEl('serverExecBadge');
             const toggle = serverExecEl('serverExecToggleBtn');
             const continuousBtn = serverExecEl('serverContinuousResearchBtn');
-            const confirmBtn = serverExecEl('serverRealConfirmBtn');
-
             if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
             if (serverExecEl('serverExecMode')) {
                 serverExecEl('serverExecMode').textContent = s.enabled
@@ -12191,7 +12039,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 }
             }
             renderServerTradeNarrative(st);
-            renderRealTradeConfirmation(st);
             if (
                 st?.last_settlement?.settled_at &&
                 Date.now() - Number(
@@ -12850,7 +12697,7 @@ pollServerExecutionState();
 
             try {
                 const result = await serverExecRequest(
-                    `/real-manual/sessions/${s.sessionId}/margin-gate`,
+                    `/sessions/${s.sessionId}/margin-gate`,
                     {
                         method: 'POST',
                         body: { minimum_margin: desired }
@@ -12918,9 +12765,9 @@ pollServerExecutionState();
             }
 
             if (wanted === 'real') {
-                // REAL OAuth/account selection is supported. Automated
-                // unattended live-money execution remains intentionally
-                // disabled by the backend in this build.
+                // The selected account mode is part of the server session
+                // configuration. START begins the shared execution loop for
+                // either DEMO or REAL; the server connection is account-bound.
                 sessionStorage.setItem('selectedAccountMode', 'REAL');
                 localStorage.setItem('selectedAccountMode', 'REAL');
                 
@@ -13280,11 +13127,19 @@ window.isBotRunning = true;
             window.maxCycleTrades = window.maxTrades;
             window.TAIL_RISK_CONFIG.maxCycleLoss = null;
 
-            log(
-                `🛡️ Tail risk guard: ACTIVE | max cycle exposure $${getTailDollarCap().toFixed(2)} | ` +
-                `projected @${window.maxCycleTrades} trades $${defaultTailDollarCap().toFixed(2)}`,
-                'SYSTEM'
-            );
+            if (window.SERVER_EXECUTION?.enabled) {
+                log(
+                    `🛡️ Server Max Trades stop: ${window.maxTrades} contracts | ` +
+                    'browser dollar-exposure estimate does not cap server purchases',
+                    'SYSTEM'
+                );
+            } else {
+                log(
+                    `🛡️ Tail risk guard: ACTIVE | max cycle exposure $${getTailDollarCap().toFixed(2)} | ` +
+                    `projected @${window.maxCycleTrades} trades $${defaultTailDollarCap().toFixed(2)}`,
+                    'SYSTEM'
+                );
+            }
             renderTailRiskPanel();
 
             log(
@@ -13524,7 +13379,7 @@ window.isBotRunning = true;
             // completed server state must not overwrite this new user action.
             window.SERVER_EXECUTION.startPending = true;
 
-            log('🚀 START BOT clicked · preparing SERVER DEMO session', 'SYSTEM');
+            log('🚀 START BOT clicked · preparing SERVER session', 'SYSTEM');
             startBot();
 
             // startBot() can still reject a genuine local prerequisite such as
@@ -13557,7 +13412,7 @@ window.isBotRunning = true;
 
                 log(
                     startedMode === 'REAL'
-                        ? '✅ REAL strategy START accepted · waiting for eligible margin/confirmation'
+                        ? '✅ REAL START accepted · server executing the selected account'
                         : '✅ Server START accepted',
                     'SYSTEM'
                 );
@@ -13566,7 +13421,7 @@ window.isBotRunning = true;
                     updateTradeStatus(
                         'REAL STRATEGY ACTIVE',
                         'Server is scoring V1 and enforcing the margin gate',
-                        'When eligible, BUY REAL TRADE appears; one click submits that purchase',
+                        'Eligible trades execute automatically · press STOP BOT to halt new purchases',
                         'trade'
                     );
                 } else {
@@ -13740,22 +13595,11 @@ window.isBotRunning = true;
             const startPending = serverExecution.startPending === true;
 
             // During a new SERVER START request, the most recent polled state
-            // still belongs to the previous completed cycle (for example
-            // Trade 13, running=false). Do not let that stale snapshot cancel
-            // the click before POST /sessions/{sid}/start is sent.
-            const realReadyPhase = (
-                serverState &&
-                String(serverState.account_mode || '').toUpperCase() === 'REAL' &&
-                ['REAL_TRADE_READY', 'REAL_NEXT_TRADE_READY', 'REAL_QUOTED'].includes(
-                    String(serverState.phase || '').toUpperCase()
-                )
-            );
-
+            // may still belong to a previous completed cycle. Do not let that
+            // stale snapshot cancel the click before the server start request.
             const authoritativeRunning = startPending
                 ? true
-                : realReadyPhase
-                    ? true
-                    : (
+                : (
                         serverState &&
                         typeof serverState.running === 'boolean'
                     )
@@ -13769,16 +13613,6 @@ window.isBotRunning = true;
                 toggleButton.disabled = true;
                 toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active', 'stop-button-active', 'hover:bg-red-700');
                 toggleButton.classList.add('bg-amber-600', 'opacity-80', 'cursor-wait');
-            } else if (realReadyPhase) {
-                toggleButton.disabled = true;
-                toggleButton.classList.remove(
-                    'bg-green-600', 'hover:bg-green-700', 'start-button-active',
-                    'stop-button-active', 'hover:bg-red-700', 'bg-amber-600',
-                    'cursor-wait'
-                );
-                toggleButton.classList.add('bg-slate-700', 'opacity-70', 'cursor-default');
-                toggleButton.innerHTML =
-                    '<span class="flex items-center justify-center"><span class="mr-2">🔐</span> REAL READY</span>';
             } else if (authoritativeRunning) {
                 toggleButton.disabled = false;
                 toggleButton.classList.remove('bg-amber-600', 'opacity-80', 'cursor-wait', 'bg-slate-700', 'cursor-default');

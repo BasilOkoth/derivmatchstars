@@ -1,0 +1,12 @@
+UPLOAD THE FULL FILES
+
+Extract this ZIP at the repository root and upload/replace each included file
+at the same relative path in GitHub. These are full files, not diffs.
+
+Before deploying, delete these obsolete files from the repository:
+  app/real_manual.py
+  .github/workflows/enable-real-manual-ui.yml
+
+Set ALLOW_REAL_MODE=true in the deployed Render service to enable REAL sessions.
+Start with a DEMO account and verify the flow before using REAL funds. No live
+Deriv connection or production deployment was tested here.
