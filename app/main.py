@@ -148,13 +148,17 @@ def digit_score_for_session(session_id: int):
         digit = int(top["digit"]) if top else None
     except (ValueError, TypeError, KeyError):
         score, digit = None, None
-    threshold = float(snapshot.get("target_min_score", 9.0))
-    eligible = bool(snapshot.get("ready") and score is not None and
-                    score >= threshold and digit is not None)
+
+    # Status must expose the SAME V1 #1 used by execution. The retired
+    # absolute-score gate (score >= 9) could hide a valid rank from the
+    # dashboard even though execution is governed by the V1 margin gate.
+    ready = bool(snapshot.get("ready") and digit is not None)
+    margin_eligible = bool(snapshot.get("margin_eligible"))
+
     snapshot["raw_selected_digit"] = digit
     snapshot["raw_top_score"] = score
-    snapshot["target_eligible"] = eligible
-    snapshot["selected_digit"] = digit if eligible else None
+    snapshot["target_eligible"] = bool(ready and margin_eligible)
+    snapshot["selected_digit"] = digit if ready else None
     snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
                               "RANK_MISSING_EPOCH")
     return snapshot
@@ -946,5 +950,3 @@ def stop(
 
     finally:
         db.close()
-
-

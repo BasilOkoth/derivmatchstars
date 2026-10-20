@@ -107,6 +107,9 @@ class MultiUserEngine:
         # Deriv's recent ticks_history before the next cycle starts.
         self.history_bootstrap_tasks = {}   # sid -> asyncio.Task
         self.history_bootstrap_generation = {}  # sid -> client connection generation
+        # Exact final observation already included by ticks_history. Deriv may
+        # replay this same observation as the first live subscription callback.
+        self.history_bootstrap_last_tick = {}  # sid -> bootstrap boundary evidence
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
         # Identifies this server process in persisted execution evidence.
@@ -717,6 +720,25 @@ class MultiUserEngine:
 
                 self.digit_history[sid] = rebuilt
 
+                # Record the last observation already included by ticks_history.
+                # The first live subscription callback can repeat this exact
+                # market observation, which must not enter DigitScore twice.
+                last_bootstrap_tick = {"quote": prices[-1]}
+                if pip_size is not None:
+                    last_bootstrap_tick["pip_size"] = pip_size
+                self.history_bootstrap_last_tick[sid] = {
+                    "epoch": (
+                        int(times[-1])
+                        if usable_times and times
+                        else int(last_epoch or 0)
+                    ),
+                    "formatted_quote": self._canonical_tick_text(
+                        last_bootstrap_tick
+                    ),
+                    "digit": self._tick_last_digit(last_bootstrap_tick),
+                    "generation": int(generation),
+                }
+
                 if last_epoch:
                     self.latest_tick_epoch[sid] = max(
                         int(self.latest_tick_epoch.get(sid) or 0),
@@ -872,6 +894,41 @@ class MultiUserEngine:
 
         epoch = int(tick.get("epoch") or 0)
 
+        # De-duplicate the ticks_history -> live-subscription boundary. Match
+        # BOTH epoch and canonical formatted quote, so a genuinely different
+        # tick within the same second is never suppressed.
+        skip_bootstrap_duplicate = False
+        boundary = self.history_bootstrap_last_tick.get(int(sid))
+        if tick and not is_replay and isinstance(boundary, dict):
+            live_text = self._canonical_tick_text(
+                tick,
+                fallback_decimals=self.tick_precision.get(int(sid)),
+            )
+            boundary_epoch = int(boundary.get("epoch") or 0)
+            boundary_text = boundary.get("formatted_quote")
+            same_epoch = bool(
+                epoch and boundary_epoch and int(epoch) == boundary_epoch
+            )
+            same_quote = bool(
+                live_text is not None
+                and boundary_text is not None
+                and str(live_text) == str(boundary_text)
+            )
+
+            if same_epoch and same_quote:
+                skip_bootstrap_duplicate = True
+                self.history_bootstrap_last_tick.pop(int(sid), None)
+                if not hasattr(self, "_last_scored_seq"):
+                    self._last_scored_seq = {}
+                if tick_seq:
+                    self._last_scored_seq[int(sid)] = max(
+                        int(self._last_scored_seq.get(int(sid), 0)),
+                        int(tick_seq),
+                    )
+            elif epoch and boundary_epoch and int(epoch) > boundary_epoch:
+                # The feed has moved beyond the bootstrap boundary.
+                self.history_bootstrap_last_tick.pop(int(sid), None)
+
         # Only a new market callback may replace latest_ticks.
         if tick and not is_replay:
             cached = dict(tick)
@@ -905,6 +962,7 @@ class MultiUserEngine:
             # Score each real market sequence exactly once.
             if (
                 not is_replay
+                and not skip_bootstrap_duplicate
                 and (not tick_seq or tick_seq > last_scored_seq)
             ):
                 history.append(int(digit))
