@@ -341,6 +341,66 @@ class MultiUserEngine:
             }
             self.green_ai_pending_by_sid.pop(sid, None)
 
+    def _bind_ai_signal_to_canonical_server_tick(self, sid: int, signal: dict):
+        """Map a browser AI T+1 forecast onto the server's canonical sequence.
+
+        Browser and server subscribe through different websocket connections, so
+        comparing their *latest* epochs directly is incorrect.  We instead find
+        the browser source observation in the short canonical server ledger and
+        bind the forecast to that server sequence number.  Only a forecast bound
+        to the SAME sequence as the prepared V1 snapshot may influence a BUY.
+        """
+        sid = int(sid)
+        if not isinstance(signal, dict):
+            return signal
+
+        source_key = self._green_ai_source_key(signal)
+        ledger = list(self._canonical_tick_ledger(sid))
+        match = None
+        if source_key and source_key[0] > 0 and source_key[1] and source_key[2] is not None:
+            match = next((t for t in ledger if self._tick_identity_key(t) == source_key), None)
+
+        latest_seq = int(ledger[-1].get("seq") or 0) if ledger else 0
+        if match is None:
+            signal["bound_source_seq"] = None
+            signal["binding_status"] = "WAITING_SERVER_SOURCE_TICK"
+            signal["server_latest_seq_at_bind"] = latest_seq or None
+            return signal
+
+        source_seq = int(match.get("seq") or 0)
+        signal["bound_source_seq"] = source_seq or None
+        signal["bound_server_tick"] = dict(match)
+        signal["server_latest_seq_at_bind"] = latest_seq or None
+
+        if source_seq and latest_seq == source_seq:
+            signal["binding_status"] = "CANONICAL_BOUND"
+        elif source_seq and latest_seq > source_seq:
+            signal["binding_status"] = "LATE_FOR_EXECUTION"
+        else:
+            signal["binding_status"] = "WAITING_SERVER_SOURCE_TICK"
+        return signal
+
+    def _bind_waiting_ai_on_server_tick(self, sid: int, canonical_tick: dict):
+        """Promote a waiting browser AI signal when its exact source tick reaches server."""
+        sid = int(sid)
+        signal = self.ai_signal_by_sid.get(sid)
+        if not isinstance(signal, dict) or not isinstance(canonical_tick, dict):
+            return False
+        if str(signal.get("binding_status") or "") != "WAITING_SERVER_SOURCE_TICK":
+            return False
+        if self._green_ai_source_key(signal) != self._tick_identity_key(canonical_tick):
+            return False
+
+        seq = int(canonical_tick.get("seq") or 0)
+        if seq <= 0:
+            return False
+        signal["bound_source_seq"] = seq
+        signal["bound_server_tick"] = dict(canonical_tick)
+        signal["server_latest_seq_at_bind"] = seq
+        signal["binding_status"] = "CANONICAL_BOUND"
+        self.ai_signal_by_sid[sid] = signal
+        return True
+
     def set_ai_signal(self, sid: int, *, symbol: str, payload: dict):
         sid = int(sid)
         digit = int(payload.get("digit"))
@@ -377,7 +437,21 @@ class MultiUserEngine:
             "received_monotonic": time.monotonic(),
             "received_at": datetime.utcnow().isoformat(),
         }
+        clean = self._bind_ai_signal_to_canonical_server_tick(sid, clean)
         self.ai_signal_by_sid[sid] = clean
+
+        # If this forecast maps to the CURRENT prepared server sequence, refresh
+        # that snapshot's fusion immediately.  This avoids waiting for another
+        # market tick just to make the newly-arrived AI signal visible/executable.
+        current_snapshot = self.digit_score_snapshots.get(sid)
+        if (
+            isinstance(current_snapshot, dict)
+            and int(clean.get("bound_source_seq") or 0) > 0
+            and int(current_snapshot.get("rank_seq") or 0) == int(clean.get("bound_source_seq") or 0)
+            and str(clean.get("binding_status") or "") == "CANONICAL_BOUND"
+        ):
+            canonical = current_snapshot.get("canonical_tick") or {}
+            self._fusion_select(sid, current_snapshot, symbol=canonical.get("symbol"))
 
         # Green AI is a forward T+1 forecast. Arm it independently of the V1
         # snapshot so asynchronous browser/server timing cannot make hits vanish.
@@ -421,13 +495,13 @@ class MultiUserEngine:
         v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
         v1_margin_ok = bool(snapshot.get("margin_eligible"))
 
-        # Freshness alone is NOT sufficient. Browser and server use separate
-        # Deriv WebSockets whose local sequence numbers are unrelated. Bind AI
-        # to the V1 snapshot only when both observed the exact same canonical
-        # market tick: epoch + formatted quote + final digit.
+        # V3 canonical-sequence alignment. Browser/server websocket clocks are
+        # not compared directly. The browser AI source observation is first
+        # mapped onto the server's canonical tick ledger; only the forecast
+        # bound to this snapshot's rank_seq can influence execution.
         ai_raw = self._fresh_ai_signal(int(sid), symbol=symbol)
         canonical = snapshot.get("canonical_tick") or {}
-
+        expected_seq = int(snapshot.get("rank_seq") or 0)
         expected_epoch = canonical.get("epoch")
         expected_quote = canonical.get("formatted_quote")
         expected_digit = canonical.get("digit")
@@ -437,23 +511,19 @@ class MultiUserEngine:
         ai = None
 
         if ai_raw:
-            ai_epoch = ai_raw.get("source_tick_epoch")
-            ai_quote = ai_raw.get("source_tick_quote")
-            ai_tick_digit = ai_raw.get("source_tick_digit")
-
-            if not expected_epoch or not expected_quote or expected_digit is None:
-                tick_mismatch_reason = "V1_TICK_IDENTITY_MISSING"
-            elif ai_epoch is None or ai_quote is None or ai_tick_digit is None:
-                tick_mismatch_reason = "AI_TICK_IDENTITY_MISSING"
-            elif int(ai_epoch) != int(expected_epoch):
-                tick_mismatch_reason = "EPOCH_MISMATCH"
-            elif str(ai_quote) != str(expected_quote):
-                tick_mismatch_reason = "QUOTE_MISMATCH"
-            elif int(ai_tick_digit) != int(expected_digit):
-                tick_mismatch_reason = "DIGIT_MISMATCH"
-            else:
+            bound_seq = int(ai_raw.get("bound_source_seq") or 0)
+            binding_status = str(ai_raw.get("binding_status") or "UNBOUND")
+            if binding_status == "CANONICAL_BOUND" and bound_seq and expected_seq and bound_seq == expected_seq:
                 tick_match = True
                 ai = ai_raw
+            elif binding_status == "WAITING_SERVER_SOURCE_TICK":
+                tick_mismatch_reason = "WAITING_SERVER_SOURCE_TICK"
+            elif binding_status == "LATE_FOR_EXECUTION":
+                tick_mismatch_reason = "AI_LATE_FOR_EXECUTION"
+            elif bound_seq and expected_seq and bound_seq != expected_seq:
+                tick_mismatch_reason = "SERVER_SEQ_MISMATCH"
+            else:
+                tick_mismatch_reason = "AI_NOT_CANONICAL_BOUND"
 
         ai_digit = int(ai["digit"]) if ai else None
         ai_score = float(ai["score"]) if ai else None
@@ -474,35 +544,19 @@ class MultiUserEngine:
                 support += int(ok)
 
         agreement = bool(
-            ai
-            and tick_match
-            and v1_ready
+            ai and tick_match and v1_ready
             and int(ai_digit) == int(v1_digit)
-            and ai_score is not None
-            and ai_score >= 0.55
+            and ai_score is not None and ai_score >= 0.55
         )
-        # GREEN AI PRIMARY: the browser renders score >= 0.85 as green.
-        # When that signal is bound to the exact same canonical tick as V1,
-        # give it first execution priority even if V1 selects another digit.
-        # The score is not assumed to be a calibrated probability; the
-        # forward counters below independently measure realised next-tick hits.
         green_ai_primary = bool(
-            ai
-            and tick_match
-            and ai_score is not None
-            and ai_score >= 0.85
+            ai and tick_match and ai_score is not None and ai_score >= 0.85
         )
         ai_override = bool(
-            ai
-            and tick_match
-            and ai_score is not None
-            and ai_score >= 0.62
-            and support >= 3
+            ai and tick_match and ai_score is not None and ai_score >= 0.62 and support >= 3
         )
 
         final_digit = None
         source = "NO_EXECUTABLE_SIGNAL"
-
         if agreement:
             final_digit = int(v1_digit)
             source = "AI_V1_AGREEMENT"
@@ -514,24 +568,24 @@ class MultiUserEngine:
             source = "AI_OVERRIDE"
         elif v1_ready and v1_margin_ok:
             final_digit = int(v1_digit)
-            source = (
-                "V1_AI_TICK_MISMATCH"
-                if ai_raw and not tick_match
-                else "V1"
-            )
+            if ai_raw and not tick_match:
+                source = "V1_AI_CANONICAL_WAIT"
+            else:
+                source = "V1"
         elif ai_raw and not tick_match:
-            source = "WAITING_AI_TICK_ALIGNMENT"
+            source = "WAITING_AI_CANONICAL_BIND"
         elif ai_raw is None:
             source = "V1_AI_STALE"
         else:
             source = "WAITING_FUSION_STRENGTH"
 
         result = {
-            "version": "AI_V1_FUSION_V2_EXACT_TICK",
+            "version": "AI_V1_FUSION_V3_CANONICAL_SEQ",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
             "tick_aligned": bool(tick_match),
+            "alignment_mode": "SERVER_CANONICAL_SEQUENCE",
             "tick_mismatch_reason": tick_mismatch_reason,
             "expected_tick": {
                 "epoch": expected_epoch,
@@ -544,18 +598,14 @@ class MultiUserEngine:
             "v1_top_margin": snapshot.get("top_margin"),
             "ai_digit": ai_digit,
             "ai_score": ai_score,
+            "ai_bound_source_seq": (int(ai_raw.get("bound_source_seq") or 0) or None) if ai_raw else None,
+            "ai_binding_status": ai_raw.get("binding_status") if ai_raw else None,
             "green_ai": bool(green_ai_primary),
             "green_ai_threshold": 0.85,
             "ai_support_count": int(support),
             "ai_support_flags": support_flags,
-            "ai": (
-                {k: v for k, v in ai.items() if k != "received_monotonic"}
-                if ai else None
-            ),
-            "rejected_ai": (
-                {k: v for k, v in ai_raw.items() if k != "received_monotonic"}
-                if ai_raw and not tick_match else None
-            ),
+            "ai": ({k: v for k, v in ai.items() if k != "received_monotonic"} if ai else None),
+            "rejected_ai": ({k: v for k, v in ai_raw.items() if k != "received_monotonic"} if ai_raw and not tick_match else None),
         }
         snapshot["fusion"] = result
         return result
@@ -1040,6 +1090,7 @@ class MultiUserEngine:
             seq_now = int(canonical_now.get("seq") or 0)
             if not ledger or int(ledger[-1].get("seq") or 0) != seq_now:
                 ledger.append(dict(canonical_now))
+            self._bind_waiting_ai_on_server_tick(int(sid), canonical_now)
             self._advance_green_ai_forward_recorder(int(sid), canonical_now)
 
         # Score the PREVIOUS prepared forecast against this newly-arrived

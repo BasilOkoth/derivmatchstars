@@ -11598,7 +11598,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
                     : (preparedFusionDigit !== null
                         ? (greenPrimary
-                            ? `Digit ${preparedFusionDigit} is the T+1 target from an exact-tick GREEN AI signal and has execution priority over a disagreeing V1 target.`
+                            ? `Digit ${preparedFusionDigit} is the T+1 target from a server-canonical GREEN AI signal and has execution priority over a disagreeing V1 target.`
                             : `Digit ${preparedFusionDigit} is the server-selected T+1 fused target waiting for the next purchase opportunity.`)
                         : 'No executable fused target yet; the server should not buy until a target qualifies.');
             }
@@ -11615,13 +11615,15 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (finalV1MarginEl) finalV1MarginEl.textContent = Number.isFinite(v1Margin)
                 ? `margin ${v1Margin.toFixed(2)}` : '—';
             if (finalAlignmentEl) {
-                finalAlignmentEl.textContent = tickAligned ? 'EXACT ✓' : 'NOT ALIGNED';
+                finalAlignmentEl.textContent = tickAligned ? 'CANONICAL ✓' : 'WAITING';
                 finalAlignmentEl.className = tickAligned
                     ? 'text-sm font-black text-emerald-300'
                     : 'text-sm font-black text-amber-300';
             }
             if (finalAlignmentDetailEl) {
-                finalAlignmentDetailEl.textContent = tickAligned ? 'same canonical tick' : (mismatchReason || 'waiting');
+                finalAlignmentDetailEl.textContent = tickAligned
+                    ? `server seq ${displayFusion?.ai_bound_source_seq ?? displayFusion?.expected_tick?.rank_seq ?? '—'}`
+                    : (mismatchReason || displayFusion?.ai_binding_status || 'waiting');
             }
 
             const perf = st?.prediction_performance || score?.prediction_performance || {};
