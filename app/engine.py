@@ -202,6 +202,16 @@ class MultiUserEngine:
             "features": self._ai_number(payload.get("features")),
             "auditor": self._ai_number(payload.get("auditor")),
             "source_tick_epoch": payload.get("source_tick_epoch"),
+            "source_tick_quote": (
+                str(payload.get("source_tick_quote"))
+                if payload.get("source_tick_quote") is not None
+                else None
+            ),
+            "source_tick_digit": (
+                int(payload.get("source_tick_digit"))
+                if payload.get("source_tick_digit") is not None
+                else None
+            ),
             "client_ts_ms": payload.get("client_ts_ms"),
             "received_monotonic": time.monotonic(),
             "received_at": datetime.utcnow().isoformat(),
@@ -244,7 +254,40 @@ class MultiUserEngine:
         v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
         v1_margin_ok = bool(snapshot.get("margin_eligible"))
 
-        ai = self._fresh_ai_signal(int(sid), symbol=symbol)
+        # Freshness alone is NOT sufficient. Browser and server use separate
+        # Deriv WebSockets whose local sequence numbers are unrelated. Bind AI
+        # to the V1 snapshot only when both observed the exact same canonical
+        # market tick: epoch + formatted quote + final digit.
+        ai_raw = self._fresh_ai_signal(int(sid), symbol=symbol)
+        canonical = snapshot.get("canonical_tick") or {}
+
+        expected_epoch = canonical.get("epoch")
+        expected_quote = canonical.get("formatted_quote")
+        expected_digit = canonical.get("digit")
+
+        tick_match = False
+        tick_mismatch_reason = None
+        ai = None
+
+        if ai_raw:
+            ai_epoch = ai_raw.get("source_tick_epoch")
+            ai_quote = ai_raw.get("source_tick_quote")
+            ai_tick_digit = ai_raw.get("source_tick_digit")
+
+            if not expected_epoch or not expected_quote or expected_digit is None:
+                tick_mismatch_reason = "V1_TICK_IDENTITY_MISSING"
+            elif ai_epoch is None or ai_quote is None or ai_tick_digit is None:
+                tick_mismatch_reason = "AI_TICK_IDENTITY_MISSING"
+            elif int(ai_epoch) != int(expected_epoch):
+                tick_mismatch_reason = "EPOCH_MISMATCH"
+            elif str(ai_quote) != str(expected_quote):
+                tick_mismatch_reason = "QUOTE_MISMATCH"
+            elif int(ai_tick_digit) != int(expected_digit):
+                tick_mismatch_reason = "DIGIT_MISMATCH"
+            else:
+                tick_match = True
+                ai = ai_raw
+
         ai_digit = int(ai["digit"]) if ai else None
         ai_score = float(ai["score"]) if ai else None
 
@@ -265,6 +308,7 @@ class MultiUserEngine:
 
         agreement = bool(
             ai
+            and tick_match
             and v1_ready
             and int(ai_digit) == int(v1_digit)
             and ai_score is not None
@@ -272,6 +316,7 @@ class MultiUserEngine:
         )
         ai_override = bool(
             ai
+            and tick_match
             and ai_score is not None
             and ai_score >= 0.62
             and support >= 3
@@ -288,17 +333,31 @@ class MultiUserEngine:
             source = "AI_OVERRIDE"
         elif v1_ready and v1_margin_ok:
             final_digit = int(v1_digit)
-            source = "V1"
-        elif ai is None:
+            source = (
+                "V1_AI_TICK_MISMATCH"
+                if ai_raw and not tick_match
+                else "V1"
+            )
+        elif ai_raw and not tick_match:
+            source = "WAITING_AI_TICK_ALIGNMENT"
+        elif ai_raw is None:
             source = "V1_AI_STALE"
         else:
             source = "WAITING_FUSION_STRENGTH"
 
         result = {
-            "version": "AI_V1_FUSION_V1",
+            "version": "AI_V1_FUSION_V2_EXACT_TICK",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
+            "tick_aligned": bool(tick_match),
+            "tick_mismatch_reason": tick_mismatch_reason,
+            "expected_tick": {
+                "epoch": expected_epoch,
+                "formatted_quote": expected_quote,
+                "digit": expected_digit,
+                "rank_seq": snapshot.get("rank_seq"),
+            },
             "v1_digit": int(v1_digit) if v1_digit is not None else None,
             "v1_margin_eligible": v1_margin_ok,
             "v1_top_margin": snapshot.get("top_margin"),
@@ -309,6 +368,10 @@ class MultiUserEngine:
             "ai": (
                 {k: v for k, v in ai.items() if k != "received_monotonic"}
                 if ai else None
+            ),
+            "rejected_ai": (
+                {k: v for k, v in ai_raw.items() if k != "received_monotonic"}
+                if ai_raw and not tick_match else None
             ),
         }
         snapshot["fusion"] = result

@@ -12122,10 +12122,29 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
   const lastTick = window.lastTick || null;
   const tickEpoch = n(
+      lastTick?.raw?.epoch ??
       lastTick?.epoch ??
       lastTick?.tick?.epoch ??
       window.lastTickEpoch
   );
+  const tickQuote = String(
+      lastTick?.formattedPrice ??
+      lastTick?.formatted_quote ??
+      lastTick?.tick?.formatted_quote ??
+      ''
+  );
+  const tickDigit = (() => {
+      if (!tickQuote) return null;
+      const match = tickQuote.match(/(\d)(?!.*\d)/);
+      return match ? Number(match[1]) : null;
+  })();
+
+  // Exact cross-stream tick identity is mandatory for AI execution.
+  // Browser/server websocket sequence numbers are process-local, so fusion
+  // binds by canonical epoch + formatted quote + last digit instead.
+  if (!(tickEpoch > 0) || !tickQuote || !Number.isInteger(tickDigit)) {
+      return false;
+  }
 
   const payload = {
       digit,
@@ -12144,6 +12163,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
       features: n(features?.signalStrength),
       auditor: n(auditor?.signalStrength),
       source_tick_epoch: tickEpoch,
+      source_tick_quote: tickQuote,
+      source_tick_digit: tickDigit,
       client_ts_ms: now
   };
 

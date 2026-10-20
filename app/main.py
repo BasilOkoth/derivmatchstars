@@ -105,6 +105,8 @@ class AISignalRequest(BaseModel):
     features: float | None = None
     auditor: float | None = None
     source_tick_epoch: int | None = None
+    source_tick_quote: str | None = None
+    source_tick_digit: int | None = Field(default=None, ge=0, le=9)
     client_ts_ms: int | None = None
 
 
