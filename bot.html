@@ -6139,6 +6139,9 @@ window.cyclePerformance = {
         if (window.postStopDepthTracker) {
             window.postStopDepthTracker.render();
         }
+        if (typeof renderCycleDepthPanel === 'function') {
+            renderCycleDepthPanel();
+        }
         if (typeof decorateDynamicMinimizablePanels === 'function') {
             decorateDynamicMinimizablePanels();
         }
@@ -11373,6 +11376,122 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         }
 
 
+        // ============================================================================
+        // CYCLE DEPTH — winning-cycle resolution distribution
+        // Uses completed cycle history for the currently selected symbol.
+        // ============================================================================
+        function cycleDepthQuantile(sortedDepths, q) {
+            if (!Array.isArray(sortedDepths) || !sortedDepths.length) return null;
+            const qq = Math.max(0, Math.min(1, Number(q)));
+            // Nearest-rank percentile: "90% resolved by Trade N" means at least
+            // 90% of observed winning cycles resolved on or before N.
+            const rank = Math.max(1, Math.ceil(qq * sortedDepths.length));
+            return Number(sortedDepths[rank - 1]);
+        }
+
+        function getCycleDepthStats() {
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                'UNKNOWN';
+
+            const rows = window.cyclePerformance?.load?.(symbol) || [];
+            const depths = rows
+                .filter(row => row && String(row.status || '').toUpperCase() === 'WIN')
+                .map(row => {
+                    const explicit = Number(row.winningTradeNumber);
+                    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+                    // Compatibility with older saved winning cycles that may not
+                    // have winningTradeNumber but do contain the settled WIN trade.
+                    const trades = Array.isArray(row.trades) ? row.trades : [];
+                    const winningTrade = trades.find(t => String(t?.result || '').toUpperCase() === 'WIN');
+                    const fallback = Number(winningTrade?.tradeNumber || trades.length || 0);
+                    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+                })
+                .filter(Number.isFinite)
+                .sort((a, b) => a - b);
+
+            if (!depths.length) {
+                return {
+                    symbol,
+                    sample: 0,
+                    median: null,
+                    p90: null,
+                    p95: null,
+                    reached20Pct: null,
+                    reached20Count: 0,
+                    worst: null,
+                };
+            }
+
+            const reached20Count = depths.filter(d => d >= 20).length;
+            return {
+                symbol,
+                sample: depths.length,
+                median: cycleDepthQuantile(depths, 0.50),
+                p90: cycleDepthQuantile(depths, 0.90),
+                p95: cycleDepthQuantile(depths, 0.95),
+                reached20Pct: (reached20Count / depths.length) * 100,
+                reached20Count,
+                worst: depths[depths.length - 1],
+            };
+        }
+
+        function toggleCycleDepthPanel() {
+            const body = document.getElementById('cycle-depth-body');
+            const btn = document.getElementById('cycle-depth-min-btn');
+            if (!body) return;
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
+            }
+            savePanelMinimizedState('cycle-depth', minimized);
+        }
+
+        function restoreCycleDepthPanelState() {
+            const minimized = getPanelMinimizedState('cycle-depth', false);
+            const body = document.getElementById('cycle-depth-body');
+            const btn = document.getElementById('cycle-depth-min-btn');
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
+            }
+        }
+
+        function renderCycleDepthPanel() {
+            const panel = document.getElementById('cycle-depth-panel');
+            if (!panel) return;
+            const stats = getCycleDepthStats();
+            const set = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+            const tradeLabel = value => Number.isFinite(Number(value)) ? `Trade ${Number(value)}` : '—';
+
+            set('cycle-depth-median', tradeLabel(stats.median));
+            set('cycle-depth-p90', tradeLabel(stats.p90));
+            set('cycle-depth-p95', tradeLabel(stats.p95));
+            set(
+                'cycle-depth-reached20',
+                stats.sample
+                    ? `${stats.reached20Pct.toFixed(1)}% (${stats.reached20Count}/${stats.sample})`
+                    : '—'
+            );
+            set('cycle-depth-worst', tradeLabel(stats.worst));
+            set(
+                'cycle-depth-sample',
+                stats.sample
+                    ? `${stats.sample} winning cycle${stats.sample === 1 ? '' : 's'} · ${stats.symbol}`
+                    : `No completed winning cycles yet · ${stats.symbol}`
+            );
+        }
+
         function ensureRecycleRuntimePanel() {
             if (document.getElementById('recycle-runtime-panel')) return;
             const host = document.getElementById('trade-result-container');
@@ -11432,6 +11551,47 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                             <div id="perf-fusion" class="text-sm font-black text-white">0 / 0 matched</div>
                         </div>
                     </div>
+
+
+                    <div id="cycle-depth-panel" class="mt-3 rounded-xl border border-fuchsia-500/30 bg-fuchsia-950/20 px-3 py-3">
+                        <div class="flex items-center gap-2">
+                            <div>
+                                <div class="text-[9px] uppercase tracking-[0.18em] text-fuchsia-300 font-black">CYCLE DEPTH</div>
+                                <div id="cycle-depth-sample" class="text-[9px] text-slate-500">No completed winning cycles yet</div>
+                            </div>
+                            <button
+                                id="cycle-depth-min-btn"
+                                type="button"
+                                aria-controls="cycle-depth-body"
+                                aria-expanded="true"
+                                onclick="toggleCycleDepthPanel()"
+                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
+                                title="Minimize cycle depth"
+                            >−</button>
+                        </div>
+                        <div id="cycle-depth-body" class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2">
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Median win</div>
+                                <div id="cycle-depth-median" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">90% resolved by</div>
+                                <div id="cycle-depth-p90" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">95% resolved by</div>
+                                <div id="cycle-depth-p95" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Reached trade 20</div>
+                                <div id="cycle-depth-reached20" class="mt-1 text-sm font-black text-amber-300">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 col-span-2 md:col-span-1">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Worst observed</div>
+                                <div id="cycle-depth-worst" class="mt-1 text-sm font-black text-rose-300">—</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                                 <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
@@ -11468,10 +11628,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
             `;
             host.appendChild(el);
+            restoreCycleDepthPanelState();
+            renderCycleDepthPanel();
         }
 
         function renderRecycleRuntimePanel(st) {
             ensureRecycleRuntimePanel();
+            renderCycleDepthPanel();
 
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
