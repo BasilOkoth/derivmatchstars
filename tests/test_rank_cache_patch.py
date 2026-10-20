@@ -18,7 +18,21 @@ class RankPipelineChecks(unittest.TestCase):
         self.assertIn("list(self._digit_history(sid))[-100:]", SOURCE)
 
     def test_cached_selection(self):
-        self.assertIn("else self.digit_score_snapshots.get(sid) or {}", SOURCE)
+        self.assertIn("prepared_snapshot if prepared_snapshot is not None", SOURCE)
+
+    def test_recovery_uses_pretrigger_snapshot(self):
+        handler = SOURCE.split("async def _handle_strategy_tick(", 1)[1].split(
+            "async def ", 1
+        )[0]
+        self.assertLess(handler.index("prepared_for_this_tick ="),
+                        handler.index("history.append(int(digit))"))
+        self.assertIn("current_snapshot = prepared_for_this_tick", handler)
+        self.assertIn("prepared_snapshot=prepared_for_this_tick", handler)
+
+    def test_final_buy_gate_respects_locked_digit(self):
+        gate = SOURCE.split("def _claim_account_buy(", 1)[1].split("def ", 1)[0]
+        self.assertIn("locked_snapshot", gate)
+        self.assertIn("gate_minimum <= 0", gate)
 
     def test_claim_does_not_recompute(self):
         claim = SOURCE.split("def _claim_account_buy(", 1)[1].split("def ", 1)[0]

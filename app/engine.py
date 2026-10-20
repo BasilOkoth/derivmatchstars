@@ -149,8 +149,8 @@ class MultiUserEngine:
 
             eligible = bool(
                 snapshot.get("ready")
-                and margin_value is not None
-                and margin_value >= value
+                and snapshot.get("selected_digit") is not None
+                and (value <= 0 or (margin_value is not None and margin_value >= value))
             )
             snapshot["minimum_v1_margin"] = value
             snapshot["margin_eligible"] = eligible
@@ -563,11 +563,12 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
+    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False, prepared_snapshot=None):
         snapshot = (
             self._score_all_digits(sid, exclude_digit=exclude_digit)
             if exclude_digit is not None
-            else self.digit_score_snapshots.get(sid) or {}
+            else (prepared_snapshot if prepared_snapshot is not None
+                  else self.digit_score_snapshots.get(sid) or {})
         )
         digit = snapshot.get("selected_digit")
 
@@ -881,6 +882,15 @@ class MultiUserEngine:
             previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
             self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
 
+        # Freeze the fully prepared rank BEFORE incorporating this incoming tick.
+        # A recovery triggered by this tick must use that previous-tick rank,
+        # rather than a new rank derived from the trigger tick itself.
+        prepared_for_this_tick = self.digit_score_snapshots.get(sid)
+        if isinstance(prepared_for_this_tick, dict):
+            prepared_for_this_tick = dict(prepared_for_this_tick)
+        else:
+            prepared_for_this_tick = {}
+
         digit = self._tick_last_digit(
             tick, fallback_decimals=self.tick_precision.get(int(sid))
         )
@@ -1027,15 +1037,12 @@ class MultiUserEngine:
                     2,
                 )
 
-                # The 0-9 cache was warmed while the current contract was open.
-                # Selection happens AFTER this decision tick is scored, so the
-                # freshest live V1 rank #1 can be bought without requesting a
-                # new proposal on the critical path.
+                # Consume the rank prepared BEFORE this trigger tick arrived.
+                # The newer rank is solely for the next trading opportunity.
                 payload = None
 
-                # The latest V1 rank #1 is the authoritative NEXT target,
-                # but it is executable only when the V1 margin gate is open.
-                current_snapshot = self.digit_score_snapshots.get(sid) or {}
+                # Freeze the previously published rank for THIS recovery.
+                current_snapshot = prepared_for_this_tick
                 margin_ok = bool(current_snapshot.get("margin_eligible"))
 
                 if not margin_ok:
@@ -1049,6 +1056,7 @@ class MultiUserEngine:
                 desired_next, current_snapshot = self._choose_scored_digit(
                     sid,
                     lock_target=True,
+                    prepared_snapshot=prepared_for_this_tick,
                 )
                 if desired_next is not None:
                     self._set_live_next_target(
@@ -1778,15 +1786,30 @@ class MultiUserEngine:
         # lost its lead on a newer tick before the network BUY was sent.
         # Read precomputed ranking. Re-scoring inside the BUY gate creates
         # avoidable latency and may change the target mid-purchase.
-        gate_snapshot = self.digit_score_snapshots.get(int(sid)) or {}
+        locked = self.locked_target_snapshots.get(int(sid)) or {}
+        locked_snapshot = locked.get("snapshot") or {}
+        # During recovery the rank is deliberately one tick behind the
+        # recovery-triggering tick. Never replace the locked BUY barrier with
+        # the newer dashboard rank.
+        gate_snapshot = (
+            locked_snapshot
+            if (locked_snapshot.get("selected_digit") is not None
+                and int(locked_snapshot["selected_digit"]) == int(digit))
+            else self.digit_score_snapshots.get(int(sid)) or {}
+        )
         gate_margin = gate_snapshot.get("top_margin")
         gate_minimum = self.get_minimum_v1_margin(int(sid))
         gate_top = gate_snapshot.get("selected_digit")
+        try:
+            gate_margin_value = float(gate_margin) if gate_margin is not None else None
+        except (TypeError, ValueError):
+            gate_margin_value = None
         gate_ok = bool(
             gate_snapshot.get("ready")
-            and gate_snapshot.get("margin_eligible")
             and gate_top is not None
             and int(gate_top) == int(digit)
+            and (gate_minimum <= 0 or
+                 (gate_margin_value is not None and gate_margin_value >= gate_minimum))
         )
 
         if not gate_ok:
