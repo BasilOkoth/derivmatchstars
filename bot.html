@@ -2735,11 +2735,22 @@
                     ? { ...this.currentRecommendation }
                     : null;
 
-                // CURRENT-TICK BIAS AUDIT: mature the forecast that was frozen
-                // on tick T-1 against this newly-arrived tick T BEFORE this tick
-                // is allowed to influence the next recommendation.
+                // CURRENT-TICK BIAS AUDIT V2: accept this Deriv tick exactly once
+                // using its canonical browser-stream identity (symbol + epoch +
+                // canonical formatted quote). Duplicate deliveries of the same
+                // market tick must never mature or arm a T+1 forecast twice.
+                let currentTickBiasMeta = null;
                 try {
-                    window.currentTickBiasAudit?.settle?.(Number(digit));
+                    currentTickBiasMeta = window.currentTickBiasAudit?.observeTick?.(
+                        window.lastTick,
+                        Number(digit)
+                    ) || null;
+                    if (currentTickBiasMeta?.accepted) {
+                        window.currentTickBiasAudit?.settle?.(
+                            Number(digit),
+                            currentTickBiasMeta
+                        );
+                    }
                 } catch (err) {
                     console.warn('Current-tick bias audit settle skipped:', err);
                 }
@@ -2803,11 +2814,14 @@
                             window.currentSymbol ||
                             window.tickFormat?.symbol ||
                             'UNKNOWN';
-                        window.currentTickBiasAudit?.arm?.(
-                            this.currentRecommendation,
-                            Number(digit),
-                            String(symbol)
-                        );
+                        if (currentTickBiasMeta?.accepted) {
+                            window.currentTickBiasAudit?.arm?.(
+                                this.currentRecommendation,
+                                Number(digit),
+                                String(symbol),
+                                currentTickBiasMeta
+                            );
+                        }
                     } catch (err) {
                         console.warn('Current-tick bias audit arm skipped:', err);
                     }
@@ -11411,21 +11425,67 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         // counted; the current tick can never score the forecast it generated.
         // ============================================================================
         window.currentTickBiasAudit = window.currentTickBiasAudit || {
-            version: 'CURRENT-TICK-BIAS-AUDIT-V1',
+            version: 'CURRENT-TICK-BIAS-AUDIT-V2-CANONICAL',
             pending: null,
             symbol: null,
             records: [],
             maxRecords: 10000,
+            uniqueSeq: 0,
+            lastCanonicalKey: null,
+            duplicateDrops: 0,
+            invalidCanonicalDrops: 0,
 
             storageKey(symbol) {
-                return `matchstar_current_tick_bias_v1_${String(symbol || 'UNKNOWN')}`;
+                // V2 deliberately starts a clean evidence set. V1 contained
+                // duplicate tick deliveries and must not contaminate this audit.
+                return `matchstar_current_tick_bias_v2_${String(symbol || 'UNKNOWN')}`;
+            },
+
+            canonicalIdentity(tickData, digit = null) {
+                const raw = tickData?.raw || tickData?.tick || {};
+                const symbol = String(
+                    raw?.symbol ||
+                    tickData?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.currentSymbol ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+                const epoch = Number(raw?.epoch ?? tickData?.epoch ?? 0);
+                const quote = String(
+                    tickData?.formattedPrice ??
+                    tickData?.formatted_quote ??
+                    raw?.formatted_quote ??
+                    ''
+                );
+                const d = Number(
+                    digit ??
+                    tickData?.digit ??
+                    (quote ? Number(quote.slice(-1)) : NaN)
+                );
+
+                if (!(epoch > 0) || !quote || !Number.isInteger(d) || d < 0 || d > 9) {
+                    return null;
+                }
+
+                return {
+                    symbol,
+                    epoch,
+                    quote,
+                    digit: d,
+                    key: `${symbol}|${epoch}|${quote}|${d}`
+                };
             },
 
             load(symbol) {
                 const sym = String(symbol || 'UNKNOWN');
                 if (this.symbol === sym && Array.isArray(this.records)) return this.records;
                 this.symbol = sym;
-                this.pending = null; // never carry a pending forecast across symbol/reload boundaries
+                this.pending = null;
+                this.uniqueSeq = 0;
+                this.lastCanonicalKey = null;
+                this.duplicateDrops = 0;
+                this.invalidCanonicalDrops = 0;
                 try {
                     const raw = JSON.parse(localStorage.getItem(this.storageKey(sym)) || '[]');
                     this.records = Array.isArray(raw) ? raw.slice(-this.maxRecords) : [];
@@ -11445,12 +11505,54 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 } catch (_) {}
             },
 
-            arm(recommendation, sourceDigit, symbol) {
+            observeTick(tickData, digit) {
+                const identity = this.canonicalIdentity(tickData, digit);
+                if (!identity) {
+                    this.invalidCanonicalDrops++;
+                    this.render();
+                    return { accepted: false, reason: 'INVALID_CANONICAL_TICK' };
+                }
+
+                this.load(identity.symbol);
+
+                // Exact consecutive duplicates are the bug observed in the V1
+                // export: one Deriv market tick reached the browser pipeline more
+                // than once. It must count as one market observation only.
+                if (identity.key === this.lastCanonicalKey) {
+                    this.duplicateDrops++;
+                    this.render();
+                    return {
+                        accepted: false,
+                        reason: 'DUPLICATE_CANONICAL_TICK',
+                        key: identity.key,
+                        epoch: identity.epoch,
+                        quote: identity.quote,
+                        digit: identity.digit,
+                        seq: this.uniqueSeq,
+                        symbol: identity.symbol
+                    };
+                }
+
+                this.lastCanonicalKey = identity.key;
+                this.uniqueSeq += 1;
+                return {
+                    accepted: true,
+                    reason: 'NEW_CANONICAL_TICK',
+                    ...identity,
+                    seq: this.uniqueSeq
+                };
+            },
+
+            arm(recommendation, sourceDigit, symbol, tickMeta) {
                 const sym = String(symbol || 'UNKNOWN');
                 this.load(sym);
 
                 const predictedDigit = Number(recommendation?.digit);
                 const src = Number(sourceDigit);
+                const sourceSeq = Number(tickMeta?.seq);
+                if (!tickMeta?.accepted || !Number.isInteger(sourceSeq) || sourceSeq <= 0) {
+                    return false;
+                }
                 if (!Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9) {
                     this.pending = null;
                     this.render();
@@ -11462,7 +11564,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     return false;
                 }
 
-                // One live source tick creates exactly one pending T+1 forecast.
+                // Forecast generated from unique canonical tick T is valid ONLY
+                // for the immediately following unique canonical tick T+1.
                 this.pending = {
                     symbol: sym,
                     sourceDigit: src,
@@ -11472,18 +11575,37 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         ? Number(recommendation.score)
                         : null,
                     source: String(recommendation?.source || 'AI'),
-                    generatedAtMs: Number(recommendation?.generatedAtMs || Date.now())
+                    generatedAtMs: Number(recommendation?.generatedAtMs || Date.now()),
+                    sourceSeq,
+                    validForSeq: sourceSeq + 1,
+                    sourceTickKey: String(tickMeta?.key || ''),
+                    sourceTickEpoch: Number(tickMeta?.epoch || 0),
+                    sourceTickQuote: String(tickMeta?.quote || '')
                 };
                 this.render();
                 return true;
             },
 
-            settle(observedNextDigit) {
+            settle(observedNextDigit, tickMeta) {
                 const p = this.pending;
                 const actual = Number(observedNextDigit);
-                if (!p || !Number.isInteger(actual) || actual < 0 || actual > 9) return false;
+                if (!p || !tickMeta?.accepted || !Number.isInteger(actual) || actual < 0 || actual > 9) {
+                    return false;
+                }
 
                 this.load(p.symbol);
+                const actualSeq = Number(tickMeta?.seq);
+                if (!Number.isInteger(actualSeq) || actualSeq <= 0) return false;
+
+                // Never score on the source tick itself and never reuse a stale
+                // forecast on T+2 or later. Only sourceSeq + 1 is a valid label.
+                if (actualSeq < Number(p.validForSeq)) return false;
+                if (actualSeq > Number(p.validForSeq)) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+
                 const hit = Number(p.predictedDigit) === actual;
                 const actualRepeatedCurrent = Number(p.sourceDigit) === actual;
                 const score = Number(p.score);
@@ -11500,6 +11622,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 this.records.push({
                     ts: Date.now(),
                     symbol: p.symbol,
+                    sourceSeq: Number(p.sourceSeq),
+                    actualSeq,
+                    sourceTickKey: p.sourceTickKey,
+                    actualTickKey: String(tickMeta?.key || ''),
+                    sourceTickEpoch: Number(p.sourceTickEpoch || 0),
+                    actualTickEpoch: Number(tickMeta?.epoch || 0),
+                    sourceTickQuote: String(p.sourceTickQuote || ''),
+                    actualTickQuote: String(tickMeta?.quote || ''),
                     sourceDigit: Number(p.sourceDigit),
                     predictedDigit: Number(p.predictedDigit),
                     actualNextDigit: actual,
@@ -11548,8 +11678,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? sameRate - actualRepeatRate
                     : null;
 
-                // Descriptive, not causal: this flags how much more often the AI
-                // copies T than T+1 naturally repeats T in the same forward sample.
                 let biasLabel = 'WAITING';
                 if (n >= 30 && Number.isFinite(excessCopy)) {
                     if (excessCopy >= 0.15) biasLabel = 'HIGH COPY BIAS';
@@ -11560,6 +11688,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 }
 
                 return {
+                    version: this.version,
                     symbol: sym,
                     n,
                     hits,
@@ -11575,6 +11704,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     actualRepeatRate,
                     excessCopy,
                     biasLabel,
+                    duplicateDrops: Number(this.duplicateDrops || 0),
+                    invalidCanonicalDrops: Number(this.invalidCanonicalDrops || 0),
+                    uniqueSeq: Number(this.uniqueSeq || 0),
                     bands,
                     pending: this.pending && this.pending.symbol === sym ? this.pending : null
                 };
@@ -11591,8 +11723,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 };
 
                 set('ctba-sample', st.n
-                    ? `${st.n} strictly forward T→T+1 forecasts · ${st.symbol}`
-                    : `Collecting strictly forward T→T+1 forecasts · ${st.symbol}`);
+                    ? `${st.n} canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`
+                    : `Collecting canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
                 set('ctba-ai-copy', `${st.sameN}/${st.n || 0} · ${pct(st.sameRate)}`);
                 set('ctba-natural-repeat', `${st.actualRepeats}/${st.n || 0} · ${pct(st.actualRepeatRate)}`);
                 set('ctba-copy-hit', `${st.sameHits}/${st.sameN || 0} · ${pct(st.sameHitRate)}`);
@@ -11602,11 +11734,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 set('ctba-excess-copy', Number.isFinite(st.excessCopy)
                     ? `${st.excessCopy >= 0 ? '+' : ''}${(st.excessCopy * 100).toFixed(1)} pp vs natural repeat`
                     : 'Need resolved forecasts');
+                set('ctba-duplicate-drops', `${st.duplicateDrops} exact duplicate canonical tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
 
                 const pending = st.pending;
                 set('ctba-pending', pending
-                    ? `Waiting for T+1: T=${pending.sourceDigit} · AI=${pending.predictedDigit}${pending.sameAsCurrent ? ' · SAME AS CURRENT' : ' · DIFFERENT'}${Number.isFinite(Number(pending.score)) ? ` · score ${(Number(pending.score)*100).toFixed(1)}%` : ''}`
-                    : 'Waiting for the next live AI forecast');
+                    ? `Waiting for unique T+1 seq ${pending.validForSeq}: T=${pending.sourceDigit} · AI=${pending.predictedDigit}${pending.sameAsCurrent ? ' · SAME AS CURRENT' : ' · DIFFERENT'}${Number.isFinite(Number(pending.score)) ? ` · score ${(Number(pending.score)*100).toFixed(1)}%` : ''}`
+                    : 'Waiting for the next unique canonical live AI forecast');
 
                 const bandsEl = document.getElementById('ctba-score-bands');
                 if (bandsEl) {
@@ -11655,9 +11788,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             if (String(format).toLowerCase() === 'csv') {
                 const headers = [
-                    'timestamp_iso','symbol','source_digit_t','ai_prediction_t1',
+                    'timestamp_iso','symbol','source_seq','actual_seq','source_tick_epoch','actual_tick_epoch','source_tick_quote','actual_tick_quote','source_digit_t','ai_prediction_t1',
                     'actual_t1','ai_equals_current_t','actual_t1_repeats_t',
-                    'hit','ai_score','ai_score_pct','score_band','source'
+                    'hit','ai_score','ai_score_pct','score_band','source','source_tick_key','actual_tick_key'
                 ];
 
                 const esc = (value) => {
@@ -11674,6 +11807,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     lines.push([
                         Number.isFinite(Number(r.ts)) ? new Date(Number(r.ts)).toISOString() : '',
                         r.symbol,
+                        r.sourceSeq,
+                        r.actualSeq,
+                        r.sourceTickEpoch,
+                        r.actualTickEpoch,
+                        r.sourceTickQuote,
+                        r.actualTickQuote,
                         r.sourceDigit,
                         r.predictedDigit,
                         r.actualNextDigit,
@@ -11683,7 +11822,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         Number.isFinite(score) ? score : '',
                         Number.isFinite(score) ? (score * 100).toFixed(3) : '',
                         r.scoreBand,
-                        r.source
+                        r.source,
+                        r.sourceTickKey,
+                        r.actualTickKey
                     ].map(esc).join(','));
                 }
 
@@ -11696,7 +11837,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             const payload = {
-                schema: 'DIGITMATCHSTAR_CURRENT_TICK_BIAS_AUDIT_V1',
+                schema: 'DIGITMATCHSTAR_CURRENT_TICK_BIAS_AUDIT_V2_CANONICAL',
                 exportedAt: now.toISOString(),
                 symbol,
                 interpretation: {
@@ -11704,6 +11845,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     sameAsCurrent: 'AI prediction for T+1 equals source/current digit T',
                     naturalRepeat: 'actual T+1 equals source/current digit T',
                     hit: 'AI prediction frozen at T equals actual unseen T+1',
+                    canonicalScoring: 'Only the next unique canonical Deriv tick may score a forecast; exact duplicate deliveries are rejected.',
                     caution: 'AI score is an internal model score, not a calibrated probability.'
                 },
                 summary,
@@ -11994,6 +12136,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         </div>
                         <div id="current-tick-bias-body" class="mt-3">
                             <div id="ctba-pending" class="mb-2 rounded-lg border border-amber-500/20 bg-slate-950/60 px-2 py-2 text-[10px] font-bold text-amber-200">Waiting for the next live AI forecast</div>
+                            <div id="ctba-duplicate-drops" class="mb-2 text-[9px] font-bold text-slate-500">0 exact duplicate canonical ticks rejected</div>
                             <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
                                 <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
                                     <div class="text-[8px] uppercase text-slate-500 font-bold">AI = current T</div>
@@ -12031,7 +12174,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                                 <button type="button" onclick="downloadCurrentTickBiasAudit('json')" class="text-[10px] font-black rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-2 text-amber-200" title="Export summary plus every resolved T→T+1 observation as JSON">⬇ EXPORT JSON</button>
                                 <button type="button" onclick="downloadCurrentTickBiasAudit('csv')" class="text-[10px] font-black rounded-lg border border-cyan-400/30 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-2 text-cyan-200" title="Export every resolved T→T+1 observation as CSV">⬇ EXPORT CSV</button>
                             </div>
-                            <div class="mt-2 text-[9px] text-slate-500">Strict rule: a forecast created after observing T is scored only when the next unseen live tick T+1 arrives. “Copy bias” is descriptive, not proof of causal leakage.</div>
+                            <div class="mt-2 text-[9px] text-slate-500">Strict rule: a forecast created after unique canonical tick T is scored only by the immediately following unique canonical tick T+1. Exact duplicate deliveries are rejected before scoring. “Copy bias” is descriptive, not proof of causal leakage.</div>
                         </div>
                     </div>
                 </div>
