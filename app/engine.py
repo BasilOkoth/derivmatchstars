@@ -1004,12 +1004,12 @@ class MultiUserEngine:
                 if is_win:
                     # MATCH: target == exact strategy tick last digit.
                     #
-                    # Stop immediately. Do not wait for official settlement.
-                    # Settlement remains active in the background.
-                    s.running = False
+                    # A displayed local match is PROVISIONAL. The tick visible
+                    # to this websocket may not be the purchased contract's
+                    # Deriv expiry tick. Wait for authoritative settlement.
                     s.paused = False
                     s.pending_real_confirmation = False
-                    s.phase = "FAST_WON"
+                    s.phase = "LOCAL_MATCH_AWAITING_OFFICIAL"
                     self.locked_target_snapshots.pop(sid, None)
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
@@ -2712,6 +2712,9 @@ class MultiUserEngine:
                         official = "WIN" if float(log.profit) > 0 else "LOSS"
                         official_digit = self._official_exit_digit(int(sid), poc)
                         execution_state["official_result"] = official
+                        execution_state["settlement_verified"] = True
+                        execution_state["barrier_matches_exit_digit"] = (official_digit == int(execution_state["target_digit"]) if official_digit is not None else None)
+                        execution_state["local_official_mismatch"] = (execution_state.get("local_result") != official if execution_state.get("local_result") is not None else None)
                         execution_state["official_exit_spot"] = poc.get("exit_spot")
                         execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                         execution_state["official_decision_digit"] = official_digit
@@ -2730,6 +2733,18 @@ class MultiUserEngine:
                                 json.dumps(execution_state)
                             )
 
+                    if (
+                        isinstance(execution_state, dict)
+                        and str(execution_state.get("contract_id") or "") == str(contract_id)
+                        and execution_state.get("local_result") == "WIN"
+                        and s.phase == "LOCAL_MATCH_AWAITING_OFFICIAL"
+                    ):
+                        s.running = False
+                        if execution_state.get("official_result") == "WIN":
+                            s.phase = "OFFICIAL_WON"
+                        else:
+                            s.phase = "RECONCILE_MISMATCH"
+                            s.last_error = f"Local/official disagreement for contract {contract_id}"
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -2817,6 +2832,9 @@ class MultiUserEngine:
                 ):
                     official_digit = self._official_exit_digit(int(sid), poc)
                     execution_state["official_result"] = official
+                    execution_state["settlement_verified"] = True
+                    execution_state["barrier_matches_exit_digit"] = (official_digit == int(execution_state["target_digit"]) if official_digit is not None else None)
+                    execution_state["local_official_mismatch"] = (execution_state.get("local_result") != official if execution_state.get("local_result") is not None else None)
                     execution_state["official_exit_spot"] = poc.get("exit_spot")
                     execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                     execution_state["official_decision_digit"] = official_digit
@@ -2897,6 +2915,25 @@ class MultiUserEngine:
                             f"{fast['fast_result']} disagreed with "
                             f"Deriv settlement {official} for "
                             f"contract {contract_id}"
+                        )
+
+                # Never promote a provisional local match to a verified win.
+                if (
+                    fast
+                    and fast.get("fast_result") == "WIN"
+                    and str(fast.get("contract_id")) == str(contract_id)
+                ):
+                    if official == "WIN" and s.phase not in ("RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"):
+                        s.running = False
+                        s.paused = False
+                        s.phase = "OFFICIAL_WON"
+                    else:
+                        s.running = False
+                        s.paused = False
+                        s.phase = "RECONCILE_MISMATCH"
+                        s.last_error = (
+                            f"Local digit appeared to match, but Deriv official result "
+                            f"is {official} for contract {contract_id}"
                         )
 
                 # If FAST_WON has already occurred, an older losing contract
