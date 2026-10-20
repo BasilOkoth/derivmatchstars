@@ -2744,8 +2744,9 @@
                 this.updateRegime(digit);
                 this.onNewDigit(digit);
                 
-                // Refresh AI ranking every 10 ticks.
-                if (this.tickIndex % 10 === 0) {
+                // AI FUSION V1: refresh recommendation after EVERY genuine live tick
+                // so a prepared AI target is available for the following market tick.
+                if (this.warmupDone) {
                     this.analyzeAndRecommend();
                 }
             },
@@ -3301,6 +3302,12 @@ survivalTop = survivalTop3[0] || null;
 
                 if (best) {
                     this.currentRecommendation = best;
+
+                    // AI FUSION V1: publish the completed browser recommendation
+                    // to the server. The server remains the only BUY authority.
+                    try {
+                        publishAISignalToServer(best).catch(() => {});
+                    } catch (_) {}
 
                     // Update UI
                     document.getElementById('ai-recommended-digit').textContent = best.digit;
@@ -10844,7 +10851,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             lastAutoRestartPhase: null,
             lastCompletedServerCycleTrade: 0,
             marginSyncPending: false,
-            lastMarginSyncAt: 0
+            lastMarginSyncAt: 0,
+            aiSignalPending: false,
+            lastAiSignalSentAt: 0,
+            lastAiSignalDigit: null
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
@@ -12082,6 +12092,77 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
             }
             return data;
+        }
+
+        // ------------------------------------------------------------------
+        // AI FUSION V1 — browser intelligence -> server execution evidence
+        // ------------------------------------------------------------------
+        async function publishAISignalToServer(best) {
+  const s = window.SERVER_EXECUTION;
+  if (!s?.enabled || !s.sessionId || !best) return false;
+  if (s.aiSignalPending) return false;
+
+  const digit = Number(best.digit);
+  const score = Number(best.score);
+  if (!Number.isInteger(digit) || digit < 0 || digit > 9) return false;
+  if (!Number.isFinite(score)) return false;
+
+  const now = Date.now();
+  if (now - Number(s.lastAiSignalSentAt || 0) < 120) return false;
+
+  const survival = best.survival || null;
+  const dna = best.digitDNA || null;
+  const features = best.digitFeatures || null;
+  const auditor = best.auditor || null;
+
+  const n = (value) => {
+      const x = Number(value);
+      return Number.isFinite(x) ? x : null;
+  };
+
+  const lastTick = window.lastTick || null;
+  const tickEpoch = n(
+      lastTick?.epoch ??
+      lastTick?.tick?.epoch ??
+      window.lastTickEpoch
+  );
+
+  const payload = {
+      digit,
+      score,
+      source: String(best.source || 'AI'),
+      symbol: String(
+          document.getElementById('symbol')?.value ||
+          window.currentSymbol ||
+          ''
+      ),
+      pm5: n(survival?.pm5 ?? best.pm5),
+      pm10: n(survival?.pm10 ?? best.pm10),
+      s20: n(survival?.s20 ?? best.s20),
+      etm: n(survival?.etm ?? best.etm),
+      dna: n(dna?.topSimilarity),
+      features: n(features?.signalStrength),
+      auditor: n(auditor?.signalStrength),
+      source_tick_epoch: tickEpoch,
+      client_ts_ms: now
+  };
+
+  s.aiSignalPending = true;
+  s.lastAiSignalSentAt = now;
+
+  try {
+      const result = await serverExecRequest(
+          `/sessions/${s.sessionId}/ai-signal`,
+          { method: 'POST', body: payload }
+      );
+      s.lastAiSignalDigit = digit;
+      return !!result?.ok;
+  } catch (error) {
+      console.warn('AI fusion signal sync failed:', error);
+      return false;
+  } finally {
+      s.aiSignalPending = false;
+  }
         }
 function toggleServerContinuousResearch() {
             const s = window.SERVER_EXECUTION;

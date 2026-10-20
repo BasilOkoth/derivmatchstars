@@ -5,6 +5,7 @@ import time
 import logging
 from datetime import datetime
 from collections import deque
+import math
 
 from .db import SessionLocal
 from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
@@ -91,6 +92,10 @@ class MultiUserEngine:
         # contract itself remains immutable at Deriv.
         self.live_next_target = {}  # sid -> digit
 
+        # AI FUSION V1: latest browser Digit Intelligence recommendation.
+        # The browser can suggest, but only this server may authorize a BUY.
+        self.ai_signal_by_sid = {}  # sid -> validated AI evidence
+
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
 
@@ -164,6 +169,150 @@ class MultiUserEngine:
             )
 
         return value
+
+    @staticmethod
+    def _ai_number(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+
+    def set_ai_signal(self, sid: int, *, symbol: str, payload: dict):
+        sid = int(sid)
+        digit = int(payload.get("digit"))
+        score = self._ai_number(payload.get("score"))
+        if digit < 0 or digit > 9:
+            raise ValueError("AI digit must be 0..9")
+        if score is None or score < 0 or score > 1:
+            raise ValueError("AI score must be between 0 and 1")
+
+        clean = {
+            "digit": digit,
+            "score": score,
+            "source": str(payload.get("source") or "AI")[:120],
+            "symbol": str(symbol),
+            "pm5": self._ai_number(payload.get("pm5")),
+            "pm10": self._ai_number(payload.get("pm10")),
+            "s20": self._ai_number(payload.get("s20")),
+            "etm": self._ai_number(payload.get("etm")),
+            "dna": self._ai_number(payload.get("dna")),
+            "features": self._ai_number(payload.get("features")),
+            "auditor": self._ai_number(payload.get("auditor")),
+            "source_tick_epoch": payload.get("source_tick_epoch"),
+            "client_ts_ms": payload.get("client_ts_ms"),
+            "received_monotonic": time.monotonic(),
+            "received_at": datetime.utcnow().isoformat(),
+        }
+        self.ai_signal_by_sid[sid] = clean
+        return {k: v for k, v in clean.items() if k != "received_monotonic"}
+
+    def _fresh_ai_signal(self, sid: int, *, symbol=None, max_age_seconds=3.0):
+        signal = self.ai_signal_by_sid.get(int(sid))
+        if not isinstance(signal, dict):
+            return None
+        if symbol is not None and str(signal.get("symbol")) != str(symbol):
+            return None
+        received = float(signal.get("received_monotonic") or 0.0)
+        age = time.monotonic() - received if received else 999999.0
+        if age < 0 or age > float(max_age_seconds):
+            return None
+        out = dict(signal)
+        out["age_seconds"] = float(age)
+        return out
+
+    def ai_signal_status(self, sid: int, *, symbol=None):
+        signal = self._fresh_ai_signal(int(sid), symbol=symbol)
+        if not signal:
+            raw = self.ai_signal_by_sid.get(int(sid))
+            if not isinstance(raw, dict):
+                return {"ready": False, "status": "MISSING"}
+            out = dict(raw)
+            out["ready"] = False
+            out["status"] = "STALE_OR_SYMBOL_MISMATCH"
+            out.pop("received_monotonic", None)
+            return out
+        signal["ready"] = True
+        signal["status"] = "FRESH"
+        signal.pop("received_monotonic", None)
+        return signal
+
+    def _fusion_select(self, sid: int, snapshot: dict, *, symbol=None):
+        v1_digit = snapshot.get("selected_digit")
+        v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
+        v1_margin_ok = bool(snapshot.get("margin_eligible"))
+
+        ai = self._fresh_ai_signal(int(sid), symbol=symbol)
+        ai_digit = int(ai["digit"]) if ai else None
+        ai_score = float(ai["score"]) if ai else None
+
+        support = 0
+        support_flags = {}
+        if ai:
+            checks = {
+                "dna": (ai.get("dna"), 0.55),
+                "features": (ai.get("features"), 0.60),
+                "auditor": (ai.get("auditor"), 0.55),
+                "pm5": (ai.get("pm5"), 0.40),
+                "pm10": (ai.get("pm10"), 0.60),
+            }
+            for name, (value, threshold) in checks.items():
+                ok = value is not None and float(value) >= float(threshold)
+                support_flags[name] = bool(ok)
+                support += int(ok)
+
+        agreement = bool(
+            ai
+            and v1_ready
+            and int(ai_digit) == int(v1_digit)
+            and ai_score is not None
+            and ai_score >= 0.55
+        )
+        ai_override = bool(
+            ai
+            and ai_score is not None
+            and ai_score >= 0.62
+            and support >= 3
+        )
+
+        final_digit = None
+        source = "NO_EXECUTABLE_SIGNAL"
+
+        if agreement:
+            final_digit = int(v1_digit)
+            source = "AI_V1_AGREEMENT"
+        elif ai_override:
+            final_digit = int(ai_digit)
+            source = "AI_OVERRIDE"
+        elif v1_ready and v1_margin_ok:
+            final_digit = int(v1_digit)
+            source = "V1"
+        elif ai is None:
+            source = "V1_AI_STALE"
+        else:
+            source = "WAITING_FUSION_STRENGTH"
+
+        result = {
+            "version": "AI_V1_FUSION_V1",
+            "executable": final_digit is not None,
+            "final_digit": final_digit,
+            "source": source,
+            "v1_digit": int(v1_digit) if v1_digit is not None else None,
+            "v1_margin_eligible": v1_margin_ok,
+            "v1_top_margin": snapshot.get("top_margin"),
+            "ai_digit": ai_digit,
+            "ai_score": ai_score,
+            "ai_support_count": int(support),
+            "ai_support_flags": support_flags,
+            "ai": (
+                {k: v for k, v in ai.items() if k != "received_monotonic"}
+                if ai else None
+            ),
+        }
+        snapshot["fusion"] = result
+        return result
 
     def _lock(self, sid: int) -> asyncio.Lock:
         lock = self.session_locks.get(sid)
@@ -563,6 +712,12 @@ class MultiUserEngine:
             "rank_seq": snapshot.get("rank_seq"),
         }
         snapshot["shadow_200"] = dict(self.shadow_200_snapshots[sid])
+
+        latest_symbol = None
+        if isinstance(snapshot.get("canonical_tick"), dict):
+            latest_symbol = snapshot["canonical_tick"].get("symbol")
+        self._fusion_select(sid, snapshot, symbol=latest_symbol)
+
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
@@ -573,21 +728,27 @@ class MultiUserEngine:
             else (prepared_snapshot if prepared_snapshot is not None
                   else self.digit_score_snapshots.get(sid) or {})
         )
-        digit = snapshot.get("selected_digit")
 
-        # Execution gate: rank #1 is visible continuously, but it is not
-        # executable until the separation from rank #2 reaches the minimum.
-        if not snapshot.get("margin_eligible"):
+        symbol = None
+        canonical = snapshot.get("canonical_tick")
+        if isinstance(canonical, dict):
+            symbol = canonical.get("symbol")
+
+        fusion = self._fusion_select(sid, snapshot, symbol=symbol)
+        digit = fusion.get("final_digit")
+
+        if digit is None:
             return None, snapshot
 
-        if lock_target and digit is not None:
+        if lock_target:
             self.locked_target_snapshots[sid] = {
                 "digit": int(digit),
                 "snapshot": json.loads(json.dumps(snapshot)),
                 "locked_at": datetime.utcnow().isoformat(),
+                "selector_source": fusion.get("source"),
             }
 
-        return (int(digit) if digit is not None else None), snapshot
+        return int(digit), snapshot
 
     def _trade_score_evidence(self, sid: int, digit: int):
         """Return the exact execution snapshot frozen when this block target was chosen."""
@@ -628,6 +789,13 @@ class MultiUserEngine:
             "candidate": row,
             "locked_target_digit": int(digit),
             "locked_at": locked.get("locked_at"),
+            "selector_source": locked.get("selector_source"),
+            "fusion": snapshot.get("fusion"),
+            "ai_signal": (
+                snapshot.get("fusion", {}).get("ai")
+                if isinstance(snapshot.get("fusion"), dict)
+                else None
+            ),
             "shadow": {
                 "version": shadow.get("version"),
                 "selected_digit": shadow.get("selected_digit"),
@@ -1100,10 +1268,15 @@ class MultiUserEngine:
                 payload = None
 
                 # Freeze the previously published rank for THIS recovery.
+                # AI FUSION V1 may rescue a weak V1 margin when AI evidence is strong.
                 current_snapshot = prepared_for_this_tick
-                margin_ok = bool(current_snapshot.get("margin_eligible"))
 
-                if not margin_ok:
+                desired_next, current_snapshot = self._choose_scored_digit(
+                    sid,
+                    lock_target=True,
+                    prepared_snapshot=prepared_for_this_tick,
+                )
+                if desired_next is None:
                     s.current_stake = expected_stake
                     s.phase = "RECOVERY_WAITING_MARGIN"
                     s.last_error = None
@@ -1111,16 +1284,10 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                desired_next, current_snapshot = self._choose_scored_digit(
+                self._set_live_next_target(
                     sid,
-                    lock_target=True,
-                    prepared_snapshot=prepared_for_this_tick,
+                    desired_next,
                 )
-                if desired_next is not None:
-                    self._set_live_next_target(
-                        sid,
-                        desired_next,
-                    )
 
                 if desired_next is not None:
                     next_digit = int(desired_next)
@@ -1839,35 +2006,22 @@ class MultiUserEngine:
         stake = round(float(payload.get("stake") or 0), 2)
         expected_trade_no = int(row.current_trade or 0) + 1
 
-        # STRICT V1 MARGIN GATE — final authoritative pre-BUY barrier.
-        # A target may have qualified a fraction of a second earlier and then
-        # lost its lead on a newer tick before the network BUY was sent.
-        # Read precomputed ranking. Re-scoring inside the BUY gate creates
-        # avoidable latency and may change the target mid-purchase.
+        # AI FUSION V1 — final authoritative pre-BUY barrier.
+        # Only a target frozen by _choose_scored_digit may be purchased.
         locked = self.locked_target_snapshots.get(int(sid)) or {}
-        locked_snapshot = locked.get("snapshot") or {}
-        # During recovery the rank is deliberately one tick behind the
-        # recovery-triggering tick. Never replace the locked BUY barrier with
-        # the newer dashboard rank.
-        gate_snapshot = (
-            locked_snapshot
-            if (locked_snapshot.get("selected_digit") is not None
-                and int(locked_snapshot["selected_digit"]) == int(digit))
-            else self.digit_score_snapshots.get(int(sid)) or {}
-        )
-        gate_margin = gate_snapshot.get("top_margin")
-        gate_minimum = self.get_minimum_v1_margin(int(sid))
-        gate_top = gate_snapshot.get("selected_digit")
-        try:
-            gate_margin_value = float(gate_margin) if gate_margin is not None else None
-        except (TypeError, ValueError):
-            gate_margin_value = None
+        gate_snapshot = locked.get("snapshot") or {}
+        fusion = (
+            gate_snapshot.get("fusion")
+            if isinstance(gate_snapshot, dict)
+            else None
+        ) or {}
+
+        gate_top = fusion.get("final_digit")
         gate_ok = bool(
-            gate_snapshot.get("ready")
+            fusion.get("executable")
             and gate_top is not None
             and int(gate_top) == int(digit)
-            and (gate_minimum <= 0 or
-                 (gate_margin_value is not None and gate_margin_value >= gate_minimum))
+            and int(locked.get("digit", -1)) == int(digit)
         )
 
         if not gate_ok:
@@ -1879,20 +2033,20 @@ class MultiUserEngine:
                 if int(row.current_trade or 0) > 0
                 else "WAITING_V1_MARGIN"
             )
-            row.candidate_digit = (
-                int(gate_top) if gate_top is not None else row.candidate_digit
-            )
-            row.last_error = None
+            row.last_error = "Fusion target changed or is no longer executable"
             row.updated_at = datetime.utcnow()
             db.commit()
             return None
 
         # Freeze the exact gate evidence used to authorize this BUY.
         payload["margin_gate"] = {
-            "top_margin": float(gate_margin) if gate_margin is not None else None,
-            "minimum_v1_margin": float(gate_minimum),
             "selected_digit": int(gate_top),
             "eligible": True,
+            "selector_source": fusion.get("source"),
+            "v1_top_margin": gate_snapshot.get("top_margin"),
+            "minimum_v1_margin": gate_snapshot.get("minimum_v1_margin"),
+            "ai_score": fusion.get("ai_score"),
+            "ai_support_count": fusion.get("ai_support_count"),
             "rank_seq": gate_snapshot.get("rank_seq"),
             "rank_epoch": gate_snapshot.get("rank_epoch"),
             "checked_at": datetime.utcnow().isoformat(),

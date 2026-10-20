@@ -92,6 +92,22 @@ class MarginGateRequest(BaseModel):
     minimum_margin: float = Field(ge=0.0, le=50.0)
 
 
+class AISignalRequest(BaseModel):
+    digit: int = Field(ge=0, le=9)
+    score: float = Field(ge=0.0, le=1.0)
+    source: str = "AI"
+    symbol: str
+    pm5: float | None = None
+    pm10: float | None = None
+    s20: float | None = None
+    etm: float | None = None
+    dna: float | None = None
+    features: float | None = None
+    auditor: float | None = None
+    source_tick_epoch: int | None = None
+    client_ts_ms: int | None = None
+
+
 @app.on_event("startup")
 async def startup():
     await engine.start()
@@ -326,6 +342,12 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
+                    "ai_signal": engine.ai_signal_status(s.id, symbol=s.symbol),
+                    "fusion": (
+                        (getattr(engine, "digit_score_snapshots", {}) or {})
+                        .get(int(s.id), {})
+                        .get("fusion")
+                    ),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),
@@ -779,6 +801,37 @@ def candidate(
             "reconcile_required": False,
         }
 
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/ai-signal")
+def set_ai_signal(
+    sid: int,
+    body: AISignalRequest,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if str(body.symbol or "") != str(s.symbol or ""):
+            raise HTTPException(
+                status_code=400,
+                detail=f"AI signal symbol {body.symbol!r} does not match session symbol {s.symbol!r}",
+            )
+
+        stored = engine.set_ai_signal(
+            int(s.id),
+            symbol=str(s.symbol),
+            payload=body.model_dump(),
+        )
+
+        return {
+            "ok": True,
+            "session_id": int(s.id),
+            "ai_signal": stored,
+        }
     finally:
         db.close()
 
