@@ -1259,12 +1259,22 @@ class MultiUserEngine:
         account_id,
         contract_id,
         client,
+        urgent=False,
     ):
         """
         Schedule one authoritative reconciliation check without waiting under
         the session lock.
 
         Normal settlement still wins. Stale release is DEMO-only and bounded.
+
+        When the in-memory fast owner is missing, urgent=True shortens the
+        reconciliation cadence for the outstanding 1-tick contract. This does
+        NOT invent a local next-tick result after a process restart; it only
+        asks Deriv for the authoritative sold state sooner, then the normal
+        recovery path resumes from persisted TradeLog evidence.
+
+        The urgent interval backs off automatically after unsold responses or
+        transport errors so a reconnect problem cannot hammer Deriv.
         """
         key = (int(sid), str(contract_id))
         task = self.contract_probe_tasks.get(key)
@@ -1272,7 +1282,23 @@ class MultiUserEngine:
             return
 
         now = time.monotonic()
-        if now - self.contract_probe_at.get(key, 0) < 3.0:
+
+        if urgent:
+            unsold_count = int(self.contract_probe_unsold.get(key, 0) or 0)
+            error_count = int(self.contract_probe_errors.get(key, 0) or 0)
+
+            # First recovery check is near-immediate, then progressively backs
+            # off while the contract remains unresolved.
+            unsold_delay = min(1.50, 0.45 + (0.25 * unsold_count))
+            error_delay = min(
+                2.00,
+                0.45 * (2 ** min(error_count, 3)),
+            )
+            probe_interval = max(unsold_delay, error_delay)
+        else:
+            probe_interval = 3.0
+
+        if now - self.contract_probe_at.get(key, 0) < probe_interval:
             return
         self.contract_probe_at[key] = now
 
@@ -1496,7 +1522,11 @@ class MultiUserEngine:
                     return
 
                 # No live in-memory owner means restart/recovery state.
-                # Only this path is allowed to wait for official settlement.
+                # We cannot safely recreate a missed "first tick after BUY"
+                # across a process restart because callback sequence continuity
+                # is gone. Instead, switch to fast authoritative reconciliation:
+                # ask Deriv for the sold state on a sub-second/backoff cadence,
+                # then resume immediately from the persisted settlement.
                 if contract_id and (not latest or str(latest.status).upper() != "SETTLED"):
                     # Subscription is best effort; bounded authoritative polling
                     # continues even if a subscription ID exists but stopped firing.
@@ -1504,6 +1534,7 @@ class MultiUserEngine:
                         sid=sid, user_id=s.user_id,
                         account_id=s.account_id, contract_id=contract_id,
                         client=client,
+                        urgent=True,
                     )
                     contract_key = (sid, contract_id)
                     if contract_key not in self.contract_subscriptions:
