@@ -83,6 +83,7 @@ class MultiUserEngine:
 
         # Settlement bookkeeping keyed per individual contract.
         self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
+        self.contract_subscription_tasks = {}  # setup task per contract
         self.contract_poll_tasks = {}  # fallback only
 
         # Latest live V1 rank #1 for the NEXT trade.
@@ -1210,6 +1211,10 @@ class MultiUserEngine:
                 self.contract_probe_errors.pop(key, None)
                 self.contract_probe_at.pop(key, None)
 
+                setup = self.contract_subscription_tasks.pop(key, None)
+                if setup and setup is not asyncio.current_task() and not setup.done():
+                    setup.cancel()
+
                 poll = self.contract_poll_tasks.pop(key, None)
                 if poll and poll is not asyncio.current_task() and not poll.done():
                     poll.cancel()
@@ -1500,17 +1505,13 @@ class MultiUserEngine:
                             contract_id=contract_id,
                             client=client,
                         )
-                        contract_key = (sid, contract_id)
-                        if contract_key not in self.contract_subscriptions:
-                            asyncio.create_task(
-                                self._subscribe_open_contract(
-                                    sid=sid,
-                                    user_id=s.user_id,
-                                    account_id=s.account_id,
-                                    contract_id=contract_id,
-                                    client=client,
-                                )
-                            )
+                        self._schedule_contract_subscription(
+                            sid=sid,
+                            user_id=s.user_id,
+                            account_id=s.account_id,
+                            contract_id=contract_id,
+                            client=client,
+                        )
 
                     s.phase = (
                         "FAST_DECISION_APPLYING"
@@ -1528,22 +1529,39 @@ class MultiUserEngine:
                 # ask Deriv for the sold state on a sub-second/backoff cadence,
                 # then resume immediately from the persisted settlement.
                 if contract_id and (not latest or str(latest.status).upper() != "SETTLED"):
-                    # Subscription is best effort; bounded authoritative polling
-                    # continues even if a subscription ID exists but stopped firing.
-                    self._schedule_contract_probe(
-                        sid=sid, user_id=s.user_id,
-                        account_id=s.account_id, contract_id=contract_id,
+                    # One settlement watcher per contract. Prefer the
+                    # subscription path; if Deriv returns no subscription id,
+                    # _subscribe_open_contract starts its own bounded poller.
+                    # Only use the urgent direct probe when no watcher is
+                    # currently active. This prevents duplicate settlement
+                    # requests from competing on the same account WebSocket.
+                    self._schedule_contract_subscription(
+                        sid=sid,
+                        user_id=s.user_id,
+                        account_id=s.account_id,
+                        contract_id=contract_id,
                         client=client,
-                        urgent=True,
                     )
-                    contract_key = (sid, contract_id)
-                    if contract_key not in self.contract_subscriptions:
-                        asyncio.create_task(
-                            self._subscribe_open_contract(
-                                sid=sid, user_id=s.user_id,
-                                account_id=s.account_id,
-                                contract_id=contract_id, client=client,
-                            )
+
+                    contract_key = (int(sid), str(contract_id))
+                    setup_task = self.contract_subscription_tasks.get(
+                        contract_key
+                    )
+                    poll_task = self.contract_poll_tasks.get(contract_key)
+                    watcher_active = bool(
+                        contract_key in self.contract_subscriptions
+                        or (setup_task and not setup_task.done())
+                        or (poll_task and not poll_task.done())
+                    )
+
+                    if not watcher_active:
+                        self._schedule_contract_probe(
+                            sid=sid,
+                            user_id=s.user_id,
+                            account_id=s.account_id,
+                            contract_id=contract_id,
+                            client=client,
+                            urgent=True,
                         )
                     probe_key = (int(sid), str(contract_id))
                     probe_count = int(
@@ -2292,17 +2310,61 @@ class MultiUserEngine:
         # than the purchase. Same-second/unordered cases remain conservative and
         # wait for authoritative Deriv settlement.
 
-        asyncio.create_task(
-            self._subscribe_open_contract(
-                sid=s.id,
-                user_id=s.user_id,
-                account_id=s.account_id,
-                contract_id=contract_id,
-                client=client,
-            )
+        self._schedule_contract_subscription(
+            sid=s.id,
+            user_id=s.user_id,
+            account_id=s.account_id,
+            contract_id=contract_id,
+            client=client,
         )
 
         return True
+
+    def _schedule_contract_subscription(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        client,
+    ):
+        """
+        Ensure at most ONE subscription-setup task exists for a contract.
+
+        step() runs every ~20 ms. Without this registry, multiple worker passes
+        can all see "no subscription yet" while the first Deriv subscription
+        request is still in flight, causing a burst of duplicate
+        proposal_open_contract requests for the same contract.
+        """
+        key = (int(sid), str(contract_id))
+
+        if key in self.contract_subscriptions:
+            return
+
+        poll = self.contract_poll_tasks.get(key)
+        if poll and not poll.done():
+            return
+
+        existing = self.contract_subscription_tasks.get(key)
+        if existing and not existing.done():
+            return
+
+        async def runner():
+            try:
+                await self._subscribe_open_contract(
+                    sid=sid,
+                    user_id=user_id,
+                    account_id=account_id,
+                    contract_id=str(contract_id),
+                    client=client,
+                )
+            finally:
+                current = self.contract_subscription_tasks.get(key)
+                if current is asyncio.current_task():
+                    self.contract_subscription_tasks.pop(key, None)
+
+        self.contract_subscription_tasks[key] = asyncio.create_task(runner())
 
     async def _subscribe_open_contract(
         self,
