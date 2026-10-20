@@ -99,8 +99,10 @@ class MultiUserEngine:
         # user-configured minimum. Shared by DEMO and REAL target selection.
         self.minimum_v1_margin_default = 3.0
         self.minimum_v1_margin_by_sid = {}
-        self.digit_history = {}          # sid -> deque(maxlen=100)
+        self.digit_history = {}          # sid -> deque(maxlen=200)
         self.digit_score_snapshots = {}  # sid -> latest ranking
+        self.shadow_200_snapshots = {}  # sid -> research-only 200-tick challenger
+        self.shadow_200_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=200)
         # Process memory is lost on Render restart. Rebuild DigitScore from
         # Deriv's recent ticks_history before the next cycle starts.
         self.history_bootstrap_tasks = {}   # sid -> asyncio.Task
@@ -456,13 +458,13 @@ class MultiUserEngine:
     def _digit_history(self, sid: int):
         history = self.digit_history.get(sid)
         if history is None:
-            history = deque(maxlen=100)
+            history = deque(maxlen=200)
             self.digit_history[sid] = history
         return history
 
     def _score_all_digits(self, sid: int, exclude_digit=None):
         snapshot = self.digit_scorer.rank(
-            list(self._digit_history(sid)),
+            list(self._digit_history(sid))[-100:],
             exclude_digit=exclude_digit,
         )
 
@@ -533,8 +535,10 @@ class MultiUserEngine:
         minimum_margin = self.get_minimum_v1_margin(sid)
         margin_eligible = bool(
             snapshot.get("ready")
-            and margin_value is not None
-            and margin_value >= minimum_margin
+            and snapshot.get("selected_digit") is not None
+            and (minimum_margin <= 0 or (
+                margin_value is not None and margin_value >= minimum_margin
+            ))
         )
 
         snapshot["minimum_v1_margin"] = minimum_margin
@@ -545,11 +549,26 @@ class MultiUserEngine:
             else "WARMING"
         )
 
+        # 200-tick challenger is shadow research only: NEVER alters purchased digit.
+        history_200 = list(self._digit_history(sid))
+        shadow_200 = self.shadow_200_scorer.rank(history_200)
+        self.shadow_200_snapshots[sid] = {
+            "version": "DIGIT_SCORE_200_SHADOW",
+            "history_count": len(history_200),
+            "selected_digit": shadow_200.get("selected_digit"),
+            "top_margin": shadow_200.get("top_margin"),
+            "rank_seq": snapshot.get("rank_seq"),
+        }
+        snapshot["shadow_200"] = dict(self.shadow_200_snapshots[sid])
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
-        snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
+        snapshot = (
+            self._score_all_digits(sid, exclude_digit=exclude_digit)
+            if exclude_digit is not None
+            else self.digit_score_snapshots.get(sid) or {}
+        )
         digit = snapshot.get("selected_digit")
 
         # Execution gate: rank #1 is visible continuously, but it is not
@@ -575,7 +594,7 @@ class MultiUserEngine:
             not snapshot
             or int(locked.get("digit", -1)) != int(digit)
         ):
-            snapshot = self._score_all_digits(sid)
+            snapshot = self.digit_score_snapshots.get(sid) or {}
 
         row = None
         for item in snapshot.get("ranking") or []:
@@ -621,7 +640,7 @@ class MultiUserEngine:
         sid,
         symbol,
         client,
-        count=100,
+        count=200,
     ):
         """
         Rebuild the server-side DigitScore window from Deriv recent tick history.
@@ -654,7 +673,7 @@ class MultiUserEngine:
             try:
                 result = await client.ticks_history(
                     str(symbol),
-                    count=max(50, int(count or 100)),
+                    count=max(200, int(count or 200)),
                 )
 
                 payload = result.get("history") or {}
@@ -667,12 +686,12 @@ class MultiUserEngine:
 
                 # Replace an incomplete process-local window with the canonical
                 # recent history returned by Deriv, preserving chronological order.
-                rebuilt = deque(maxlen=100)
+                rebuilt = deque(maxlen=200)
 
                 usable_times = len(times) == len(prices)
                 last_epoch = 0
 
-                for idx, price in enumerate(prices[-100:]):
+                for idx, price in enumerate(prices[-200:]):
                     tick = {
                         "quote": price,
                     }
@@ -687,7 +706,7 @@ class MultiUserEngine:
 
                     if usable_times:
                         try:
-                            epoch = int(times[-len(prices[-100:]) + idx])
+                            epoch = int(times[-len(prices[-200:]) + idx])
                             last_epoch = max(last_epoch, epoch)
                         except Exception:
                             pass
@@ -768,7 +787,7 @@ class MultiUserEngine:
                 sid=int(sid),
                 symbol=str(symbol),
                 client=client,
-                count=100,
+                count=200,
             )
 
         existing = self.tick_subscriptions.get(sid)
@@ -862,7 +881,9 @@ class MultiUserEngine:
             previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
             self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
 
-        digit = self._tick_last_digit(tick)
+        digit = self._tick_last_digit(
+            tick, fallback_decimals=self.tick_precision.get(int(sid))
+        )
         if digit is not None:
             history = self._digit_history(sid)
 
@@ -1014,7 +1035,7 @@ class MultiUserEngine:
 
                 # The latest V1 rank #1 is the authoritative NEXT target,
                 # but it is executable only when the V1 margin gate is open.
-                current_snapshot = self._score_all_digits(sid)
+                current_snapshot = self.digit_score_snapshots.get(sid) or {}
                 margin_ok = bool(current_snapshot.get("margin_eligible"))
 
                 if not margin_ok:
@@ -1755,8 +1776,9 @@ class MultiUserEngine:
         # STRICT V1 MARGIN GATE — final authoritative pre-BUY barrier.
         # A target may have qualified a fraction of a second earlier and then
         # lost its lead on a newer tick before the network BUY was sent.
-        # Re-score HERE, immediately before claiming the paid purchase.
-        gate_snapshot = self._score_all_digits(int(sid))
+        # Read precomputed ranking. Re-scoring inside the BUY gate creates
+        # avoidable latency and may change the target mid-purchase.
+        gate_snapshot = self.digit_score_snapshots.get(int(sid)) or {}
         gate_margin = gate_snapshot.get("top_margin")
         gate_minimum = self.get_minimum_v1_margin(int(sid))
         gate_top = gate_snapshot.get("selected_digit")
