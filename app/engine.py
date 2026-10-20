@@ -2247,7 +2247,7 @@ class MultiUserEngine:
                 inflight_proven_pre_purchase
             ),
             "decision_mode": (
-                "OFFICIAL_ONLY_AMBIGUOUS_INFLIGHT_TICK"
+                "OFFICIAL_ONLY_INFLIGHT_TICK"
                 if official_only_inflight
                 else "FAST_NEXT_TICK"
             ),
@@ -2559,6 +2559,34 @@ class MultiUserEngine:
         }
 
 
+    def _official_exit_digit(self, sid: int, poc: dict):
+        """
+        Return the authoritative last digit of Deriv's settled exit_spot.
+
+        Prefer the exact string representation returned by Deriv so trailing
+        zeroes are preserved. If Deriv returns a numeric value, format it with
+        the market precision learned from the canonical tick stream.
+        """
+        raw = poc.get("exit_spot")
+        if raw is None:
+            return None
+
+        if isinstance(raw, str):
+            digits = [ch for ch in raw if ch.isdigit()]
+            return int(digits[-1]) if digits else None
+
+        decimals = self.tick_precision.get(int(sid))
+        try:
+            if decimals is not None:
+                rendered = f"{float(raw):.{int(decimals)}f}"
+            else:
+                rendered = str(raw)
+        except Exception:
+            rendered = str(raw)
+
+        digits = [ch for ch in rendered if ch.isdigit()]
+        return int(digits[-1]) if digits else None
+
     async def _handle_contract_update(
         self,
         *,
@@ -2637,10 +2665,19 @@ class MultiUserEngine:
                         and log.profit is not None
                     ):
                         official = "WIN" if float(log.profit) > 0 else "LOSS"
+                        official_digit = self._official_exit_digit(int(sid), poc)
                         execution_state["official_result"] = official
+                        execution_state["official_exit_spot"] = poc.get("exit_spot")
+                        execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
+                        execution_state["official_decision_digit"] = official_digit
+
                         if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
                             execution_state["decided"] = True
-                            execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                            execution_state["decision_source"] = "DERIV_SETTLEMENT_EXIT_SPOT"
+                            execution_state["local_result"] = None
+                            if official_digit is not None:
+                                execution_state["decision_digit"] = int(official_digit)
+
                         self.execution_contract_state[int(sid)] = execution_state
                         snapshot = self.digit_score_snapshots.get(int(sid))
                         if isinstance(snapshot, dict):
@@ -2672,6 +2709,12 @@ class MultiUserEngine:
                     existing_raw["settlement_profit"] = float(profit)
                     existing_raw["settlement_result"] = (
                         "WIN" if profit > 0 else "LOSS"
+                    )
+                    existing_raw["settlement_exit_spot"] = poc.get("exit_spot")
+                    existing_raw["settlement_exit_spot_time"] = poc.get("exit_spot_time")
+                    existing_raw["settlement_exit_digit"] = self._official_exit_digit(
+                        int(sid),
+                        poc,
                     )
                     log.raw_json = json.dumps(existing_raw)
 
@@ -2727,11 +2770,34 @@ class MultiUserEngine:
                     and str(execution_state.get("contract_id") or "")
                     == str(contract_id)
                 ):
+                    official_digit = self._official_exit_digit(int(sid), poc)
                     execution_state["official_result"] = official
+                    execution_state["official_exit_spot"] = poc.get("exit_spot")
+                    execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
+                    execution_state["official_decision_digit"] = official_digit
+
                     if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
                         execution_state["decided"] = True
-                        execution_state["decision_source"] = "DERIV_SETTLEMENT"
+                        execution_state["decision_source"] = "DERIV_SETTLEMENT_EXIT_SPOT"
                         execution_state["local_result"] = None
+                        if official_digit is not None:
+                            execution_state["decision_digit"] = int(official_digit)
+                    else:
+                        local_digit = execution_state.get("decision_digit")
+                        if (
+                            local_digit is not None
+                            and official_digit is not None
+                            and int(local_digit) != int(official_digit)
+                        ):
+                            s.running = False
+                            s.paused = False
+                            s.phase = "RECONCILE_TICK_MISMATCH"
+                            s.last_error = (
+                                "Server decision digit "
+                                f"{int(local_digit)} disagreed with Deriv exit digit "
+                                f"{int(official_digit)} for contract {contract_id}"
+                            )
+
                     self.execution_contract_state[int(sid)] = execution_state
                     snapshot = self.digit_score_snapshots.get(int(sid))
                     if isinstance(snapshot, dict):
@@ -2759,6 +2825,9 @@ class MultiUserEngine:
                         "payout": float(log.payout) if log and log.payout is not None else None,
                         "profit": float(profit),
                         "result": official,
+                        "exit_spot": poc.get("exit_spot"),
+                        "exit_spot_time": poc.get("exit_spot_time"),
+                        "exit_digit": self._official_exit_digit(int(sid), poc),
                         "settled_at": datetime.utcnow().isoformat(),
 
                         # Exact cycle accounting from persisted Deriv settlements.
