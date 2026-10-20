@@ -578,11 +578,22 @@
 <div class="text-sm font-bold text-yellow-400" id="engine-status-text">Warming up...</div>
 <div class="text-xs text-gray-400 mt-1" id="engine-regime-status">Regime: Unknown</div>
 </div>
-<!-- Selected Digit -->
-<div class="mb-3 p-2 bg-gray-900 rounded border border-green-500/30">
-<div class="text-xs font-semibold text-green-400 mb-1">AI Recommended Digit:</div>
-<div class="text-2xl font-bold text-center text-green-400" id="ai-recommended-digit">-</div>
+<!-- Next-tick AI Forecast -->
+<div class="mb-3 p-2 bg-gray-900 rounded border border-cyan-500/30">
+<div class="text-xs font-semibold text-cyan-300 mb-1">AI NEXT-TICK TARGET (T+1):</div>
+<div class="text-2xl font-bold text-center text-cyan-300" id="ai-recommended-digit">-</div>
 <div class="text-xs text-gray-400 text-center" id="ai-digit-score">Score: -</div>
+<div class="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+  <div class="rounded border border-slate-700 bg-slate-950/60 px-2 py-1">
+    <span class="text-slate-500">Observed tick T:</span>
+    <span id="ai-source-tick-digit" class="ml-1 font-black text-white">—</span>
+  </div>
+  <div class="rounded border border-slate-700 bg-slate-950/60 px-2 py-1">
+    <span class="text-slate-500">Previous forecast:</span>
+    <span id="ai-prev-forecast-result" class="ml-1 font-black text-slate-300">WAITING</span>
+  </div>
+</div>
+<div class="mt-1 text-[9px] text-slate-500 text-center">This digit predicts the NEXT market tick. It is never scored against the tick that generated it.</div>
 </div>
 <!-- Digit Analysis (Collapsible) -->
 <div class="mt-2">
@@ -2710,12 +2721,36 @@
                 }
             },
             
-            // Process live tick
+            // Process live tick. NEXT-TICK discipline:
+            // 1) score the PREVIOUS forecast against the newly-arrived tick;
+            // 2) ingest this tick into history;
+            // 3) generate a fresh forecast strictly for T+1.
             processLiveTick: function(digit) {
                 if (!this.enabled) return;
                 
                 // 🔥 FIXED: digit 0 is valid, so check for NaN instead
                 if (isNaN(digit) || digit < 0 || digit > 9) return;
+
+                const previousForecast = this.currentRecommendation
+                    ? { ...this.currentRecommendation }
+                    : null;
+                const observedEl = document.getElementById('ai-source-tick-digit');
+                const previousResultEl = document.getElementById('ai-prev-forecast-result');
+                if (observedEl) observedEl.textContent = String(digit);
+                if (previousResultEl) {
+                    if (previousForecast && Number.isInteger(Number(previousForecast.digit))) {
+                        const hit = Number(previousForecast.digit) === Number(digit);
+                        previousResultEl.textContent = hit
+                            ? `HIT ✓ (${previousForecast.digit} → ${digit})`
+                            : `MISS (${previousForecast.digit} → ${digit})`;
+                        previousResultEl.className = hit
+                            ? 'ml-1 font-black text-emerald-300'
+                            : 'ml-1 font-black text-rose-300';
+                    } else {
+                        previousResultEl.textContent = 'WAITING';
+                        previousResultEl.className = 'ml-1 font-black text-slate-300';
+                    }
+                }
 
                 // SurvivalEngine rolling digits buffer
                 window.lastDigits.push(digit);
@@ -3301,6 +3336,22 @@ survivalTop = survivalTop3[0] || null;
                 }
 
                 if (best) {
+                    // This recommendation is produced AFTER ingesting tick T and
+                    // is therefore a forecast for T+1. A repeated digit is valid:
+                    // T+1 may legitimately equal T. Never count that as a hit until
+                    // the following market tick actually arrives.
+                    const sourceTick = window.lastTick || null;
+                    const sourceTickDigit = (() => {
+                        const raw = sourceTick?.lastDigit ?? sourceTick?.digit;
+                        const n = Number(raw);
+                        if (Number.isInteger(n) && n >= 0 && n <= 9) return n;
+                        const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
+                        const digits = formatted.replace(/\D/g, '');
+                        return digits ? Number(digits.slice(-1)) : null;
+                    })();
+                    best.predictionHorizon = 'T+1';
+                    best.sourceTickDigit = sourceTickDigit;
+                    best.generatedAtMs = Date.now();
                     this.currentRecommendation = best;
 
                     // AI FUSION V1: publish the completed browser recommendation
@@ -3310,7 +3361,15 @@ survivalTop = survivalTop3[0] || null;
                     } catch (_) {}
 
                     // Update UI
-                    document.getElementById('ai-recommended-digit').textContent = best.digit;
+                    const aiDigitEl = document.getElementById('ai-recommended-digit');
+                    if (aiDigitEl) {
+                        aiDigitEl.textContent = best.digit;
+                        aiDigitEl.title = `Prediction for the next tick (T+1), generated after observing tick T${best.sourceTickDigit !== null ? ' digit ' + best.sourceTickDigit : ''}`;
+                    }
+                    const sourceTickEl = document.getElementById('ai-source-tick-digit');
+                    if (sourceTickEl && best.sourceTickDigit !== null && best.sourceTickDigit !== undefined) {
+                        sourceTickEl.textContent = String(best.sourceTickDigit);
+                    }
                     if (window.nextTickModel) window.nextTickModel.render();
 
                     const sourceLabel = best.source ? ` | ${best.source}` : '';
@@ -3339,7 +3398,7 @@ survivalTop = survivalTop3[0] || null;
                         ? ` | DNA:${(Number(best.digitDNA.topSimilarity||0)*100).toFixed(0)}%`
                         : '';
                     document.getElementById('ai-digit-score').textContent =
-                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}`;
+                        `NEXT TICK · Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}`;
 
                     // Color code based on score
                     const scoreElem = document.getElementById('ai-digit-score');
@@ -11328,6 +11387,53 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
                 </div>
 
+                <div id="final-target-card" class="mb-3 rounded-2xl border border-emerald-400/40 bg-gradient-to-br from-emerald-950/70 to-slate-950/80 p-4 shadow-lg">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div>
+                            <div class="text-[10px] uppercase tracking-[0.20em] text-emerald-300 font-black">FINAL MATCH TARGET</div>
+                            <div class="flex items-end gap-3 mt-1">
+                                <div id="final-match-target" class="text-5xl font-black text-white leading-none">—</div>
+                                <div>
+                                    <div id="final-target-status" class="text-xs font-black text-amber-300">WAITING</div>
+                                    <div id="final-target-source" class="text-[11px] font-bold text-slate-300">Source: —</div>
+                                </div>
+                            </div>
+                            <div id="final-target-help" class="mt-2 text-[10px] text-slate-400">This is the only digit to treat as the active DIGITMATCH target.</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 min-w-[280px]">
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AI</div>
+                                <div id="final-ai-digit" class="text-lg font-black text-white">—</div>
+                                <div id="final-ai-score" class="text-[9px] text-slate-400">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">V1 #1</div>
+                                <div id="final-v1-digit" class="text-lg font-black text-white">—</div>
+                                <div id="final-v1-margin" class="text-[9px] text-slate-400">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">ALIGNMENT</div>
+                                <div id="final-alignment" class="text-sm font-black text-slate-300">—</div>
+                                <div id="final-alignment-detail" class="text-[9px] text-slate-500">—</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <div class="rounded-lg border border-emerald-500/25 bg-emerald-950/30 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-emerald-300 font-black">GREEN AI ≥85%</div>
+                            <div id="perf-green-ai" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                        <div class="rounded-lg border border-cyan-500/25 bg-cyan-950/25 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-cyan-300 font-black">V1 NEXT-TICK</div>
+                            <div id="perf-v1" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                        <div class="rounded-lg border border-violet-500/25 bg-violet-950/25 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-violet-300 font-black">FINAL FUSION</div>
+                            <div id="perf-fusion" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                    </div>
+                </div>
+
                                 <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
                     <div class="grid grid-cols-3 md:grid-cols-6 divide-x divide-slate-700/50">
                         <div class="px-2 py-1 text-center">
@@ -11358,7 +11464,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    The bot buys only when V1 rank #1 leads rank #2 by your configured Minimum V1 Margin. Below the threshold it keeps watching ticks without buying.
+                    FINAL MATCH TARGET is authoritative. A purchased target is the actual Deriv barrier; otherwise the card shows the prepared AI+V1 fused target for the next BUY.
                 </div>
             `;
             host.appendChild(el);
@@ -11421,6 +11527,114 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 rawLiveNext !== '' &&
                 Number.isInteger(Number(rawLiveNext))
             ) ? Number(rawLiveNext) : rankingTopDigit;
+
+            // FINAL MATCH TARGET: when a contract is open, the purchased barrier
+            // is authoritative and immutable. Otherwise show the prepared fused
+            // target for the next BUY. Never ask the user to infer between AI/V1.
+            const fusion = st?.fusion || score?.fusion || null;
+            const purchasedFusion = execution?.fusion || null;
+            const hasOpenContract = !!st?.open_contract_id && purchasedTarget !== null;
+            const preparedFusionDigit = (
+                fusion?.final_digit !== null &&
+                fusion?.final_digit !== undefined &&
+                Number.isInteger(Number(fusion.final_digit))
+            ) ? Number(fusion.final_digit) : null;
+            const finalTarget = hasOpenContract ? purchasedTarget : preparedFusionDigit;
+            const finalSource = hasOpenContract
+                ? String(execution?.selector_source || purchasedFusion?.source || 'PURCHASED')
+                : String(fusion?.source || 'WAITING');
+
+            const finalTargetEl = document.getElementById('final-match-target');
+            const finalStatusEl = document.getElementById('final-target-status');
+            const finalSourceEl = document.getElementById('final-target-source');
+            const finalHelpEl = document.getElementById('final-target-help');
+            const finalAiDigitEl = document.getElementById('final-ai-digit');
+            const finalAiScoreEl = document.getElementById('final-ai-score');
+            const finalV1DigitEl = document.getElementById('final-v1-digit');
+            const finalV1MarginEl = document.getElementById('final-v1-margin');
+            const finalAlignmentEl = document.getElementById('final-alignment');
+            const finalAlignmentDetailEl = document.getElementById('final-alignment-detail');
+
+            const displayFusion = hasOpenContract ? (purchasedFusion || fusion || {}) : (fusion || {});
+            const aiDigitRaw = displayFusion?.ai_digit;
+            const aiDigit = (aiDigitRaw !== null && aiDigitRaw !== undefined && Number.isInteger(Number(aiDigitRaw)))
+                ? Number(aiDigitRaw) : null;
+            const aiScore = Number(displayFusion?.ai_score);
+            const v1DigitRaw = displayFusion?.v1_digit;
+            const v1Digit = (v1DigitRaw !== null && v1DigitRaw !== undefined && Number.isInteger(Number(v1DigitRaw)))
+                ? Number(v1DigitRaw) : rankingTopDigit;
+            const v1Margin = Number(displayFusion?.v1_top_margin ?? score?.top_margin);
+            const tickAligned = displayFusion?.tick_aligned === true;
+            const mismatchReason = String(displayFusion?.tick_mismatch_reason || '');
+
+            if (finalTargetEl) {
+                finalTargetEl.textContent = finalTarget !== null ? String(finalTarget) : '—';
+                finalTargetEl.className = finalTarget !== null
+                    ? 'text-5xl font-black text-emerald-300 leading-none'
+                    : 'text-5xl font-black text-slate-500 leading-none';
+            }
+            if (finalStatusEl) {
+                finalStatusEl.textContent = hasOpenContract
+                    ? 'PURCHASED · MATCH THIS DIGIT'
+                    : (preparedFusionDigit !== null ? 'PREPARED FOR NEXT BUY' : 'WAITING · NO BUY TARGET');
+                finalStatusEl.className = hasOpenContract
+                    ? 'text-xs font-black text-emerald-300'
+                    : (preparedFusionDigit !== null
+                        ? 'text-xs font-black text-cyan-300'
+                        : 'text-xs font-black text-amber-300');
+            }
+            if (finalSourceEl) {
+                const greenPrimary = finalSource === 'GREEN_AI_PRIMARY';
+                finalSourceEl.textContent = greenPrimary
+                    ? 'Source: GREEN AI PRIMARY'
+                    : `Source: ${finalSource}`;
+                finalSourceEl.className = greenPrimary
+                    ? 'text-xs font-black text-emerald-300'
+                    : 'text-xs font-bold text-slate-300';
+            }
+            if (finalHelpEl) {
+                const greenPrimary = finalSource === 'GREEN_AI_PRIMARY';
+                finalHelpEl.textContent = hasOpenContract
+                    ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
+                    : (preparedFusionDigit !== null
+                        ? (greenPrimary
+                            ? `Digit ${preparedFusionDigit} is the T+1 target from an exact-tick GREEN AI signal and has execution priority over a disagreeing V1 target.`
+                            : `Digit ${preparedFusionDigit} is the server-selected T+1 fused target waiting for the next purchase opportunity.`)
+                        : 'No executable fused target yet; the server should not buy until a target qualifies.');
+            }
+            if (finalAiDigitEl) {
+                finalAiDigitEl.textContent = aiDigit !== null ? String(aiDigit) : '—';
+                finalAiDigitEl.className = Number.isFinite(aiScore) && aiScore >= 0.85
+                    ? 'text-lg font-black text-emerald-300'
+                    : 'text-lg font-black text-white';
+            }
+            if (finalAiScoreEl) finalAiScoreEl.textContent = Number.isFinite(aiScore)
+                ? `${(aiScore * 100).toFixed(1)}%${aiScore >= 0.85 ? ' · GREEN' : ''}`
+                : '—';
+            if (finalV1DigitEl) finalV1DigitEl.textContent = v1Digit !== null ? String(v1Digit) : '—';
+            if (finalV1MarginEl) finalV1MarginEl.textContent = Number.isFinite(v1Margin)
+                ? `margin ${v1Margin.toFixed(2)}` : '—';
+            if (finalAlignmentEl) {
+                finalAlignmentEl.textContent = tickAligned ? 'EXACT ✓' : 'NOT ALIGNED';
+                finalAlignmentEl.className = tickAligned
+                    ? 'text-sm font-black text-emerald-300'
+                    : 'text-sm font-black text-amber-300';
+            }
+            if (finalAlignmentDetailEl) {
+                finalAlignmentDetailEl.textContent = tickAligned ? 'same canonical tick' : (mismatchReason || 'waiting');
+            }
+
+            const perf = st?.prediction_performance || score?.prediction_performance || {};
+            const perfText = (matches, total, rate) => {
+                const m = Number(matches || 0), t = Number(total || 0), r = Number(rate);
+                return `${m} / ${t} matched${t > 0 && Number.isFinite(r) ? ` · ${(r * 100).toFixed(1)}%` : ''}`;
+            };
+            const greenPerfEl = document.getElementById('perf-green-ai');
+            const v1PerfEl = document.getElementById('perf-v1');
+            const fusionPerfEl = document.getElementById('perf-fusion');
+            if (greenPerfEl) greenPerfEl.textContent = perfText(perf.green_ai_matches, perf.green_ai_total, perf.green_ai_rate);
+            if (v1PerfEl) v1PerfEl.textContent = perfText(perf.v1_matches, perf.v1_total, perf.v1_rate);
+            if (fusionPerfEl) fusionPerfEl.textContent = perfText(perf.fusion_matches, perf.fusion_total, perf.fusion_rate);
 
             if (targetEl) {
                 targetEl.textContent = purchasedTarget !== null

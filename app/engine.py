@@ -96,6 +96,11 @@ class MultiUserEngine:
         # The browser can suggest, but only this server may authorize a BUY.
         self.ai_signal_by_sid = {}  # sid -> validated AI evidence
 
+        # Forward-only prediction scoreboard. Each prepared V1/AI signal is
+        # evaluated exactly once against the next canonical SERVER tick.
+        self.prediction_performance_by_sid = {}  # sid -> aggregate counters
+        self.prediction_performance_last_seq = {}  # sid -> last evaluated prepared rank_seq
+
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
 
@@ -314,6 +319,17 @@ class MultiUserEngine:
             and ai_score is not None
             and ai_score >= 0.55
         )
+        # GREEN AI PRIMARY: the browser renders score >= 0.85 as green.
+        # When that signal is bound to the exact same canonical tick as V1,
+        # give it first execution priority even if V1 selects another digit.
+        # The score is not assumed to be a calibrated probability; the
+        # forward counters below independently measure realised next-tick hits.
+        green_ai_primary = bool(
+            ai
+            and tick_match
+            and ai_score is not None
+            and ai_score >= 0.85
+        )
         ai_override = bool(
             ai
             and tick_match
@@ -328,6 +344,9 @@ class MultiUserEngine:
         if agreement:
             final_digit = int(v1_digit)
             source = "AI_V1_AGREEMENT"
+        elif green_ai_primary:
+            final_digit = int(ai_digit)
+            source = "GREEN_AI_PRIMARY"
         elif ai_override:
             final_digit = int(ai_digit)
             source = "AI_OVERRIDE"
@@ -363,6 +382,8 @@ class MultiUserEngine:
             "v1_top_margin": snapshot.get("top_margin"),
             "ai_digit": ai_digit,
             "ai_score": ai_score,
+            "green_ai": bool(green_ai_primary),
+            "green_ai_threshold": 0.85,
             "ai_support_count": int(support),
             "ai_support_flags": support_flags,
             "ai": (
@@ -376,6 +397,126 @@ class MultiUserEngine:
         }
         snapshot["fusion"] = result
         return result
+
+    def _prediction_performance_state(self, sid: int):
+        sid = int(sid)
+        state = self.prediction_performance_by_sid.get(sid)
+        if not isinstance(state, dict):
+            state = {
+                "green_ai_total": 0,
+                "green_ai_matches": 0,
+                "v1_total": 0,
+                "v1_matches": 0,
+                "fusion_total": 0,
+                "fusion_matches": 0,
+                "last_outcome": None,
+            }
+            self.prediction_performance_by_sid[sid] = state
+        return state
+
+    def prediction_performance_status(self, sid: int):
+        state = dict(self._prediction_performance_state(int(sid)))
+
+        def rate(matches, total):
+            return (float(matches) / float(total)) if total else None
+
+        state["green_ai_rate"] = rate(
+            state.get("green_ai_matches", 0),
+            state.get("green_ai_total", 0),
+        )
+        state["v1_rate"] = rate(
+            state.get("v1_matches", 0),
+            state.get("v1_total", 0),
+        )
+        state["fusion_rate"] = rate(
+            state.get("fusion_matches", 0),
+            state.get("fusion_total", 0),
+        )
+        state["green_ai_threshold"] = 0.85
+        return state
+
+    def _score_previous_prediction(self, sid: int, previous_snapshot: dict, *, observed_digit, current_seq):
+        """Score one prepared snapshot against the next canonical server tick.
+
+        This is forward-only: snapshot rank_seq N is evaluated when sequence N+1
+        arrives. Duplicate rescoring/API refreshes cannot increase the counters.
+        """
+        if not isinstance(previous_snapshot, dict):
+            return
+        try:
+            prepared_seq = int(previous_snapshot.get("rank_seq") or 0)
+            current_seq = int(current_seq or 0)
+            observed_digit = int(observed_digit)
+        except (TypeError, ValueError):
+            return
+        if prepared_seq <= 0 or current_seq <= prepared_seq:
+            return
+        if int(self.prediction_performance_last_seq.get(int(sid), 0) or 0) >= prepared_seq:
+            return
+
+        state = self._prediction_performance_state(int(sid))
+        fusion = previous_snapshot.get("fusion") or {}
+
+        v1_digit = fusion.get("v1_digit", previous_snapshot.get("selected_digit"))
+        ai_digit = fusion.get("ai_digit")
+        ai_score = fusion.get("ai_score")
+        final_digit = fusion.get("final_digit")
+        tick_aligned = bool(fusion.get("tick_aligned"))
+
+        v1_match = None
+        ai_match = None
+        fusion_match = None
+
+        if v1_digit is not None:
+            try:
+                v1_digit = int(v1_digit)
+                state["v1_total"] += 1
+                v1_match = (v1_digit == observed_digit)
+                state["v1_matches"] += int(v1_match)
+            except (TypeError, ValueError):
+                pass
+
+        # The dashboard's AI recommendation is green at score >= 85%. Only
+        # exact-tick-aligned green AI signals enter this comparison.
+        try:
+            green_ai = (
+                tick_aligned
+                and ai_digit is not None
+                and ai_score is not None
+                and float(ai_score) >= 0.85
+            )
+        except (TypeError, ValueError):
+            green_ai = False
+
+        if green_ai:
+            ai_digit = int(ai_digit)
+            state["green_ai_total"] += 1
+            ai_match = (ai_digit == observed_digit)
+            state["green_ai_matches"] += int(ai_match)
+
+        if final_digit is not None and bool(fusion.get("executable")):
+            try:
+                final_digit = int(final_digit)
+                state["fusion_total"] += 1
+                fusion_match = (final_digit == observed_digit)
+                state["fusion_matches"] += int(fusion_match)
+            except (TypeError, ValueError):
+                pass
+
+        state["last_outcome"] = {
+            "prepared_rank_seq": prepared_seq,
+            "observed_seq": current_seq,
+            "observed_digit": observed_digit,
+            "v1_digit": v1_digit,
+            "v1_match": v1_match,
+            "green_ai_digit": int(ai_digit) if green_ai else None,
+            "green_ai_score": float(ai_score) if green_ai else None,
+            "green_ai_match": ai_match,
+            "fusion_digit": final_digit,
+            "fusion_match": fusion_match,
+            "fusion_source": fusion.get("source"),
+        }
+        self.prediction_performance_last_seq[int(sid)] = prepared_seq
 
     def _lock(self, sid: int) -> asyncio.Lock:
         lock = self.session_locks.get(sid)
@@ -678,6 +819,7 @@ class MultiUserEngine:
         return history
 
     def _score_all_digits(self, sid: int, exclude_digit=None):
+        previous_snapshot = self.digit_score_snapshots.get(int(sid))
         snapshot = self.digit_scorer.rank(
             list(self._digit_history(sid))[-100:],
             exclude_digit=exclude_digit,
@@ -733,6 +875,20 @@ class MultiUserEngine:
             snapshot["rank_epoch"] = None
             snapshot["canonical_tick"] = None
             snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
+
+        # Score the PREVIOUS prepared forecast against this newly-arrived
+        # canonical tick before publishing the new prediction.
+        current_tick = snapshot.get("canonical_tick") or {}
+        current_digit = current_tick.get("digit")
+        current_seq = snapshot.get("rank_seq")
+        if current_digit is not None and current_seq:
+            self._score_previous_prediction(
+                int(sid),
+                previous_snapshot,
+                observed_digit=current_digit,
+                current_seq=current_seq,
+            )
+        snapshot["prediction_performance"] = self.prediction_performance_status(int(sid))
 
         execution_state = self.execution_contract_state.get(int(sid))
         snapshot["execution_contract"] = (
@@ -2577,6 +2733,8 @@ class MultiUserEngine:
             "local_result": None,
             "official_result": None,
             "decided": False,
+            "selector_source": score_evidence.get("selector_source"),
+            "fusion": score_evidence.get("fusion"),
         }
         self.execution_contract_state[int(row.id)] = execution_state
 

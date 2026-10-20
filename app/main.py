@@ -338,7 +338,14 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "max_trades": s.max_trades,
                     "current_stake": s.current_stake,
                     "candidate_digit": s.candidate_digit,
-                    "live_next_target": digit_score_for_session(s.id).get("selected_digit"),
+                    "live_next_target": (
+                        ((getattr(engine, "digit_score_snapshots", {}) or {})
+                         .get(int(s.id), {}).get("fusion") or {})
+                        .get("final_digit")
+                        if ((getattr(engine, "digit_score_snapshots", {}) or {})
+                            .get(int(s.id), {}).get("fusion") or {}).get("executable")
+                        else digit_score_for_session(s.id).get("selected_digit")
+                    ),
                     "open_contract_id": s.open_contract_id,
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
@@ -350,6 +357,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                         .get(int(s.id), {})
                         .get("fusion")
                     ),
+                    "prediction_performance": engine.prediction_performance_status(s.id),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),
