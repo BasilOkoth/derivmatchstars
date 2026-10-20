@@ -2077,7 +2077,35 @@ class MultiUserEngine:
             0,
             int(buy_ack_seq) - int(buy_sent_after_seq),
         )
-        official_only_inflight = inflight_tick_count > 0
+
+        # Deriv's own purchase timestamp lets us distinguish some harmless
+        # in-flight ticks from genuinely ambiguous ones.
+        #
+        # If the purchase timestamp is strictly AFTER the latest market tick
+        # observed while BUY was in flight, then every such tick is provably
+        # pre-purchase. In that case it is safe to keep the fast owner and arm
+        # the contract after buy_ack_seq.
+        #
+        # If the timestamps are equal (whole-second resolution), unavailable,
+        # or the market tick is later than the purchase timestamp, the ordering
+        # cannot be proven. Only those cases fall back to official settlement.
+        purchase_epoch = int(
+            buy.get("purchase_time")
+            or buy.get("start_time")
+            or 0
+        )
+
+        inflight_proven_pre_purchase = bool(
+            inflight_tick_count > 0
+            and purchase_epoch > 0
+            and buy_ack_epoch > 0
+            and purchase_epoch > buy_ack_epoch
+        )
+
+        official_only_inflight = bool(
+            inflight_tick_count > 0
+            and not inflight_proven_pre_purchase
+        )
 
         # Lock the row again and prove that this process still owns the exact
         # claim before committing the purchased contract into the cycle.
@@ -2158,27 +2186,32 @@ class MultiUserEngine:
                         "buy_ack_seq": int(buy_ack_seq),
                         "buy_ack_epoch": int(buy_ack_epoch),
                         "inflight_tick_count": int(inflight_tick_count),
+                        "purchase_epoch": int(purchase_epoch or 0) or None,
+                        "inflight_proven_pre_purchase": bool(
+                            inflight_proven_pre_purchase
+                        ),
                         "arming_policy": (
-                            "OFFICIAL_ONLY_INFLIGHT_TICK"
+                            "OFFICIAL_ONLY_AMBIGUOUS_INFLIGHT_TICK"
                             if official_only_inflight
-                            else "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK"
+                            else (
+                                "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK_"
+                                "INFLIGHT_PROVEN_PRE_PURCHASE"
+                                if inflight_tick_count > 0
+                                else "FIRST_NEW_SERVER_TICK_AFTER_BUY_ACK"
+                            )
                         ),
                     },
                 }),
             )
         )
 
-        purchase_epoch = int(
-            buy.get("start_time")
-            or buy.get("purchase_time")
-            or buy_ack_epoch
-            or 0
-        )
-
         # Exact callback sequence is authoritative for local fast ownership.
+        # purchase_epoch was captured above from Deriv's BUY acknowledgement.
+        # Fall back to buy_ack_epoch only for display/legacy epoch gating; the
+        # ambiguity decision itself never treats that fallback as proof.
         decision_after_epoch = max(
             buy_ack_epoch,
-            purchase_epoch,
+            purchase_epoch or buy_ack_epoch,
         )
 
         execution_state = {
@@ -2192,8 +2225,11 @@ class MultiUserEngine:
             "buy_ack_epoch": int(buy_ack_epoch),
             "purchase_epoch": int(purchase_epoch or 0) or None,
             "inflight_tick_count": int(inflight_tick_count),
+            "inflight_proven_pre_purchase": bool(
+                inflight_proven_pre_purchase
+            ),
             "decision_mode": (
-                "OFFICIAL_ONLY_INFLIGHT_TICK"
+                "OFFICIAL_ONLY_AMBIGUOUS_INFLIGHT_TICK"
                 if official_only_inflight
                 else "FAST_NEXT_TICK"
             ),
@@ -2250,8 +2286,11 @@ class MultiUserEngine:
 
         # Normal case: no market tick occurred while BUY was in flight, so
         # the first genuinely new server tick after BUY ACK can decide locally.
-        # Ambiguous case: one or more in-flight ticks occurred; no fast owner
-        # exists and step() waits for authoritative Deriv settlement instead.
+        #
+        # If in-flight ticks did occur, keep fast ownership only when Deriv's
+        # purchase timestamp proves all observed in-flight ticks were earlier
+        # than the purchase. Same-second/unordered cases remain conservative and
+        # wait for authoritative Deriv settlement.
 
         asyncio.create_task(
             self._subscribe_open_contract(
