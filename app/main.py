@@ -376,6 +376,83 @@ def sessions(user_id: str = Depends(current_user_id)):
 
 
 
+
+
+@app.get("/sessions/{sid}/cycle-depth")
+def cycle_depth(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    """Return cycle-resolution depth from authoritative settled TradeLog wins."""
+    db = SessionLocal()
+    try:
+        session = owns_session(db, user_id, sid)
+        rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.user_id == user_id,
+                TradeLog.trading_session_id == int(sid),
+                TradeLog.symbol == str(session.symbol),
+            )
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        # One terminal row per Deriv contract. Historical duplicates must not
+        # inflate the depth distribution.
+        by_contract = {}
+        no_contract = []
+        for row in rows:
+            cid = str(row.contract_id or "").strip()
+            if cid:
+                by_contract[cid] = row
+            else:
+                no_contract.append(row)
+        clean_rows = list(by_contract.values()) + no_contract
+
+        depths = []
+        for row in clean_rows:
+            try:
+                profit = float(row.profit) if row.profit is not None else None
+                trade_no = int(row.trade_no)
+            except (TypeError, ValueError):
+                continue
+            if (
+                str(row.status or "").upper() == "SETTLED"
+                and profit is not None
+                and profit > 0
+                and trade_no > 0
+            ):
+                depths.append(trade_no)
+
+        depths.sort()
+
+        def nearest_rank(q: float):
+            if not depths:
+                return None
+            import math as _math
+            rank = max(1, int(_math.ceil(float(q) * len(depths))))
+            return int(depths[rank - 1])
+
+        reached20_count = sum(1 for d in depths if int(d) >= 20)
+        sample = len(depths)
+        return {
+            "ok": True,
+            "session_id": int(sid),
+            "symbol": str(session.symbol),
+            "source": "SETTLED_TRADELOG_WINS",
+            "sample": sample,
+            "median": nearest_rank(0.50),
+            "p90": nearest_rank(0.90),
+            "p95": nearest_rank(0.95),
+            "reached20_count": reached20_count,
+            "reached20_pct": ((float(reached20_count) / float(sample)) * 100.0 if sample else None),
+            "worst": int(depths[-1]) if depths else None,
+            "depths": depths[-5000:],
+        }
+    finally:
+        db.close()
+
 @app.get("/sessions/{sid}/trigger-fusion/export")
 def export_trigger_fusion(
     sid: int,

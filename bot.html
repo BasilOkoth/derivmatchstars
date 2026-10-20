@@ -11389,52 +11389,60 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             return Number(sortedDepths[rank - 1]);
         }
 
+        window.CYCLE_DEPTH_SERVER = window.CYCLE_DEPTH_SERVER || {
+            sessionId: null, data: null, lastFetchAt: 0, pending: false, error: null
+        };
+
+        async function refreshCycleDepthFromServer(st = null, force = false) {
+            const cache = window.CYCLE_DEPTH_SERVER;
+            const sid = Number(st?.id ?? window.SERVER_EXECUTION?.state?.id ?? window.SERVER_EXECUTION?.sessionId ?? 0);
+            if (!Number.isInteger(sid) || sid <= 0) return false;
+
+            const now = Date.now();
+            const sameSession = Number(cache.sessionId || 0) === sid;
+            if (!force && cache.pending) return false;
+            if (!force && sameSession && cache.data && now - Number(cache.lastFetchAt || 0) < 3000) return false;
+
+            cache.pending = true;
+            cache.sessionId = sid;
+            cache.lastFetchAt = now;
+            try {
+                const data = await serverExecRequest(`/sessions/${sid}/cycle-depth`, { method: 'GET' });
+                cache.data = data && typeof data === 'object' ? data : null;
+                cache.error = null;
+                renderCycleDepthPanel();
+                return true;
+            } catch (err) {
+                cache.error = String(err?.message || err || 'Cycle depth fetch failed');
+                console.warn('Cycle depth server history fetch failed:', err);
+                renderCycleDepthPanel();
+                return false;
+            } finally {
+                cache.pending = false;
+            }
+        }
+
         function getCycleDepthStats() {
-            const symbol =
-                document.getElementById('symbol')?.value ||
-                window.tickFormat?.symbol ||
-                'UNKNOWN';
-
-            const rows = window.cyclePerformance?.load?.(symbol) || [];
-            const depths = rows
-                .filter(row => row && String(row.status || '').toUpperCase() === 'WIN')
-                .map(row => {
-                    const explicit = Number(row.winningTradeNumber);
-                    if (Number.isFinite(explicit) && explicit > 0) return explicit;
-
-                    // Compatibility with older saved winning cycles that may not
-                    // have winningTradeNumber but do contain the settled WIN trade.
-                    const trades = Array.isArray(row.trades) ? row.trades : [];
-                    const winningTrade = trades.find(t => String(t?.result || '').toUpperCase() === 'WIN');
-                    const fallback = Number(winningTrade?.tradeNumber || trades.length || 0);
-                    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
-                })
-                .filter(Number.isFinite)
-                .sort((a, b) => a - b);
-
-            if (!depths.length) {
+            const symbol = document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
+            const cache = window.CYCLE_DEPTH_SERVER || {};
+            const server = cache.data;
+            if (server && Number(server.session_id || 0) === Number(cache.sessionId || 0) && (!server.symbol || String(server.symbol) === String(symbol))) {
                 return {
-                    symbol,
-                    sample: 0,
-                    median: null,
-                    p90: null,
-                    p95: null,
-                    reached20Pct: null,
-                    reached20Count: 0,
-                    worst: null,
+                    symbol: String(server.symbol || symbol),
+                    sample: Number(server.sample || 0),
+                    median: server.median == null ? null : Number(server.median),
+                    p90: server.p90 == null ? null : Number(server.p90),
+                    p95: server.p95 == null ? null : Number(server.p95),
+                    reached20Pct: server.reached20_pct == null ? null : Number(server.reached20_pct),
+                    reached20Count: Number(server.reached20_count || 0),
+                    worst: server.worst == null ? null : Number(server.worst),
+                    source: 'SERVER_SETTLED_HISTORY', loading: false, error: null
                 };
             }
-
-            const reached20Count = depths.filter(d => d >= 20).length;
             return {
-                symbol,
-                sample: depths.length,
-                median: cycleDepthQuantile(depths, 0.50),
-                p90: cycleDepthQuantile(depths, 0.90),
-                p95: cycleDepthQuantile(depths, 0.95),
-                reached20Pct: (reached20Count / depths.length) * 100,
-                reached20Count,
-                worst: depths[depths.length - 1],
+                symbol, sample: 0, median: null, p90: null, p95: null, reached20Pct: null,
+                reached20Count: 0, worst: null, source: 'SERVER_SETTLED_HISTORY',
+                loading: !!cache.pending, error: cache.error || null
             };
         }
 
@@ -11487,8 +11495,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             set(
                 'cycle-depth-sample',
                 stats.sample
-                    ? `${stats.sample} winning cycle${stats.sample === 1 ? '' : 's'} · ${stats.symbol}`
-                    : `No completed winning cycles yet · ${stats.symbol}`
+                    ? `${stats.sample} settled winning cycle${stats.sample === 1 ? '' : 's'} · ${stats.symbol} · SERVER`
+                    : stats.loading
+                        ? `Loading settled cycle history… · ${stats.symbol}`
+                        : stats.error
+                            ? `Server history unavailable · ${stats.symbol}`
+                            : `No settled winning cycles found · ${stats.symbol}`
             );
         }
 
@@ -11635,6 +11647,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         function renderRecycleRuntimePanel(st) {
             ensureRecycleRuntimePanel();
             renderCycleDepthPanel();
+            try { refreshCycleDepthFromServer(st).catch(() => {}); } catch (_) {}
 
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
@@ -12212,6 +12225,15 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             try { renderRecycleRuntimePanel(st); } catch (_) {}
             try { publishFastWinToTelegram(st); } catch (_) {}
+            try {
+                if (String(st?.last_settlement?.result || '').toUpperCase() === 'WIN' && st?.last_settlement?.settled_at) {
+                    const settleKey = String(st.last_settlement.contract_id || st.last_settlement.settled_at);
+                    if (window.__cycleDepthLastWinRefresh !== settleKey) {
+                        window.__cycleDepthLastWinRefresh = settleKey;
+                        refreshCycleDepthFromServer(st, true).catch(() => {});
+                    }
+                }
+            } catch (_) {}
 
             // V1.6 deterministic server audio.
             // Compare the newly received server state with the previous state;
