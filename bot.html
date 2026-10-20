@@ -2145,13 +2145,19 @@
                     return snap;
                 }
 
+                // T+1 discipline: the just-arrived digit T is valid CONTEXT for
+                // transitions/ngrams, but it must not give itself a free +1 boost in
+                // unconditional recent-frequency features. Those frequencies are
+                // measured on history ending at T-1.
+                const frequencyHistory = arr.length > 1 ? arr.slice(0, -1) : arr;
+
                 const rows=[];
                 for(let d=0;d<10;d++){
-                    const f5=this.freq(arr,d,5);
-                    const f20=this.freq(arr,d,20);
-                    const f50=this.freq(arr,d,50);
-                    const f100=this.freq(arr,d,100);
-                    const f200=this.freq(arr,d,200);
+                    const f5=this.freq(frequencyHistory,d,5);
+                    const f20=this.freq(frequencyHistory,d,20);
+                    const f50=this.freq(frequencyHistory,d,50);
+                    const f100=this.freq(frequencyHistory,d,100);
+                    const f200=this.freq(frequencyHistory,d,200);
 
                     const momentum=f20-f100;
                     const acceleration=(f5-f20)-(f20-f50);
@@ -2446,11 +2452,15 @@
                     return snap;
                 }
 
-                const recent=digits.slice(-100);
+                // Use T as conditional context, not as an unconditional vote for
+                // itself. The latest digit is excluded from recent/global frequency
+                // distributions but retained in transition/ngram context.
+                const unconditionalHistory = digits.length > 1 ? digits.slice(0, -1) : digits;
+                const recent=unconditionalHistory.slice(-100);
                 const recentP=this.distribution(recent);
                 const trans=this.transitionDistribution(digits);
                 const ng=this.ngram2Distribution(digits);
-                const globalP=this.distribution(digits);
+                const globalP=this.distribution(unconditionalHistory);
 
                 const globalEntropy=this.normalizedEntropy(globalP);
                 const conditionalEntropy=this.normalizedEntropy(ng.probs);
@@ -3086,6 +3096,126 @@ expectedAdditionalTicks: function(gaps, g) {
                 return best;
             },
 
+            // FEATURE-DRIVEN CURRENT-DIGIT COPY GUARD
+            //
+            // The latest digit T is allowed to be selected again for T+1, but only
+            // when independent forward-context features support a repeat. This does
+            // NOT blacklist the current digit. It removes the failure mode where
+            // unconditional recency alone makes the AI echo T.
+            applyCurrentDigitCopyGuard: function(best, featureSnap, auditor, dnaSnap, survivalByDigit) {
+                if (!best) return best;
+
+                const sourceTick = window.lastTick || null;
+                const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
+                const rawDigit = Number(sourceTick?.lastDigit ?? sourceTick?.digit);
+                const currentDigit = Number.isInteger(rawDigit)
+                    ? rawDigit
+                    : (() => {
+                        const m = formatted.match(/(\d)(?!.*\d)/);
+                        return m ? Number(m[1]) : null;
+                    })();
+
+                if (!Number.isInteger(currentDigit) || Number(best.digit) !== currentDigit) {
+                    if (best) best.copyGuard = { applied:false, currentDigit, decision:'NOT_COPYING_CURRENT' };
+                    return best;
+                }
+
+                const fRows = Array.isArray(featureSnap?.rows) ? featureSnap.rows : [];
+                const aRows = Array.isArray(auditor?.rows) ? auditor.rows : [];
+                const dRows = Array.isArray(dnaSnap?.rows) ? dnaSnap.rows : [];
+
+                const fCur = fRows.find(r => Number(r.digit) === currentDigit) || null;
+                const aCur = aRows.find(r => Number(r.digit) === currentDigit) || null;
+                const dCur = dRows.find(r => Number(r.digit) === currentDigit) || null;
+                const sCur = survivalByDigit?.get?.(currentDigit) || null;
+
+                // Best alternative is selected from the SAME feature engines. Each
+                // engine contributes a normalized rank signal; no arbitrary digit is
+                // substituted.
+                const altRows = [];
+                for (let d=0; d<10; d++) {
+                    if (d === currentDigit) continue;
+                    const fr = fRows.find(r => Number(r.digit) === d) || null;
+                    const ar = aRows.find(r => Number(r.digit) === d) || null;
+                    const dr = dRows.find(r => Number(r.digit) === d) || null;
+                    const sr = survivalByDigit?.get?.(d) || null;
+
+                    const feature = Number(fr?.scoreShare ?? 0);
+                    const auditorP = Number(auditor?.predictions?.[d] ?? 0);
+                    const dna = Number(dr?.similarity ?? 0);
+                    const survivalRaw = sr
+                        ? (2.0*Number(sr.pm5||0) + 1.0*Number(sr.pm10||0) - 2.5*Number(sr.s20||0) - 0.05*Math.min(Number.isFinite(sr.etm)?Number(sr.etm):100,100))
+                        : -10;
+                    const survival = sr ? 1/(1+Math.exp(-survivalRaw)) : 0;
+
+                    const ensemble = 0.40*feature + 0.25*auditorP + 0.20*dna + 0.15*survival;
+                    altRows.push({digit:d, ensemble, fr, ar, dr, sr});
+                }
+                altRows.sort((a,b)=>b.ensemble-a.ensemble || a.digit-b.digit);
+                const alt = altRows[0] || null;
+                if (!alt) return best;
+
+                // Require independent FORWARD evidence for a repeat of T.
+                // Short/long unconditional frequencies are deliberately excluded
+                // from these checks because they are the source of the echo bias.
+                const supports = {
+                    transition: !!(fCur && alt.fr && Number(fCur.transitionP||0) > Number(alt.fr.transitionP||0) + 0.005),
+                    ngram2: !!(fCur && alt.fr && Number(fCur.ngram2P||0) > Number(alt.fr.ngram2P||0) + 0.005),
+                    ngram3: !!(fCur && alt.fr && Number(fCur.ngram3P||0) > Number(alt.fr.ngram3P||0) + 0.005),
+                    dna: !!(dCur && alt.dr && Number(dCur.similarity||0) > Number(alt.dr.similarity||0) + 0.015),
+                    auditorConditional: !!(aCur && alt.ar && (
+                        Number(aCur.ngramP||0) > Number(alt.ar.ngramP||0) + 0.005 ||
+                        Number(aCur.transitionP||0) > Number(alt.ar.transitionP||0) + 0.005
+                    )),
+                    survival: !!(sCur && alt.sr && (
+                        Number(sCur.pm5||0) > Number(alt.sr.pm5||0) + 0.03 ||
+                        Number(sCur.pm10||0) > Number(alt.sr.pm10||0) + 0.03
+                    ))
+                };
+                const supportCount = Object.values(supports).filter(Boolean).length;
+
+                // Two independent forward-context supports are enough to retain a
+                // repeat prediction. Otherwise select the strongest feature-derived
+                // alternative. This is a de-bias rule, not a ban on repeats.
+                if (supportCount >= 2) {
+                    best.copyGuard = {
+                        applied:true, currentDigit, decision:'REPEAT_SUPPORTED',
+                        supportCount, supports, alternativeDigit:alt.digit,
+                        alternativeEnsemble:alt.ensemble
+                    };
+                    best.source = `${best.source||'AI'}+COPY-VALIDATED`;
+                    return best;
+                }
+
+                const ds = this.digitStats[alt.digit] || {};
+                const replacement = {
+                    ...best,
+                    digit:Number(alt.digit),
+                    gap:Number(ds.currentGap||0),
+                    persistenceScore:Number(ds.persistenceScore||0),
+                    isUnstable:!!ds.isUnstable,
+                    source:'FEATURE-DEBIASED',
+                    copyGuard:{
+                        applied:true, currentDigit, decision:'CURRENT_COPY_REJECTED',
+                        supportCount, supports, rejectedDigit:currentDigit,
+                        alternativeDigit:alt.digit, alternativeEnsemble:alt.ensemble
+                    }
+                };
+
+                if (alt.fr && featureSnap) replacement.digitFeatures = featureSnap;
+                if (alt.dr && dnaSnap) replacement.digitDNA = dnaSnap;
+                if (alt.ar && auditor) replacement.auditor = auditor;
+                if (alt.sr) replacement.survival = alt.sr;
+
+                // Keep the displayed score explicitly as a ranking score. Use the
+                // alternative ensemble only to cap/shape it, never as probability.
+                replacement.score = Math.max(0, Math.min(1,
+                    0.55*Number(best.score||0) + 0.45*Math.min(1, alt.ensemble*4)
+                ));
+
+                return replacement;
+            },
+
             // Analyze and recommend digit
             analyzeAndRecommend: function() {
                 const regimeStatus = this.computeRegimeStatus();
@@ -3377,6 +3507,12 @@ survivalTop = survivalTop3[0] || null;
                     }
                 }
 
+                // Final feature-driven de-bias pass. The current digit may still
+                // win, but not merely because it was the last observation.
+                best = this.applyCurrentDigitCopyGuard(
+                    best, featureSnap, auditor, dnaSnap, survivalByDigit
+                );
+
                 if (best) {
                     // This recommendation is produced AFTER ingesting tick T and
                     // is therefore a forecast for T+1. A repeated digit is valid:
@@ -3439,8 +3575,13 @@ survivalTop = survivalTop3[0] || null;
                     const dnaLabel = best.digitDNA?.ready
                         ? ` | DNA:${(Number(best.digitDNA.topSimilarity||0)*100).toFixed(0)}%`
                         : '';
+                    const copyGuardLabel = best.copyGuard?.applied
+                        ? (best.copyGuard.decision === 'REPEAT_SUPPORTED'
+                            ? ` | CopyGuard:REPEAT ✓ ${best.copyGuard.supportCount}/6`
+                            : ` | CopyGuard:DEBIASED ${best.copyGuard.rejectedDigit}→${best.copyGuard.alternativeDigit}`)
+                        : '';
                     document.getElementById('ai-digit-score').textContent =
-                        `NEXT TICK · Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}`;
+                        `NEXT TICK · Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}${copyGuardLabel}`;
 
                     // Color code based on score
                     const scoreElem = document.getElementById('ai-digit-score');

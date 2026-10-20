@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import SessionLocal
@@ -17,7 +17,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.8.0-live-v1-target-tracking",
+    version="3.9.0-shared-account-execution",
 )
 
 
@@ -88,6 +88,28 @@ class Candidate(BaseModel):
     digit: int
 
 
+class MarginGateRequest(BaseModel):
+    minimum_margin: float = Field(ge=0.0, le=50.0)
+
+
+class AISignalRequest(BaseModel):
+    digit: int = Field(ge=0, le=9)
+    score: float = Field(ge=0.0, le=1.0)
+    source: str = "AI"
+    symbol: str
+    pm5: float | None = None
+    pm10: float | None = None
+    s20: float | None = None
+    etm: float | None = None
+    dna: float | None = None
+    features: float | None = None
+    auditor: float | None = None
+    source_tick_epoch: int | None = None
+    source_tick_quote: str | None = None
+    source_tick_digit: int | None = Field(default=None, ge=0, le=9)
+    client_ts_ms: int | None = None
+
+
 @app.on_event("startup")
 async def startup():
     await engine.start()
@@ -97,7 +119,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.8.0-live-v1-target-tracking",
+        "version": "3.9.0-shared-account-execution",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -144,31 +166,19 @@ def digit_score_for_session(session_id: int):
         digit = int(top["digit"]) if top else None
     except (ValueError, TypeError, KeyError):
         score, digit = None, None
-    threshold = float(snapshot.get("target_min_score", 9.0))
-    eligible = bool(snapshot.get("ready") and score is not None and
-                    score >= threshold and digit is not None)
+
+    # Status must expose the SAME V1 #1 used by execution. The retired
+    # absolute-score gate (score >= 9) could hide a valid rank from the
+    # dashboard even though execution is governed by the V1 margin gate.
+    ready = bool(snapshot.get("ready") and digit is not None)
+    margin_eligible = bool(snapshot.get("margin_eligible"))
+
     snapshot["raw_selected_digit"] = digit
     snapshot["raw_top_score"] = score
-    snapshot["target_eligible"] = eligible
-    snapshot["selected_digit"] = digit if eligible else None
-    snapshot["display_digit"] = digit
-    snapshot["display_score"] = score
-    snapshot["ranking_status"] = ("WARMING" if not snapshot.get("ready") else ("ELIGIBLE" if eligible else "BELOW_THRESHOLD"))
-    # Report the age of the server's canonical market tick, independently of
-    # whether score>=9 allows execution. No rank calculations on read.
-    from datetime import datetime, timezone
-    tick_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
-    age = max(0, int(datetime.now(timezone.utc).timestamp()) - tick_epoch) if tick_epoch else None
-    snapshot["server_tick_age_seconds"] = age
-    snapshot["feed_state"] = (
-        "WAITING_FOR_SERVER_RANK" if not tick_epoch else
-        "STALE_SERVER_TICK" if age is not None and age > 20 else
-        "LIVE_RANK"
-    )
-    snapshot["ranking_status"] = (
-        "WARMING" if not snapshot.get("ready") else
-        "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
-    )
+    snapshot["target_eligible"] = bool(ready and margin_eligible)
+    snapshot["selected_digit"] = digit if ready else None
+    snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
+                              "RANK_MISSING_EPOCH")
     return snapshot
 
 
@@ -328,12 +338,26 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "max_trades": s.max_trades,
                     "current_stake": s.current_stake,
                     "candidate_digit": s.candidate_digit,
-                    "live_next_target": digit_score_for_session(s.id).get("selected_digit"),
+                    "live_next_target": (
+                        ((getattr(engine, "digit_score_snapshots", {}) or {})
+                         .get(int(s.id), {}).get("fusion") or {})
+                        .get("final_digit")
+                        if ((getattr(engine, "digit_score_snapshots", {}) or {})
+                            .get(int(s.id), {}).get("fusion") or {}).get("executable")
+                        else digit_score_for_session(s.id).get("selected_digit")
+                    ),
                     "open_contract_id": s.open_contract_id,
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
+                    "ai_signal": engine.ai_signal_status(s.id, symbol=s.symbol),
+                    "fusion": (
+                        (getattr(engine, "digit_score_snapshots", {}) or {})
+                        .get(int(s.id), {})
+                        .get("fusion")
+                    ),
+                    "prediction_performance": engine.prediction_performance_status(s.id),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),
@@ -351,6 +375,83 @@ def sessions(user_id: str = Depends(current_user_id)):
         db.close()
 
 
+
+
+
+@app.get("/sessions/{sid}/cycle-depth")
+def cycle_depth(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    """Return cycle-resolution depth from authoritative settled TradeLog wins."""
+    db = SessionLocal()
+    try:
+        session = owns_session(db, user_id, sid)
+        rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.user_id == user_id,
+                TradeLog.trading_session_id == int(sid),
+                TradeLog.symbol == str(session.symbol),
+            )
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        # One terminal row per Deriv contract. Historical duplicates must not
+        # inflate the depth distribution.
+        by_contract = {}
+        no_contract = []
+        for row in rows:
+            cid = str(row.contract_id or "").strip()
+            if cid:
+                by_contract[cid] = row
+            else:
+                no_contract.append(row)
+        clean_rows = list(by_contract.values()) + no_contract
+
+        depths = []
+        for row in clean_rows:
+            try:
+                profit = float(row.profit) if row.profit is not None else None
+                trade_no = int(row.trade_no)
+            except (TypeError, ValueError):
+                continue
+            if (
+                str(row.status or "").upper() == "SETTLED"
+                and profit is not None
+                and profit > 0
+                and trade_no > 0
+            ):
+                depths.append(trade_no)
+
+        depths.sort()
+
+        def nearest_rank(q: float):
+            if not depths:
+                return None
+            import math as _math
+            rank = max(1, int(_math.ceil(float(q) * len(depths))))
+            return int(depths[rank - 1])
+
+        reached20_count = sum(1 for d in depths if int(d) >= 20)
+        sample = len(depths)
+        return {
+            "ok": True,
+            "session_id": int(sid),
+            "symbol": str(session.symbol),
+            "source": "SETTLED_TRADELOG_WINS",
+            "sample": sample,
+            "median": nearest_rank(0.50),
+            "p90": nearest_rank(0.90),
+            "p95": nearest_rank(0.95),
+            "reached20_count": reached20_count,
+            "reached20_pct": ((float(reached20_count) / float(sample)) * 100.0 if sample else None),
+            "worst": int(depths[-1]) if depths else None,
+            "depths": depths[-5000:],
+        }
+    finally:
+        db.close()
 
 @app.get("/sessions/{sid}/trigger-fusion/export")
 def export_trigger_fusion(
@@ -638,6 +739,11 @@ def create_session(
 
         account_type = str(acct.account_type or "").lower()
         mode = "DEMO" if account_type == "demo" else "REAL"
+        if mode == "REAL" and not settings.allow_real_mode:
+            raise HTTPException(
+                status_code=403,
+                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
+            )
 
         s = (
             db.query(TradingSession)
@@ -786,6 +892,76 @@ def candidate(
         db.close()
 
 
+@app.post("/sessions/{sid}/ai-signal")
+def set_ai_signal(
+    sid: int,
+    body: AISignalRequest,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if str(body.symbol or "") != str(s.symbol or ""):
+            raise HTTPException(
+                status_code=400,
+                detail=f"AI signal symbol {body.symbol!r} does not match session symbol {s.symbol!r}",
+            )
+
+        stored = engine.set_ai_signal(
+            int(s.id),
+            symbol=str(s.symbol),
+            payload=body.model_dump(),
+        )
+
+        return {
+            "ok": True,
+            "session_id": int(s.id),
+            "ai_signal": stored,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/margin-gate")
+def set_margin_gate(
+    sid: int,
+    body: MarginGateRequest,
+    user_id: str = Depends(current_user_id),
+):
+    if body.minimum_margin < 0 or body.minimum_margin > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="minimum_margin must be between 0 and 50",
+        )
+
+    db = SessionLocal()
+    try:
+        s = owns_session(db, user_id, sid)
+        value = engine.set_minimum_v1_margin(
+            int(s.id),
+            float(body.minimum_margin),
+        )
+        try:
+            snapshot = engine._score_all_digits(int(s.id))
+        except Exception:
+            snapshot = (
+                getattr(engine, "digit_score_snapshots", {}) or {}
+            ).get(int(s.id)) or {}
+
+        return {
+            "ok": True,
+            "session_id": int(s.id),
+            "account_mode": str(s.account_mode),
+            "minimum_v1_margin": float(value),
+            "top_margin": snapshot.get("top_margin"),
+            "margin_eligible": snapshot.get("margin_eligible"),
+            "margin_status": snapshot.get("margin_status"),
+        }
+    finally:
+        db.close()
+
+
 @app.post("/sessions/{sid}/start")
 def start(
     sid: int,
@@ -795,6 +971,14 @@ def start(
 
     try:
         s = owns_session(db, user_id, sid)
+        if (
+            str(s.account_mode or "").upper() == "REAL"
+            and not settings.allow_real_mode
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
+            )
 
         if s.open_contract_id:
             s.running = True
@@ -873,6 +1057,19 @@ def stop(
 
     try:
         s = owns_session(db, user_id, sid)
+        was_running = bool(s.running)
+        old_phase = str(s.phase or '')
+        # Deliberately do not trust client-provided stop source for authorization;
+        # useful as diagnostics only.  Server state decides the operation.
+        print(
+            f"DMS_STOP_REQUEST sid={sid} running_before={was_running} "
+            f"phase_before={old_phase} open_contract={bool(s.open_contract_id)}",
+            flush=True,
+        )
+        if not was_running:
+            # Duplicate STOP is a no-op; retain terminal/reconciliation phase.
+            return {"ok": True, "already_stopped": True,
+                    "phase": s.phase, "open_contract_id": s.open_contract_id}
 
         s.running = False
         s.paused = False
@@ -893,28 +1090,3 @@ def stop(
 
     finally:
         db.close()
-
-
-@app.post("/sessions/{sid}/real/confirm")
-async def confirm_real(
-    sid: int,
-    user_id: str = Depends(current_user_id),
-):
-    try:
-        await engine.confirm_real(user_id, sid)
-
-        return {
-            "ok": True,
-            "session_id": sid,
-        }
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        )
-
-
-# Explicitly confirmed, one-purchase-at-a-time REAL API.
-from .real_manual import router as real_manual_router
-app.include_router(real_manual_router)
