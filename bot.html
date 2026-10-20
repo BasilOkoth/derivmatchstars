@@ -3155,35 +3155,78 @@ expectedAdditionalTicks: function(gaps, g) {
                 const alt = altRows[0] || null;
                 if (!alt) return best;
 
-                // Require independent FORWARD evidence for a repeat of T.
-                // Short/long unconditional frequencies are deliberately excluded
-                // from these checks because they are the source of the echo bias.
+                // STRICT STRUCTURAL REPEAT VALIDATION
+                //
+                // A current-digit repeat is NOT retained just because two correlated
+                // short-window features agree. It now needs evidence from BOTH:
+                //   (A) a forward contextual family: transition / n-gram structure
+                //   (B) an independent long-history family: DNA / survival structure
+                //
+                // This keeps the current digit available when the feature stack truly
+                // supports it, while preventing CRYPTO-AUDITOR/recent-window echoes
+                // from validating each other.
+                const transitionSupport = Number(fCur?.transitionSupport || 0);
+                const ngram2Support = Number(fCur?.ngram2Support || 0);
+                const ngram3Support = Number(fCur?.ngram3Support || 0);
+
                 const supports = {
-                    transition: !!(fCur && alt.fr && Number(fCur.transitionP||0) > Number(alt.fr.transitionP||0) + 0.005),
-                    ngram2: !!(fCur && alt.fr && Number(fCur.ngram2P||0) > Number(alt.fr.ngram2P||0) + 0.005),
-                    ngram3: !!(fCur && alt.fr && Number(fCur.ngram3P||0) > Number(alt.fr.ngram3P||0) + 0.005),
-                    dna: !!(dCur && alt.dr && Number(dCur.similarity||0) > Number(alt.dr.similarity||0) + 0.015),
-                    auditorConditional: !!(aCur && alt.ar && (
-                        Number(aCur.ngramP||0) > Number(alt.ar.ngramP||0) + 0.005 ||
-                        Number(aCur.transitionP||0) > Number(alt.ar.transitionP||0) + 0.005
-                    )),
-                    survival: !!(sCur && alt.sr && (
-                        Number(sCur.pm5||0) > Number(alt.sr.pm5||0) + 0.03 ||
-                        Number(sCur.pm10||0) > Number(alt.sr.pm10||0) + 0.03
-                    ))
+                    transition: !!(
+                        fCur && alt.fr &&
+                        transitionSupport >= 12 &&
+                        Number(fCur.transitionP||0) > Number(alt.fr.transitionP||0) + 0.010
+                    ),
+                    ngram2: !!(
+                        fCur && alt.fr &&
+                        ngram2Support >= 8 &&
+                        Number(fCur.ngram2P||0) > Number(alt.fr.ngram2P||0) + 0.010
+                    ),
+                    ngram3: !!(
+                        fCur && alt.fr &&
+                        ngram3Support >= 5 &&
+                        Number(fCur.ngram3P||0) > Number(alt.fr.ngram3P||0) + 0.010
+                    ),
+                    dna: !!(
+                        dCur && alt.dr &&
+                        Number(dCur.similarity||0) >= 0.55 &&
+                        Number(dCur.similarity||0) > Number(alt.dr.similarity||0) + 0.020
+                    ),
+                    survival: !!(
+                        sCur && alt.sr && (
+                            Number(sCur.pm5||0) > Number(alt.sr.pm5||0) + 0.05 ||
+                            Number(sCur.pm10||0) > Number(alt.sr.pm10||0) + 0.05
+                        )
+                    )
                 };
+
+                // Collapse correlated features into two genuinely different families.
+                // Auditor conditional evidence is diagnostic only here because its
+                // transition/ngram inputs overlap with the feature engine.
+                const contextualSupport = !!(supports.transition || supports.ngram2 || supports.ngram3);
+                const longHistorySupport = !!(supports.dna || supports.survival);
                 const supportCount = Object.values(supports).filter(Boolean).length;
 
-                // Two independent forward-context supports are enough to retain a
-                // repeat prediction. Otherwise select the strongest feature-derived
-                // alternative. This is a de-bias rule, not a ban on repeats.
-                if (supportCount >= 2) {
+                if (contextualSupport && longHistorySupport) {
                     best.copyGuard = {
-                        applied:true, currentDigit, decision:'REPEAT_SUPPORTED',
-                        supportCount, supports, alternativeDigit:alt.digit,
+                        applied:true,
+                        currentDigit,
+                        decision:'REPEAT_STRUCTURALLY_VALIDATED',
+                        supportCount,
+                        contextualSupport,
+                        longHistorySupport,
+                        supports,
+                        supportThresholds:{
+                            transitionMinSupport:12,
+                            ngram2MinSupport:8,
+                            ngram3MinSupport:5,
+                            contextualMargin:0.010,
+                            dnaMinSimilarity:0.55,
+                            dnaMargin:0.020,
+                            survivalMargin:0.05
+                        },
+                        alternativeDigit:alt.digit,
                         alternativeEnsemble:alt.ensemble
                     };
-                    best.source = `${best.source||'AI'}+COPY-VALIDATED`;
+                    best.source = `${best.source||'AI'}+COPY-STRUCTURAL`;
                     return best;
                 }
 
@@ -3197,7 +3240,7 @@ expectedAdditionalTicks: function(gaps, g) {
                     source:'FEATURE-DEBIASED',
                     copyGuard:{
                         applied:true, currentDigit, decision:'CURRENT_COPY_REJECTED',
-                        supportCount, supports, rejectedDigit:currentDigit,
+                        supportCount, contextualSupport, longHistorySupport, supports, rejectedDigit:currentDigit,
                         alternativeDigit:alt.digit, alternativeEnsemble:alt.ensemble
                     }
                 };
