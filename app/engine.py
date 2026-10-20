@@ -101,6 +101,14 @@ class MultiUserEngine:
         self.prediction_performance_by_sid = {}  # sid -> aggregate counters
         self.prediction_performance_last_seq = {}  # sid -> last evaluated prepared rank_seq
 
+        # GREEN AI forward recorder. Browser AI arrives asynchronously from a
+        # separate Deriv websocket, so it cannot rely on already-built V1 snapshots.
+        # Keep a short canonical server tick ledger and bind every green AI call
+        # to its source tick, then score it exactly once against source_seq + 1.
+        self.canonical_tick_history_by_sid = {}  # sid -> deque of canonical server ticks
+        self.green_ai_pending_by_sid = {}        # sid -> latest unscored green AI forecast
+        self.green_ai_scored_sources_by_sid = {}  # sid -> deque of scored source keys
+
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
 
@@ -185,6 +193,154 @@ class MultiUserEngine:
             return None
         return number
 
+    def _canonical_tick_ledger(self, sid: int):
+        sid = int(sid)
+        ledger = self.canonical_tick_history_by_sid.get(sid)
+        if ledger is None:
+            ledger = deque(maxlen=12)
+            self.canonical_tick_history_by_sid[sid] = ledger
+        return ledger
+
+    @staticmethod
+    def _green_ai_source_key(signal: dict):
+        if not isinstance(signal, dict):
+            return None
+        return (
+            int(signal.get("source_tick_epoch") or 0),
+            str(signal.get("source_tick_quote") or ""),
+            int(signal.get("source_tick_digit"))
+            if signal.get("source_tick_digit") is not None else None,
+        )
+
+    @staticmethod
+    def _tick_identity_key(tick: dict):
+        if not isinstance(tick, dict):
+            return None
+        return (
+            int(tick.get("epoch") or 0),
+            str(tick.get("formatted_quote") or ""),
+            int(tick.get("digit")) if tick.get("digit") is not None else None,
+        )
+
+    def _green_ai_scored_sources(self, sid: int):
+        sid = int(sid)
+        rows = self.green_ai_scored_sources_by_sid.get(sid)
+        if rows is None:
+            rows = deque(maxlen=1000)
+            self.green_ai_scored_sources_by_sid[sid] = rows
+        return rows
+
+    def _record_green_ai_result(self, sid: int, forecast: dict, observed_tick: dict):
+        """Count one green AI T+1 forecast exactly once."""
+        sid = int(sid)
+        source_key = self._green_ai_source_key(forecast)
+        if source_key is None:
+            return False
+        scored = self._green_ai_scored_sources(sid)
+        if source_key in scored:
+            return False
+
+        try:
+            predicted = int(forecast.get("digit"))
+            observed = int(observed_tick.get("digit"))
+            source_seq = int(forecast.get("source_seq") or 0)
+            observed_seq = int(observed_tick.get("seq") or 0)
+        except (TypeError, ValueError):
+            return False
+
+        # Strict forward-only rule: only the immediately following canonical tick.
+        if source_seq <= 0 or observed_seq != source_seq + 1:
+            return False
+
+        matched = predicted == observed
+        state = self._prediction_performance_state(sid)
+        state["green_ai_total"] += 1
+        state["green_ai_matches"] += int(matched)
+        state["last_green_ai_outcome"] = {
+            "source_seq": source_seq,
+            "source_epoch": forecast.get("source_tick_epoch"),
+            "source_quote": forecast.get("source_tick_quote"),
+            "predicted_digit": predicted,
+            "score": float(forecast.get("score") or 0.0),
+            "observed_seq": observed_seq,
+            "observed_epoch": observed_tick.get("epoch"),
+            "observed_digit": observed,
+            "matched": bool(matched),
+        }
+        scored.append(source_key)
+        self.green_ai_pending_by_sid.pop(sid, None)
+        return True
+
+    def _arm_or_score_green_ai(self, sid: int, signal: dict):
+        """Bind a green browser AI call to canonical server tick T.
+
+        If T+1 is already in the short ledger (browser POST arrived late), score it
+        immediately. Otherwise keep the forecast armed until the next server tick.
+        """
+        sid = int(sid)
+        if not isinstance(signal, dict) or float(signal.get("score") or 0.0) < 0.85:
+            return False
+        source_key = self._green_ai_source_key(signal)
+        if not source_key or source_key[0] <= 0 or not source_key[1] or source_key[2] is None:
+            return False
+        if source_key in self._green_ai_scored_sources(sid):
+            return True
+
+        ledger = list(self._canonical_tick_ledger(sid))
+        source_tick = next((t for t in ledger if self._tick_identity_key(t) == source_key), None)
+        pending = dict(signal)
+        pending["armed"] = False
+        pending["source_seq"] = None
+
+        if source_tick is not None:
+            source_seq = int(source_tick.get("seq") or 0)
+            pending["source_seq"] = source_seq or None
+            pending["armed"] = bool(source_seq)
+            if source_seq:
+                next_tick = next((t for t in ledger if int(t.get("seq") or 0) == source_seq + 1), None)
+                if next_tick is not None:
+                    return self._record_green_ai_result(sid, pending, next_tick)
+
+        self.green_ai_pending_by_sid[sid] = pending
+        return bool(pending.get("armed"))
+
+    def _advance_green_ai_forward_recorder(self, sid: int, current_tick: dict):
+        """Advance/score the pending green AI forecast on canonical server ticks."""
+        sid = int(sid)
+        if not isinstance(current_tick, dict):
+            return
+        pending = self.green_ai_pending_by_sid.get(sid)
+        if not isinstance(pending, dict):
+            return
+
+        current_seq = int(current_tick.get("seq") or 0)
+        if current_seq <= 0:
+            return
+
+        source_key = self._green_ai_source_key(pending)
+        current_key = self._tick_identity_key(current_tick)
+
+        # Signal may arrive before the server sees its source tick. Bind it here.
+        if not pending.get("source_seq"):
+            if source_key == current_key:
+                pending["source_seq"] = current_seq
+                pending["armed"] = True
+                self.green_ai_pending_by_sid[sid] = pending
+            return
+
+        source_seq = int(pending.get("source_seq") or 0)
+        if current_seq == source_seq + 1:
+            self._record_green_ai_result(sid, pending, current_tick)
+        elif current_seq > source_seq + 1:
+            # We missed T+1; never substitute a later tick. Keep diagnostics honest.
+            state = self._prediction_performance_state(sid)
+            state["last_green_ai_drop"] = {
+                "reason": "MISSED_EXACT_NEXT_TICK",
+                "source_seq": source_seq,
+                "current_seq": current_seq,
+            }
+            self.green_ai_pending_by_sid.pop(sid, None)
+
     def set_ai_signal(self, sid: int, *, symbol: str, payload: dict):
         sid = int(sid)
         digit = int(payload.get("digit"))
@@ -222,6 +378,12 @@ class MultiUserEngine:
             "received_at": datetime.utcnow().isoformat(),
         }
         self.ai_signal_by_sid[sid] = clean
+
+        # Green AI is a forward T+1 forecast. Arm it independently of the V1
+        # snapshot so asynchronous browser/server timing cannot make hits vanish.
+        if float(score) >= 0.85:
+            self._arm_or_score_green_ai(sid, clean)
+
         return {k: v for k, v in clean.items() if k != "received_monotonic"}
 
     def _fresh_ai_signal(self, sid: int, *, symbol=None, max_age_seconds=3.0):
@@ -410,6 +572,8 @@ class MultiUserEngine:
                 "fusion_total": 0,
                 "fusion_matches": 0,
                 "last_outcome": None,
+                "last_green_ai_outcome": None,
+                "last_green_ai_drop": None,
             }
             self.prediction_performance_by_sid[sid] = state
         return state
@@ -433,6 +597,11 @@ class MultiUserEngine:
             state.get("fusion_total", 0),
         )
         state["green_ai_threshold"] = 0.85
+        pending = self.green_ai_pending_by_sid.get(int(sid))
+        state["green_ai_pending"] = (
+            {k: v for k, v in pending.items() if k != "received_monotonic"}
+            if isinstance(pending, dict) else None
+        )
         return state
 
     def _score_previous_prediction(self, sid: int, previous_snapshot: dict, *, observed_digit, current_seq):
@@ -476,23 +645,10 @@ class MultiUserEngine:
             except (TypeError, ValueError):
                 pass
 
-        # The dashboard's AI recommendation is green at score >= 85%. Only
-        # exact-tick-aligned green AI signals enter this comparison.
-        try:
-            green_ai = (
-                tick_aligned
-                and ai_digit is not None
-                and ai_score is not None
-                and float(ai_score) >= 0.85
-            )
-        except (TypeError, ValueError):
-            green_ai = False
-
-        if green_ai:
-            ai_digit = int(ai_digit)
-            state["green_ai_total"] += 1
-            ai_match = (ai_digit == observed_digit)
-            state["green_ai_matches"] += int(ai_match)
+        # GREEN AI is scored by the independent forward recorder armed by
+        # set_ai_signal(). Browser AI arrives asynchronously and must not depend
+        # on whether it happened to be present inside this V1 snapshot.
+        green_ai = False
 
         if final_digit is not None and bool(fusion.get("executable")):
             try:
@@ -875,6 +1031,16 @@ class MultiUserEngine:
             snapshot["rank_epoch"] = None
             snapshot["canonical_tick"] = None
             snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
+
+        # Maintain a short exact canonical tick ledger for asynchronous browser
+        # AI forecasts. Dedupe API-triggered re-scores of the same market tick.
+        canonical_now = snapshot.get("canonical_tick") or {}
+        if canonical_now.get("seq"):
+            ledger = self._canonical_tick_ledger(int(sid))
+            seq_now = int(canonical_now.get("seq") or 0)
+            if not ledger or int(ledger[-1].get("seq") or 0) != seq_now:
+                ledger.append(dict(canonical_now))
+            self._advance_green_ai_forward_recorder(int(sid), canonical_now)
 
         # Score the PREVIOUS prepared forecast against this newly-arrived
         # canonical tick before publishing the new prediction.
