@@ -2734,6 +2734,16 @@
                 const previousForecast = this.currentRecommendation
                     ? { ...this.currentRecommendation }
                     : null;
+
+                // CURRENT-TICK BIAS AUDIT: mature the forecast that was frozen
+                // on tick T-1 against this newly-arrived tick T BEFORE this tick
+                // is allowed to influence the next recommendation.
+                try {
+                    window.currentTickBiasAudit?.settle?.(Number(digit));
+                } catch (err) {
+                    console.warn('Current-tick bias audit settle skipped:', err);
+                }
+
                 const observedEl = document.getElementById('ai-source-tick-digit');
                 const previousResultEl = document.getElementById('ai-prev-forecast-result');
                 if (observedEl) observedEl.textContent = String(digit);
@@ -2783,6 +2793,24 @@
                 // so a prepared AI target is available for the following market tick.
                 if (this.warmupDone) {
                     this.analyzeAndRecommend();
+
+                    // Freeze exactly one T -> T+1 audit observation. The
+                    // source digit is the just-observed market digit; the AI
+                    // target must not be scored until the following live tick.
+                    try {
+                        const symbol =
+                            document.getElementById('symbol')?.value ||
+                            window.currentSymbol ||
+                            window.tickFormat?.symbol ||
+                            'UNKNOWN';
+                        window.currentTickBiasAudit?.arm?.(
+                            this.currentRecommendation,
+                            Number(digit),
+                            String(symbol)
+                        );
+                    } catch (err) {
+                        console.warn('Current-tick bias audit arm skipped:', err);
+                    }
                 }
             },
             
@@ -11377,6 +11405,349 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
 
         // ============================================================================
+        // AI CURRENT-TICK BIAS AUDIT — strict forward T -> T+1 evaluation
+        // Purpose: distinguish genuine next-tick forecasting from a model that
+        // merely tends to echo the current digit. Only resolved unseen ticks are
+        // counted; the current tick can never score the forecast it generated.
+        // ============================================================================
+        window.currentTickBiasAudit = window.currentTickBiasAudit || {
+            version: 'CURRENT-TICK-BIAS-AUDIT-V1',
+            pending: null,
+            symbol: null,
+            records: [],
+            maxRecords: 10000,
+
+            storageKey(symbol) {
+                return `matchstar_current_tick_bias_v1_${String(symbol || 'UNKNOWN')}`;
+            },
+
+            load(symbol) {
+                const sym = String(symbol || 'UNKNOWN');
+                if (this.symbol === sym && Array.isArray(this.records)) return this.records;
+                this.symbol = sym;
+                this.pending = null; // never carry a pending forecast across symbol/reload boundaries
+                try {
+                    const raw = JSON.parse(localStorage.getItem(this.storageKey(sym)) || '[]');
+                    this.records = Array.isArray(raw) ? raw.slice(-this.maxRecords) : [];
+                } catch (_) {
+                    this.records = [];
+                }
+                return this.records;
+            },
+
+            save() {
+                if (!this.symbol) return;
+                try {
+                    localStorage.setItem(
+                        this.storageKey(this.symbol),
+                        JSON.stringify((this.records || []).slice(-this.maxRecords))
+                    );
+                } catch (_) {}
+            },
+
+            arm(recommendation, sourceDigit, symbol) {
+                const sym = String(symbol || 'UNKNOWN');
+                this.load(sym);
+
+                const predictedDigit = Number(recommendation?.digit);
+                const src = Number(sourceDigit);
+                if (!Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+                if (!Number.isInteger(src) || src < 0 || src > 9) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+
+                // One live source tick creates exactly one pending T+1 forecast.
+                this.pending = {
+                    symbol: sym,
+                    sourceDigit: src,
+                    predictedDigit,
+                    sameAsCurrent: predictedDigit === src,
+                    score: Number.isFinite(Number(recommendation?.score))
+                        ? Number(recommendation.score)
+                        : null,
+                    source: String(recommendation?.source || 'AI'),
+                    generatedAtMs: Number(recommendation?.generatedAtMs || Date.now())
+                };
+                this.render();
+                return true;
+            },
+
+            settle(observedNextDigit) {
+                const p = this.pending;
+                const actual = Number(observedNextDigit);
+                if (!p || !Number.isInteger(actual) || actual < 0 || actual > 9) return false;
+
+                this.load(p.symbol);
+                const hit = Number(p.predictedDigit) === actual;
+                const actualRepeatedCurrent = Number(p.sourceDigit) === actual;
+                const score = Number(p.score);
+                const scorePct = Number.isFinite(score) ? score * 100 : null;
+                let scoreBand = 'UNKNOWN';
+                if (Number.isFinite(scorePct)) {
+                    if (scorePct < 70) scoreBand = '<70%';
+                    else if (scorePct < 80) scoreBand = '70–79%';
+                    else if (scorePct < 85) scoreBand = '80–84%';
+                    else if (scorePct < 90) scoreBand = '85–89%';
+                    else scoreBand = '90%+';
+                }
+
+                this.records.push({
+                    ts: Date.now(),
+                    symbol: p.symbol,
+                    sourceDigit: Number(p.sourceDigit),
+                    predictedDigit: Number(p.predictedDigit),
+                    actualNextDigit: actual,
+                    sameAsCurrent: !!p.sameAsCurrent,
+                    actualRepeatedCurrent,
+                    hit,
+                    score: Number.isFinite(score) ? score : null,
+                    scoreBand,
+                    source: p.source
+                });
+                if (this.records.length > this.maxRecords) {
+                    this.records.splice(0, this.records.length - this.maxRecords);
+                }
+                this.pending = null;
+                this.save();
+                this.render();
+                return true;
+            },
+
+            stats(symbol = null) {
+                const sym = String(
+                    symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.currentSymbol ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+                const rows = this.load(sym);
+                const n = rows.length;
+                const same = rows.filter(r => r.sameAsCurrent);
+                const different = rows.filter(r => !r.sameAsCurrent);
+                const actualRepeats = rows.filter(r => r.actualRepeatedCurrent).length;
+                const hits = rows.filter(r => r.hit).length;
+                const sameHits = same.filter(r => r.hit).length;
+                const differentHits = different.filter(r => r.hit).length;
+
+                const bands = ['<70%','70–79%','80–84%','85–89%','90%+'].map(label => {
+                    const b = rows.filter(r => r.scoreBand === label);
+                    const bh = b.filter(r => r.hit).length;
+                    return { label, n: b.length, hits: bh, rate: b.length ? bh / b.length : null };
+                });
+
+                const sameRate = n ? same.length / n : null;
+                const actualRepeatRate = n ? actualRepeats / n : null;
+                const excessCopy = (sameRate != null && actualRepeatRate != null)
+                    ? sameRate - actualRepeatRate
+                    : null;
+
+                // Descriptive, not causal: this flags how much more often the AI
+                // copies T than T+1 naturally repeats T in the same forward sample.
+                let biasLabel = 'WAITING';
+                if (n >= 30 && Number.isFinite(excessCopy)) {
+                    if (excessCopy >= 0.15) biasLabel = 'HIGH COPY BIAS';
+                    else if (excessCopy >= 0.05) biasLabel = 'ELEVATED';
+                    else biasLabel = 'LOW';
+                } else if (n > 0) {
+                    biasLabel = 'COLLECTING DATA';
+                }
+
+                return {
+                    symbol: sym,
+                    n,
+                    hits,
+                    hitRate: n ? hits / n : null,
+                    sameN: same.length,
+                    sameHits,
+                    sameRate,
+                    sameHitRate: same.length ? sameHits / same.length : null,
+                    differentN: different.length,
+                    differentHits,
+                    differentHitRate: different.length ? differentHits / different.length : null,
+                    actualRepeats,
+                    actualRepeatRate,
+                    excessCopy,
+                    biasLabel,
+                    bands,
+                    pending: this.pending && this.pending.symbol === sym ? this.pending : null
+                };
+            },
+
+            render() {
+                const panel = document.getElementById('current-tick-bias-panel');
+                if (!panel) return;
+                const st = this.stats();
+                const pct = v => Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(1)}%` : '—';
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set('ctba-sample', st.n
+                    ? `${st.n} strictly forward T→T+1 forecasts · ${st.symbol}`
+                    : `Collecting strictly forward T→T+1 forecasts · ${st.symbol}`);
+                set('ctba-ai-copy', `${st.sameN}/${st.n || 0} · ${pct(st.sameRate)}`);
+                set('ctba-natural-repeat', `${st.actualRepeats}/${st.n || 0} · ${pct(st.actualRepeatRate)}`);
+                set('ctba-copy-hit', `${st.sameHits}/${st.sameN || 0} · ${pct(st.sameHitRate)}`);
+                set('ctba-different-hit', `${st.differentHits}/${st.differentN || 0} · ${pct(st.differentHitRate)}`);
+                set('ctba-overall-hit', `${st.hits}/${st.n || 0} · ${pct(st.hitRate)}`);
+                set('ctba-bias-label', st.biasLabel);
+                set('ctba-excess-copy', Number.isFinite(st.excessCopy)
+                    ? `${st.excessCopy >= 0 ? '+' : ''}${(st.excessCopy * 100).toFixed(1)} pp vs natural repeat`
+                    : 'Need resolved forecasts');
+
+                const pending = st.pending;
+                set('ctba-pending', pending
+                    ? `Waiting for T+1: T=${pending.sourceDigit} · AI=${pending.predictedDigit}${pending.sameAsCurrent ? ' · SAME AS CURRENT' : ' · DIFFERENT'}${Number.isFinite(Number(pending.score)) ? ` · score ${(Number(pending.score)*100).toFixed(1)}%` : ''}`
+                    : 'Waiting for the next live AI forecast');
+
+                const bandsEl = document.getElementById('ctba-score-bands');
+                if (bandsEl) {
+                    bandsEl.innerHTML = st.bands.map(b => `
+                        <div class="flex items-center justify-between gap-3 py-1 border-b border-slate-800/70 last:border-b-0">
+                            <span class="text-slate-400">${b.label}</span>
+                            <span class="font-black text-white">${b.hits}/${b.n} · ${pct(b.rate)}</span>
+                        </div>
+                    `).join('');
+                }
+            }
+        };
+
+        function downloadCurrentTickBiasAudit(format = 'json') {
+            const audit = window.currentTickBiasAudit;
+            if (!audit) {
+                alert('Current-tick bias audit is not available yet.');
+                return false;
+            }
+
+            const symbol = String(
+                document.getElementById('symbol')?.value ||
+                window.currentSymbol ||
+                window.tickFormat?.symbol ||
+                audit.symbol ||
+                'UNKNOWN'
+            );
+
+            const rows = [...(audit.load(symbol) || [])];
+            const summary = audit.stats(symbol);
+            const now = new Date();
+            const stamp = now.toISOString().replace(/[:.]/g, '-');
+            const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]+/g, '_');
+
+            const triggerDownload = (filename, content, mime) => {
+                const blob = new Blob([content], { type: mime });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1500);
+            };
+
+            if (String(format).toLowerCase() === 'csv') {
+                const headers = [
+                    'timestamp_iso','symbol','source_digit_t','ai_prediction_t1',
+                    'actual_t1','ai_equals_current_t','actual_t1_repeats_t',
+                    'hit','ai_score','ai_score_pct','score_band','source'
+                ];
+
+                const esc = (value) => {
+                    if (value === null || value === undefined) return '';
+                    const text = String(value);
+                    return /[",\n\r]/.test(text)
+                        ? `"${text.replace(/"/g, '""')}"`
+                        : text;
+                };
+
+                const lines = [headers.join(',')];
+                for (const r of rows) {
+                    const score = Number(r.score);
+                    lines.push([
+                        Number.isFinite(Number(r.ts)) ? new Date(Number(r.ts)).toISOString() : '',
+                        r.symbol,
+                        r.sourceDigit,
+                        r.predictedDigit,
+                        r.actualNextDigit,
+                        r.sameAsCurrent ? 1 : 0,
+                        r.actualRepeatedCurrent ? 1 : 0,
+                        r.hit ? 1 : 0,
+                        Number.isFinite(score) ? score : '',
+                        Number.isFinite(score) ? (score * 100).toFixed(3) : '',
+                        r.scoreBand,
+                        r.source
+                    ].map(esc).join(','));
+                }
+
+                triggerDownload(
+                    `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.csv`,
+                    lines.join('\n'),
+                    'text/csv;charset=utf-8'
+                );
+                return true;
+            }
+
+            const payload = {
+                schema: 'DIGITMATCHSTAR_CURRENT_TICK_BIAS_AUDIT_V1',
+                exportedAt: now.toISOString(),
+                symbol,
+                interpretation: {
+                    targetHorizon: 'T+1: first unseen live tick after the forecast is frozen',
+                    sameAsCurrent: 'AI prediction for T+1 equals source/current digit T',
+                    naturalRepeat: 'actual T+1 equals source/current digit T',
+                    hit: 'AI prediction frozen at T equals actual unseen T+1',
+                    caution: 'AI score is an internal model score, not a calibrated probability.'
+                },
+                summary,
+                pending: audit.pending && audit.pending.symbol === symbol
+                    ? { ...audit.pending }
+                    : null,
+                records: rows
+            };
+
+            triggerDownload(
+                `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.json`,
+                JSON.stringify(payload, null, 2),
+                'application/json;charset=utf-8'
+            );
+            return true;
+        }
+
+        function toggleCurrentTickBiasPanel() {
+            const body = document.getElementById('current-tick-bias-body');
+            const btn = document.getElementById('current-tick-bias-min-btn');
+            if (!body) return;
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
+            }
+            savePanelMinimizedState('current-tick-bias', minimized);
+        }
+
+        function restoreCurrentTickBiasPanelState() {
+            const minimized = getPanelMinimizedState('current-tick-bias', false);
+            const body = document.getElementById('current-tick-bias-body');
+            const btn = document.getElementById('current-tick-bias-min-btn');
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
+            }
+        }
+
+        // ============================================================================
         // CYCLE DEPTH — winning-cycle resolution distribution
         // Uses completed cycle history for the currently selected symbol.
         // ============================================================================
@@ -11604,6 +11975,65 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                             </div>
                         </div>
                     </div>
+
+                    <div id="current-tick-bias-panel" class="mt-3 rounded-xl border border-amber-500/30 bg-amber-950/15 px-3 py-3">
+                        <div class="flex items-center gap-2">
+                            <div>
+                                <div class="text-[9px] uppercase tracking-[0.18em] text-amber-300 font-black">AI CURRENT-TICK BIAS AUDIT</div>
+                                <div id="ctba-sample" class="text-[9px] text-slate-500">Collecting strictly forward T→T+1 forecasts</div>
+                            </div>
+                            <button
+                                id="current-tick-bias-min-btn"
+                                type="button"
+                                aria-controls="current-tick-bias-body"
+                                aria-expanded="true"
+                                onclick="toggleCurrentTickBiasPanel()"
+                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
+                                title="Minimize current-tick bias audit"
+                            >−</button>
+                        </div>
+                        <div id="current-tick-bias-body" class="mt-3">
+                            <div id="ctba-pending" class="mb-2 rounded-lg border border-amber-500/20 bg-slate-950/60 px-2 py-2 text-[10px] font-bold text-amber-200">Waiting for the next live AI forecast</div>
+                            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">AI = current T</div>
+                                    <div id="ctba-ai-copy" class="mt-1 text-sm font-black text-white">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Actual T+1 repeats T</div>
+                                    <div id="ctba-natural-repeat" class="mt-1 text-sm font-black text-white">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI = T</div>
+                                    <div id="ctba-copy-hit" class="mt-1 text-sm font-black text-emerald-300">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI ≠ T</div>
+                                    <div id="ctba-different-hit" class="mt-1 text-sm font-black text-cyan-300">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Overall AI T+1</div>
+                                    <div id="ctba-overall-hit" class="mt-1 text-sm font-black text-violet-300">0/0 · —</div>
+                                </div>
+                            </div>
+                            <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                <div class="rounded-lg border border-amber-500/20 bg-slate-900/60 p-2">
+                                    <div class="text-[8px] uppercase text-amber-300 font-black">Copy-bias diagnostic</div>
+                                    <div id="ctba-bias-label" class="mt-1 text-sm font-black text-white">WAITING</div>
+                                    <div id="ctba-excess-copy" class="text-[9px] text-slate-400">Need resolved forecasts</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                                    <div class="text-[8px] uppercase text-slate-400 font-black">T+1 hit rate by AI score band</div>
+                                    <div id="ctba-score-bands" class="mt-1 text-[9px]">—</div>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button type="button" onclick="downloadCurrentTickBiasAudit('json')" class="text-[10px] font-black rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-2 text-amber-200" title="Export summary plus every resolved T→T+1 observation as JSON">⬇ EXPORT JSON</button>
+                                <button type="button" onclick="downloadCurrentTickBiasAudit('csv')" class="text-[10px] font-black rounded-lg border border-cyan-400/30 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-2 text-cyan-200" title="Export every resolved T→T+1 observation as CSV">⬇ EXPORT CSV</button>
+                            </div>
+                            <div class="mt-2 text-[9px] text-slate-500">Strict rule: a forecast created after observing T is scored only when the next unseen live tick T+1 arrives. “Copy bias” is descriptive, not proof of causal leakage.</div>
+                        </div>
+                    </div>
                 </div>
 
                                 <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
@@ -11642,11 +12072,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             host.appendChild(el);
             restoreCycleDepthPanelState();
             renderCycleDepthPanel();
+            restoreCurrentTickBiasPanelState();
+            window.currentTickBiasAudit?.render?.();
         }
 
         function renderRecycleRuntimePanel(st) {
             ensureRecycleRuntimePanel();
             renderCycleDepthPanel();
+            window.currentTickBiasAudit?.render?.();
             try { refreshCycleDepthFromServer(st).catch(() => {}); } catch (_) {}
 
             const score = st?.digit_score || null;
