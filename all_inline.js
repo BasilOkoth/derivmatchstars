@@ -1,0 +1,15757 @@
+
+;
+
+;
+
+        // ============================================================================
+        // UI ONLY — MINIMIZABLE PANELS
+        // No trading logic, cycle logic, or existing history storage is changed.
+        // ============================================================================
+
+        function toggleResearchPanel(bodyId, buttonId, storageKey) {
+            const body = document.getElementById(bodyId);
+            const btn = document.getElementById(buttonId);
+            if (!body) return;
+            const willHide = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', willHide);
+            if (btn) btn.textContent = willHide ? '+' : '−';
+            try {
+                sessionStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
+            } catch (_) {}
+            try {
+                localStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
+            } catch (_) {}
+        }
+
+        function restoreResearchPanelState(bodyId, buttonId, storageKey) {
+            let minimized = false;
+            try {
+                const sessionSaved = sessionStorage.getItem(`matchstar_panel_min_${storageKey}`);
+                minimized = sessionSaved !== null
+                    ? sessionSaved === '1'
+                    : localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
+            } catch (_) {}
+            const body = document.getElementById(bodyId);
+            const btn = document.getElementById(buttonId);
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) btn.textContent = minimized ? '+' : '−';
+        }
+
+        function getPanelMinimizedState(key, fallback = false) {
+            const storageKey = `matchstar_panel_min_${key}`;
+            try {
+                const sessionSaved = sessionStorage.getItem(storageKey);
+                if (sessionSaved !== null) return sessionSaved === '1';
+            } catch (_) {}
+            try {
+                const localSaved = localStorage.getItem(storageKey);
+                return localSaved === null ? !!fallback : localSaved === '1';
+            } catch (_) {
+                return !!fallback;
+            }
+        }
+
+        function savePanelMinimizedState(key, minimized) {
+            const storageKey = `matchstar_panel_min_${key}`;
+            const value = minimized ? '1' : '0';
+            try { sessionStorage.setItem(storageKey, value); } catch (_) {}
+            try { localStorage.setItem(storageKey, value); } catch (_) {}
+        }
+
+        function makePanelMinimizable(panel, options = {}) {
+            if (!panel || panel.dataset.matchstarMinReady === '1') return;
+
+            // Panels with their own built-in minimize controls should not be wrapped again.
+            if (
+                panel.querySelector(':scope > .matchstar-min-body') ||
+                panel.querySelector('[id$="-min-btn"]') ||
+                panel.querySelector('[id$="-minimize"]')
+            ) {
+                panel.dataset.matchstarMinReady = 'native';
+                return;
+            }
+
+            const key = options.key || panel.id || 'panel';
+            const defaultMinimized = !!options.defaultMinimized;
+            const children = Array.from(panel.children);
+            if (!children.length) return;
+
+            const header = children[0];
+            const body = document.createElement('div');
+            body.className = 'matchstar-min-body';
+            body.id = `${key}-min-body`;
+
+            children.slice(1).forEach(node => body.appendChild(node));
+            panel.appendChild(body);
+
+            if (!header.classList.contains('flex')) {
+                header.classList.add('flex', 'items-center', 'gap-2');
+            }
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className =
+                'ml-auto shrink-0 text-xs bg-gray-700 hover:bg-gray-600 ' +
+                'px-2 py-1 rounded font-bold text-white';
+            btn.setAttribute('aria-controls', body.id);
+            header.appendChild(btn);
+
+            let minimized = getPanelMinimizedState(key, defaultMinimized);
+
+            const applyState = () => {
+                body.classList.toggle('hidden', minimized);
+                btn.textContent = minimized ? '+' : '−';
+                btn.title = minimized ? 'Expand panel' : 'Minimize panel';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                savePanelMinimizedState(key, minimized);
+            };
+
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                minimized = !minimized;
+                applyState();
+            });
+
+            panel.dataset.matchstarMinReady = '1';
+            applyState();
+        }
+
+        function initializeStaticMinimizablePanels() {
+            const marketPanel = document.querySelector(
+                '.lg\\:col-span-1 > .bg-gray-900.border.border-gray-700.rounded-xl'
+            );
+            if (marketPanel) {
+                makePanelMinimizable(marketPanel, { key: 'market-engine' });
+            }
+
+            const tradeStatus = document.getElementById('trade-result-container');
+            if (tradeStatus) {
+                makePanelMinimizable(tradeStatus, { key: 'trade-status' });
+            }
+
+            const logColumn = document.getElementById('log-column');
+            if (logColumn) {
+                makePanelMinimizable(logColumn, {
+                    key: 'live-log',
+                    defaultMinimized: true
+                });
+            }
+        }
+
+        function decorateDynamicMinimizablePanels() {
+            const configs = [
+                ['tail-risk-panel', 'tail-risk']
+            ];
+
+            for (const [id, key] of configs) {
+                const panel = document.getElementById(id);
+                if (panel) makePanelMinimizable(panel, { key });
+            }
+        }
+
+        let matchstarMinObserver = null;
+
+        function startMinimizablePanelUI() {
+            try {
+                initializeStaticMinimizablePanels();
+                decorateDynamicMinimizablePanels();
+
+                if (!matchstarMinObserver && document.body) {
+                    matchstarMinObserver = new MutationObserver(() => {
+                        try { decorateDynamicMinimizablePanels(); } catch (_) {}
+                    });
+
+                    matchstarMinObserver.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+            } catch (err) {
+                console.warn('[DigitMatchStar] minimizable panel initialization warning:', err);
+            }
+        }
+
+        // Initialize minimizable UI independently of the trading/bootstrap listener.
+        // This keeps panel controls working even if another startup component throws.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startMinimizablePanelUI, { once: true });
+        } else {
+            setTimeout(startMinimizablePanelUI, 0);
+        }
+
+        // Universal fallback for minimize buttons using aria-controls.
+        document.addEventListener('click', (event) => {
+            const btn = event.target.closest('button[aria-controls]');
+            if (!btn) return;
+            const bodyId = btn.getAttribute('aria-controls');
+            if (!bodyId) return;
+            const body = document.getElementById(bodyId);
+            if (!body) return;
+
+            // Buttons initialized by makePanelMinimizable already have their own listener.
+            if (btn.closest('[data-matchstar-min-ready="1"]')) return;
+
+            event.preventDefault();
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            btn.textContent = minimized ? '+' : '−';
+            btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+        });
+
+        // ============================================================================
+        // AUTHENTICATION GUARD - users must authenticate before opening this bot file
+        // ============================================================================
+        function getPlatformJwt() {
+            return sessionStorage.getItem('dms_platform_jwt') ||
+                   localStorage.getItem('dms_platform_jwt') ||
+                   '';
+        }
+
+        function getStoredDerivToken() {
+            // V2.1: raw Deriv OAuth tokens are intentionally not stored in the browser.
+            // Legacy token lookup remains only for old browser-mode installations.
+            return localStorage.getItem('active_token') ||
+                   localStorage.getItem('derivToken') ||
+                   localStorage.getItem('derivTokenDemo') ||
+                   localStorage.getItem('derivTokenReal');
+        }
+
+        function getStoredDerivAccount() {
+            const mode =
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode');
+
+            const get = (key) =>
+                sessionStorage.getItem(key) ||
+                localStorage.getItem(key);
+
+            if (mode === 'DEMO') {
+                return get('active_account') ||
+                       get('derivAccount') ||
+                       get('derivDemoAccount');
+            }
+
+            if (mode === 'REAL') {
+                return get('active_account') ||
+                       get('derivAccount') ||
+                       get('derivRealAccount');
+            }
+
+            return get('active_account') ||
+                   get('derivAccount') ||
+                   get('derivDemoAccount') ||
+                   get('derivRealAccount');
+        }
+
+        function getDerivAppIdForRest() {
+            return localStorage.getItem('deriv_app_id') ||
+                   localStorage.getItem('deriv_client_id') ||
+                   '34uXWAMOwfAO5EtltnV4n';
+        }
+
+        function isBotAuthenticated() {
+            const authenticated =
+                sessionStorage.getItem('bot_authenticated') === 'true' ||
+                localStorage.getItem('bot_authenticated') === 'true';
+
+            return authenticated && !!getPlatformJwt();
+        }
+
+        if (!isBotAuthenticated()) {
+            window.location.replace('/');
+        }
+
+        // ============================================================================
+        // DERIV DIGIT MATCH INTELLIGENCE ENGINE - FIXED FOR DIGIT 0
+        // Warm-up (1000 ticks) → Live incremental → Regime + Smart digit selection
+        // ============================================================================
+        
+        // Global AI thresholds (single source of truth)
+        window.AI_THRESHOLDS = {
+            minSupport: 22,
+
+            // EARLY PRESSURE (REALISTIC MODE)
+            minH5: 0.42,        // 🔥 KEY CHANGE (from 0.50 → 0.45)
+            minP10: 0.66,       // slightly relaxed
+
+            maxPersistenceStable: 97,      // allow more clean cold
+            maxPersistenceStableRelax: 97,
+            maxPersistenceUnstable: 93,    // still strict when unstable
+
+            maxExtend: 3,
+            require_g_lt_p90: true
+        ,
+            // PRESSURE ZONE: only recommend digits whose current gap is close to P90
+            // Example: min=0.75 means "within last 15% of the P90 gap"
+            pressureZoneEnabled: true,
+            // Pressure is a ranking signal in V7, not a mandatory gate.
+            pressureZoneMinP90Ratio: 0.35,
+            pressureZoneMaxP90Ratio: 0.95,
+            pressureZoneMinFloorP90Ratio: 0.00,
+        };
+
+
+        // ============================================================================
+        // SURVIVAL CURVE ENGINE CONFIG (Empirical conditional survival from historical gaps)
+        // ============================================================================
+        window.SURVIVAL_WINDOW = 2000;   // rolling digits window (oldest -> newest)
+        window.lastDigits = [];          // rolling buffer of last digits for SurvivalEngine
+
+        // Ranking defaults (tweakable)
+        window.SURVIVAL_CFG = {
+            minPm5: 0.45,
+            maxS20: 0.20,
+            maxETM: 12,
+            requirePressure: false
+        };
+
+        // ============================================================================
+        // STRICT SAFETY CONSTANTS (single source of truth)
+        // ============================================================================
+        const MAX_EXTEND_RATIO = 1.5;
+        const MAX_ETM = 6.5;
+        const PRESSURE_MIN = 0.80;
+        const PRESSURE_MAX = 0.95;
+
+
+        // ============================================================================
+        // DIGITMATCHSTAR V56 — DIGIT DNA / PRECURSOR FINGERPRINT ENGINE
+        //
+        // For each digit 0..9, learn the conditions that existed BEFORE that digit
+        // appeared. Every historical event is labelled only after it occurred, and
+        // the feature vector uses preceding ticks only:
+        //   • exact predecessor distributions at lags 1..5
+        //   • preceding 2-, 3- and 4-digit contexts
+        //   • entropy of the previous 10 / 20 ticks
+        //   • target frequency in the previous 20 ticks
+        //   • target gap immediately before the hit
+        //   • run length immediately before the hit
+        //
+        // The current live context is compared with every digit's historical
+        // precursor fingerprint. "DNA match" is a similarity/ranking score, NOT a
+        // calibrated probability. A forward top-pick tracker measures whether this
+        // fingerprint has genuine predictive value on unseen ticks.
+        // ============================================================================
+        window.DIGIT_DNA_CONFIG = {
+            enabled: true,
+            historyWindow: 1500,
+            minEventsPerDigit: 12,
+            precursorWindow: 20,
+            lagDepth: 5,
+            aiBlend: 0.20,
+            overrideSimilarity: 0.82
+        };
+
+        window.digitDNAEngine = {
+            version: 'DNA-1-T1-PERFORMANCE',
+            lastSnapshot: null,
+            forward: {
+                pending: null,
+                n: 0,
+                hits: 0,
+                byDigit: Array.from({length:10},()=>({n:0,hits:0})),
+                records: [],
+                loadedSymbol: null,
+                maxRecords: 10000,
+                realizationActive: [],
+                realizationResolved: [],
+                maxResolvedRealizations: 10000,
+                maxRealizationDepth: 100
+            },
+
+            digits() {
+                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
+                    .map(Number)
+                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    .slice(-window.DIGIT_DNA_CONFIG.historyWindow);
+            },
+
+            entropy(arr) {
+                if (!arr?.length) return 1;
+                const c=Array(10).fill(0);
+                arr.forEach(d=>c[d]++);
+                let h=0;
+                for(const n of c){
+                    if(!n) continue;
+                    const p=n/arr.length;
+                    h-=p*Math.log2(p);
+                }
+                return h/Math.log2(10);
+            },
+
+            runLengthBefore(arr, idx) {
+                if(idx<=0) return 0;
+                const d=arr[idx-1];
+                let n=1;
+                for(let j=idx-2;j>=0 && arr[j]===d;j--) n++;
+                return n;
+            },
+
+            previousGap(arr, idx, target) {
+                for(let j=idx-1;j>=0;j--){
+                    if(arr[j]===target) return idx-j-1;
+                }
+                return idx;
+            },
+
+            freqBefore(arr, idx, target, w=20) {
+                const s=arr.slice(Math.max(0,idx-w),idx);
+                if(!s.length) return 0.10;
+                let n=0;
+                s.forEach(d=>{if(d===target)n++;});
+                return n/s.length;
+            },
+
+            contextBefore(arr, idx, k) {
+                if(idx<k) return null;
+                return arr.slice(idx-k,idx).join('');
+            },
+
+            buildProfiles(arr) {
+                const cfg=window.DIGIT_DNA_CONFIG;
+                const profiles=Array.from({length:10},(_,digit)=>({
+                    digit,
+                    events:0,
+                    lagCounts:Array.from({length:cfg.lagDepth},()=>Array(10).fill(1)), // smoothing
+                    contexts2:{}, contexts3:{}, contexts4:{},
+                    entropy5:[], entropy10:[], entropy20:[], entropy50:[], entropy100:[],
+                    entropySlopeFast:[], entropySlopeSlow:[], entropyCompression:[],
+                    freq20:[], preGap:[], runLength:[]
+                }));
+
+                for(let i=Math.max(20,cfg.lagDepth); i<arr.length; i++){
+                    const target=arr[i];
+                    const p=profiles[target];
+                    p.events++;
+
+                    for(let lag=1;lag<=cfg.lagDepth;lag++){
+                        const d=arr[i-lag];
+                        if(Number.isInteger(d)) p.lagCounts[lag-1][d]++;
+                    }
+
+                    for(const k of [2,3,4]){
+                        const key=this.contextBefore(arr,i,k);
+                        if(key!==null){
+                            const map=p[`contexts${k}`];
+                            map[key]=(map[key]||0)+1;
+                        }
+                    }
+
+                    const h5=this.entropy(arr.slice(Math.max(0,i-5),i));
+                    const h10=this.entropy(arr.slice(Math.max(0,i-10),i));
+                    const h20=this.entropy(arr.slice(Math.max(0,i-20),i));
+                    const h50=this.entropy(arr.slice(Math.max(0,i-50),i));
+                    const h100=this.entropy(arr.slice(Math.max(0,i-100),i));
+                    p.entropy5.push(h5);
+                    p.entropy10.push(h10);
+                    p.entropy20.push(h20);
+                    p.entropy50.push(h50);
+                    p.entropy100.push(h100);
+                    p.entropySlopeFast.push(h5-h20);
+                    p.entropySlopeSlow.push(h20-h100);
+                    p.entropyCompression.push(h10-h50);
+                    p.freq20.push(this.freqBefore(arr,i,target,20));
+                    p.preGap.push(this.previousGap(arr,i,target));
+                    p.runLength.push(this.runLengthBefore(arr,i));
+                }
+
+                const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
+                const sd=a=>{
+                    if(a.length<2) return 0;
+                    const m=mean(a);
+                    return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1));
+                };
+                const topContexts=map=>Object.entries(map)
+                    .sort((a,b)=>b[1]-a[1])
+                    .slice(0,5)
+                    .map(([context,count])=>({context,count}));
+
+                return profiles.map(p=>{
+                    const lagP=p.lagCounts.map(row=>{
+                        const t=row.reduce((s,x)=>s+x,0);
+                        return row.map(x=>x/t);
+                    });
+                    return {
+                        digit:p.digit,
+                        events:p.events,
+                        lagP,
+                        top2:topContexts(p.contexts2),
+                        top3:topContexts(p.contexts3),
+                        top4:topContexts(p.contexts4),
+                        meanEntropy5:mean(p.entropy5),
+                        sdEntropy5:sd(p.entropy5),
+                        meanEntropy10:mean(p.entropy10),
+                        sdEntropy10:sd(p.entropy10),
+                        meanEntropy20:mean(p.entropy20),
+                        sdEntropy20:sd(p.entropy20),
+                        meanEntropy50:mean(p.entropy50),
+                        sdEntropy50:sd(p.entropy50),
+                        meanEntropy100:mean(p.entropy100),
+                        sdEntropy100:sd(p.entropy100),
+                        meanEntropySlopeFast:mean(p.entropySlopeFast),
+                        sdEntropySlopeFast:sd(p.entropySlopeFast),
+                        meanEntropySlopeSlow:mean(p.entropySlopeSlow),
+                        sdEntropySlopeSlow:sd(p.entropySlopeSlow),
+                        meanEntropyCompression:mean(p.entropyCompression),
+                        sdEntropyCompression:sd(p.entropyCompression),
+                        meanFreq20:mean(p.freq20),
+                        sdFreq20:sd(p.freq20),
+                        meanPreGap:mean(p.preGap),
+                        sdPreGap:sd(p.preGap),
+                        meanRun:mean(p.runLength),
+                        sdRun:sd(p.runLength)
+                    };
+                });
+            },
+
+            gaussianSimilarity(x, mean, sd, fallbackScale=1) {
+                if(!Number.isFinite(x)||!Number.isFinite(mean)) return 0.5;
+                const scale=Math.max(Number(sd)||0,fallbackScale);
+                const z=(x-mean)/scale;
+                return Math.exp(-0.5*z*z);
+            },
+
+            contextRate(arr, target, k) {
+                if(arr.length<=k) return {p:0.10,support:0};
+                const ctx=arr.slice(-k).join('');
+                let support=0,hits=0;
+                for(let i=k;i<arr.length;i++){
+                    if(arr.slice(i-k,i).join('')===ctx){
+                        support++;
+                        if(arr[i]===target) hits++;
+                    }
+                }
+                // Beta-like smoothing around 10%.
+                const prior=10;
+                return {p:(hits+prior*0.10)/(support+prior),support,ctx};
+            },
+
+            currentFeatures(arr,target) {
+                const n=arr.length;
+                return {
+                    lags:Array.from({length:window.DIGIT_DNA_CONFIG.lagDepth},(_,j)=>
+                        n-1-j>=0 ? arr[n-1-j] : null
+                    ),
+                    entropy5:this.entropy(arr.slice(-5)),
+                    entropy10:this.entropy(arr.slice(-10)),
+                    entropy20:this.entropy(arr.slice(-20)),
+                    entropy50:this.entropy(arr.slice(-50)),
+                    entropy100:this.entropy(arr.slice(-100)),
+                    entropySlopeFast:this.entropy(arr.slice(-5))-this.entropy(arr.slice(-20)),
+                    entropySlopeSlow:this.entropy(arr.slice(-20))-this.entropy(arr.slice(-100)),
+                    entropyCompression:this.entropy(arr.slice(-10))-this.entropy(arr.slice(-50)),
+                    freq20:this.freqBefore(arr,n,target,20),
+                    gap:this.previousGap(arr,n,target),
+                    runLength:this.runLengthBefore(arr,n),
+                    c2:this.contextRate(arr,target,2),
+                    c3:this.contextRate(arr,target,3),
+                    c4:this.contextRate(arr,target,4)
+                };
+            },
+
+            scoreProfile(profile, current) {
+                if(!profile || profile.events < window.DIGIT_DNA_CONFIG.minEventsPerDigit){
+                    return {score:0,parts:{}};
+                }
+
+                // Likelihood of current last 5 digits under the historical
+                // predecessor distribution for this target.
+                let lagLog=0, lagN=0;
+                current.lags.forEach((d,i)=>{
+                    if(Number.isInteger(d)){
+                        const p=Math.max(1e-6,Number(profile.lagP?.[i]?.[d]||0.10));
+                        lagLog+=Math.log(p/0.10); // relative to uniform
+                        lagN++;
+                    }
+                });
+                const lagScore=lagN ? 1/(1+Math.exp(-(lagLog/lagN))) : 0.5;
+
+                const e5=this.gaussianSimilarity(
+                    current.entropy5,profile.meanEntropy5,profile.sdEntropy5,0.07
+                );
+                const e10=this.gaussianSimilarity(
+                    current.entropy10,profile.meanEntropy10,profile.sdEntropy10,0.05
+                );
+                const e20=this.gaussianSimilarity(
+                    current.entropy20,profile.meanEntropy20,profile.sdEntropy20,0.04
+                );
+                const e50=this.gaussianSimilarity(
+                    current.entropy50,profile.meanEntropy50,profile.sdEntropy50,0.03
+                );
+                const e100=this.gaussianSimilarity(
+                    current.entropy100,profile.meanEntropy100,profile.sdEntropy100,0.025
+                );
+                const entropySlopeFast=this.gaussianSimilarity(
+                    current.entropySlopeFast,profile.meanEntropySlopeFast,profile.sdEntropySlopeFast,0.05
+                );
+                const entropySlopeSlow=this.gaussianSimilarity(
+                    current.entropySlopeSlow,profile.meanEntropySlopeSlow,profile.sdEntropySlopeSlow,0.04
+                );
+                const entropyCompression=this.gaussianSimilarity(
+                    current.entropyCompression,profile.meanEntropyCompression,profile.sdEntropyCompression,0.04
+                );
+                const f20=this.gaussianSimilarity(
+                    current.freq20,profile.meanFreq20,profile.sdFreq20,0.03
+                );
+                const gap=this.gaussianSimilarity(
+                    current.gap,profile.meanPreGap,profile.sdPreGap,3
+                );
+                const run=this.gaussianSimilarity(
+                    current.runLength,profile.meanRun,profile.sdRun,1
+                );
+
+                // Exact current suffix conditional rates are powerful when supported,
+                // but sparse contexts are downweighted automatically.
+                const ctxScore=(c,kMin)=>{
+                    const rel=Math.min(1,c.support/kMin);
+                    const pNorm=Math.max(0,Math.min(1,(c.p-0.02)/0.20));
+                    return rel*pNorm+(1-rel)*0.5;
+                };
+                const c2=ctxScore(current.c2,12);
+                const c3=ctxScore(current.c3,8);
+                const c4=ctxScore(current.c4,5);
+
+                // Entropy is now a first-class precursor signal. It does not name a
+                // digit on its own; instead we ask whether the CURRENT multi-horizon
+                // entropy state resembles the states that historically preceded THIS
+                // target digit. This avoids turning low entropy into a simplistic rule.
+                const entropyMatch=
+                    0.10*e5+
+                    0.17*e10+
+                    0.20*e20+
+                    0.14*e50+
+                    0.09*e100+
+                    0.12*entropySlopeFast+
+                    0.08*entropySlopeSlow+
+                    0.10*entropyCompression;
+
+                const score=
+                    0.22*lagScore+
+                    0.13*c2+
+                    0.09*c3+
+                    0.06*c4+
+                    0.22*entropyMatch+
+                    0.07*f20+
+                    0.14*gap+
+                    0.07*run;
+
+                return {
+                    score,
+                    parts:{
+                        lagScore,c2,c3,c4,
+                        e5,e10,e20,e50,e100,
+                        entropySlopeFast,entropySlopeSlow,entropyCompression,entropyMatch,
+                        f20,gap,run
+                    }
+                };
+            },
+
+            forwardStorageKey(symbol) {
+                return `matchstar_dna_t1_v1_${symbol || 'UNKNOWN'}`;
+            },
+
+            realizationStorageKey(symbol) {
+                return `matchstar_dna_realization_v1_${symbol || 'UNKNOWN'}`;
+            },
+
+            ensureForwardLoaded(symbol=null) {
+                const sym = symbol || document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
+                if (this.forward.loadedSymbol === sym) return;
+
+                this.forward.loadedSymbol = sym;
+                this.forward.pending = null;
+
+                try {
+                    const raw = localStorage.getItem(this.forwardStorageKey(sym));
+                    const saved = raw ? JSON.parse(raw) : null;
+                    if (saved && Array.isArray(saved.records)) {
+                        this.forward.records = saved.records.slice(-this.forward.maxRecords);
+                        this.rebuildForwardStats();
+                    } else {
+                        this.forward.records = [];
+                        this.forward.n = 0;
+                        this.forward.hits = 0;
+                        this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                    }
+                } catch (_) {
+                    this.forward.records = [];
+                    this.forward.n = 0;
+                    this.forward.hits = 0;
+                    this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                }
+
+                try {
+                    const rzRaw = localStorage.getItem(this.realizationStorageKey(sym));
+                    const rz = rzRaw ? JSON.parse(rzRaw) : null;
+                    this.forward.realizationActive = Array.isArray(rz?.active) ? rz.active : [];
+                    this.forward.realizationResolved = Array.isArray(rz?.resolved)
+                        ? rz.resolved.slice(-this.forward.maxResolvedRealizations) : [];
+                } catch (_) {
+                    this.forward.realizationActive = [];
+                    this.forward.realizationResolved = [];
+                }
+            },
+
+            saveForward(symbol=null) {
+                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
+                try {
+                    localStorage.setItem(
+                        this.forwardStorageKey(sym),
+                        JSON.stringify({
+                            version:'DNA-T1-1',
+                            symbol:sym,
+                            updatedAt:Date.now(),
+                            records:this.forward.records.slice(-this.forward.maxRecords)
+                        })
+                    );
+                } catch (_) {}
+            },
+
+            saveRealizations(symbol=null) {
+                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
+                try {
+                    localStorage.setItem(
+                        this.realizationStorageKey(sym),
+                        JSON.stringify({
+                            version:'DNA-REALIZATION-1',
+                            symbol:sym,
+                            updatedAt:Date.now(),
+                            active:this.forward.realizationActive || [],
+                            resolved:(this.forward.realizationResolved || []).slice(-this.forward.maxResolvedRealizations)
+                        })
+                    );
+                } catch (_) {}
+            },
+
+            rebuildForwardStats() {
+                this.forward.n = 0;
+                this.forward.hits = 0;
+                this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
+                for (const r of this.forward.records || []) {
+                    const d = Number(r.predictedDigit);
+                    if (!Number.isInteger(d) || d < 0 || d > 9) continue;
+                    this.forward.n++;
+                    if (r.hit) this.forward.hits++;
+                    this.forward.byDigit[d].n++;
+                    if (r.hit) this.forward.byDigit[d].hits++;
+                }
+            },
+
+            wilson95(hits, n) {
+                hits = Number(hits || 0);
+                n = Number(n || 0);
+                if (!n) return {low:null, high:null};
+                const z = 1.959963984540054;
+                const p = hits / n;
+                const denom = 1 + (z*z)/n;
+                const center = (p + (z*z)/(2*n)) / denom;
+                const half = z * Math.sqrt((p*(1-p)/n) + (z*z)/(4*n*n)) / denom;
+                return {
+                    low: Math.max(0, center-half),
+                    high: Math.min(1, center+half)
+                };
+            },
+
+            summarizeRecords(records) {
+                const rows = Array.isArray(records) ? records : [];
+                const n = rows.length;
+                const hits = rows.reduce((s,r)=>s+(r.hit?1:0),0);
+                const rate = n ? hits/n : null;
+                const ci = this.wilson95(hits,n);
+                return {n,hits,rate,low95:ci.low,high95:ci.high};
+            },
+
+            t1Performance() {
+                const records = this.forward.records || [];
+                const bucket = (label, filter) => ({
+                    label,
+                    ...this.summarizeRecords(records.filter(filter))
+                });
+
+                const byDigit = Array.from({length:10},(_,digit)=>({
+                    digit,
+                    ...this.summarizeRecords(records.filter(r=>Number(r.predictedDigit)===digit))
+                }));
+
+                const similarityBuckets = [
+                    bucket('<50%', r=>Number(r.similarity)<0.50),
+                    bucket('50–55%', r=>Number(r.similarity)>=0.50 && Number(r.similarity)<0.55),
+                    bucket('55–60%', r=>Number(r.similarity)>=0.55 && Number(r.similarity)<0.60),
+                    bucket('60–65%', r=>Number(r.similarity)>=0.60 && Number(r.similarity)<0.65),
+                    bucket('65–70%', r=>Number(r.similarity)>=0.65 && Number(r.similarity)<0.70),
+                    bucket('≥70%', r=>Number(r.similarity)>=0.70)
+                ];
+
+                const marginBuckets = [
+                    bucket('<2 pp', r=>Number(r.margin)<0.02),
+                    bucket('2–5 pp', r=>Number(r.margin)>=0.02 && Number(r.margin)<0.05),
+                    bucket('5–8 pp', r=>Number(r.margin)>=0.05 && Number(r.margin)<0.08),
+                    bucket('≥8 pp', r=>Number(r.margin)>=0.08)
+                ];
+
+                const consensus = [
+                    bucket('DNA + Feature agree', r=>r.dnaFeatureAgree===true),
+                    bucket('DNA + Auditor agree', r=>r.dnaAuditorAgree===true),
+                    bucket('All 3 agree', r=>r.allThreeAgree===true)
+                ];
+
+                return {
+                    overall:this.summarizeRecords(records),
+                    randomBaseline:0.10,
+                    byDigit,
+                    similarityBuckets,
+                    marginBuckets,
+                    consensus
+                };
+            },
+
+            analyze(symbol=null) {
+                this.ensureForwardLoaded(symbol);
+                const arr=this.digits();
+                const profiles=this.buildProfiles(arr);
+                const rows=[];
+
+                for(let d=0;d<10;d++){
+                    const current=this.currentFeatures(arr,d);
+                    const scored=this.scoreProfile(profiles[d],current);
+                    rows.push({
+                        digit:d,
+                        similarity:scored.score,
+                        parts:scored.parts,
+                        profile:profiles[d],
+                        current
+                    });
+                }
+
+                rows.sort((a,b)=>b.similarity-a.similarity || a.digit-b.digit);
+                const top=rows[0], second=rows[1];
+                const margin=Math.max(0,(top?.similarity||0)-(second?.similarity||0));
+
+                const snap={
+                    ready: arr.length>=100 && profiles.every(p=>p.events>=window.DIGIT_DNA_CONFIG.minEventsPerDigit),
+                    historyN:arr.length,
+                    symbol,
+                    rows,
+                    profiles,
+                    topDigit:top?.digit ?? null,
+                    topSimilarity:top?.similarity ?? 0,
+                    secondSimilarity:second?.similarity ?? 0,
+                    margin,
+                    forwardN:this.forward.n,
+                    forwardHits:this.forward.hits,
+                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null,
+                    t1Performance:this.t1Performance()
+                };
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            updateRealizationTrackers(actualDigit, symbol=null) {
+                const actual = Number(actualDigit);
+                if (!Number.isInteger(actual) || actual < 0 || actual > 9) return;
+
+                const nextActive = [];
+                for (const tr of (this.forward.realizationActive || [])) {
+                    const depth = Number(tr.depth || 0) + 1;
+
+                    if (actual === Number(tr.predictedDigit)) {
+                        this.forward.realizationResolved.push({
+                            ...tr,
+                            depth,
+                            resolvedAt:Date.now(),
+                            firstRealizationDepth:depth,
+                            within2:depth<=2,
+                            within3:depth<=3,
+                            within5:depth<=5,
+                            within10:depth<=10,
+                            within20:depth<=20,
+                            within50:depth<=50,
+                            censored:false
+                        });
+                    } else if (depth >= this.forward.maxRealizationDepth) {
+                        this.forward.realizationResolved.push({
+                            ...tr,
+                            depth,
+                            resolvedAt:Date.now(),
+                            firstRealizationDepth:null,
+                            within2:false,
+                            within3:false,
+                            within5:false,
+                            within10:false,
+                            within20:false,
+                            within50:false,
+                            censored:true
+                        });
+                    } else {
+                        nextActive.push({...tr, depth});
+                    }
+                }
+
+                this.forward.realizationActive = nextActive;
+                this.forward.realizationResolved = (this.forward.realizationResolved || [])
+                    .slice(-this.forward.maxResolvedRealizations);
+                this.saveRealizations(symbol);
+            },
+
+            startRealizationTracker(forecast) {
+                if (!forecast || !Number.isInteger(Number(forecast.digit))) return;
+                this.forward.realizationActive.push({
+                    version:'DNA-REALIZATION-1',
+                    symbol:forecast.symbol || this.forward.loadedSymbol || 'UNKNOWN',
+                    forecastAt:Number(forecast.at || Date.now()),
+                    predictedDigit:Number(forecast.digit),
+                    similarity:Number(forecast.similarity || 0),
+                    secondSimilarity:Number(forecast.secondSimilarity || 0),
+                    margin:Number(forecast.margin || 0),
+                    featureTop:Number.isInteger(Number(forecast.featureTop)) ? Number(forecast.featureTop) : null,
+                    auditorTop:Number.isInteger(Number(forecast.auditorTop)) ? Number(forecast.auditorTop) : null,
+                    dnaFeatureAgree:!!forecast.dnaFeatureAgree,
+                    dnaAuditorAgree:!!forecast.dnaAuditorAgree,
+                    allThreeAgree:!!forecast.allThreeAgree,
+                    depth:0
+                });
+            },
+
+            realizationPerformance() {
+                const rows = Array.isArray(this.forward.realizationResolved) ? this.forward.realizationResolved : [];
+                const realized = rows.filter(r => !r.censored && Number.isFinite(Number(r.firstRealizationDepth)));
+                const depths = realized.map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
+                const n = rows.length;
+                const within = (k) => n ? rows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=k).length/n : null;
+
+                const byDigit = Array.from({length:10},(_,digit)=>{
+                    const drows = rows.filter(r=>Number(r.predictedDigit)===digit);
+                    const dd = drows.filter(r=>!r.censored && Number.isFinite(Number(r.firstRealizationDepth)))
+                                    .map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
+                    const dn = drows.length;
+                    return {
+                        digit,
+                        n:dn,
+                        realized:dd.length,
+                        t1:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)===1).length/dn : null,
+                        within5:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=5).length/dn : null,
+                        within10:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=10).length/dn : null,
+                        within20:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=20).length/dn : null,
+                        meanDepth:dd.length ? dd.reduce((a,b)=>a+b,0)/dd.length : null,
+                        medianDepth:dd.length ? dd[Math.floor((dd.length-1)/2)] : null
+                    };
+                });
+
+                return {
+                    n,
+                    resolved:realized.length,
+                    censored:rows.filter(r=>r.censored).length,
+                    active:(this.forward.realizationActive || []).length,
+                    meanDepth:depths.length ? depths.reduce((a,b)=>a+b,0)/depths.length : null,
+                    medianDepth:depths.length ? depths[Math.floor((depths.length-1)/2)] : null,
+                    within2:within(2),
+                    within3:within(3),
+                    within5:within(5),
+                    within10:within(10),
+                    within20:within(20),
+                    within50:within(50),
+                    byDigit,
+                    note:'First future occurrence depth after the DNA forecast was frozen. This complements, but does not replace, T+1 accuracy.'
+                };
+            },
+
+            scorePendingOutcome(actualDigit, symbol=null) {
+                const p=this.forward.pending;
+                if(!p) return;
+
+                const actual=Number(actualDigit);
+                const predicted=Number(p.digit);
+                const hit=predicted===actual;
+
+                const record={
+                    version:'DNA-T1-1',
+                    symbol:p.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
+                    forecastAt:Number(p.at || Date.now()),
+                    resolvedAt:Date.now(),
+                    predictedDigit:predicted,
+                    actualDigit:actual,
+                    hit,
+                    similarity:Number(p.similarity||0),
+                    secondSimilarity:Number(p.secondSimilarity||0),
+                    margin:Number(p.margin||0),
+                    featureTop:Number.isInteger(Number(p.featureTop)) ? Number(p.featureTop) : null,
+                    auditorTop:Number.isInteger(Number(p.auditorTop)) ? Number(p.auditorTop) : null,
+                    dnaFeatureAgree:!!p.dnaFeatureAgree,
+                    dnaAuditorAgree:!!p.dnaAuditorAgree,
+                    allThreeAgree:!!p.allThreeAgree
+                };
+
+                this.forward.records.push(record);
+                if(this.forward.records.length>this.forward.maxRecords){
+                    this.forward.records.splice(0,this.forward.records.length-this.forward.maxRecords);
+                }
+
+                this.rebuildForwardStats();
+                this.saveForward(record.symbol);
+                this.forward.pending=null;
+            },
+
+            armNextForecast(symbol=null) {
+                // analyzeAndRecommend() already refreshed DNA for this canonical tick.
+                // Reuse that snapshot instead of rebuilding 1,500-tick profiles twice.
+                const requestedSymbol = String(symbol || this.forward.loadedSymbol || 'UNKNOWN');
+                const cached = this.lastSnapshot;
+                const s = (cached && String(cached.symbol || requestedSymbol) === requestedSymbol)
+                    ? cached
+                    : this.analyze(symbol);
+                if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
+
+                const featureTop=Number(window.digitFeatureEngine?.lastSnapshot?.topDigit);
+                const auditorTop=Number(window.randomnessAuditor?.lastSnapshot?.topDigit);
+                const dnaTop=Number(s.topDigit);
+
+                this.forward.pending={
+                    digit:dnaTop,
+                    similarity:Number(s.topSimilarity||0),
+                    secondSimilarity:Number(s.secondSimilarity||0),
+                    margin:Number(s.margin||0),
+                    featureTop:Number.isInteger(featureTop)?featureTop:null,
+                    auditorTop:Number.isInteger(auditorTop)?auditorTop:null,
+                    dnaFeatureAgree:Number.isInteger(featureTop) && dnaTop===featureTop,
+                    dnaAuditorAgree:Number.isInteger(auditorTop) && dnaTop===auditorTop,
+                    allThreeAgree:
+                        Number.isInteger(featureTop) &&
+                        Number.isInteger(auditorTop) &&
+                        dnaTop===featureTop &&
+                        dnaTop===auditorTop,
+                    symbol:s.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
+                    at:Date.now()
+                };
+                this.startRealizationTracker(this.forward.pending);
+                this.saveRealizations(symbol);
+            },
+
+            onNewTick(actualDigit,symbol=null) {
+                // Forward-only DNA evaluation:
+                // 1) advance prior forecasts toward first-realization depth;
+                // 2) score the frozen T+1 forecast on this unseen tick;
+                // 3) arm a new forecast for the next unseen tick.
+                this.ensureForwardLoaded(symbol);
+                this.updateRealizationTrackers(actualDigit,symbol);
+                this.scorePendingOutcome(actualDigit,symbol);
+                this.armNextForecast(symbol);
+            },
+
+            ensurePanel() {
+                return;
+                const ref=document.getElementById('digit-analysis-panel');
+                if(!ref || !ref.parentElement) return;
+
+                const panel=document.createElement('div');
+                panel.id='digit-dna-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-pink-500/30 text-xs';
+                panel.innerHTML=`
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="font-bold text-pink-300">🧬 DIGIT DNA · WHAT HAPPENS BEFORE EACH DIGIT</div>
+                    <button id="dna-min-btn" type="button"
+                            onclick="toggleResearchPanel('dna-min-body','dna-min-btn','digit-dna')"
+                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
+                  </div>
+                  <div id="dna-min-body">
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                      <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
+                      <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
+                      <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
+                      <span class="text-gray-400">T+1 overall:</span><span id="dna-forward" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">95% interval:</span><span id="dna-t1-ci" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">vs 10% baseline:</span><span id="dna-t1-lift" class="font-bold text-white">-</span>
+                    </div>
+                    <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
+                    <div class="mt-3 border-t border-gray-700 pt-2">
+                      <div class="font-bold text-cyan-300 mb-1">T+1 PERFORMANCE · FORWARD ONLY</div>
+                      <div id="dna-t1-bydigit" class="text-[10px] text-gray-300">Collecting per-digit results…</div>
+                      <div id="dna-t1-sim" class="mt-2 text-[10px] text-gray-300">Collecting similarity buckets…</div>
+                      <div id="dna-t1-margin" class="mt-2 text-[10px] text-gray-300">Collecting separation buckets…</div>
+                      <div id="dna-t1-consensus" class="mt-2 text-[10px] text-gray-300">Collecting consensus states…</div>
+                    </div>
+                    <div class="mt-3 border-t border-violet-700 pt-2">
+                      <div class="font-bold text-violet-300 mb-1">DNA FIRST-REALIZATION DEPTH · SHADOW ONLY</div>
+                      <div id="dna-realization-summary" class="text-[10px] text-gray-300">Collecting first-realization depths…</div>
+                      <div id="dna-realization-bydigit" class="mt-2 text-[10px] text-gray-300">Collecting per-digit realization depths…</div>
+                    </div>
+                    <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
+                    <div class="mt-2 text-[10px] text-gray-500">
+                      DNA = historical precursor fingerprint, not a guaranteed probability.
+                      Every profile uses only ticks that occurred BEFORE each labelled digit.
+                    </div>
+                  </div>
+                `;
+                ref.parentElement.appendChild(panel);
+                restoreResearchPanelState('dna-min-body','dna-min-btn','digit-dna');
+            },
+
+            render(s=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                s=s||this.lastSnapshot;
+                if(!s) return;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                set('dna-history',`${s.historyN||0}${s.ready?' ✓':' · learning'}`);
+                set('dna-top',s.ready?String(s.topDigit):'-');
+                set('dna-sim',s.ready?`${(Number(s.topSimilarity||0)*100).toFixed(1)}%`:'-');
+                set('dna-forward',s.forwardN
+                    ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
+                    : 'collecting');
+
+                const perf=s.t1Performance || this.t1Performance();
+                const overall=perf?.overall || {};
+                set('dna-t1-ci',overall.n
+                    ? `${(Number(overall.low95)*100).toFixed(2)}–${(Number(overall.high95)*100).toFixed(2)}%`
+                    : '-');
+                set('dna-t1-lift',overall.n
+                    ? `${((Number(overall.rate)-0.10)*100)>=0?'+':''}${((Number(overall.rate)-0.10)*100).toFixed(2)} pp`
+                    : '-');
+
+                const fmt=(x)=>{
+                    if(!x?.n) return `${x?.label ?? ''}: -`;
+                    return `${x?.label ?? ''}: ${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`;
+                };
+
+                const byDigitEl=document.getElementById('dna-t1-bydigit');
+                if(byDigitEl){
+                    byDigitEl.innerHTML='<b>By predicted digit:</b> '+
+                        (perf?.byDigit||[]).map(x=>
+                            `<span class="${x.n>=30 && x.rate>0.10?'text-cyan-300':'text-gray-300'}">`+
+                            `${x.digit}: ${x.n?`${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`:'-'}</span>`
+                        ).join(' · ');
+                }
+
+                const simEl=document.getElementById('dna-t1-sim');
+                if(simEl){
+                    simEl.innerHTML='<b>Similarity:</b> '+
+                        (perf?.similarityBuckets||[]).map(fmt).join(' · ');
+                }
+
+                const marginEl=document.getElementById('dna-t1-margin');
+                if(marginEl){
+                    marginEl.innerHTML='<b>DNA separation:</b> '+
+                        (perf?.marginBuckets||[]).map(fmt).join(' · ');
+                }
+
+                const rz=this.realizationPerformance();
+                const rzEl=document.getElementById('dna-realization-summary');
+                if(rzEl){
+                    const pct=(v)=>v==null?'-':`${(Number(v)*100).toFixed(1)}%`;
+                    rzEl.innerHTML=
+                        `<b>Resolved:</b> ${rz.resolved}/${rz.n} · active ${rz.active} · censored ${rz.censored}<br>`+
+                        `<b>Within:</b> T+2 ${pct(rz.within2)} · T+5 ${pct(rz.within5)} · T+10 ${pct(rz.within10)} · T+20 ${pct(rz.within20)}<br>`+
+                        `<b>Depth:</b> mean ${rz.meanDepth==null?'-':Number(rz.meanDepth).toFixed(2)} · median ${rz.medianDepth==null?'-':rz.medianDepth}`;
+                }
+
+                const rzDigitEl=document.getElementById('dna-realization-bydigit');
+                if(rzDigitEl){
+                    rzDigitEl.innerHTML='<b>By predicted digit (within 10):</b> '+
+                        (rz.byDigit||[]).map(x=>`${x.digit}: ${x.n?`${(Number(x.within10||0)*100).toFixed(1)}% n=${x.n}`:'-'}`).join(' · ');
+                }
+
+                const consEl=document.getElementById('dna-t1-consensus');
+                if(consEl){
+                    consEl.innerHTML='<b>Consensus:</b> '+
+                        (perf?.consensus||[]).map(fmt).join(' · ');
+                }
+
+                const top3=document.getElementById('dna-top3');
+                if(top3){
+                    top3.innerHTML=s.rows.slice(0,3).map((r,i)=>{
+                        const p=r.profile;
+                        const pred1=p?.lagP?.[0]
+                            ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
+                            : null;
+                        return `#${i+1} <b>Digit ${r.digit}</b> · match ${(r.similarity*100).toFixed(1)}% · `+
+                               `events ${p?.events||0} · most common immediate predecessor `+
+                               `${pred1 ? pred1.d+' ('+(pred1.v*100).toFixed(1)+'%)' : '-'}`;
+                    }).join('<br>');
+                }
+
+                const all=document.getElementById('dna-all');
+                if(all){
+                    all.innerHTML=s.rows
+                      .slice()
+                      .sort((a,b)=>a.digit-b.digit)
+                      .map(r=>{
+                        const p=r.profile;
+                        const pred1=p?.lagP?.[0]
+                          ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
+                          : null;
+                        return `<div class="mb-1">
+                          <b class="text-pink-200">DNA ${r.digit}</b>:
+                          events ${p?.events||0} · before-hit predecessor ${pred1?pred1.d:'-'} ·
+                          mean pre-gap ${Number(p?.meanPreGap||0).toFixed(1)} ·
+                          mean H20 ${Number(p?.meanEntropy20||0).toFixed(3)} ·
+                          mean target F20 ${(Number(p?.meanFreq20||0)*100).toFixed(1)}% ·
+                          current match ${(r.similarity*100).toFixed(1)}%
+                        </div>`;
+                      }).join('');
+                }
+            }
+        };
+
+        // ============================================================================
+        // DIGITMATCHSTAR V55.2 — ENTROPY-STRENGTHENED DIGIT FEATURE ENGINE
+        //
+        // Feature engineering discussed for cryptanalysis-style AI:
+        //   • multi-window digit frequencies (5/20/50/100/200)
+        //   • frequency momentum / acceleration
+        //   • 10x10 transition probabilities
+        //   • 2-, 3- and 4-gram conditional next-digit probabilities
+        //   • current gap, gap/average-gap and recent run length
+        //   • entropy at 5/10/20/50/100/200 ticks, slope, acceleration and compression
+        //   • lag-1 mutual information
+        //   • tick interval, price direction and short volatility context
+        //
+        // This engine is a ranking feature source for SCORE AUTO only.
+        // It does not change INSTANT execution and does not claim these features
+        // are predictive until forward evidence demonstrates that.
+        // ============================================================================
+        window.DIGIT_FEATURE_CONFIG = {
+            enabled: true,
+            windows: [5,20,50,100,200],
+            maxHistory: 1000,
+            minHistory: 50,
+            ngramPrior: 2.0,
+            aiBlend: 0.25,
+            overrideSignal: 0.70
+        };
+
+        window.digitFeatureEngine = {
+            version: 'DFE-2-ENTROPY-FUSION',
+            lastSnapshot: null,
+
+            safeDigits() {
+                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
+                    .map(Number)
+                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
+                    .slice(-window.DIGIT_FEATURE_CONFIG.maxHistory);
+            },
+
+            entropyOf(arr) {
+                if (!arr?.length) return 1;
+                const counts=Array(10).fill(0);
+                arr.forEach(d=>counts[d]++);
+                let h=0;
+                for(const c of counts){
+                    if(!c) continue;
+                    const p=c/arr.length;
+                    h -= p*Math.log2(p);
+                }
+                return h/Math.log2(10);
+            },
+
+            mutualInformationLag1(arr) {
+                if (!arr || arr.length < 30) return 0;
+                const joint=Array.from({length:10},()=>Array(10).fill(0));
+                const a=Array(10).fill(0), b=Array(10).fill(0);
+                let n=0;
+                for(let i=0;i<arr.length-1;i++){
+                    const x=arr[i], y=arr[i+1];
+                    joint[x][y]++; a[x]++; b[y]++; n++;
+                }
+                if(!n) return 0;
+                let mi=0;
+                for(let x=0;x<10;x++) for(let y=0;y<10;y++){
+                    const c=joint[x][y];
+                    if(!c) continue;
+                    const pxy=c/n, px=a[x]/n, py=b[y]/n;
+                    mi += pxy*Math.log2(pxy/(px*py));
+                }
+                return Math.max(0,mi);
+            },
+
+            freq(arr, digit, n) {
+                const s=arr.slice(-Math.min(n,arr.length));
+                if(!s.length) return 0.10;
+                let hits=0;
+                for(const d of s) if(d===digit) hits++;
+                // Light shrinkage toward 10%.
+                const prior=5;
+                return (hits + prior*0.10)/(s.length+prior);
+            },
+
+            gap(arr,digit) {
+                for(let i=arr.length-1;i>=0;i--){
+                    if(arr[i]===digit) return arr.length-1-i;
+                }
+                return arr.length;
+            },
+
+            averageGap(arr,digit) {
+                const pos=[];
+                for(let i=0;i<arr.length;i++) if(arr[i]===digit) pos.push(i);
+                if(pos.length<2) return 10;
+                let total=0;
+                for(let i=1;i<pos.length;i++) total += pos[i]-pos[i-1]-1;
+                return total/(pos.length-1);
+            },
+
+            runLength(arr) {
+                if(!arr.length) return 0;
+                const d=arr[arr.length-1];
+                let n=1;
+                for(let i=arr.length-2;i>=0 && arr[i]===d;i--) n++;
+                return n;
+            },
+
+            conditional(arr, contextLength, digit) {
+                if(arr.length <= contextLength) return {p:0.10,support:0};
+                const ctx=arr.slice(-contextLength);
+                const counts=Array(10).fill(window.DIGIT_FEATURE_CONFIG.ngramPrior);
+                let support=0;
+                for(let i=0;i+contextLength<arr.length;i++){
+                    let ok=true;
+                    for(let j=0;j<contextLength;j++){
+                        if(arr[i+j]!==ctx[j]) {ok=false;break;}
+                    }
+                    if(!ok) continue;
+                    const next=arr[i+contextLength];
+                    if(Number.isInteger(next)){
+                        counts[next]++; support++;
+                    }
+                }
+                const total=counts.reduce((s,x)=>s+x,0);
+                return {p:counts[digit]/total,support};
+            },
+
+            transition(arr,digit) {
+                if(arr.length<2) return {p:0.10,support:0};
+                const prev=arr[arr.length-1];
+                const counts=Array(10).fill(2);
+                let support=0;
+                for(let i=0;i<arr.length-1;i++){
+                    if(arr[i]===prev){
+                        counts[arr[i+1]]++; support++;
+                    }
+                }
+                const total=counts.reduce((s,x)=>s+x,0);
+                return {p:counts[digit]/total,support};
+            },
+
+            marketContext() {
+                const rows=Array.isArray(window.recentMarketTicks)
+                    ? window.recentMarketTicks.slice(-40) : [];
+
+                const prices=rows.map(x=>Number(x.price)).filter(Number.isFinite);
+                const times=rows.map(x=>Number(x.raw?.epoch || 0)).filter(x=>x>0);
+
+                let direction=0, volatility=0, meanInterval=null;
+                if(prices.length>=2){
+                    const diffs=[];
+                    for(let i=1;i<prices.length;i++) diffs.push(prices[i]-prices[i-1]);
+                    direction=diffs.reduce((s,x)=>s+Math.sign(x),0)/diffs.length;
+                    const mean=diffs.reduce((s,x)=>s+x,0)/diffs.length;
+                    volatility=Math.sqrt(diffs.reduce((s,x)=>s+(x-mean)*(x-mean),0)/diffs.length);
+                }
+                if(times.length>=2){
+                    const ints=[];
+                    for(let i=1;i<times.length;i++) if(times[i]>times[i-1]) ints.push(times[i]-times[i-1]);
+                    if(ints.length) meanInterval=ints.reduce((s,x)=>s+x,0)/ints.length;
+                }
+                return {direction,volatility,meanInterval,n:rows.length};
+            },
+
+            analyze(symbol=null) {
+                const arr=this.safeDigits();
+                const n=arr.length;
+                const cfg=window.DIGIT_FEATURE_CONFIG;
+
+                const e5=this.entropyOf(arr.slice(-5));
+                const e10=this.entropyOf(arr.slice(-10));
+                const e20=this.entropyOf(arr.slice(-20));
+                const e50=this.entropyOf(arr.slice(-50));
+                const e100=this.entropyOf(arr.slice(-100));
+                const e200=this.entropyOf(arr.slice(-200));
+                const entropyTrend=e20-e100;
+                const entropySlopeFast=e5-e20;
+                const entropySlopeSlow=e20-e100;
+                const entropyCompression=e10-e50;
+                const entropyAcceleration=entropySlopeFast-entropySlopeSlow;
+                // 0 = highly disordered, 1 = comparatively structured/compressed.
+                const entropyStructure=Math.max(0,Math.min(1,
+                    0.45*(1-e20)+
+                    0.20*Math.max(0,-entropySlopeFast)+
+                    0.15*Math.max(0,-entropyCompression)+
+                    0.20*(1-e50)
+                ));
+                const mi=this.mutualInformationLag1(arr.slice(-Math.min(500,n)));
+                const runLength=this.runLength(arr);
+                const market=this.marketContext();
+
+                if(n<cfg.minHistory){
+                    const snap={
+                        ready:false,historyN:n,symbol,
+                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                        mutualInformation:mi,
+                        runLength,market,rows:[],topDigit:null,signalStrength:0
+                    };
+                    this.lastSnapshot=snap;
+                    this.render(snap);
+                    return snap;
+                }
+
+                // T+1 discipline: the just-arrived digit T is valid CONTEXT for
+                // transitions/ngrams, but it must not give itself a free +1 boost in
+                // unconditional recent-frequency features. Those frequencies are
+                // measured on history ending at T-1.
+                const frequencyHistory = arr.length > 1 ? arr.slice(0, -1) : arr;
+
+                const rows=[];
+                for(let d=0;d<10;d++){
+                    const f5=this.freq(frequencyHistory,d,5);
+                    const f20=this.freq(frequencyHistory,d,20);
+                    const f50=this.freq(frequencyHistory,d,50);
+                    const f100=this.freq(frequencyHistory,d,100);
+                    const f200=this.freq(frequencyHistory,d,200);
+
+                    const momentum=f20-f100;
+                    const acceleration=(f5-f20)-(f20-f50);
+
+                    const tr=this.transition(arr,d);
+                    const n2=this.conditional(arr,2,d);
+                    const n3=this.conditional(arr,3,d);
+                    const n4=this.conditional(arr,4,d);
+
+                    const gap=this.gap(arr,d);
+                    const avgGap=Math.max(0.5,this.averageGap(arr,d));
+                    const gapRatio=gap/avgGap;
+
+                    // Reliability shrinks sparse n-grams toward 10%.
+                    const r2=Math.min(1,n2.support/12);
+                    const r3=Math.min(1,n3.support/8);
+                    const r4=Math.min(1,n4.support/5);
+                    const p2=r2*n2.p+(1-r2)*0.10;
+                    const p3=r3*n3.p+(1-r3)*0.10;
+                    const p4=r4*n4.p+(1-r4)*0.10;
+
+                    // Entropy does not pick a digit directly. It controls how much
+                    // trust we place in conditional structure versus unconditional
+                    // frequency. When the stream compresses / entropy falls, genuine
+                    // transition and n-gram evidence gets more weight; in high entropy
+                    // states the engine shrinks back toward conservative weighting.
+                    const contextBoost = 1 + 0.85*entropyStructure;
+                    const frequencyShrink = 1 - 0.45*entropyStructure;
+                    const raw =
+                        contextBoost*(
+                            0.18*tr.p +
+                            0.18*p2 +
+                            0.12*p3 +
+                            0.07*p4
+                        ) +
+                        frequencyShrink*(
+                            0.15*f20 +
+                            0.10*f50 +
+                            0.08*f100 +
+                            0.05*f200 +
+                            0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
+                            0.03*Math.max(0,Math.min(0.30,0.10+acceleration))
+                        );
+
+                    rows.push({
+                        digit:d,score:raw,
+                        f5,f20,f50,f100,f200,momentum,acceleration,
+                        transitionP:tr.p,transitionSupport:tr.support,
+                        ngram2P:p2,ngram2Support:n2.support,
+                        ngram3P:p3,ngram3Support:n3.support,
+                        ngram4P:p4,ngram4Support:n4.support,
+                        gap,avgGap,gapRatio,
+                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                        mutualInformation:mi,runLength,
+                        priceDirection:market.direction,
+                        priceVolatility:market.volatility,
+                        meanTickInterval:market.meanInterval
+                    });
+                }
+
+                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
+                const scores=rows.map(r=>r.score);
+                const total=scores.reduce((s,x)=>s+x,0)||1;
+                rows.forEach(r=>r.scoreShare=r.score/total);
+
+                const top=rows[0], second=rows[1];
+                const margin=Math.max(0,(top?.scoreShare||0)-(second?.scoreShare||0));
+                const entropySignal=Math.max(0,Math.min(1,
+                    0.50*entropyStructure +
+                    0.25*Math.max(0,1-e20) +
+                    0.15*Math.max(0,-entropySlopeFast) +
+                    0.10*Math.max(0,-entropyCompression)
+                ));
+                const miSignal=Math.min(1,mi/0.10);
+                const marginSignal=Math.min(1,margin/0.025);
+                const contextSupport=Math.min(
+                    1,
+                    ((top?.transitionSupport||0)+(top?.ngram2Support||0)+(top?.ngram3Support||0))/60
+                );
+                const signalStrength=
+                    0.30*entropySignal+
+                    0.25*miSignal+
+                    0.30*marginSignal+
+                    0.15*contextSupport;
+
+                const snap={
+                    ready:true,historyN:n,symbol,
+                    entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                    entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                    mutualInformation:mi,runLength,market,
+                    topDigit:top?.digit ?? null,
+                    topScore:top?.score ?? null,
+                    topShare:top?.scoreShare ?? null,
+                    secondShare:second?.scoreShare ?? null,
+                    margin,signalStrength,rows
+                };
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            rowForDigit(digit) {
+                const s=this.lastSnapshot || this.analyze();
+                return s?.rows?.find(r=>Number(r.digit)===Number(digit)) || null;
+            },
+
+            ensurePanel() {
+                return;
+                const ref=document.getElementById('digit-analysis-panel');
+                if(!ref || !ref.parentElement) return;
+
+                const panel=document.createElement('div');
+                panel.id='digit-feature-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-emerald-500/30 text-xs';
+                panel.innerHTML=`
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="font-bold text-emerald-300">🧬 DIGIT FEATURE ENGINE · SCORE AUTO</div>
+                    <button id="dfe-min-btn" type="button"
+                            onclick="toggleResearchPanel('dfe-min-body','dfe-min-btn','digit-feature')"
+                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
+                  </div>
+                  <div id="dfe-min-body">
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                      <span class="text-gray-400">History:</span><span id="dfe-history" class="font-bold text-white">warming</span>
+                      <span class="text-gray-400">Top feature digit:</span><span id="dfe-top" class="font-bold text-emerald-300">-</span>
+                      <span class="text-gray-400">Feature signal:</span><span id="dfe-signal" class="font-bold text-cyan-300">-</span>
+                      <span class="text-gray-400">Entropy 20/50/100:</span><span id="dfe-entropy" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Entropy trend:</span><span id="dfe-entropy-trend" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Lag-1 MI:</span><span id="dfe-mi" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Run length:</span><span id="dfe-run" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Tick interval:</span><span id="dfe-interval" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Price direction:</span><span id="dfe-direction" class="font-bold text-white">-</span>
+                      <span class="text-gray-400">Short volatility:</span><span id="dfe-volatility" class="font-bold text-white">-</span>
+                    </div>
+                    <div id="dfe-top3" class="mt-2 text-[11px] text-gray-300">Top features warming…</div>
+                    <div class="mt-2 text-[10px] text-gray-500">Ranking features only · no claim of predictive edge · INSTANT unchanged.</div>
+                  </div>
+                `;
+                ref.parentElement.appendChild(panel);
+                restoreResearchPanelState('dfe-min-body','dfe-min-btn','digit-feature');
+            },
+
+            render(s=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                s=s||this.lastSnapshot;
+                if(!s) return;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                set('dfe-history',`${s.historyN||0}${s.ready?' ✓':' · warming'}`);
+                set('dfe-top',s.ready?String(s.topDigit):'-');
+                set('dfe-signal',s.ready?`${(Number(s.signalStrength||0)*100).toFixed(1)}%`:'-');
+                set('dfe-entropy',`${Number(s.entropy20||0).toFixed(3)} / ${Number(s.entropy50||0).toFixed(3)} / ${Number(s.entropy100||0).toFixed(3)}`);
+                set('dfe-entropy-trend',`${Number(s.entropyTrend||0)>=0?'+':''}${Number(s.entropyTrend||0).toFixed(4)}`);
+                set('dfe-mi',`${Number(s.mutualInformation||0).toFixed(4)} bits`);
+                set('dfe-run',String(s.runLength||0));
+                set('dfe-interval',Number.isFinite(s.market?.meanInterval)?`${Number(s.market.meanInterval).toFixed(2)} s`:'-');
+                set('dfe-direction',Number.isFinite(s.market?.direction)?Number(s.market.direction).toFixed(3):'-');
+                set('dfe-volatility',Number.isFinite(s.market?.volatility)?Number(s.market.volatility).toFixed(5):'-');
+
+                const top3=document.getElementById('dfe-top3');
+                if(top3){
+                    if(!s.ready){
+                        top3.textContent='Top features warming…';
+                    } else {
+                        top3.innerHTML=s.rows.slice(0,3).map((r,i)=>
+                          `#${i+1} <b>${r.digit}</b> · F20 ${(r.f20*100).toFixed(1)}% · T ${(r.transitionP*100).toFixed(1)}% · `+
+                          `2g ${(r.ngram2P*100).toFixed(1)}% · 3g ${(r.ngram3P*100).toFixed(1)}% · 4g ${(r.ngram4P*100).toFixed(1)}% · gap ${r.gap}`
+                        ).join('<br>');
+                    }
+                }
+            }
+        };
+
+        // ============================================================================
+        // DIGITMATCHSTAR V52 — CRYPTANALYSIS-STYLE RANDOMNESS AUDITOR
+        // SCORE AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
+        //
+        // This does NOT attempt to recover a secret RNG seed. It tests observable
+        // output structure: entropy, lag-1 mutual information, transition bias and
+        // 2-gram conditional bias, then blends those signals with the existing
+        // next-tick model for AI digit selection.
+        // ============================================================================
+        window.RANDOMNESS_AUDITOR_CONFIG = {
+            enabled: true,
+            minHistory: 120,
+            window: 600,
+            minNgramSupport: 5,
+            aiAssistSignal: 0.18,
+            aiAssistEdgeFloor: -0.040,   // -4.0 pp; explicitly experimental
+            weights: {
+                nextTick: 0.40,
+                ngram2: 0.25,
+                transition: 0.20,
+                recent: 0.15
+            }
+        };
+
+        window.randomnessAuditor = {
+            version: 'RA-1',
+            lastSnapshot: null,
+
+            clampP(x) {
+                x = Number(x);
+                return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.10;
+            },
+
+            entropy(probs) {
+                let h = 0;
+                for (const p0 of probs) {
+                    const p = Number(p0);
+                    if (p > 0) h -= p * Math.log2(p);
+                }
+                return h;
+            },
+
+            normalizedEntropy(probs) {
+                return this.entropy(probs) / Math.log2(10);
+            },
+
+            distribution(digits) {
+                const counts = Array(10).fill(0);
+                for (const d of digits) {
+                    if (Number.isInteger(d) && d >= 0 && d <= 9) counts[d]++;
+                }
+                const n = digits.length || 1;
+                return counts.map(c => c / n);
+            },
+
+            transitionDistribution(digits) {
+                if (digits.length < 2) return { probs:Array(10).fill(0.10), support:0 };
+                const last = digits[digits.length - 1];
+                const counts = Array(10).fill(1); // Laplace smoothing
+                let support = 0;
+                for (let i = 0; i < digits.length - 1; i++) {
+                    if (digits[i] === last) {
+                        const next = digits[i + 1];
+                        if (Number.isInteger(next)) {
+                            counts[next]++;
+                            support++;
+                        }
+                    }
+                }
+                const total = counts.reduce((a,b)=>a+b,0);
+                return { probs: counts.map(c=>c/total), support };
+            },
+
+            ngram2Distribution(digits) {
+                if (digits.length < 3) return { probs:Array(10).fill(0.10), support:0 };
+                const a = digits[digits.length - 2];
+                const b = digits[digits.length - 1];
+                const counts = Array(10).fill(1); // Laplace smoothing
+                let support = 0;
+                for (let i = 0; i < digits.length - 2; i++) {
+                    if (digits[i] === a && digits[i + 1] === b) {
+                        const next = digits[i + 2];
+                        if (Number.isInteger(next)) {
+                            counts[next]++;
+                            support++;
+                        }
+                    }
+                }
+                const total = counts.reduce((x,y)=>x+y,0);
+                return { probs: counts.map(c=>c/total), support };
+            },
+
+            lag1MutualInformation(digits) {
+                if (digits.length < 30) return 0;
+                const joint = Array.from({length:10},()=>Array(10).fill(0));
+                const px = Array(10).fill(0);
+                const py = Array(10).fill(0);
+                let n = 0;
+
+                for (let i=0;i<digits.length-1;i++) {
+                    const x=digits[i], y=digits[i+1];
+                    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+                    joint[x][y]++; px[x]++; py[y]++; n++;
+                }
+                if (!n) return 0;
+
+                let mi=0;
+                for (let x=0;x<10;x++) for (let y=0;y<10;y++) {
+                    const c=joint[x][y];
+                    if (!c) continue;
+                    const pxy=c/n, p1=px[x]/n, p2=py[y]/n;
+                    mi += pxy*Math.log2(pxy/(p1*p2));
+                }
+                return Math.max(0, mi);
+            },
+
+            analyze(symbol=null) {
+                const cfg=window.RANDOMNESS_AUDITOR_CONFIG;
+                const source=Array.isArray(window.lastDigits) ? window.lastDigits : [];
+                const digits=source
+                    .filter(d=>Number.isInteger(Number(d)) && Number(d)>=0 && Number(d)<=9)
+                    .map(Number)
+                    .slice(-cfg.window);
+
+                const n=digits.length;
+                if (n < cfg.minHistory) {
+                    const snap={
+                        ready:false, historyN:n, reason:'WARMING',
+                        topDigit:null, signalStrength:0,
+                        normalizedEntropy:null, mutualInformation:null,
+                        predictions:Array(10).fill(0.10)
+                    };
+                    this.lastSnapshot=snap;
+                    this.render(snap);
+                    return snap;
+                }
+
+                // Use T as conditional context, not as an unconditional vote for
+                // itself. The latest digit is excluded from recent/global frequency
+                // distributions but retained in transition/ngram context.
+                const unconditionalHistory = digits.length > 1 ? digits.slice(0, -1) : digits;
+                const recent=unconditionalHistory.slice(-100);
+                const recentP=this.distribution(recent);
+                const trans=this.transitionDistribution(digits);
+                const ng=this.ngram2Distribution(digits);
+                const globalP=this.distribution(unconditionalHistory);
+
+                const globalEntropy=this.normalizedEntropy(globalP);
+                const conditionalEntropy=this.normalizedEntropy(ng.probs);
+                const mi=this.lag1MutualInformation(digits);
+
+                const w=cfg.weights;
+                const rows=[];
+
+                for(let d=0;d<10;d++){
+                    let ntmP=0.10, ntmReady=false, ntmSupport=0;
+                    try{
+                        const m=window.nextTickModel?.getPrediction?.(
+                            symbol || window.nextTickModel?.getSymbol?.(),
+                            d
+                        );
+                        if(m){
+                            ntmP=this.clampP(m.probability);
+                            ntmReady=!!m.ready;
+                            ntmSupport=Number(m.effectiveSupport||0);
+                        }
+                    }catch(_){}
+
+                    // If a 2-gram is poorly supported, shrink it toward transition.
+                    const ngReliability=Math.min(1, ng.support / Math.max(cfg.minNgramSupport,1));
+                    const ngP=(ngReliability*ng.probs[d]) + ((1-ngReliability)*trans.probs[d]);
+
+                    const score=
+                        w.nextTick*ntmP +
+                        w.ngram2*ngP +
+                        w.transition*trans.probs[d] +
+                        w.recent*recentP[d];
+
+                    rows.push({
+                        digit:d, score, ntmP, ntmReady, ntmSupport,
+                        ngramP:ngP, ngramSupport:ng.support,
+                        transitionP:trans.probs[d], transitionSupport:trans.support,
+                        recentP:recentP[d]
+                    });
+                }
+
+                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
+                const total=rows.reduce((s,r)=>s+r.score,0) || 1;
+                const probabilities=Array(10).fill(0);
+                rows.forEach(r=>{ probabilities[r.digit]=r.score/total; });
+
+                const top=rows[0];
+                const second=rows[1];
+                const topP=probabilities[top.digit];
+                const secondP=probabilities[second.digit];
+                const margin=Math.max(0,topP-secondP);
+
+                // "Signal strength" is a ranking-confidence diagnostic, not a
+                // calibrated win probability.
+                const entropySignal=Math.max(0,1-conditionalEntropy);
+                const marginSignal=Math.min(1, margin/0.03);
+                const miSignal=Math.min(1, mi/0.10);
+                const supportSignal=Math.min(1, (ng.support+trans.support)/40);
+                const signalStrength=
+                    0.35*entropySignal +
+                    0.30*marginSignal +
+                    0.20*miSignal +
+                    0.15*supportSignal;
+
+                const snap={
+                    ready:true,
+                    historyN:n,
+                    symbol:symbol || null,
+                    globalEntropy,
+                    normalizedEntropy:conditionalEntropy,
+                    mutualInformation:mi,
+                    transitionSupport:trans.support,
+                    ngramSupport:ng.support,
+                    topDigit:top.digit,
+                    topScore:top.score,
+                    topShare:topP,
+                    secondShare:secondP,
+                    margin,
+                    signalStrength,
+                    rows,
+                    predictions: probabilities
+                };
+
+                this.lastSnapshot=snap;
+                this.render(snap);
+                return snap;
+            },
+
+            supportsDigit(digit) {
+                const s=this.lastSnapshot || this.analyze();
+                return !!(
+                    s?.ready &&
+                    Number(s.topDigit)===Number(digit) &&
+                    Number(s.signalStrength||0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG.aiAssistSignal||0)
+                );
+            },
+
+            ensurePanel() {
+                return;
+                const anchor=document.getElementById('digit-analysis-panel');
+                if(!anchor || !anchor.parentElement) return;
+                const panel=document.createElement('div');
+                panel.id='randomness-auditor-panel';
+                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
+                panel.innerHTML=`
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="font-bold text-fuchsia-300">🔐 RANDOMNESS AUDITOR · SCORE AUTO</div>
+                      <button id="ra-min-btn" type="button"
+                              onclick="toggleResearchPanel('ra-min-body','ra-min-btn','randomness-auditor')"
+                              class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
+                    </div>
+                    <div id="ra-min-body" class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">History:</span><span id="ra-history" class="font-bold text-white">warming</span>
+                        <span class="text-gray-400">Conditional entropy:</span><span id="ra-entropy" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">Lag-1 mutual info:</span><span id="ra-mi" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">2-gram support:</span><span id="ra-ngram" class="font-bold text-white">-</span>
+                        <span class="text-gray-400">Auditor digit:</span><span id="ra-digit" class="font-bold text-fuchsia-300">-</span>
+                        <span class="text-gray-400">Signal strength:</span><span id="ra-signal" class="font-bold text-cyan-300">-</span>
+                        <span class="text-gray-400">Role:</span><span class="font-bold text-green-300">AI only · public feed single-source · INSTANT unchanged</span>
+                    </div>
+                `;
+                anchor.parentElement.appendChild(panel);
+                restoreResearchPanelState('ra-min-body','ra-min-btn','randomness-auditor');
+            },
+
+            render(snap=null) {
+                if(typeof document==='undefined') return;
+                this.ensurePanel();
+                const s=snap || this.lastSnapshot;
+                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+                if(!s){return;}
+                set('ra-history', `${s.historyN||0} ticks${s.ready?' ✓':' · warming'}`);
+                set('ra-entropy', s.ready ? `${Number(s.normalizedEntropy).toFixed(3)} / 1.000` : '-');
+                set('ra-mi', s.ready ? `${Number(s.mutualInformation).toFixed(4)} bits` : '-');
+                set('ra-ngram', s.ready ? String(s.ngramSupport||0) : '-');
+                set('ra-digit', s.ready ? String(s.topDigit) : '-');
+                set('ra-signal', s.ready ? `${(Number(s.signalStrength||0)*100).toFixed(1)}%` : '-');
+            }
+        };
+
+        // Engine State
+        window.digitIntelligenceEngine = {
+            enabled: true,
+            warmupDone: false,
+            warmupTicks: 0,
+            targetWarmupTicks: 200,
+            tickIndex: 0,
+            
+            // Data structures
+            digitStats: Array(10).fill().map(() => ({
+                gaps: [],
+                lastSeen: null,
+                currentGap: 0,
+
+                avgGap: 0,
+                p75Gap: 0,
+                p90Gap: 0,
+                maxGap: 0,
+
+                coldHistory: [],
+                longestColdStreak: 0,
+                avgColdDuration: 0,
+
+                persistenceScore: 0,
+                consecutiveExtendingGaps: 0,
+                lastGap: null,
+
+                isUnstable: false,
+                count: 0
+            })),
+            
+            // Regime detector
+            regime: {
+                window: 200,
+                digits: [],
+                counts: Array(10).fill(0)
+            },
+            
+            // Current recommendation
+            currentRecommendation: null,
+            
+            // Initialize engine
+            init: function() {
+                this.reset();
+                log('🧠 Digit Intelligence Engine initialized', 'ENGINE');
+            },
+            
+            // Reset engine
+            reset: function() {
+                this.warmupDone = false;
+                this.warmupTicks = 0;
+                this.tickIndex = 0;
+                this.currentRecommendation = null;
+                
+                this.digitStats = Array(10).fill().map(() => ({
+                    gaps: [],
+                    lastSeen: null,
+                    currentGap: 0,
+                    avgGap: 0,
+                    p75Gap: 0,
+                    p90Gap: 0,
+                    maxGap: 0,
+                    coldHistory: [],
+                    longestColdStreak: 0,
+                    avgColdDuration: 0,
+                    persistenceScore: 0,
+                    consecutiveExtendingGaps: 0,
+                    lastGap: null,
+                    isUnstable: false,
+                    count: 0
+                }));
+                
+                this.regime = {
+                    window: 200,
+                    digits: [],
+                    counts: Array(10).fill(0)
+                };
+                
+                updateEngineStatus('Warming up...', 'WARMUP', 0);
+                log('🧠 Engine reset - ready for warm-up', 'ENGINE');
+            },
+            
+            // Process warm-up ticks
+            processWarmupTicks: function(prices) {
+                if (!this.enabled) return;
+                
+                
+                initTickFormatFromPrices(prices);
+                const warmupSymbol =
+                    window.tickFormat.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    null;
+
+                for (let i = 0; i < prices.length; i++) {
+                    const digit = getLastDigitFromQuote(prices[i], null, warmupSymbol);
+                    if (isNaN(digit) || digit < 0 || digit > 9) continue;
+
+                    // SurvivalEngine rolling digits buffer
+                    window.lastDigits.push(digit);
+                    if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
+                    
+                    // Debug digit 0
+                    if (digit === 0) {
+                        console.log('Warm-up: Digit 0 detected from price:', prices[i]);
+                    }
+                    
+                    this.updateRegime(digit);
+                    this.onNewDigit(digit);
+                    
+                    this.warmupTicks++;
+                    this.tickIndex++;
+                    
+                    // Update progress every 10 ticks
+                    if (this.warmupTicks % 10 === 0) {
+                        const progress = Math.min(100, Math.round((this.warmupTicks / this.targetWarmupTicks) * 100));
+                        updateEngineStatus(`Warming up... ${this.warmupTicks}/${this.targetWarmupTicks}`, 'WARMUP', progress);
+                    }
+                }
+                
+                if (this.warmupTicks >= this.targetWarmupTicks && !this.warmupDone) {
+                    this.warmupDone = true;
+                    log(`🧠 Warm-up complete! Analyzed ${this.warmupTicks} ticks`, 'ENGINE');
+                    updateEngineStatus('Analyzing market...', 'ANALYZING', 100);
+                    
+                    // Initial analysis
+                    setTimeout(() => {
+                        this.analyzeAndRecommend();
+                    }, 100);
+                }
+            },
+            
+            // Process live tick. NEXT-TICK discipline:
+            // 1) score the PREVIOUS forecast against the newly-arrived tick;
+            // 2) ingest this tick into history;
+            // 3) generate a fresh forecast strictly for T+1.
+            processLiveTick: function(digit, providedTickBiasMeta = null) {
+                if (!this.enabled) return;
+                
+                // 🔥 FIXED: digit 0 is valid, so check for NaN instead
+                if (isNaN(digit) || digit < 0 || digit > 9) return;
+
+                const previousForecast = this.currentRecommendation
+                    ? { ...this.currentRecommendation }
+                    : null;
+
+                // CURRENT-TICK BIAS AUDIT V2: accept this Deriv tick exactly once
+                // using its canonical browser-stream identity (symbol + epoch +
+                // canonical formatted quote). Duplicate deliveries of the same
+                // market tick must never mature or arm a T+1 forecast twice.
+                let currentTickBiasMeta = providedTickBiasMeta || null;
+                try {
+                    // Normal live path pre-validates the canonical tick in handleTick()
+                    // so duplicate Deriv deliveries never enter ANY model twice. Keep
+                    // this fallback for direct/test calls to processLiveTick().
+                    if (!currentTickBiasMeta) {
+                        currentTickBiasMeta = window.currentTickBiasAudit?.observeTick?.(
+                            window.lastTick,
+                            Number(digit)
+                        ) || null;
+                    }
+                    if (currentTickBiasMeta?.accepted) {
+                        window.currentTickBiasAudit?.settle?.(
+                            Number(digit),
+                            currentTickBiasMeta
+                        );
+                    } else if (currentTickBiasMeta) {
+                        return; // never learn/recompute from a duplicate canonical tick
+                    }
+                } catch (err) {
+                    console.warn('Current-tick bias audit settle skipped:', err);
+                }
+
+                const observedEl = document.getElementById('ai-source-tick-digit');
+                const previousResultEl = document.getElementById('ai-prev-forecast-result');
+                if (observedEl) observedEl.textContent = String(digit);
+                if (previousResultEl) {
+                    if (previousForecast && Number.isInteger(Number(previousForecast.digit))) {
+                        const hit = Number(previousForecast.digit) === Number(digit);
+                        previousResultEl.textContent = hit
+                            ? `HIT ✓ (${previousForecast.digit} → ${digit})`
+                            : `MISS (${previousForecast.digit} → ${digit})`;
+                        previousResultEl.className = hit
+                            ? 'ml-1 font-black text-emerald-300'
+                            : 'ml-1 font-black text-rose-300';
+                    } else {
+                        previousResultEl.textContent = 'WAITING';
+                        previousResultEl.className = 'ml-1 font-black text-slate-300';
+                    }
+                }
+
+                // SurvivalEngine rolling digits buffer
+                window.lastDigits.push(digit);
+                if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
+                
+                // 🔥 FIX #3: advance tick index
+                this.tickIndex++;
+                
+                // Update warmup ticks if still in warmup phase
+                if (!this.warmupDone) {
+                    this.warmupTicks++;
+                    
+                    // Update progress every 10 ticks
+                    if (this.warmupTicks % 10 === 0) {
+                        const progress = Math.min(100, Math.round((this.warmupTicks / this.targetWarmupTicks) * 100));
+                        updateEngineStatus(`Warming up... ${this.warmupTicks}/${this.targetWarmupTicks}`, 'WARMUP', progress);
+                    }
+                    
+                    if (this.warmupTicks >= this.targetWarmupTicks && !this.warmupDone) {
+                        this.warmupDone = true;
+                        log(`🧠 Warm-up complete! Analyzed ${this.warmupTicks} ticks`, 'ENGINE');
+                        updateEngineStatus('Analyzing market...', 'ANALYZING', 100);
+                    }
+                }
+                
+                this.updateRegime(digit);
+                this.onNewDigit(digit);
+                
+                // AI FUSION V1: refresh recommendation after EVERY genuine live tick
+                // so a prepared AI target is available for the following market tick.
+                if (this.warmupDone) {
+                    this.analyzeAndRecommend();
+
+                    // Freeze exactly one T -> T+1 audit observation. The
+                    // source digit is the just-observed market digit; the AI
+                    // target must not be scored until the following live tick.
+                    try {
+                        const symbol =
+                            document.getElementById('symbol')?.value ||
+                            window.currentSymbol ||
+                            window.tickFormat?.symbol ||
+                            'UNKNOWN';
+                        if (currentTickBiasMeta?.accepted) {
+                            window.currentTickBiasAudit?.arm?.(
+                                this.currentRecommendation,
+                                Number(digit),
+                                String(symbol),
+                                currentTickBiasMeta
+                            );
+                        }
+                    } catch (err) {
+                        console.warn('Current-tick bias audit arm skipped:', err);
+                    }
+                }
+            },
+            
+            // Update regime statistics
+            updateRegime: function(digit) {
+                this.regime.digits.push(digit);
+                this.regime.counts[digit]++;
+                
+                if (this.regime.digits.length > this.regime.window) {
+                    const old = this.regime.digits.shift();
+                    this.regime.counts[old]--;
+                }
+            },
+            
+            // Compute regime status
+            computeRegimeStatus: function() {
+                const n = this.regime.digits.length;
+                if (n < 60) return { ok: false, label: "WARMING" };
+                
+                let H = 0;
+                for (let d = 0; d < 10; d++) {
+                    const p = this.regime.counts[d] / n;
+                    if (p > 0) H -= p * Math.log(p);
+                }
+                const entropy = H / Math.log(10);
+                
+                const expected = n / 10;
+                let chi2 = 0;
+                for (let d = 0; d < 10; d++) {
+                    const diff = this.regime.counts[d] - expected;
+                    chi2 += (diff * diff) / expected;
+                }
+                
+                const dominance = Math.max(...this.regime.counts) / n;
+                
+                const ok =
+                    entropy >= 0.88 &&
+                    chi2 <= 28 &&
+                    dominance <= 0.20;
+                
+                return { 
+                    ok, 
+                    entropy: entropy.toFixed(3), 
+                    chi2: chi2.toFixed(2), 
+                    dominance: dominance.toFixed(3),
+                    label: ok ? "STABLE" : "UNSTABLE"
+                };
+            },
+            
+            // Handle new digit - FIXED FOR DIGIT 0
+            onNewDigit: function(digit) {
+                // 🔥 FIXED: digit can be 0, so check for NaN instead
+                if (isNaN(digit) || digit < 0 || digit > 9) {
+                    console.log('Invalid digit skipped:', digit);
+                    return;
+                }
+
+                const s = this.digitStats[digit];
+
+                // 🔥 FIX: Always increment count for valid digits
+                s.count++;
+
+                // gap update
+                if (s.lastSeen !== null) {
+                    const gap = this.tickIndex - s.lastSeen - 1;
+                    if (gap >= 0) this.updateGapStats(digit, gap);
+                }
+
+                s.lastSeen = this.tickIndex;
+
+                // update current gaps
+                for (let d = 0; d < 10; d++) {
+                    const st = this.digitStats[d];
+                    st.currentGap = (st.lastSeen === null)
+                        ? this.tickIndex
+                        : (this.tickIndex - st.lastSeen);
+                }
+            },
+            
+            // Update gap statistics
+            updateGapStats: function(digit, gap) {
+                const s = this.digitStats[digit];
+                
+                s.gaps.push(gap);
+                if (s.gaps.length > 300) s.gaps.shift();
+                
+                if (s.lastGap !== null) {
+                    if (gap > s.lastGap) s.consecutiveExtendingGaps++;
+                    else s.consecutiveExtendingGaps = 0;
+                }
+                s.lastGap = gap;
+                
+                if (s.gaps.length > 0) {
+                    const sorted = [...s.gaps].sort((a,b)=>a-b);
+                    s.avgGap = s.gaps.reduce((a,b)=>a+b,0) / s.gaps.length;
+                    s.p75Gap = sorted[Math.floor(0.75 * sorted.length)];
+                    s.p90Gap = sorted[Math.floor(0.90 * sorted.length)];
+                    s.maxGap = sorted[sorted.length - 1];
+                    
+                    if (gap > s.avgGap) {
+                        s.coldHistory.push(gap);
+                        if (s.coldHistory.length > 200) s.coldHistory.shift();
+                    }
+                    
+                    s.longestColdStreak = s.coldHistory.length ? Math.max(...s.coldHistory) : 0;
+                    s.avgColdDuration = s.coldHistory.length
+                        ? s.coldHistory.reduce((a,b)=>a+b,0) / s.coldHistory.length
+                        : 0;
+                    
+                    s.isUnstable = (s.p90Gap > s.avgGap * 3 + 1);
+                    
+                    this.computePersistenceScore(digit);
+                }
+            },
+            
+            // Compute persistence score
+            computePersistenceScore: function(digit) {
+                const s = this.digitStats[digit];
+                
+                if (s.gaps.length < 20) {
+                    s.persistenceScore = 40;
+                    return;
+                }
+                
+                const tailRatio = s.longestColdStreak / Math.max(s.avgColdDuration, 1);
+                const p90Ratio  = s.p90Gap / Math.max(s.avgGap * 3, 1);
+                
+                let score =
+                    40 * Math.min(tailRatio / 2, 1) +
+                    60 * Math.min(p90Ratio, 1);
+                
+                s.persistenceScore = Math.min(Math.round(score), 100);
+            },
+            
+            // Conditional return probability
+            conditionalReturnProb: function(digit, g, K = 10) {
+                const gaps = this.digitStats[digit].gaps;
+                if (gaps.length < 30) return 0.5;
+                
+                let denom = 0;
+                let numer = 0;
+                
+                for (const L of gaps) {
+                    if (L > g) {
+                        denom++;
+                        if (L <= g + K) numer++;
+                    }
+                }
+                
+                if (denom === 0) return 0.0;
+                return numer / denom;
+            },
+
+
+// Expected additional ticks given current gap (fallback safe)
+expectedAdditionalTicks: function(gaps, g) {
+    const eligible = (Array.isArray(gaps) ? gaps : []).filter(x => x > g);
+    if (!eligible.length) return Infinity;
+    const rem = eligible.map(x => x - g);
+    return rem.reduce((s, x) => s + x, 0) / rem.length;
+},
+            
+            // Select best digit using AI logic
+            selectBestDigit: function() {
+                if (!this.warmupDone || !this.enabled) return null;
+
+                const regimeStatus = this.computeRegimeStatus();
+                if (!regimeStatus.ok) {
+                    log(`🧠 Regime unstable: E=${regimeStatus.entropy}, χ²=${regimeStatus.chi2}, D=${regimeStatus.dominance}`, 'ENGINE');
+                    return null;
+                }
+
+                const thresholds = window.AI_THRESHOLDS;
+                const candidates = [];
+
+                for (let d = 0; d < 10; d++) {
+                    const s = this.digitStats[d];
+                    if (!s) continue;
+
+                    const g = Number(s.currentGap || 0);
+                    const p90 = Math.max(Number(s.p90Gap || 0), 1);
+                    const p90Ratio = g / p90;
+                    const avgGap = Math.max(Number(s.avgGap || 0), 1);
+                    const extendRatio = g / avgGap;
+                    const support = Array.isArray(s.gaps) ? s.gaps.length : 0;
+
+                    const P5 = this.conditionalReturnProb(d, g, 5);
+                    const P10 = this.conditionalReturnProb(d, g, 10);
+                    const pm2 = pmK(s.gaps || [], g, 2);
+                    const pm3 = pmK(s.gaps || [], g, 3);
+                    const pm5w = pm5Weighted(s.gaps || [], g);
+                    const etm = (typeof this.expectedAdditionalTicks === "function")
+                        ? this.expectedAdditionalTicks(s.gaps || [], g)
+                        : Infinity;
+
+                    // HARD SAFETY GATES
+                    if (support < thresholds.minSupport) continue;
+                    if (s.isUnstable) continue;
+                    if (s.persistenceScore > thresholds.maxPersistenceStable) continue;
+                    if (s.consecutiveExtendingGaps > thresholds.maxExtend) continue;
+                    if (thresholds.require_g_lt_p90 && g >= p90) continue;
+                    if (extendRatio > 1.80) continue;
+                    if (!Number.isFinite(etm) || etm > 12) continue;
+
+                    // RANKING SIGNALS — pressure no longer vetoes an otherwise safe digit.
+                    const pressureTarget = 0.65;
+                    const pressureScore = Math.max(
+                        0,
+                        1 - (Math.abs(p90Ratio - pressureTarget) / pressureTarget)
+                    );
+
+                    const persistenceSafety =
+                        Math.max(0, Math.min(1, 1 - (Number(s.persistenceScore || 0) / 100)));
+
+                    const score =
+                        0.22 * P5 +
+                        0.23 * P10 +
+                        0.16 * pm2 +
+                        0.16 * pm3 +
+                        0.13 * pm5w +
+                        0.07 * pressureScore +
+                        0.03 * persistenceSafety;
+
+                    candidates.push({
+                        digit: d,
+                        score: Math.max(0, Math.min(1, score)),
+                        P5,
+                        P10,
+                        pm2,
+                        pm3,
+                        pm5w,
+                        gap: g,
+                        p90,
+                        p90Ratio,
+                        avgGap,
+                        extendRatio,
+                        etm,
+                        support,
+                        persistenceScore: Number(s.persistenceScore || 0),
+                        consecutiveExtendingGaps: Number(s.consecutiveExtendingGaps || 0),
+                        isUnstable: !!s.isUnstable,
+                        pressureScore,
+                        source: 'RANKED'
+                    });
+                }
+
+                candidates.sort((a, b) => b.score - a.score);
+                const best = candidates[0] || null;
+
+                if (best) {
+                    log(
+                        `🧠 Ranked digit ${best.digit}: score ${(best.score * 100).toFixed(1)}% | ` +
+                        `P5 ${(best.P5 * 100).toFixed(0)}% | P10 ${(best.P10 * 100).toFixed(0)}% | ` +
+                        `gap/P90 ${best.p90Ratio.toFixed(2)}`,
+                        'ENGINE'
+                    );
+                }
+
+                return best;
+            },
+
+            // FEATURE-DRIVEN CURRENT-DIGIT COPY GUARD
+            //
+            // The latest digit T is allowed to be selected again for T+1, but only
+            // when independent forward-context features support a repeat. This does
+            // NOT blacklist the current digit. It removes the failure mode where
+            // unconditional recency alone makes the AI echo T.
+            applyCurrentDigitCopyGuard: function(best, featureSnap, auditor, dnaSnap, survivalByDigit) {
+                if (!best) return best;
+
+                const sourceTick = window.lastTick || null;
+                const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
+                const rawDigit = Number(sourceTick?.lastDigit ?? sourceTick?.digit);
+                const currentDigit = Number.isInteger(rawDigit)
+                    ? rawDigit
+                    : (() => {
+                        const m = formatted.match(/(\d)(?!.*\d)/);
+                        return m ? Number(m[1]) : null;
+                    })();
+
+                if (!Number.isInteger(currentDigit) || Number(best.digit) !== currentDigit) {
+                    if (best) best.copyGuard = { applied:false, currentDigit, decision:'NOT_COPYING_CURRENT' };
+                    return best;
+                }
+
+                const fRows = Array.isArray(featureSnap?.rows) ? featureSnap.rows : [];
+                const aRows = Array.isArray(auditor?.rows) ? auditor.rows : [];
+                const dRows = Array.isArray(dnaSnap?.rows) ? dnaSnap.rows : [];
+
+                const fCur = fRows.find(r => Number(r.digit) === currentDigit) || null;
+                const aCur = aRows.find(r => Number(r.digit) === currentDigit) || null;
+                const dCur = dRows.find(r => Number(r.digit) === currentDigit) || null;
+                const sCur = survivalByDigit?.get?.(currentDigit) || null;
+
+                // Best alternative is selected from the SAME feature engines. Each
+                // engine contributes a normalized rank signal; no arbitrary digit is
+                // substituted.
+                const altRows = [];
+                for (let d=0; d<10; d++) {
+                    if (d === currentDigit) continue;
+                    const fr = fRows.find(r => Number(r.digit) === d) || null;
+                    const ar = aRows.find(r => Number(r.digit) === d) || null;
+                    const dr = dRows.find(r => Number(r.digit) === d) || null;
+                    const sr = survivalByDigit?.get?.(d) || null;
+
+                    const feature = Number(fr?.scoreShare ?? 0);
+                    const auditorP = Number(auditor?.predictions?.[d] ?? 0);
+                    const dna = Number(dr?.similarity ?? 0);
+                    const survivalRaw = sr
+                        ? (2.0*Number(sr.pm5||0) + 1.0*Number(sr.pm10||0) - 2.5*Number(sr.s20||0) - 0.05*Math.min(Number.isFinite(sr.etm)?Number(sr.etm):100,100))
+                        : -10;
+                    const survival = sr ? 1/(1+Math.exp(-survivalRaw)) : 0;
+
+                    const ensemble = 0.40*feature + 0.25*auditorP + 0.20*dna + 0.15*survival;
+                    altRows.push({digit:d, ensemble, fr, ar, dr, sr});
+                }
+                altRows.sort((a,b)=>b.ensemble-a.ensemble || a.digit-b.digit);
+                const alt = altRows[0] || null;
+                if (!alt) return best;
+
+                // STRICT STRUCTURAL REPEAT VALIDATION
+                //
+                // A current-digit repeat is NOT retained just because two correlated
+                // short-window features agree. It now needs evidence from BOTH:
+                //   (A) a forward contextual family: transition / n-gram structure
+                //   (B) an independent long-history family: DNA / survival structure
+                //
+                // This keeps the current digit available when the feature stack truly
+                // supports it, while preventing CRYPTO-AUDITOR/recent-window echoes
+                // from validating each other.
+                const transitionSupport = Number(fCur?.transitionSupport || 0);
+                const ngram2Support = Number(fCur?.ngram2Support || 0);
+                const ngram3Support = Number(fCur?.ngram3Support || 0);
+
+                const supports = {
+                    transition: !!(
+                        fCur && alt.fr &&
+                        transitionSupport >= 12 &&
+                        Number(fCur.transitionP||0) > Number(alt.fr.transitionP||0) + 0.010
+                    ),
+                    ngram2: !!(
+                        fCur && alt.fr &&
+                        ngram2Support >= 8 &&
+                        Number(fCur.ngram2P||0) > Number(alt.fr.ngram2P||0) + 0.010
+                    ),
+                    ngram3: !!(
+                        fCur && alt.fr &&
+                        ngram3Support >= 5 &&
+                        Number(fCur.ngram3P||0) > Number(alt.fr.ngram3P||0) + 0.010
+                    ),
+                    dna: !!(
+                        dCur && alt.dr &&
+                        Number(dCur.similarity||0) >= 0.55 &&
+                        Number(dCur.similarity||0) > Number(alt.dr.similarity||0) + 0.020
+                    ),
+                    survival: !!(
+                        sCur && alt.sr && (
+                            Number(sCur.pm5||0) > Number(alt.sr.pm5||0) + 0.05 ||
+                            Number(sCur.pm10||0) > Number(alt.sr.pm10||0) + 0.05
+                        )
+                    )
+                };
+
+                // Collapse correlated features into two genuinely different families.
+                // Auditor conditional evidence is diagnostic only here because its
+                // transition/ngram inputs overlap with the feature engine.
+                const contextualSupport = !!(supports.transition || supports.ngram2 || supports.ngram3);
+                const longHistorySupport = !!(supports.dna || supports.survival);
+                const supportCount = Object.values(supports).filter(Boolean).length;
+
+                if (contextualSupport && longHistorySupport) {
+                    best.copyGuard = {
+                        applied:true,
+                        currentDigit,
+                        decision:'REPEAT_STRUCTURALLY_VALIDATED',
+                        supportCount,
+                        contextualSupport,
+                        longHistorySupport,
+                        supports,
+                        supportThresholds:{
+                            transitionMinSupport:12,
+                            ngram2MinSupport:8,
+                            ngram3MinSupport:5,
+                            contextualMargin:0.010,
+                            dnaMinSimilarity:0.55,
+                            dnaMargin:0.020,
+                            survivalMargin:0.05
+                        },
+                        alternativeDigit:alt.digit,
+                        alternativeEnsemble:alt.ensemble
+                    };
+                    best.source = `${best.source||'AI'}+COPY-STRUCTURAL`;
+                    return best;
+                }
+
+                const ds = this.digitStats[alt.digit] || {};
+                const replacement = {
+                    ...best,
+                    digit:Number(alt.digit),
+                    gap:Number(ds.currentGap||0),
+                    persistenceScore:Number(ds.persistenceScore||0),
+                    isUnstable:!!ds.isUnstable,
+                    source:'FEATURE-DEBIASED',
+                    copyGuard:{
+                        applied:true, currentDigit, decision:'CURRENT_COPY_REJECTED',
+                        supportCount, contextualSupport, longHistorySupport, supports, rejectedDigit:currentDigit,
+                        alternativeDigit:alt.digit, alternativeEnsemble:alt.ensemble
+                    }
+                };
+
+                if (alt.fr && featureSnap) replacement.digitFeatures = featureSnap;
+                if (alt.dr && dnaSnap) replacement.digitDNA = dnaSnap;
+                if (alt.ar && auditor) replacement.auditor = auditor;
+                if (alt.sr) replacement.survival = alt.sr;
+
+                // Keep the displayed score explicitly as a ranking score. Use the
+                // alternative ensemble only to cap/shape it, never as probability.
+                replacement.score = Math.max(0, Math.min(1,
+                    0.55*Number(best.score||0) + 0.45*Math.min(1, alt.ensemble*4)
+                ));
+
+                return replacement;
+            },
+
+            // Analyze and recommend digit
+            analyzeAndRecommend: function() {
+                const __analysisStartedAt = performance.now();
+                const regimeStatus = this.computeRegimeStatus();
+
+                // V52: regime is now a ranking/context signal, not a blanket AI veto.
+                // This keeps SCORE AUTO active in more market states.
+                let best = this.selectBestDigit();
+
+                let auditor = null;
+                try {
+                    auditor = window.randomnessAuditor?.analyze?.(
+                        document.getElementById('symbol')?.value || window.currentSymbol || null
+                    ) || null;
+                } catch (e) {
+                    console.warn('Randomness Auditor analysis skipped:', e);
+                    auditor = window.randomnessAuditor?.lastSnapshot || null;
+                }
+
+                // -----------------------------
+                // Survival-curve overlay (always-on hybrid when data exists)
+                // -----------------------------
+                const minDigits = (typeof window.SURVIVAL_MIN_DIGITS === 'number') ? window.SURVIVAL_MIN_DIGITS : 80;
+                const windowSize = window.SURVIVAL_WINDOW || 2000;
+
+                let survivalStats = null;
+                let survivalByDigit = null;
+                let survivalTop3 = [];
+                let survivalTop = null;
+
+                try {
+                    if (window.SurvivalEngine && Array.isArray(window.lastDigits) && window.lastDigits.length >= minDigits) {
+                        survivalStats = window.SurvivalEngine.analyze(window.lastDigits, { window: windowSize });
+                        survivalByDigit = new Map(survivalStats.map(s => [s.digit, s]));
+
+                        // Try strict rank first (user cfg). If empty, fall back to global ranking (no "ignore" case).
+                        let ranked = [];
+                        try {
+                            ranked = window.SurvivalEngine.rank(survivalStats, window.SURVIVAL_CFG || {});
+                        } catch (_) {
+                            ranked = [];
+                        }
+
+                        const scoreRaw = (x) =>
+                            (2.0 * (x.pm5 || 0)) +
+                            (1.0 * (x.pm10 || 0)) -
+                            (2.5 * (x.s20 || 0)) -
+                            (0.05 * Math.min(Number.isFinite(x.etm) ? x.etm : 100, 100));
+
+                        const asScored = (arr) => arr.map(x => {
+                            const raw = Number.isFinite(x.survivalScore) ? x.survivalScore : scoreRaw(x);
+                            const norm = 1 / (1 + Math.exp(-raw));
+                            return { ...x, survivalScore: raw, survivalNorm: norm };
+                        });
+
+                        let globalRanked = asScored(ranked);
+
+// STRICT MODE: if no candidates meet filters (including maxS20), do NOT fall back to unfiltered ranking.
+if (!globalRanked.length) {
+    globalRanked = [];
+}
+
+survivalTop3 = globalRanked.slice(0, 3);
+survivalTop = survivalTop3[0] || null;
+                    }
+                } catch (e) {
+                    console.warn('SurvivalEngine error:', e);
+                    survivalStats = null;
+                    survivalByDigit = null;
+                    survivalTop3 = [];
+                    survivalTop = null;
+                }
+
+                const hasSurvival = !!(survivalByDigit && survivalByDigit.size);
+
+                // Expose latest survival stats for trading gates
+                try {
+                    window.latestSurvivalStats = Array.isArray(survivalStats) ? survivalStats : null;
+                    window.latestSurvivalByDigit = Array.isArray(survivalStats)
+                        ? Object.fromEntries(survivalStats.map(s => [s.digit, s]))
+                        : null;
+                    window.latestSurvivalUpdatedAt = Date.now();
+                } catch (_) {
+                    window.latestSurvivalStats = null;
+                    window.latestSurvivalByDigit = null;
+                }
+
+                const attachHybrid = (candidate) => {
+                    if (!candidate || !hasSurvival) return candidate;
+
+                    const s = survivalByDigit.get(candidate.digit) || null;
+                    if (s) {
+                        const raw =
+                            Number.isFinite(s.survivalScore) ? s.survivalScore :
+                            (2.0 * (s.pm5 || 0)) + (1.0 * (s.pm10 || 0)) - (2.5 * (s.s20 || 0)) - (0.05 * Math.min(Number.isFinite(s.etm) ? s.etm : 100, 100));
+                        const survNorm = 1 / (1 + Math.exp(-raw));
+
+                        const base = Number.isFinite(candidate.score) ? candidate.score : 0.0;
+                        const historyFactor = Math.min(1, (window.lastDigits.length / windowSize));
+                        const wBase = (typeof window.SURVIVAL_BLEND === 'number') ? window.SURVIVAL_BLEND : 0.35;
+                        const w = Math.max(0.10, Math.min(0.55, wBase * historyFactor));
+
+                        candidate.survival = { ...s, survivalScore: raw, survivalNorm: survNorm };
+                        candidate.source = 'HYBRID';
+                        candidate.score = Math.max(0, Math.min(1, ((1 - w) * base) + (w * survNorm)));
+                    } else {
+                        candidate.source = 'HYBRID';
+                        candidate.survival = null;
+                    }
+                    return candidate;
+                };
+
+                // If base engine has no pick, use survival's best digit (still HYBRID)
+                if (!best && hasSurvival && survivalTop) {
+                    best = {
+                        digit: survivalTop.digit,
+                        score: survivalTop.survivalNorm ?? (1 / (1 + Math.exp(-(survivalTop.survivalScore || 0)))),
+                        P10: survivalTop.pm10 ?? 0,
+                        P5: survivalTop.pm5 ?? 0,
+                        gap: survivalTop.gap ?? 0,
+                        persistenceScore: (this.digitStats[survivalTop.digit]?.persistenceScore ?? 0),
+                        isUnstable: (this.digitStats[survivalTop.digit]?.isUnstable ?? false),
+                        source: 'HYBRID',
+                        survival: survivalTop
+                    };
+                } else {
+                    best = attachHybrid(best);
+                }
+
+                // Optional override: if survival strongly prefers another digit, allow it to replace weak base picks.
+                if (best && hasSurvival && survivalTop && survivalTop.digit !== best.digit) {
+                    const baseScore = Number.isFinite(best.score) ? best.score : 0;
+                    const survTopNorm = survivalTop.survivalNorm ?? (1 / (1 + Math.exp(-(survivalTop.survivalScore || 0))));
+                    if (survTopNorm >= Math.max(0.62, baseScore + 0.08)) {
+                        best = {
+                            digit: survivalTop.digit,
+                            score: survTopNorm,
+                            P10: survivalTop.pm10 ?? 0,
+                            P5: survivalTop.pm5 ?? 0,
+                            gap: survivalTop.gap ?? 0,
+                            persistenceScore: (this.digitStats[survivalTop.digit]?.persistenceScore ?? 0),
+                            isUnstable: (this.digitStats[survivalTop.digit]?.isUnstable ?? false),
+                            source: 'HYBRID',
+                            survival: survivalTop
+                        };
+                    } else {
+                        // Ensure survival metrics are attached even if not overriding.
+                        best.survival = best.survival || survivalByDigit.get(best.digit) || null;
+                        best.source = 'HYBRID';
+                    }
+                }
+
+                // V56 Digit DNA overlay: compare the CURRENT precursor state with
+                // what historically happened immediately BEFORE each digit appeared.
+                const dnaSnap = window.digitDNAEngine?.analyze?.(
+                    document.getElementById('symbol')?.value || window.currentSymbol || null
+                ) || null;
+
+                if (dnaSnap?.ready && Number.isInteger(Number(dnaSnap.topDigit))) {
+                    const dnaNorm=Math.max(0,Math.min(1,Number(dnaSnap.topSimilarity||0)));
+                    if (!best) {
+                        const ds=this.digitStats[dnaSnap.topDigit] || {};
+                        best={
+                            digit:Number(dnaSnap.topDigit),
+                            score:dnaNorm,
+                            P10:0.10,
+                            P5:0.10,
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-DNA',
+                            digitDNA:dnaSnap
+                        };
+                    } else if (Number(best.digit) === Number(dnaSnap.topDigit)) {
+                        const w=Number(window.DIGIT_DNA_CONFIG?.aiBlend||0.20);
+                        best.score=Math.max(0,Math.min(1,(1-w)*Number(best.score||0)+w*dnaNorm));
+                        best.source=`${best.source||'AI'}+DNA`;
+                        best.digitDNA=dnaSnap;
+                    } else if (Number(dnaSnap.topSimilarity||0) >= Number(window.DIGIT_DNA_CONFIG?.overrideSimilarity||0.82)) {
+                        const ds=this.digitStats[dnaSnap.topDigit] || {};
+                        best={
+                            digit:Number(dnaSnap.topDigit),
+                            score:dnaNorm,
+                            P10:0.10,
+                            P5:0.10,
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-DNA',
+                            digitDNA:dnaSnap
+                        };
+                    } else {
+                        best.digitDNA=dnaSnap;
+                    }
+                }
+
+                // V55 digit-feature overlay: rank with higher-order and multi-window
+                // features before the Randomness Auditor makes its final assist.
+                const featureSnap = window.digitFeatureEngine?.analyze?.(
+                    document.getElementById('symbol')?.value || window.currentSymbol || null
+                ) || null;
+
+                if (featureSnap?.ready && Number.isInteger(Number(featureSnap.topDigit))) {
+                    const fr = featureSnap.rows?.find?.(
+                        x => Number(x.digit) === Number(featureSnap.topDigit)
+                    ) || null;
+                    const featureNorm = Math.max(
+                        0,
+                        Math.min(1, 0.50 + Number(featureSnap.signalStrength||0)*0.50)
+                    );
+
+                    if (!best) {
+                        const ds=this.digitStats[featureSnap.topDigit] || {};
+                        best={
+                            digit:Number(featureSnap.topDigit),
+                            score:featureNorm,
+                            P10:Number(fr?.f20||0.10),
+                            P5:Number(fr?.f5||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-FEATURES',
+                            digitFeatures:featureSnap
+                        };
+                    } else if (Number(best.digit) === Number(featureSnap.topDigit)) {
+                        const w=Number(window.DIGIT_FEATURE_CONFIG?.aiBlend||0.25);
+                        best.score=Math.max(0,Math.min(1,(1-w)*Number(best.score||0)+w*featureNorm));
+                        best.source=`${best.source||'AI'}+FEATURES`;
+                        best.digitFeatures=featureSnap;
+                    } else if (Number(featureSnap.signalStrength||0) >= Number(window.DIGIT_FEATURE_CONFIG?.overrideSignal||0.70)) {
+                        const ds=this.digitStats[featureSnap.topDigit] || {};
+                        best={
+                            digit:Number(featureSnap.topDigit),
+                            score:featureNorm,
+                            P10:Number(fr?.f20||0.10),
+                            P5:Number(fr?.f5||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'DIGIT-FEATURES',
+                            digitFeatures:featureSnap
+                        };
+                    } else {
+                        best.digitFeatures=featureSnap;
+                    }
+                }
+
+                // Cryptanalysis-style auditor overlay for SCORE AUTO.
+                // The auditor may supply a candidate even when legacy ranking is weak.
+                if (auditor?.ready && Number.isInteger(Number(auditor.topDigit))) {
+                    const ar = auditor.rows?.find?.(x => Number(x.digit) === Number(auditor.topDigit)) || null;
+                    const auditorNorm = Math.max(0, Math.min(1, 0.50 + Number(auditor.signalStrength||0) * 0.50));
+
+                    if (!best) {
+                        const ds=this.digitStats[auditor.topDigit] || {};
+                        best={
+                            digit:Number(auditor.topDigit),
+                            score:auditorNorm,
+                            P10:Number(ar?.recentP||0.10),
+                            P5:Number(ar?.recentP||0.10),
+                            gap:Number(ds.currentGap||0),
+                            persistenceScore:Number(ds.persistenceScore||0),
+                            isUnstable:!!ds.isUnstable,
+                            source:'CRYPTO-AUDITOR',
+                            auditor
+                        };
+                    } else {
+                        // Blend confidence if both engines agree; if they disagree,
+                        // allow the auditor to override only when its signal is material.
+                        if (Number(best.digit) === Number(auditor.topDigit)) {
+                            best.score=Math.max(0,Math.min(1,0.75*Number(best.score||0)+0.25*auditorNorm));
+                            best.source=`${best.source||'AI'}+AUDITOR`;
+                            best.auditor=auditor;
+                        } else if (Number(auditor.signalStrength||0) >= 0.35) {
+                            const ds=this.digitStats[auditor.topDigit] || {};
+                            best={
+                                digit:Number(auditor.topDigit),
+                                score:auditorNorm,
+                                P10:Number(ar?.recentP||0.10),
+                                P5:Number(ar?.recentP||0.10),
+                                gap:Number(ds.currentGap||0),
+                                persistenceScore:Number(ds.persistenceScore||0),
+                                isUnstable:!!ds.isUnstable,
+                                source:'CRYPTO-AUDITOR',
+                                auditor
+                            };
+                        } else {
+                            best.auditor=auditor;
+                        }
+                    }
+                }
+
+                // Final feature-driven de-bias pass. The current digit may still
+                // win, but not merely because it was the last observation.
+                best = this.applyCurrentDigitCopyGuard(
+                    best, featureSnap, auditor, dnaSnap, survivalByDigit
+                );
+
+                if (best) {
+                    // This recommendation is produced AFTER ingesting tick T and
+                    // is therefore a forecast for T+1. A repeated digit is valid:
+                    // T+1 may legitimately equal T. Never count that as a hit until
+                    // the following market tick actually arrives.
+                    const sourceTick = window.lastTick || null;
+                    const sourceTickDigit = (() => {
+                        const raw = sourceTick?.lastDigit ?? sourceTick?.digit;
+                        const n = Number(raw);
+                        if (Number.isInteger(n) && n >= 0 && n <= 9) return n;
+                        const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
+                        const digits = formatted.replace(/\D/g, '');
+                        return digits ? Number(digits.slice(-1)) : null;
+                    })();
+                    best.predictionHorizon = 'T+1';
+                    best.sourceTickDigit = sourceTickDigit;
+                    best.generatedAtMs = Date.now();
+                    this.currentRecommendation = best;
+                try {
+                    const ms = performance.now() - __analysisStartedAt;
+                    this.lastAnalysisMs = ms;
+                    if (ms > 350) console.warn(`[AI-PERF] analyzeAndRecommend took ${ms.toFixed(1)} ms`);
+                } catch (_) {}
+
+                    // AI FUSION V1: publish the completed browser recommendation
+                    // to the server. The server remains the only BUY authority.
+                    try {
+                        publishAISignalToServer(best).catch(() => {});
+                    } catch (_) {}
+
+                    // Update UI
+                    const aiDigitEl = document.getElementById('ai-recommended-digit');
+                    if (aiDigitEl) {
+                        aiDigitEl.textContent = best.digit;
+                        aiDigitEl.title = `Prediction for the next tick (T+1), generated after observing tick T${best.sourceTickDigit !== null ? ' digit ' + best.sourceTickDigit : ''}`;
+                    }
+                    const sourceTickEl = document.getElementById('ai-source-tick-digit');
+                    if (sourceTickEl && best.sourceTickDigit !== null && best.sourceTickDigit !== undefined) {
+                        sourceTickEl.textContent = String(best.sourceTickDigit);
+                    }
+                    if (window.nextTickModel) window.nextTickModel.render();
+
+                    const sourceLabel = best.source ? ` | ${best.source}` : '';
+
+                    let survivalLabel = '';
+                    if (hasSurvival) {
+                        const s = best.survival || (survivalByDigit ? survivalByDigit.get(best.digit) : null);
+                        if (s) {
+                            survivalLabel =
+                                ` | pm5:${Math.round((s.pm5 || 0) * 100)}% pm10:${Math.round((s.pm10 || 0) * 100)}% s20:${Math.round((s.s20 || 0) * 100)}% etm:${Number.isFinite(s.etm) ? s.etm.toFixed(1) : '∞'}`;
+                        } else {
+                            survivalLabel = ` | Survival: N/A`;
+                        }
+                    } else {
+                        const n = Array.isArray(window.lastDigits) ? window.lastDigits.length : 0;
+                        survivalLabel = ` | Survival: warming up (${n}/${minDigits})`;
+                    }
+
+                    const auditorLabel = best.auditor?.ready
+                        ? ` | Auditor:${(Number(best.auditor.signalStrength||0)*100).toFixed(0)}%`
+                        : '';
+                    const featureLabel = best.digitFeatures?.ready
+                        ? ` | Features:${(Number(best.digitFeatures.signalStrength||0)*100).toFixed(0)}%`
+                        : '';
+                    const dnaLabel = best.digitDNA?.ready
+                        ? ` | DNA:${(Number(best.digitDNA.topSimilarity||0)*100).toFixed(0)}%`
+                        : '';
+                    const copyGuardLabel = best.copyGuard?.applied
+                        ? (best.copyGuard.decision === 'REPEAT_SUPPORTED'
+                            ? ` | CopyGuard:REPEAT ✓ ${best.copyGuard.supportCount}/6`
+                            : ` | CopyGuard:DEBIASED ${best.copyGuard.rejectedDigit}→${best.copyGuard.alternativeDigit}`)
+                        : '';
+                    document.getElementById('ai-digit-score').textContent =
+                        `NEXT TICK · Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}${copyGuardLabel}`;
+
+                    // Color code based on score
+                    const scoreElem = document.getElementById('ai-digit-score');
+                    scoreElem.classList.remove('engine-digit-score-high', 'engine-digit-score-medium', 'engine-digit-score-low');
+                    if (best.score >= 0.85) scoreElem.classList.add('engine-digit-score-high');
+                    else if (best.score >= 0.75) scoreElem.classList.add('engine-digit-score-medium');
+                    else scoreElem.classList.add('engine-digit-score-low');
+
+                    // Update survival panel (top3)
+                    try {
+                        const panel = document.getElementById('survival-top3');
+                        if (panel) {
+                            if (!hasSurvival) {
+                                panel.textContent = 'Survival picks: warming up…';
+                            } else if (!survivalTop3.length) {
+                                panel.textContent = 'Survival picks: N/A';
+                            } else {
+                                panel.textContent = 'Top picks: ' + survivalTop3.map(x =>
+                                    `${x.digit} (pm5:${Math.round((x.pm5 || 0) * 100)}%, pm10:${Math.round((x.pm10 || 0) * 100)}%, s20:${Math.round((x.s20 || 0) * 100)}%, etm:${Number.isFinite(x.etm) ? x.etm.toFixed(1) : '∞'})`
+                                ).join(' | ');
+                            }
+                        }
+                    } catch (_) {}
+
+                    log(`🎯 AI recommends digit ${best.digit} (Score: ${(best.score * 100).toFixed(1)}%, P10: ${(best.P10 * 100).toFixed(1)}%)`, 'AI');
+                }
+            },
+            
+            // Get digit statistics for display
+            getDigitStatsForDisplay: function() {
+                const stats = [];
+                for (let d = 0; d < 10; d++) {
+                    const s = this.digitStats[d];
+                    stats.push({
+                        digit: d,
+                        count: s.count,
+                        currentGap: s.currentGap,
+                        avgGap: s.avgGap.toFixed(1),
+                        p90Gap: s.p90Gap,
+                        persistenceScore: s.persistenceScore,
+                        isUnstable: s.isUnstable,
+                        isRecommended: this.currentRecommendation && this.currentRecommendation.digit === d
+                    });
+                }
+                return stats;
+            }
+        };
+        
+        
+        // ============================================================================
+        // SURVIVAL CURVE ENGINE v1
+        // Empirical conditional survival from historical gaps (rolling digits)
+        // ============================================================================
+        const SurvivalEngine = (() => {
+          function clampDigit(x) {
+            x = Number(x);
+            if (!Number.isFinite(x)) return null;
+            x = Math.floor(x);
+            return (x >= 0 && x <= 9) ? x : null;
+          }
+
+          function buildGapSamples(digits) {
+            const lastSeen = Array(10).fill(null);
+            const gaps = Array.from({ length: 10 }, () => []);
+            for (let i = 0; i < digits.length; i++) {
+              const d = clampDigit(digits[i]);
+              if (d === null) continue;
+              if (lastSeen[d] !== null) gaps[d].push(i - lastSeen[d] - 1);
+              lastSeen[d] = i;
+            }
+            return gaps;
+          }
+
+          function computeCurrentGaps(digits) {
+            const lastSeen = Array(10).fill(null);
+            for (let i = 0; i < digits.length; i++) {
+              const d = clampDigit(digits[i]);
+              if (d === null) continue;
+              lastSeen[d] = i;
+            }
+            const n = digits.length;
+            return lastSeen.map(idx => (idx === null ? n : (n - 1 - idx)));
+          }
+
+          function percentile(arr, p) {
+            if (!arr.length) return 0;
+            const a = [...arr].sort((x, y) => x - y);
+            const idx = (p / 100) * (a.length - 1);
+            const lo = Math.floor(idx), hi = Math.ceil(idx);
+            if (lo === hi) return a[lo];
+            return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+          }
+
+          function survivalConditional(gaps, g, t) {
+            const eligible = gaps.filter(x => x > g);
+            if (!eligible.length) return 1.0;
+            const stillWaiting = eligible.filter(x => x > g + t);
+            return stillWaiting.length / eligible.length;
+          }
+
+          function pMatchWithin(gaps, g, k) {
+            return 1 - survivalConditional(gaps, g, k);
+          }
+
+          function expectedAdditionalTicks(gaps, g) {
+            const eligible = gaps.filter(x => x > g);
+            if (!eligible.length) return Infinity;
+            const rem = eligible.map(x => x - g);
+            return rem.reduce((s, x) => s + x, 0) / rem.length;
+          }
+
+          function analyze(lastDigits, opts = {}) {
+            const window = opts.window ?? 2000;
+            const digits = lastDigits.slice(-window);
+
+            const gapsByDigit = buildGapSamples(digits);
+            const currentGaps = computeCurrentGaps(digits);
+
+            const out = [];
+            for (let d = 0; d <= 9; d++) {
+              const gaps = gapsByDigit[d];
+              const g = currentGaps[d];
+
+              const p90 = percentile(gaps, 90);
+              const p75 = percentile(gaps, 75);
+              const avg = gaps.length ? (gaps.reduce((s,x)=>s+x,0)/gaps.length) : 0;
+
+              const pm5  = pMatchWithin(gaps, g, 5);
+              const pm10 = pMatchWithin(gaps, g, 10);
+
+              const s10 = survivalConditional(gaps, g, 10);
+              const s20 = survivalConditional(gaps, g, 20);
+
+              const etm = expectedAdditionalTicks(gaps, g);
+
+              const inPressure = (p90 > 0) ? (g >= 0.70 * p90 && g < 0.95 * p90) : false;
+
+              out.push({ digit: d, gap: g, avgGap: avg, p75, p90, inPressure, pm5, pm10, s10, s20, etm });
+            }
+            return out;
+          }
+
+          function rank(stats, cfg = {}) {
+            const minPm5 = cfg.minPm5 ?? 0.45;
+            const maxS20 = cfg.maxS20 ?? 0.20;
+            const maxETM = cfg.maxETM ?? 12;
+            const requirePressure = cfg.requirePressure ?? false;
+
+            const candidates = stats.filter(x => {
+              if (requirePressure && !x.inPressure) return false;
+              if (x.pm5 < minPm5) return false;
+              if (x.s20 > maxS20) return false;
+              if (x.etm > maxETM) return false;
+              return true;
+            });
+
+            candidates.forEach(x => {
+              const p90 = Math.max(Number(x.p90 || 0), 1);
+              const pressureRatio = Number(x.gap || 0) / p90;
+              const pressureScore = Math.max(
+                0,
+                1 - (Math.abs(pressureRatio - 0.65) / 0.65)
+              );
+
+              x.survivalScore =
+                (1.80 * (x.pm5 || 0)) +
+                (1.10 * (x.pm10 || 0)) -
+                (2.25 * (x.s20 || 0)) -
+                (0.04 * Math.min(Number.isFinite(x.etm) ? x.etm : 100, 100)) +
+                (0.35 * pressureScore);
+            });
+
+            candidates.sort((a, b) => b.survivalScore - a.survivalScore);
+            return candidates;
+          }
+
+          return { analyze, rank };
+        })();
+
+        window.SurvivalEngine = SurvivalEngine;
+
+// =====================================================
+// 🔥 EARLY MATCH HELPERS (2–3 TICKS)
+// =====================================================
+
+// Probability of match within K ticks
+function pmK(gaps, g, K) {
+  const eligible = gaps.filter(x => x > g);
+  if (!eligible.length) return 0;
+
+  let hits = 0;
+  for (const x of eligible) {
+    if (x <= g + K) hits++;
+  }
+  return hits / eligible.length;
+}
+
+// Early-weighted pm5 (front-loaded)
+function pm5Weighted(gaps, g) {
+  const eligible = gaps.filter(x => x > g);
+  if (!eligible.length) return 0;
+
+  let score = 0;
+  for (const x of eligible) {
+    const d = x - g;
+    if (d <= 2) score += 1.0;
+    else if (d === 3) score += 0.8;
+    else if (d === 4) score += 0.4;
+    else if (d === 5) score += 0.2;
+  }
+  return score / eligible.length;
+}
+
+// Detect accelerating gaps (tail warning)
+function gapSlope(gaps) {
+  if (gaps.length < 3) return 0;
+  const n = gaps.length;
+  return gaps[n - 1] - gaps[n - 3];
+}
+
+
+// =====================================================
+// 🧱 SHORT-WINDOW VETO (kills tails)
+// =====================================================
+
+function shortWindowPass(d) {
+  let hits = 0;
+  if ((d.pm2 ?? 0) >= 0.35) hits++;
+  if ((d.pm3 ?? 0) >= 0.45) hits++;
+  if ((d.pm5_recent ?? 0) >= 0.60) hits++;
+  return hits >= 2;
+}
+
+function getCurrentRegimeNumbers() {
+  try {
+    const rs = window.digitIntelligenceEngine?.computeRegimeStatus?.();
+    return {
+      entropy: Number.parseFloat(rs?.entropy ?? "0"),
+      dominance: Number.parseFloat(rs?.dominance ?? "1")
+    };
+  } catch (_) {
+    return { entropy: 0, dominance: 1 };
+  }
+}
+
+function buildDigitDecision(digit) {
+  const engine = window.digitIntelligenceEngine;
+  const s = engine?.digitStats?.[digit];
+  if (!s) return null;
+
+  const g = Number(s.currentGap ?? 0);
+  const avgGap = Math.max(Number(s.avgGap ?? 0), 1);
+  const localP90 = Math.max(Number(s.p90Gap ?? 0), 1);
+
+  const pm2 = pmK(s.gaps || [], g, 2);
+  const pm3 = pmK(s.gaps || [], g, 3);
+  const pm5w = pm5Weighted(s.gaps || [], g);
+
+  const P5 = (typeof engine?.conditionalReturnProb === "function")
+    ? engine.conditionalReturnProb(digit, g, 5)
+    : 0;
+
+  const P10 = (typeof engine?.conditionalReturnProb === "function")
+    ? engine.conditionalReturnProb(digit, g, 10)
+    : 0;
+
+  const etm = (typeof engine?.expectedAdditionalTicks === "function")
+    ? engine.expectedAdditionalTicks(s.gaps || [], g)
+    : Infinity;
+
+  const surv = (typeof getSurvivalForDigit === "function")
+    ? getSurvivalForDigit(digit)
+    : null;
+
+  const p90 = Number.isFinite(Number(surv?.p90))
+    ? Number(surv.p90)
+    : localP90;
+
+  return {
+    digit,
+    gap: g,
+    avgGap,
+    p90,
+    pressureRatio: g / Math.max(p90, 1),
+    extendRatio: g / avgGap,
+    pm2,
+    pm3,
+    pm5_recent: Number.isFinite(Number(surv?.pm5)) ? Number(surv.pm5) : pm5w,
+    P5,
+    P10,
+    s20: Number.isFinite(Number(surv?.s20)) ? Number(surv.s20) : null,
+    etm,
+    support: Array.isArray(s.gaps) ? s.gaps.length : 0,
+    persistenceScore: Number(s.persistenceScore || 0),
+    consecutiveExtendingGaps: Number(s.consecutiveExtendingGaps || 0),
+    isUnstable: !!s.isUnstable
+  };
+}
+
+// =====================================================
+// ✅ FINAL TRADE DECISION (STRICT, NO FALLBACKS)
+// =====================================================
+
+function canTradeDigit(d, regime, tradeCount) {
+  if (tradeCount >= (window.maxTrades ?? 10)) {
+    return { ok: false, reason: "MAX_TRADES_REACHED" };
+  }
+
+  if (!d) return { ok: false, reason: "DIGIT_METRICS_NOT_READY" };
+
+  const auditor = window.randomnessAuditor?.lastSnapshot || window.randomnessAuditor?.analyze?.();
+  const auditorSupports = !!(
+    auditor?.ready &&
+    Number(auditor.topDigit) === Number(d.digit) &&
+    Number(auditor.signalStrength || 0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistSignal || 0.18)
+  );
+
+  // V52: only severe structural/tail conditions remain hard vetoes.
+  // The former entropy/dominance gate is no longer a blanket block.
+  const minSupport = auditorSupports ? 10 : 14;
+  if ((d.support ?? 0) < minSupport) {
+    return { ok: false, reason: "INSUFFICIENT_SUPPORT" };
+  }
+
+  if ((d.persistenceScore ?? 0) > 99.5) {
+    return { ok: false, reason: "EXTREME_PERSISTENCE" };
+  }
+
+  if ((d.consecutiveExtendingGaps ?? 0) > 6 && !auditorSupports) {
+    return { ok: false, reason: "SEVERE_EXTENDING_GAPS" };
+  }
+
+  if ((d.extendRatio ?? 0) > 3.0 && !auditorSupports) {
+    return { ok: false, reason: "EXTREME_EXTEND_RATIO" };
+  }
+
+  const configuredMaxS20 = Number(window.SURVIVAL_CFG?.maxS20 ?? 0.20);
+  const hardMaxS20 = Math.max(0.30, configuredMaxS20);
+  if (Number.isFinite(d.s20) && d.s20 > hardMaxS20 && !auditorSupports) {
+    return { ok: false, reason: "SEVERE_TAIL_RISK_S20" };
+  }
+
+  if (Number.isFinite(d.etm) && d.etm > 25 && !auditorSupports) {
+    return { ok: false, reason: "ETM_EXTREME" };
+  }
+
+  return {
+    ok: true,
+    reason: auditorSupports ? "TRADE_APPROVED_AUDITOR" : "TRADE_APPROVED_ADAPTIVE",
+    auditorSupports
+  };
+}
+
+
+// ============================================================================
+// MATCHSTAR V9 — NEXT-TICK PROBABILITY + EV GATE + FORWARD SHADOW VALIDATION
+// ============================================================================
+
+window.EV_GATE_CONFIG = {
+    enabled: true,
+
+    // SCORE AUTO only. INSTANT remains a manual execution mode.
+    applyToInstant: false,
+
+    // SCORE AUTO thresholds.
+    // Entry: +0.001 = +0.10 percentage points above live break-even.
+    // Recovery: 0.000 = break-even-or-better only.
+    // Recovery re-ranks all 10 digits on each attempt and may switch digits without resetting the cycle.
+    minEdge: 0.000,
+    recoveryMinEdge: -1.000,
+
+    // Smart entry override:
+    // +0.10 pp remains the preferred entry threshold.
+    // If the same digit remains selected for 2 consecutive proposal evaluations,
+    // entry may proceed down to -0.05 pp provided support is ready and digit tail risk
+    // is not elevated (s20 > 5% vetoes the override).
+    smartOverrideEnabled: true,
+    smartOverrideFloor: -0.040,
+    smartOverridePersistence: 1,
+    smartOverrideMaxS20: 0.30,
+
+    // Exact-next-tick empirical model readiness.
+    minEffectiveSupport: 12,
+
+    // Calibration affects probabilities only after a bucket has enough genuine
+    // forward observations. Until then the raw probability is used.
+    minCalibrationSamples: 100,
+    maxCalibrationBlend: 0.50
+};
+
+window.nextTickModel = {
+    version: 'NTM-1',
+    states: {},
+    lastEvaluation: null,
+
+    getSymbol() {
+        return (
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN'
+        );
+    },
+
+    state(symbol = this.getSymbol()) {
+        if (!this.states[symbol]) {
+            this.states[symbol] = {
+                symbol,
+                lastDigit: null,
+                pendingForecast: null,
+                transition: Array.from({ length: 10 }, () => Array(10).fill(0)),
+                transitionTotals: Array(10).fill(0),
+                shadowTicks: 0,
+                shadowPredictions: 0,
+                topPickHits: 0,
+                brierSum: 0,
+                calibration: {},
+                seeded: false,
+                lastForecast: null,
+                lastOutcome: null
+            };
+            this.loadShadow(symbol);
+        }
+        return this.states[symbol];
+    },
+
+    betaPosterior(hits, trials, priorP = 0.10, strength = 30) {
+        const a = priorP * strength;
+        const b = (1 - priorP) * strength;
+        return (hits + a) / (trials + a + b);
+    },
+
+    probabilityBucket(p) {
+        // 1 percentage-point calibration buckets.
+        const clamped = Math.max(0, Math.min(0.999999, Number(p) || 0));
+        return (Math.floor(clamped * 100) / 100).toFixed(2);
+    },
+
+    getCalibration(symbol, p) {
+        const st = this.state(symbol);
+        const key = this.probabilityBucket(p);
+        const row = st.calibration[key];
+        if (!row || row.n < window.EV_GATE_CONFIG.minCalibrationSamples) {
+            return {
+                ready: false,
+                n: row?.n || 0,
+                observed: null,
+                bucket: key
+            };
+        }
+
+        return {
+            ready: true,
+            n: row.n,
+            observed: row.hits / row.n,
+            bucket: key
+        };
+    },
+
+    applyCalibration(symbol, p) {
+        const cal = this.getCalibration(symbol, p);
+        if (!cal.ready) return { probability: p, calibration: cal };
+
+        const strength = Math.min(
+            window.EV_GATE_CONFIG.maxCalibrationBlend,
+            cal.n / 1000
+        );
+
+        const adjusted =
+            ((1 - strength) * p) +
+            (strength * cal.observed);
+
+        return {
+            probability: Math.max(0.001, Math.min(0.999, adjusted)),
+            calibration: cal
+        };
+    },
+
+    seedTransitionsFromWarmup(symbol = this.getSymbol()) {
+        const st = this.state(symbol);
+        if (st.seeded) return;
+
+        const digits = Array.isArray(window.lastDigits) ? window.lastDigits : [];
+        if (digits.length < 2) return;
+
+        for (let i = 1; i < digits.length; i++) {
+            const prev = Number(digits[i - 1]);
+            const next = Number(digits[i]);
+            if (
+                Number.isInteger(prev) && prev >= 0 && prev <= 9 &&
+                Number.isInteger(next) && next >= 0 && next <= 9
+            ) {
+                st.transition[prev][next]++;
+                st.transitionTotals[prev]++;
+            }
+        }
+
+        st.seeded = true;
+        st.lastDigit = Number(digits[digits.length - 1]);
+    },
+
+    recentDigitRate(targetDigit, windowSize = 250) {
+        const digits = Array.isArray(window.lastDigits)
+            ? window.lastDigits.slice(-windowSize)
+            : [];
+
+        if (!digits.length) return { p: 0.10, support: 0 };
+
+        let hits = 0;
+        for (const d of digits) {
+            if (Number(d) === Number(targetDigit)) hits++;
+        }
+
+        return {
+            p: this.betaPosterior(hits, digits.length, 0.10, 30),
+            support: digits.length
+        };
+    },
+
+    exactHazard(targetDigit) {
+        const engine = window.digitIntelligenceEngine;
+        const stats = engine?.digitStats?.[targetDigit];
+        if (!stats || !Array.isArray(stats.gaps)) {
+            return { p: 0.10, support: 0, hits: 0, gap: 0 };
+        }
+
+        const g = Number(stats.currentGap || 0);
+        let eligible = 0;
+        let hits = 0;
+
+        // Exact next-tick hazard:
+        // among completed historical gaps that survived beyond current gap g,
+        // how many ended exactly one tick later?
+        for (const gap of stats.gaps) {
+            const x = Number(gap);
+            if (!Number.isFinite(x)) continue;
+            if (x > g) {
+                eligible++;
+                if (x === g + 1) hits++;
+            }
+        }
+
+        return {
+            p: this.betaPosterior(hits, eligible, 0.10, 35),
+            support: eligible,
+            hits,
+            gap: g
+        };
+    },
+
+    transitionProbability(symbol, previousDigit, targetDigit) {
+        const st = this.state(symbol);
+        if (
+            previousDigit === null ||
+            !Number.isInteger(Number(previousDigit))
+        ) {
+            return { p: 0.10, support: 0, hits: 0 };
+        }
+
+        const prev = Number(previousDigit);
+        const target = Number(targetDigit);
+        const support = Number(st.transitionTotals[prev] || 0);
+        const hits = Number(st.transition[prev]?.[target] || 0);
+
+        return {
+            p: this.betaPosterior(hits, support, 0.10, 30),
+            support,
+            hits
+        };
+    },
+
+    rawDigitProbability(symbol, targetDigit, previousDigit) {
+        const hazard = this.exactHazard(targetDigit);
+        const transition = this.transitionProbability(
+            symbol,
+            previousDigit,
+            targetDigit
+        );
+        const recent = this.recentDigitRate(targetDigit);
+
+        // Exact-gap hazard has highest weight because it directly asks the
+        // one-tick question. Transition and recent frequency are stabilizers.
+        const hazardReliability = Math.min(1, hazard.support / 60);
+        const transitionReliability = Math.min(1, transition.support / 100);
+
+        const wHazard = 0.45 + (0.20 * hazardReliability);
+        const wTransition = 0.15 + (0.10 * transitionReliability);
+        const wRecent = Math.max(0.10, 1 - wHazard - wTransition);
+
+        const p =
+            (wHazard * hazard.p) +
+            (wTransition * transition.p) +
+            (wRecent * recent.p);
+
+        return {
+            targetDigit,
+            raw: p,
+            hazard,
+            transition,
+            recent,
+            effectiveSupport: Math.max(
+                hazard.support,
+                transition.support
+            )
+        };
+    },
+
+    forecastNext(symbol = this.getSymbol(), currentDigit = null, tickData = null) {
+        const st = this.state(symbol);
+        this.seedTransitionsFromWarmup(symbol);
+
+        const previousDigit =
+            currentDigit !== null && currentDigit !== undefined
+                ? Number(currentDigit)
+                : st.lastDigit;
+
+        const components = [];
+        let rawSum = 0;
+
+        for (let d = 0; d <= 9; d++) {
+            const row = this.rawDigitProbability(symbol, d, previousDigit);
+            components.push(row);
+            rawSum += row.raw;
+        }
+
+        if (!Number.isFinite(rawSum) || rawSum <= 0) rawSum = 1;
+
+        // Normalize so exact-next-digit probabilities sum to 1.
+        let calibratedRows = components.map(row => {
+            const normalized = row.raw / rawSum;
+            const cal = this.applyCalibration(symbol, normalized);
+            return {
+                ...row,
+                normalized,
+                calibratedRaw: cal.probability,
+                calibration: cal.calibration
+            };
+        });
+
+        let calibratedSum = calibratedRows.reduce(
+            (sum, row) => sum + row.calibratedRaw,
+            0
+        );
+        if (!Number.isFinite(calibratedSum) || calibratedSum <= 0) {
+            calibratedSum = 1;
+        }
+
+        calibratedRows = calibratedRows.map(row => ({
+            ...row,
+            probability: row.calibratedRaw / calibratedSum
+        }));
+
+        const predictions = Object.fromEntries(
+            calibratedRows.map(row => [row.targetDigit, row])
+        );
+
+        const top = calibratedRows
+            .slice()
+            .sort((a, b) => b.probability - a.probability)[0];
+
+        const forecast = {
+            symbol,
+            createdAt: Date.now(),
+            epoch: Number(tickData?.raw?.epoch || 0) || null,
+            previousDigit,
+            predictions,
+            topDigit: top?.targetDigit ?? null,
+            topProbability: top?.probability ?? 0
+        };
+
+        st.pendingForecast = forecast;
+        st.lastForecast = forecast;
+        this.render();
+
+        return forecast;
+    },
+
+    settleForwardOutcome(symbol, actualDigit) {
+        const st = this.state(symbol);
+        const forecast = st.pendingForecast;
+
+        if (!forecast) return;
+
+        const actual = Number(actualDigit);
+        if (!Number.isInteger(actual) || actual < 0 || actual > 9) return;
+
+        let brier = 0;
+
+        for (let d = 0; d <= 9; d++) {
+            const row = forecast.predictions[d];
+            if (!row) continue;
+
+            const p = Number(row.probability || 0);
+            const y = d === actual ? 1 : 0;
+            const key = this.probabilityBucket(p);
+
+            if (!st.calibration[key]) {
+                st.calibration[key] = { n: 0, hits: 0 };
+            }
+
+            st.calibration[key].n++;
+            st.calibration[key].hits += y;
+
+            st.shadowPredictions++;
+            brier += Math.pow(p - y, 2);
+        }
+
+        st.shadowTicks++;
+        st.brierSum += brier;
+        if (forecast.topDigit === actual) st.topPickHits++;
+        st.lastOutcome = actual;
+        st.pendingForecast = null;
+
+        if (st.shadowTicks % 50 === 0) {
+            const acc = st.shadowTicks
+                ? (st.topPickHits / st.shadowTicks) * 100
+                : 0;
+            const brierMean = st.shadowTicks
+                ? st.brierSum / st.shadowTicks
+                : 0;
+
+            log(
+                `🧪 Forward shadow: ${st.shadowTicks} ticks | top-pick hit ${acc.toFixed(1)}% | Brier ${brierMean.toFixed(3)}`,
+                'ENGINE'
+            );
+            this.saveShadow(symbol);
+        }
+
+        this.render();
+    },
+
+    updateTransition(symbol, previousDigit, actualDigit) {
+        const st = this.state(symbol);
+
+        if (
+            Number.isInteger(Number(previousDigit)) &&
+            Number(previousDigit) >= 0 &&
+            Number(previousDigit) <= 9 &&
+            Number.isInteger(Number(actualDigit)) &&
+            Number(actualDigit) >= 0 &&
+            Number(actualDigit) <= 9
+        ) {
+            const prev = Number(previousDigit);
+            const next = Number(actualDigit);
+            st.transition[prev][next]++;
+            st.transitionTotals[prev]++;
+        }
+
+        st.lastDigit = Number(actualDigit);
+    },
+
+    onTickBeforeEngine(symbol, actualDigit) {
+        const st = this.state(symbol);
+        const previousDigit = st.lastDigit;
+
+        // Settle the forecast that was frozen BEFORE this tick existed.
+        this.settleForwardOutcome(symbol, actualDigit);
+
+        // Only after scoring the forecast do we expose this outcome to the
+        // transition model.
+        this.updateTransition(symbol, previousDigit, actualDigit);
+    },
+
+    onTickAfterEngine(symbol, actualDigit, tickData) {
+        this.forecastNext(symbol, actualDigit, tickData);
+    },
+
+    getPrediction(symbol, digit) {
+        const st = this.state(symbol);
+        const forecast = st.lastForecast;
+        const row = forecast?.predictions?.[digit];
+
+        if (!row) {
+            return {
+                ready: false,
+                probability: 0.10,
+                effectiveSupport: 0,
+                source: 'BASELINE'
+            };
+        }
+
+        return {
+            ready:
+                Number(row.effectiveSupport || 0) >=
+                window.EV_GATE_CONFIG.minEffectiveSupport,
+            probability: Number(row.probability || 0.10),
+            effectiveSupport: Number(row.effectiveSupport || 0),
+            hazardProbability: Number(row.hazard?.p || 0.10),
+            hazardSupport: Number(row.hazard?.support || 0),
+            transitionProbability: Number(row.transition?.p || 0.10),
+            transitionSupport: Number(row.transition?.support || 0),
+            recentProbability: Number(row.recent?.p || 0.10),
+            calibration: row.calibration || null,
+            forecastCreatedAt: forecast.createdAt,
+            source: 'NEXT_TICK_MODEL'
+        };
+    },
+
+    evaluateProposal({
+        symbol,
+        digit,
+        askPrice,
+        payout,
+        modelSnapshot = null,
+        mode = null
+    }) {
+        const model = modelSnapshot || this.getPrediction(symbol, digit);
+        const ask = Number(askPrice);
+        const grossPayout = Number(payout);
+
+        if (
+            !Number.isFinite(ask) || ask <= 0 ||
+            !Number.isFinite(grossPayout) || grossPayout <= 0
+        ) {
+            return {
+                approved: false,
+                reason: 'INVALID_QUOTE',
+                modelProbability: Number(model?.probability || 0),
+                breakEvenProbability: null,
+                edge: null,
+                expectedValue: null
+            };
+        }
+
+        const p = Number(model?.probability || 0.10);
+        const breakEven = ask / grossPayout;
+        const edge = p - breakEven;
+        const expectedValue = (p * grossPayout) - ask;
+
+        const gateApplies =
+            window.EV_GATE_CONFIG.enabled &&
+            (
+                mode === 'ai' ||
+                (mode === 'instant' && window.EV_GATE_CONFIG.applyToInstant)
+            );
+
+        let approved = true;
+        let reason = 'EV_GATE_NOT_APPLIED';
+
+        const minEdgeRequired =
+            mode === 'recovery'
+                ? Number(window.EV_GATE_CONFIG.recoveryMinEdge ?? window.EV_GATE_CONFIG.minEdge)
+                : Number(window.EV_GATE_CONFIG.minEdge);
+
+        if (gateApplies) {
+            const auditor = window.randomnessAuditor?.lastSnapshot || null;
+            const auditorSupports = !!(
+                mode === 'ai' &&
+                auditor?.ready &&
+                Number(auditor.topDigit) === Number(digit) &&
+                Number(auditor.signalStrength || 0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistSignal || 0.18)
+            );
+            const auditorFloor = Number(window.RANDOMNESS_AUDITOR_CONFIG?.aiAssistEdgeFloor ?? -0.040);
+
+            if (!model?.ready && !auditorSupports) {
+                approved = false;
+                reason = 'NEXT_TICK_MODEL_NOT_READY';
+            } else if (edge >= minEdgeRequired) {
+                approved = true;
+                reason = 'POSITIVE_LIVE_EDGE';
+            } else if (auditorSupports && Number.isFinite(edge) && edge >= auditorFloor) {
+                approved = true;
+                reason = 'AUDITOR_ASSISTED_ENTRY';
+            } else {
+                approved = false;
+                reason = 'EDGE_BELOW_THRESHOLD';
+            }
+        } else if (mode === 'recovery') {
+            // Recovery continuity for the user's 1.15 progression.
+            // Tail-risk and max-trade protections still control the cycle.
+            approved = true;
+            reason = 'RECOVERY_CONTINUITY';
+        }
+
+        const result = {
+            approved,
+            reason,
+            minEdgeRequired,
+            modelProbability: p,
+            breakEvenProbability: breakEven,
+            edge,
+            expectedValue,
+            askPrice: ask,
+            payout: grossPayout,
+            support: Number(model?.effectiveSupport || 0),
+            gateApplies,
+            digit,
+            symbol
+        };
+
+        this.lastEvaluation = result;
+        this.render();
+        return result;
+    },
+
+    ensurePanel() {
+        return;
+
+        const analysisPanel = document.getElementById('digit-analysis-panel');
+        if (!analysisPanel || !analysisPanel.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'next-tick-edge-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-cyan-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-cyan-300 mb-2">🎯 NEXT-TICK EDGE ENGINE</div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Digit:</span>
+                <span id="ntm-digit" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Next-tick P:</span>
+                <span id="ntm-prob" class="font-bold text-cyan-300">-</span>
+
+                <span class="text-gray-400">Live break-even:</span>
+                <span id="ntm-breakeven" class="font-bold text-yellow-300">Awaiting quote</span>
+
+                <span class="text-gray-400">Live edge:</span>
+                <span id="ntm-edge" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Entry threshold:</span>
+                <span id="ntm-threshold" class="font-bold text-orange-300">0.00 pp preferred · auditor assist to -4.00 pp</span>
+
+                <span class="text-gray-400">Recovery threshold:</span>
+                <span id="ntm-recovery-threshold" class="font-bold text-orange-300">Recovery continuity · tail caps remain</span>
+
+                <span class="text-gray-400">Expected value:</span>
+                <span id="ntm-ev" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Model support:</span>
+                <span id="ntm-support" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Forward shadow:</span>
+                <span id="ntm-shadow" class="font-bold text-white">0 ticks</span>
+
+                <span class="text-gray-400">Top-pick hit rate:</span>
+                <span id="ntm-hit-rate" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Brier score:</span>
+                <span id="ntm-brier" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Decision:</span>
+                <span id="ntm-decision" class="font-bold text-gray-300">Shadow monitoring</span>
+            </div>
+        `;
+
+        analysisPanel.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+        this.ensurePanel();
+
+        const symbol = this.getSymbol();
+        const st = this.state(symbol);
+
+        let digit = null;
+        if (
+            typeof sessionState !== 'undefined' &&
+            sessionState.mode === 'ai' &&
+            sessionState.sessionDigit !== null
+        ) {
+            digit = Number(sessionState.sessionDigit);
+        } else {
+            const rec = window.digitIntelligenceEngine?.currentRecommendation;
+            if (rec && Number.isInteger(Number(rec.digit))) {
+                digit = Number(rec.digit);
+            }
+        }
+
+        const prediction =
+            digit !== null ? this.getPrediction(symbol, digit) : null;
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        set('ntm-digit', digit !== null ? String(digit) : '-');
+        set(
+            'ntm-prob',
+            prediction
+                ? `${(prediction.probability * 100).toFixed(2)}%`
+                : '-'
+        );
+        set(
+            'ntm-support',
+            prediction
+                ? `${prediction.effectiveSupport}${prediction.ready ? ' ✓' : ' · warming'}`
+                : '-'
+        );
+
+        const evaln = this.lastEvaluation;
+        const evaluationMatchesCurrentDigit =
+            evaln &&
+            evaln.symbol === symbol &&
+            digit !== null &&
+            Number(evaln.digit) === Number(digit);
+
+        if (evaluationMatchesCurrentDigit) {
+            set(
+                'ntm-breakeven',
+                evaln.breakEvenProbability !== null
+                    ? `${(evaln.breakEvenProbability * 100).toFixed(2)}%`
+                    : '-'
+            );
+            set(
+                'ntm-edge',
+                evaln.edge !== null
+                    ? `${evaln.edge >= 0 ? '+' : ''}${(evaln.edge * 100).toFixed(2)} pp`
+                    : '-'
+            );
+            set(
+                'ntm-ev',
+                evaln.expectedValue !== null
+                    ? `${evaln.expectedValue >= 0 ? '+' : ''}$${evaln.expectedValue.toFixed(3)} / trade`
+                    : '-'
+            );
+            set(
+                'ntm-decision',
+                evaln.reason === 'EV_GATE_NOT_APPLIED'
+                    ? 'ℹ️ Recovery quote · entry EV gate not applied'
+                    : (
+                        evaln.approved
+                            ? `✅ ${evaln.reason}`
+                            : `🧱 ${evaln.reason}`
+                    )
+            );
+        } else {
+            set('ntm-breakeven', 'Awaiting quote');
+            set('ntm-edge', '-');
+            set('ntm-ev', '-');
+            set('ntm-decision', 'Shadow monitoring');
+        }
+
+        set('ntm-shadow', `${st.shadowTicks} ticks`);
+
+        const hitRate =
+            st.shadowTicks > 0
+                ? (st.topPickHits / st.shadowTicks) * 100
+                : null;
+
+        set(
+            'ntm-hit-rate',
+            hitRate !== null ? `${hitRate.toFixed(2)}%` : '-'
+        );
+
+        const brier =
+            st.shadowTicks > 0
+                ? st.brierSum / st.shadowTicks
+                : null;
+
+        set(
+            'ntm-brier',
+            brier !== null ? brier.toFixed(4) : '-'
+        );
+
+        if (window.cyclePerformance) {
+            window.cyclePerformance.render();
+        }
+    },
+
+    saveShadow(symbol = this.getSymbol()) {
+        try {
+            const st = this.state(symbol);
+            const payload = {
+                shadowTicks: st.shadowTicks,
+                shadowPredictions: st.shadowPredictions,
+                topPickHits: st.topPickHits,
+                brierSum: st.brierSum,
+                calibration: st.calibration
+            };
+            localStorage.setItem(
+                `matchstar_shadow_v1_${symbol}`,
+                JSON.stringify(payload)
+            );
+        } catch (_) {}
+    },
+
+    loadShadow(symbol = this.getSymbol()) {
+        try {
+            const raw = localStorage.getItem(`matchstar_shadow_v1_${symbol}`);
+            if (!raw) return;
+
+            const saved = JSON.parse(raw);
+            const st = this.states[symbol];
+            if (!st) return;
+
+            st.shadowTicks = Number(saved.shadowTicks || 0);
+            st.shadowPredictions = Number(saved.shadowPredictions || 0);
+            st.topPickHits = Number(saved.topPickHits || 0);
+            st.brierSum = Number(saved.brierSum || 0);
+            st.calibration =
+                saved.calibration && typeof saved.calibration === 'object'
+                    ? saved.calibration
+                    : {};
+        } catch (_) {}
+    }
+};
+
+function getFrozenNextTickSnapshot(symbol, digit) {
+    return window.nextTickModel.getPrediction(symbol, digit);
+}
+
+
+// ============================================================================
+// MATCHSTAR V16 — TAIL PRECURSOR LAB
+// Prospective, forward-only cycle-state recorder.
+// It does NOT invent a tail score from hand-written weights. It learns only
+// after enough completed normal and natural-tail cycles have accumulated.
+// ============================================================================
+
+window.tailPrecursorLab = {
+    minNormalForModel: 20,
+    minTailForModel: 5,
+    neighborCount: 12,
+
+    numericFeatures: [
+        ['aiScore', 'AI score'],
+        ['p10', 'P10'],
+        ['p5', 'P5'],
+        ['pm5', 'pm5'],
+        ['pm10', 'pm10'],
+        ['s20', 'S20'],
+        ['etm', 'ETM'],
+        ['gapP90', 'gap/P90'],
+        ['extendRatio', 'extend ratio'],
+        ['persistenceScore', 'persistence'],
+        ['consecutiveExtendingGaps', 'extending gaps'],
+        ['entropy', 'entropy'],
+        ['chi2', 'chi-square'],
+        ['dominance', 'dominance'],
+        ['nextTickProbability', 'next-tick P'],
+        ['targetFreq20', 'target freq 20'],
+        ['targetFreq50', 'target freq 50'],
+        ['targetFreq100', 'target freq 100']
+    ],
+
+    finite(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    },
+
+    mean(values) {
+        const xs = values.map(Number).filter(Number.isFinite);
+        return xs.length ? xs.reduce((a,b) => a+b, 0) / xs.length : null;
+    },
+
+    sd(values) {
+        const xs = values.map(Number).filter(Number.isFinite);
+        if (xs.length < 2) return null;
+        const m = this.mean(xs);
+        const v = xs.reduce((s,x) => s + Math.pow(x-m,2), 0) / (xs.length-1);
+        return Math.sqrt(Math.max(0, v));
+    },
+
+    captureState(digit, trigger = 'SNAPSHOT', tradeNumber = 0) {
+        const d = Number(digit);
+        let decision = null;
+        try {
+            if (typeof buildDigitDecision === 'function') decision = buildDigitDecision(d);
+        } catch (_) {}
+
+        const engine = window.digitIntelligenceEngine;
+        const rec = engine?.currentRecommendation || null;
+        const ds = engine?.digitStats?.[d] || null;
+
+        let regime = null;
+        try {
+            regime = engine?.computeRegimeStatus ? engine.computeRegimeStatus() : null;
+        } catch (_) {}
+
+        let pred = null;
+        try {
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                null;
+            pred = window.nextTickModel?.getPrediction
+                ? window.nextTickModel.getPrediction(symbol, d)
+                : null;
+        } catch (_) {}
+
+        const digits = Array.isArray(window.lastDigits)
+            ? window.lastDigits.slice(-100)
+            : [];
+
+        const freq = (n) => {
+            const xs = digits.slice(-n);
+            if (!xs.length) return null;
+            return xs.filter(x => Number(x) === d).length / xs.length;
+        };
+
+        const gap = Number(decision?.gap ?? decision?.g ?? ds?.currentGap ?? NaN);
+        const p90 = Number(decision?.p90 ?? ds?.p90Gap ?? NaN);
+        const avgGap = Number(decision?.avgGap ?? ds?.avgGap ?? NaN);
+
+        return {
+            at: Date.now(),
+            trigger,
+            tradeNumber: Number(tradeNumber || 0),
+            digit: d,
+
+            aiScore: Number(rec?.score ?? decision?.score ?? NaN),
+            p10: Number(rec?.p10 ?? rec?.P10 ?? decision?.P10 ?? NaN),
+            p5: Number(decision?.P5 ?? NaN),
+            pm5: Number(rec?.pm5 ?? decision?.pm5 ?? decision?.pm5w ?? NaN),
+            pm10: Number(rec?.pm10 ?? decision?.pm10 ?? NaN),
+            s20: Number(rec?.s20 ?? decision?.s20 ?? NaN),
+            etm: Number(rec?.etm ?? decision?.etm ?? NaN),
+
+            gap,
+            p90,
+            gapP90: Number.isFinite(gap) && Number.isFinite(p90) && p90 > 0
+                ? gap / p90
+                : NaN,
+            avgGap,
+            extendRatio: Number(
+                decision?.extendRatio ??
+                (
+                    Number.isFinite(gap) && Number.isFinite(avgGap) && avgGap > 0
+                        ? gap / avgGap
+                        : NaN
+                )
+            ),
+            persistenceScore: Number(
+                decision?.persistenceScore ??
+                ds?.persistenceScore ??
+                NaN
+            ),
+            consecutiveExtendingGaps: Number(
+                decision?.consecutiveExtendingGaps ??
+                ds?.consecutiveExtendingGaps ??
+                NaN
+            ),
+            unstable: !!(decision?.isUnstable ?? ds?.isUnstable),
+
+            entropy: Number(regime?.entropy ?? NaN),
+            chi2: Number(regime?.chi2 ?? NaN),
+            dominance: Number(regime?.dominance ?? NaN),
+            regimeLabel: regime?.label || (regime?.ok ? 'STABLE' : 'UNKNOWN'),
+
+            nextTickProbability: Number(pred?.probability ?? NaN),
+            modelSupport: Number(pred?.effectiveSupport ?? NaN),
+
+            targetFreq20: Number(freq(20) ?? NaN),
+            targetFreq50: Number(freq(50) ?? NaN),
+            targetFreq100: Number(freq(100) ?? NaN),
+
+            recentDigits: digits.slice(-50)
+        };
+    },
+
+    classifyCycle(cycle) {
+        if (!cycle) return 'EXCLUDE';
+
+        const reason = String(cycle.finalReason || '').toLowerCase();
+        const liveWin = Number(cycle.winningTradeNumber || 0);
+        const psd = cycle.postStopDepth || null;
+        const eventualDepth = Number(psd?.wouldWinTradeNumber || 0);
+
+        // Confirmed financial wins inside the live safety window.
+        if (cycle.status === 'WIN' && liveWin > 0 && liveWin <= 10) {
+            return liveWin <= 5 ? 'FAST_WIN' : 'NORMAL_WIN';
+        }
+
+        // Depth-aware continuation classes from genuine FUTURE public ticks.
+        if (eventualDepth >= 11 && eventualDepth <= 15) return 'POST_STOP_11_15';
+        if (eventualDepth >= 16 && eventualDepth <= 20) return 'POST_STOP_16_20';
+        if (eventualDepth >= 21 && eventualDepth <= 30) return 'POST_STOP_21_30';
+        if (eventualDepth >= 31) return 'POST_STOP_31_PLUS';
+
+        const naturalCapReason =
+            reason.includes('maximum trades') ||
+            reason.includes('maximum cycle') ||
+            reason.includes('tail risk');
+
+        // A capped cycle without observed continuation is censored, not a known tail.
+        if (naturalCapReason) return 'CENSORED_STOP';
+
+        // Reconciliation/network/manual stops are excluded from the market model.
+        return 'TECHNICAL_STOP';
+    },
+
+    eligibleGroups(symbol) {
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const enriched = rows.map(r => {
+            const klass = this.classifyCycle(r);
+            // Keep stored class synchronized with the richer depth-aware taxonomy.
+            if (r && r.tailClass !== klass) r.tailClass = klass;
+            return { cycle: r, klass };
+        });
+
+        const normal = enriched.filter(x =>
+            x.klass === 'FAST_WIN' || x.klass === 'NORMAL_WIN'
+        );
+
+        const tails = enriched.filter(x =>
+            x.klass === 'POST_STOP_11_15' ||
+            x.klass === 'POST_STOP_16_20' ||
+            x.klass === 'POST_STOP_21_30' ||
+            x.klass === 'POST_STOP_31_PLUS'
+        );
+
+        return {
+            normal,
+            tails,
+            post11_15: enriched.filter(x => x.klass === 'POST_STOP_11_15'),
+            post16_20: enriched.filter(x => x.klass === 'POST_STOP_16_20'),
+            post21_30: enriched.filter(x => x.klass === 'POST_STOP_21_30'),
+            post31plus: enriched.filter(x => x.klass === 'POST_STOP_31_PLUS'),
+            censored: enriched.filter(x => x.klass === 'CENSORED_STOP'),
+            technical: enriched.filter(x => x.klass === 'TECHNICAL_STOP')
+        };
+    },
+
+    entrySnapshot(cycle) {
+        return cycle?.tailTrajectory?.[0] || cycle?.entryTailState || null;
+    },
+
+    featureStats(symbol) {
+        const g = this.eligibleGroups(symbol);
+        const result = [];
+
+        for (const [key, label] of this.numericFeatures) {
+            const nv = g.normal
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+            const tv = g.tails
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+
+            if (nv.length < 3 || tv.length < 2) continue;
+
+            const nm = this.mean(nv);
+            const tm = this.mean(tv);
+            const pooled = this.sd(nv.concat(tv));
+
+            if (!Number.isFinite(pooled) || pooled <= 1e-12) continue;
+
+            result.push({
+                key,
+                label,
+                normalMean: nm,
+                tailMean: tm,
+                effect: (tm - nm) / pooled,
+                normalN: nv.length,
+                tailN: tv.length
+            });
+        }
+
+        result.sort((a,b) => Math.abs(b.effect) - Math.abs(a.effect));
+        return result;
+    },
+
+    modelReady(symbol) {
+        const g = this.eligibleGroups(symbol);
+        return (
+            g.normal.length >= this.minNormalForModel &&
+            g.tails.length >= this.minTailForModel
+        );
+    },
+
+    empiricalTailScore(symbol, currentState) {
+        const g = this.eligibleGroups(symbol);
+        if (!this.modelReady(symbol) || !currentState) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: 0,
+                reason: `Learning: need ≥${this.minNormalForModel} normal wins and ≥${this.minTailForModel} natural tails`
+            };
+        }
+
+        const all = [
+            ...g.normal.map(x => ({...x, y: 0})),
+            ...g.tails.map(x => ({...x, y: 1}))
+        ];
+
+        const usableFeatures = this.featureStats(symbol)
+            .slice(0, 8)
+            .map(x => x.key);
+
+        if (usableFeatures.length < 3) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: 0,
+                reason: 'Learning: not enough stable precursor features'
+            };
+        }
+
+        const scales = {};
+        for (const key of usableFeatures) {
+            const values = all
+                .map(x => Number(this.entrySnapshot(x.cycle)?.[key]))
+                .filter(Number.isFinite);
+            scales[key] = {
+                mean: this.mean(values),
+                sd: this.sd(values)
+            };
+        }
+
+        const distances = [];
+        for (const row of all) {
+            const s = this.entrySnapshot(row.cycle);
+            if (!s) continue;
+
+            let sum = 0;
+            let used = 0;
+
+            for (const key of usableFeatures) {
+                const a = Number(currentState[key]);
+                const b = Number(s[key]);
+                const sd = Number(scales[key]?.sd);
+
+                if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(sd) || sd <= 1e-12) continue;
+
+                sum += Math.pow((a-b)/sd, 2);
+                used++;
+            }
+
+            if (used >= 3) {
+                distances.push({
+                    d: Math.sqrt(sum/used),
+                    y: row.y
+                });
+            }
+        }
+
+        distances.sort((a,b) => a.d-b.d);
+        const k = Math.min(this.neighborCount, distances.length);
+        const near = distances.slice(0,k);
+
+        if (near.length < 8) {
+            return {
+                ready: false,
+                score: null,
+                neighbors: near.length,
+                reason: 'Learning: too few comparable historical states'
+            };
+        }
+
+        // Distance-weighted empirical tail frequency. This is descriptive, not
+        // a claim of causal prediction.
+        let wTail = 0;
+        let wTotal = 0;
+        for (const n of near) {
+            const w = 1 / Math.max(0.10, n.d);
+            wTotal += w;
+            wTail += w * n.y;
+        }
+
+        const p = wTotal > 0 ? wTail / wTotal : null;
+
+        return {
+            ready: Number.isFinite(p),
+            score: Number.isFinite(p) ? p : null,
+            neighbors: near.length,
+            reason: Number.isFinite(p) ? 'Empirical nearest-state tail rate' : 'Unavailable'
+        };
+    },
+
+    eventualDepth(cycle) {
+        if (!cycle) return null;
+        const liveWin = Number(cycle.winningTradeNumber || 0);
+        if (cycle.status === 'WIN' && liveWin > 0) return liveWin;
+
+        const post = Number(cycle.postStopDepth?.wouldWinTradeNumber || 0);
+        return post > 0 ? post : null;
+    },
+
+    conditionalRecovery(symbol, depth) {
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const d = Math.max(1, Number(depth || 1));
+
+        // Use only market-resolved cycles. Technical stops and still-censored
+        // safety stops are excluded from both numerator and denominator.
+        const resolved = rows.filter(r => {
+            const klass = this.classifyCycle(r);
+            if (klass === 'TECHNICAL_STOP' || klass === 'CENSORED_STOP') return false;
+            return Number.isFinite(Number(this.eventualDepth(r)));
+        });
+
+        const atRisk = resolved.filter(r =>
+            Number(this.eventualDepth(r)) >= d
+        );
+
+        if (!atRisk.length) {
+            return {
+                n: 0,
+                next1: null,
+                next2: null,
+                next4: null,
+                deepTail: null
+            };
+        }
+
+        const recoveredWithin = (h) => atRisk.filter(r => {
+            const w = Number(this.eventualDepth(r));
+            return w > d && w <= d + h;
+        }).length / atRisk.length;
+
+        const deepTail = atRisk.filter(r => {
+            const w = Number(this.eventualDepth(r));
+            return w >= 21;
+        }).length / atRisk.length;
+
+        return {
+            n: atRisk.length,
+            next1: recoveredWithin(1),
+            next2: recoveredWithin(2),
+            next4: recoveredWithin(4),
+            deepTail
+        };
+    },
+
+    trajectorySnapshotAt(cycle, depth) {
+        const targetDepth = Number(depth || 0);
+        const xs = Array.isArray(cycle?.tailTrajectory)
+            ? cycle.tailTrajectory
+            : [];
+
+        if (!xs.length) return cycle?.entryTailState || null;
+
+        // ENTRY for depth 0, otherwise latest snapshot at/before requested depth.
+        const eligible = xs.filter(s =>
+            Number(s?.tradeNumber || 0) <= targetDepth
+        );
+
+        if (!eligible.length) return xs[0] || null;
+        return eligible[eligible.length - 1];
+    },
+
+    percentileRank(values, x) {
+        const arr = (Array.isArray(values) ? values : [])
+            .map(Number)
+            .filter(Number.isFinite)
+            .sort((a,b) => a-b);
+
+        if (!arr.length || !Number.isFinite(Number(x))) return null;
+
+        const value = Number(x);
+        let below = 0;
+        let equal = 0;
+
+        for (const v of arr) {
+            if (v < value) below++;
+            else if (v === value) equal++;
+        }
+
+        // Mid-rank percentile handles ties more gracefully.
+        return ((below + 0.5 * equal) / arr.length) * 100;
+    },
+
+    researchReferenceCycle(symbol) {
+        // Prefer the currently active cycle. When trading has ended, keep the
+        // latest completed cycle as the research reference so the table/report
+        // does not go blank at the moment the most useful tail data arrives.
+        const current = window.cyclePerformance?.current || null;
+        if (current) {
+            return {
+                cycle: current,
+                source: 'ACTIVE',
+                label: 'Active cycle'
+            };
+        }
+
+        const rows = window.cyclePerformance?.load(symbol) || [];
+        const latest = rows.length ? rows[rows.length - 1] : null;
+
+        if (!latest) {
+            return {
+                cycle: null,
+                source: 'NONE',
+                label: 'No cycle available'
+            };
+        }
+
+        return {
+            cycle: latest,
+            source: 'LAST_COMPLETED',
+            label: 'Last completed cycle'
+        };
+    },
+
+    currentCheckpointSnapshot(symbol, depth) {
+        const ref = this.researchReferenceCycle(symbol);
+        if (!ref.cycle) return null;
+        return this.trajectorySnapshotAt(ref.cycle, depth);
+    },
+
+    comparisonForFeature(symbol, depth, featureKey) {
+        const g = this.eligibleGroups(symbol);
+        const current = this.currentCheckpointSnapshot(symbol, depth);
+        const currentValue = Number(current?.[featureKey]);
+
+        if (!Number.isFinite(currentValue)) {
+            return {
+                currentValue: null,
+                normalMean: null,
+                tailMean: null,
+                normalPercentile: null,
+                tailPercentile: null,
+                normalN: 0,
+                tailN: 0
+            };
+        }
+
+        const normalValues = g.normal
+            .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[featureKey]))
+            .filter(Number.isFinite);
+
+        const tailValues = g.tails
+            .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[featureKey]))
+            .filter(Number.isFinite);
+
+        return {
+            currentValue,
+            normalMean: normalValues.length ? this.mean(normalValues) : null,
+            tailMean: tailValues.length ? this.mean(tailValues) : null,
+            normalPercentile: this.percentileRank(normalValues, currentValue),
+            tailPercentile: this.percentileRank(tailValues, currentValue),
+            normalN: normalValues.length,
+            tailN: tailValues.length
+        };
+    },
+
+    featureStatsAtDepth(symbol, depth) {
+        const g = this.eligibleGroups(symbol);
+        const result = [];
+
+        for (const [key, label] of this.numericFeatures) {
+            const nv = g.normal
+                .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[key]))
+                .filter(Number.isFinite);
+
+            const tv = g.tails
+                .map(x => Number(this.trajectorySnapshotAt(x.cycle, depth)?.[key]))
+                .filter(Number.isFinite);
+
+            if (nv.length < 3 || tv.length < 2) continue;
+
+            const nm = this.mean(nv);
+            const tm = this.mean(tv);
+            const pooled = this.sd(nv.concat(tv));
+            if (!Number.isFinite(pooled) || pooled <= 1e-12) continue;
+
+            result.push({
+                key,
+                label,
+                normalMean: nm,
+                tailMean: tm,
+                effect: (tm - nm) / pooled,
+                normalN: nv.length,
+                tailN: tv.length
+            });
+        }
+
+        result.sort((a,b) => Math.abs(b.effect) - Math.abs(a.effect));
+        return result;
+    },
+
+    ensurePanel() {
+        return;
+
+        const tailPanel = document.getElementById('tail-risk-panel');
+        const cyclePanel = document.getElementById('cycle-performance-panel');
+        const anchor = tailPanel || cyclePanel;
+        if (!anchor || !anchor.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'tail-precursor-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-fuchsia-300 mb-1">🧬 TAIL PRECURSOR LAB</div>
+            <div class="text-gray-400 mb-2">
+                Forward-only research · learns what is different before natural tails
+            </div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Learning sample:</span>
+                <span id="tpl-sample" class="font-bold text-white">0 normal · 0 resolved tails</span>
+
+                <span class="text-gray-400">Censored cap stops:</span>
+                <span id="tpl-censored" class="font-bold text-yellow-300">0</span>
+
+                <span class="text-gray-400">Technical stops excluded:</span>
+                <span id="tpl-tech" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Resolved depth classes:</span>
+                <span id="tpl-depth-classes" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Current tail state:</span>
+                <span id="tpl-state" class="font-bold text-yellow-300">LEARNING</span>
+
+                <span class="text-gray-400">Empirical tail score:</span>
+                <span id="tpl-score" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Comparable cycles:</span>
+                <span id="tpl-neighbors" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Cycle depth:</span>
+                <span id="tpl-depth" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Recover ≤ next 1:</span>
+                <span id="tpl-rec1" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Recover ≤ next 2:</span>
+                <span id="tpl-rec2" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Recover ≤ next 4:</span>
+                <span id="tpl-rec4" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Observed deep-tail rate:</span>
+                <span id="tpl-taildepth" class="font-bold text-white">-</span>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-1">Strongest observed entry differences:</div>
+                <div id="tpl-precursors" class="font-mono text-gray-200">
+                    Learning — more resolved post-stop cycles required.
+                </div>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-2">Current trajectory research:</div>
+
+                <div class="mb-2 flex flex-wrap gap-2 items-center">
+                    <span class="text-gray-400">Compare at:</span>
+                    <select id="tpl-checkpoint"
+                            onchange="window.tailPrecursorLab && window.tailPrecursorLab.render()"
+                            class="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white">
+                        <option value="0">Entry</option>
+                        <option value="3">Trade 3</option>
+                        <option value="5">Trade 5</option>
+                        <option value="7">Trade 7</option>
+                        <option value="9">Trade 9</option>
+                    </select>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-[11px] border-collapse">
+                        <thead>
+                            <tr class="text-gray-400">
+                                <th class="text-left p-1 border-b border-gray-700">Metric</th>
+                                <th class="text-right p-1 border-b border-gray-700">Current</th>
+                                <th class="text-right p-1 border-b border-gray-700">Normal mean</th>
+                                <th class="text-right p-1 border-b border-gray-700">Resolved-tail mean</th>
+                                <th class="text-right p-1 border-b border-gray-700">%ile vs normal</th>
+                                <th class="text-right p-1 border-b border-gray-700">%ile vs tails</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tpl-research-table">
+                            <tr>
+                                <td colspan="6" class="p-2 text-gray-400">
+                                    Waiting for cycle history and enough resolved comparison data.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="tpl-research-note" class="mt-2 text-gray-400">
+                    Percentiles show where the reference cycle sits relative to historical distributions.
+                </div>
+                <div class="mt-1 text-[10px] text-cyan-300">
+                    Research values stay visible after trading stops. When no cycle is active, the latest completed cycle remains the reference, including its stored trajectory and post-stop tail observations.
+                </div>
+            </div>
+
+            <div class="mt-3">
+                <div class="text-gray-400 mb-1">Trajectory warning checkpoints:</div>
+                <div id="tpl-trajectory" class="font-mono text-gray-200">
+                    Waiting for enough resolved cycles.
+                </div>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+                <button id="downloadResearchReportBtn"
+                        onclick="downloadMatchStarResearchReport()"
+                        class="px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded">
+                    ⬇ DOWNLOAD FULL OBSERVABILITY REPORT
+                </button>
+                <button id="downloadTaeResultsBtn"
+                        onclick="downloadTargetAttractionResults()"
+                        class="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded">
+                    📊 EXPORT TAE RESULTS
+                </button>
+            </div>
+
+            <div class="mt-2 text-gray-400" id="tpl-action">
+                Adaptive control remains observation-only until the validation sample is large enough.
+            </div>
+        `;
+
+        anchor.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+        this.ensurePanel();
+
+        const symbol =
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN';
+
+        const g = this.eligibleGroups(symbol);
+        // Persist richer class labels without changing the CPR-3 storage key.
+        try {
+            if (window.cyclePerformance?.historyBySymbol?.[symbol]) {
+                window.cyclePerformance.save(symbol);
+            }
+        } catch (_) {}
+        const current = window.cyclePerformance?.current || null;
+        const depth = Number(current?.trades?.length || 0);
+
+        let currentState = null;
+        if (current?.tailTrajectory?.length) {
+            currentState = current.tailTrajectory[current.tailTrajectory.length - 1];
+        } else {
+            const digit =
+                current?.digit ??
+                sessionState?.sessionDigit ??
+                window.digitIntelligenceEngine?.currentRecommendation?.digit;
+            if (Number.isInteger(Number(digit))) {
+                currentState = this.captureState(Number(digit), 'LIVE_PREVIEW', depth);
+            }
+        }
+
+        const score = this.empiricalTailScore(symbol, currentState);
+        const recovery = this.conditionalRecovery(symbol, Math.max(1, depth || 1));
+        const effects = this.featureStats(symbol).slice(0, 4);
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        set('tpl-sample', `${g.normal.length} normal · ${g.tails.length} resolved tails`);
+        set('tpl-censored', String(g.censored.length));
+        set('tpl-tech', String(g.technical.length));
+        set(
+            'tpl-depth-classes',
+            `11–15 ${g.post11_15.length} · 16–20 ${g.post16_20.length} · ` +
+            `21–30 ${g.post21_30.length} · 31+ ${g.post31plus.length}`
+        );
+        set('tpl-depth', String(depth));
+
+        if (score.ready) {
+            const pct = score.score * 100;
+            const label = pct >= 50 ? 'HIGH' : (pct >= 25 ? 'CAUTION' : 'LOW');
+            set('tpl-state', label);
+            set('tpl-score', `${pct.toFixed(1)}%`);
+            set('tpl-neighbors', String(score.neighbors));
+            set(
+                'tpl-action',
+                `Empirical state comparison active. Hard dollar/trade caps remain the authoritative control.`
+            );
+        } else {
+            set('tpl-state', 'LEARNING');
+            set('tpl-score', '-');
+            set('tpl-neighbors', String(score.neighbors || 0));
+            set('tpl-action', score.reason);
+        }
+
+        const pct = (x) => Number.isFinite(x) ? `${(x*100).toFixed(1)}%` : '-';
+        set('tpl-rec1', recovery.n ? `${pct(recovery.next1)} · n=${recovery.n}` : '-');
+        set('tpl-rec2', recovery.n ? pct(recovery.next2) : '-');
+        set('tpl-rec4', recovery.n ? pct(recovery.next4) : '-');
+        set('tpl-taildepth', recovery.n ? pct(recovery.deepTail) : '-');
+
+        const p = document.getElementById('tpl-precursors');
+        if (p) {
+            if (effects.length && g.tails.length >= 2) {
+                p.innerHTML = effects.map(e => {
+                    const direction = e.effect >= 0 ? '↑ in tails' : '↓ in tails';
+                    const fmt = (v) => Number.isFinite(v) ? Number(v).toFixed(3) : '-';
+                    return `${e.label}: ${direction} · normal ${fmt(e.normalMean)} vs tail ${fmt(e.tailMean)} · effect ${Math.abs(e.effect).toFixed(2)}`;
+                }).join('<br>');
+            } else {
+                p.textContent = 'Learning — at least 2 resolved post-stop cycles are needed even for a preliminary comparison.';
+            }
+        }
+
+        const researchBody = document.getElementById('tpl-research-table');
+        if (researchBody) {
+            const checkpointEl = document.getElementById('tpl-checkpoint');
+            const depth = Number(checkpointEl?.value || 0);
+
+            const metrics = [
+                ['extendRatio', 'Extend ratio'],
+                ['gapP90', 'gap/P90'],
+                ['targetFreq20', 'Target freq 20']
+            ];
+
+            const fmt = (v, key) => {
+                if (!Number.isFinite(v)) return '-';
+                if (key === 'targetFreq20') return `${(v * 100).toFixed(1)}%`;
+                return Number(v).toFixed(3);
+            };
+
+            const fmtPctile = (v) =>
+                Number.isFinite(v) ? `${v.toFixed(1)}%` : '-';
+
+            const rows = [];
+
+            for (const [key, label] of metrics) {
+                const c = this.comparisonForFeature(symbol, depth, key);
+
+                rows.push(`
+                    <tr>
+                        <td class="p-1 border-b border-gray-800 text-gray-300">${label}</td>
+                        <td class="p-1 border-b border-gray-800 text-right font-bold text-cyan-300">${fmt(c.currentValue, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-gray-200">${fmt(c.normalMean, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-yellow-300">${fmt(c.tailMean, key)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-gray-200">${fmtPctile(c.normalPercentile)}</td>
+                        <td class="p-1 border-b border-gray-800 text-right text-yellow-200">${fmtPctile(c.tailPercentile)}</td>
+                    </tr>
+                `);
+            }
+
+            researchBody.innerHTML = rows.join('');
+
+            const note = document.getElementById('tpl-research-note');
+            if (note) {
+                const g2 = this.eligibleGroups(symbol);
+                const ref = this.researchReferenceCycle(symbol);
+                const refCycle = ref.cycle;
+                const refClass = refCycle ? this.classifyCycle(refCycle) : '-';
+                const refDigit = Number.isInteger(Number(refCycle?.digit)) ? Number(refCycle.digit) : '-';
+
+                note.textContent =
+                    `${ref.label} · target ${refDigit} · class ${refClass} · ` +
+                    `Checkpoint: ${depth === 0 ? 'Entry' : 'Trade ' + depth} · ` +
+                    `${g2.normal.length} normal cycles · ${g2.tails.length} resolved-tail cycles · ` +
+                    `${g2.censored.length} censored cap stops excluded.`;
+
+            }
+        }
+
+        const traj = document.getElementById('tpl-trajectory');
+        if (traj) {
+            const checkpoints = [0, 3, 5, 7, 9];
+            const labels = {
+                0: 'Entry',
+                3: 'After trade 3',
+                5: 'After trade 5',
+                7: 'After trade 7',
+                9: 'After trade 9'
+            };
+
+            const rows = [];
+            for (const d of checkpoints) {
+                const best = this.featureStatsAtDepth(symbol, d)[0] || null;
+                if (!best) continue;
+
+                const dir = best.effect >= 0 ? '↑ in resolved tails' : '↓ in resolved tails';
+                rows.push(
+                    `${labels[d]}: ${best.label} ${dir} · ` +
+                    `normal ${Number(best.normalMean).toFixed(3)} vs tail ${Number(best.tailMean).toFixed(3)} · ` +
+                    `effect ${Math.abs(best.effect).toFixed(2)}`
+                );
+            }
+
+            traj.innerHTML = rows.length
+                ? rows.join('<br>')
+                : 'Waiting for enough resolved normal and post-stop cycles at comparable checkpoints.';
+        }
+    }
+};
+
+
+// ============================================================================
+// MATCHSTAR V16 — CYCLE PERFORMANCE RECORDER + PRECURSOR TRAJECTORY
+// ============================================================================
+
+
+/* === DigitMatchStar official result publisher === */
+window.matchstarPublisher = {
+    storageKey: 'matchstar_telegram_preview_cycle_ids_v3',
+
+    publishedIds() {
+        try {
+            const rows = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
+            return Array.isArray(rows) ? rows : [];
+        } catch (_) {
+            return [];
+        }
+    },
+
+    remember(id) {
+        if (!id) return;
+        const rows = this.publishedIds();
+        if (!rows.includes(id)) rows.push(id);
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(rows.slice(-500)));
+        } catch (_) {}
+    },
+
+    authCandidates() {
+        const platformJwt =
+            (typeof getPlatformJwt === 'function' ? getPlatformJwt() : '') ||
+            sessionStorage.getItem('dms_platform_jwt') ||
+            localStorage.getItem('dms_platform_jwt') ||
+            '';
+
+        const derivToken =
+            (typeof getStoredDerivToken === 'function' ? getStoredDerivToken() : '') ||
+            sessionStorage.getItem('active_token') ||
+            localStorage.getItem('active_token') ||
+            localStorage.getItem('derivToken') ||
+            '';
+
+        const out = [];
+        if (platformJwt) out.push({ mode: 'platform', token: platformJwt });
+        if (derivToken && derivToken !== platformJwt) out.push({ mode: 'deriv', token: derivToken });
+        return out;
+    },
+
+    accountId() {
+        return (typeof getStoredDerivAccount === 'function')
+            ? getStoredDerivAccount()
+            : (
+                sessionStorage.getItem('active_account') ||
+                sessionStorage.getItem('derivAccount') ||
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('derivAccount') ||
+                localStorage.getItem('derivDemoAccount') ||
+                localStorage.getItem('derivRealAccount') ||
+                ''
+            );
+    },
+
+    async publishCycle(cycle) {
+        if (!cycle?.id || this.publishedIds().includes(cycle.id)) return;
+
+        // WIN notifications are settlement-safe only.
+        // Legacy/browser cycle recorders may still call publishCycle(), but
+        // they are not allowed to publish a WIN unless the exact Deriv
+        // settlement has been attached to the payload.
+        if (
+            String(cycle?.status || '').toUpperCase() === 'WIN' &&
+            cycle?.settlementConfirmed !== true
+        ) {
+            console.info(
+                '[MatchStar Publisher] skipped unconfirmed WIN; waiting for authoritative settlement'
+            );
+            return null;
+        }
+
+        const accountId = this.accountId();
+        const auths = this.authCandidates();
+
+        if (!accountId || !auths.length) {
+            const msg =
+                `📣 Telegram publish skipped: missing ${!accountId ? 'account ID' : 'publisher authentication'}`;
+            console.warn('[MatchStar Publisher]', msg);
+            if (typeof log === 'function') log(msg, 'WARNING');
+            return;
+        }
+
+        const payload = {
+            account_id: accountId,
+            cycle: {
+                id: cycle.id,
+                symbol: cycle.symbol,
+                digit: cycle.digit,
+                startedAt: cycle.startedAt,
+                endedAt: cycle.endedAt,
+                status: cycle.status,
+                finalReason: cycle.finalReason,
+                winningTradeNumber: cycle.winningTradeNumber,
+                totalInvestment: cycle.totalInvestment,
+                totalPayout: cycle.totalPayout,
+                netPnL: cycle.netPnL,
+                cyclePnlAuthoritative: cycle.cyclePnlAuthoritative === true,
+                settlementConfirmed: cycle.settlementConfirmed === true,
+                settlementContractId: cycle.settlementContractId || '',
+                maxStake: cycle.maxStake,
+                trades: Array.isArray(cycle.trades)
+                    ? cycle.trades.map(t => ({
+                        tradeNumber: t.tradeNumber,
+                        digit: t.digit,
+                        stake: t.stake,
+                        result: t.result,
+                        finalDigit: t.finalDigit,
+                        payout: t.payout,
+                        profit: t.profit,
+                        contractId: t.contractId || '',
+                        settled: t.settled === true
+                    }))
+                    : []
+            }
+        };
+
+        let lastError = null;
+
+        // Prefer secure platform JWT. If that session is unavailable/stale and
+        // a legacy/manual Deriv token exists, retry once with verified Deriv auth.
+        for (const auth of auths) {
+            try {
+                const response = await fetch('/api/publish-cycle', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${auth.token}`,
+                        'X-DMS-Auth-Mode': auth.mode
+                    },
+                    body: JSON.stringify({
+                        ...payload,
+                        auth_mode: auth.mode
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok && data?.pendingApproval) {
+                    this.remember(cycle.id);
+                    if (typeof log === 'function') {
+                        log(
+                            `📣 Telegram approval preview SENT | ${cycle.status} | auth ${auth.mode} | awaiting approval`,
+                            'SYSTEM'
+                        );
+                    }
+                    return data;
+                }
+
+                if (response.ok && data?.published) {
+                    this.remember(cycle.id);
+                    if (typeof log === 'function') {
+                        log(`📣 Telegram result published | ${cycle.status}`, 'SYSTEM');
+                    }
+                    return data;
+                }
+
+                lastError = data?.error || `HTTP ${response.status}`;
+                console.warn(
+                    `[MatchStar Publisher] ${auth.mode} authentication failed:`,
+                    lastError
+                );
+
+                // Only try the next auth candidate for auth/session failures.
+                if (![401, 403].includes(Number(response.status))) break;
+
+            } catch (err) {
+                lastError = err?.message || String(err);
+                console.warn('[MatchStar Publisher]', lastError);
+                break;
+            }
+        }
+
+        if (typeof log === 'function') {
+            log(`📣 Telegram publish failed: ${lastError || 'unknown error'}`, 'WARNING');
+        }
+        return null;
+    }
+};
+
+window.cyclePerformance = {
+    version: 'CPR-3',
+    current: null,
+    historyBySymbol: {},
+    maxStoredCyclesPerSymbol: 500,
+
+    getSymbol() {
+        return (
+            document.getElementById('symbol')?.value ||
+            window.tickFormat?.symbol ||
+            'UNKNOWN'
+        );
+    },
+
+    storageKey(symbol = this.getSymbol()) {
+        return `matchstar_cycle_history_v3_${symbol}`;
+    },
+
+    load(symbol = this.getSymbol()) {
+        if (this.historyBySymbol[symbol]) return this.historyBySymbol[symbol];
+
+        let rows = [];
+        try {
+            const raw = localStorage.getItem(this.storageKey(symbol));
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) rows = parsed;
+            }
+        } catch (_) {}
+
+        this.historyBySymbol[symbol] = rows;
+        return rows;
+    },
+
+    save(symbol = this.getSymbol()) {
+        const rows = this.historyBySymbol[symbol] || [];
+        const trimmed = rows.slice(-this.maxStoredCyclesPerSymbol);
+        this.historyBySymbol[symbol] = trimmed;
+
+        try {
+            localStorage.setItem(
+                this.storageKey(symbol),
+                JSON.stringify(trimmed)
+            );
+        } catch (_) {}
+    },
+
+    startCycle(contract, pending = null) {
+        if (this.current) return;
+
+        const symbol = pending?.symbol || this.getSymbol();
+        const digit = Number(contract?.predictedDigit);
+
+        let decision = null;
+        try {
+            if (typeof buildDigitDecision === 'function') {
+                decision = buildDigitDecision(digit);
+            }
+        } catch (_) {}
+
+        const rec = window.digitIntelligenceEngine?.currentRecommendation || null;
+
+        this.current = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            symbol,
+            digit,
+            startedAt: Date.now(),
+            endedAt: null,
+            status: 'ACTIVE',
+
+            entry: {
+                aiScore: Number(rec?.score ?? NaN),
+                p10: Number(rec?.p10 ?? rec?.P10 ?? decision?.P10 ?? NaN),
+                p5: Number(decision?.P5 ?? NaN),
+                pm5: Number(rec?.pm5 ?? decision?.pm5 ?? NaN),
+                pm10: Number(rec?.pm10 ?? decision?.pm10 ?? NaN),
+                s20: Number(rec?.s20 ?? decision?.s20 ?? NaN),
+                etm: Number(rec?.etm ?? decision?.etm ?? NaN),
+                gap: Number(decision?.gap ?? decision?.g ?? NaN),
+                p90: Number(decision?.p90 ?? NaN),
+                nextTickProbability: Number(contract?.nextTickProbability ?? NaN),
+                breakEvenProbability: Number(contract?.liveBreakEvenProbability ?? NaN),
+                liveEdge: Number(contract?.liveEdge ?? NaN),
+                expectedValue: Number(contract?.expectedValueAtEntry ?? NaN)
+            },
+
+            tailTrajectory: [
+                window.tailPrecursorLab.captureState(digit, 'ENTRY', 0)
+            ],
+            tailClass: null,
+
+            trades: [],
+            totalInvestment: 0,
+            totalPayout: 0,
+            netPnL: 0,
+            maxStake: 0,
+            winningTradeNumber: null,
+            finalReason: null
+        };
+
+        // Entry Tick DNA V3.6: synchronous direct capture into the loaded shadow lab.
+        // This avoids event timing/polling races on one-tick contracts.
+        try {
+            if (window.EntryTickDNAV2?.captureStart) {
+                const ok = window.EntryTickDNAV2.captureStart(this.current, window.lastTick || null);
+                if (!ok) console.warn('Entry Tick DNA direct start capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle start');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct start capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-started', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(this.current)),
+                    entryTick: window.lastTick ? JSON.parse(JSON.stringify(window.lastTick)) : null,
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-start event failed:', err);
+        }
+
+        log(
+            `🔁 CYCLE START | ${symbol} | digit ${digit} | entry edge ` +
+            `${Number.isFinite(this.current.entry.liveEdge) ? (this.current.entry.liveEdge * 100).toFixed(2) + ' pp' : 'n/a'}`,
+            'SYSTEM'
+        );
+
+        this.render();
+    },
+
+    recordPurchase(contract, pending = null) {
+        if (!contract) return;
+
+        if (!this.current) this.startCycle(contract, pending);
+        if (!this.current) return;
+
+        const contractId = Number(contract.contractId);
+        if (this.current.trades.some(t => Number(t.contractId) === contractId)) {
+            return;
+        }
+
+        const stake = Number(contract.askPrice || contract.stake || 0);
+
+        this.current.trades.push({
+            tradeNumber: this.current.trades.length + 1,
+            contractId,
+            digit: Number(contract.predictedDigit),
+            stake,
+            quotedPayout: Number(contract.quotedPayout || 0),
+            nextTickProbability: Number(contract.nextTickProbability ?? NaN),
+            breakEvenProbability: Number(contract.liveBreakEvenProbability ?? NaN),
+            liveEdge: Number(contract.liveEdge ?? NaN),
+            expectedValueAtEntry: Number(contract.expectedValueAtEntry ?? NaN),
+            purchasedAt: Date.now(),
+            settledAt: null,
+            result: 'OPEN',
+            finalDigit: null,
+            payout: 0,
+            profit: null
+        });
+
+        this.current.totalInvestment += stake;
+        this.current.maxStake = Math.max(this.current.maxStake, stake);
+        this.current.netPnL =
+            this.current.totalPayout - this.current.totalInvestment;
+
+        // Preserve the state immediately before/at each confirmed purchase.
+        this.current.tailTrajectory = this.current.tailTrajectory || [];
+        this.current.tailTrajectory.push(
+            window.tailPrecursorLab.captureState(
+                Number(contract.predictedDigit),
+                'PURCHASE',
+                this.current.trades.length
+            )
+        );
+
+        this.render();
+        window.tailPrecursorLab.render();
+    },
+
+    recordTailSnapshot(trigger, digit = null) {
+        if (!this.current) return;
+
+        const d = Number(
+            digit ??
+            this.current.digit ??
+            sessionState?.sessionDigit ??
+            window.digitIntelligenceEngine?.currentRecommendation?.digit
+        );
+
+        if (!Number.isInteger(d) || d < 0 || d > 9) return;
+
+        this.current.tailTrajectory = this.current.tailTrajectory || [];
+        this.current.tailTrajectory.push(
+            window.tailPrecursorLab.captureState(
+                d,
+                trigger,
+                this.current.trades.length
+            )
+        );
+
+        window.tailPrecursorLab.render();
+    },
+
+    settleTrade(contractId, result, finalDigit, payout, profit) {
+        if (!this.current) return;
+
+        const row = this.current.trades.find(
+            t => Number(t.contractId) === Number(contractId)
+        );
+
+        if (!row) return;
+
+        // Ignore duplicate settlement updates.
+        if (row.result !== 'OPEN') return;
+
+        row.result = result;
+        row.finalDigit =
+            finalDigit === null || finalDigit === undefined
+                ? null
+                : Number(finalDigit);
+        row.payout = Number(payout || 0);
+        row.profit = Number(profit || 0);
+        row.settledAt = Date.now();
+
+        // Losing DIGITMATCH settlements contribute zero payout.
+        // Only confirmed winning payouts count as cycle revenue.
+        if (result === 'WIN') {
+            const winPayout = Number(row.payout || 0);
+            if (Number.isFinite(winPayout) && winPayout > 0) {
+                this.current.totalPayout += winPayout;
+            }
+            this.current.winningTradeNumber = row.tradeNumber;
+        }
+
+        this.current.netPnL =
+            this.current.totalPayout - this.current.totalInvestment;
+
+        this.render();
+    },
+
+    completeCycle(status = 'WIN', reason = null) {
+        if (!this.current) return null;
+
+        const c = this.current;
+        c.endedAt = Date.now();
+        c.status = status;
+        c.finalReason = reason || status;
+
+        // Rebuild authoritative totals from confirmed purchases and confirmed wins.
+        c.totalInvestment = c.trades.reduce((sum, t) => {
+            const stake = Number(t.stake || 0);
+            return sum + (Number.isFinite(stake) && stake > 0 ? stake : 0);
+        }, 0);
+
+        c.totalPayout = c.trades.reduce((sum, t) => {
+            if (t.result !== 'WIN') return sum;
+            const payout = Number(t.payout || 0);
+            return sum + (Number.isFinite(payout) && payout > 0 ? payout : 0);
+        }, 0);
+
+        c.netPnL = c.totalPayout - c.totalInvestment;
+
+        c.tailClass = window.tailPrecursorLab.classifyCycle(c);
+
+        const symbol = c.symbol || this.getSymbol();
+        const rows = this.load(symbol);
+
+        rows.push(JSON.parse(JSON.stringify(c)));
+        this.historyBySymbol[symbol] = rows;
+        this.save(symbol);
+
+        const durationSec = Math.max(
+            0,
+            (c.endedAt - c.startedAt) / 1000
+        );
+
+        log(
+            `📊 CYCLE COMPLETE | ${status} | ${c.trades.length} trades | ` +
+            `invested $${c.totalInvestment.toFixed(2)} | payout $${c.totalPayout.toFixed(2)} | ` +
+            `net ${c.netPnL >= 0 ? '+' : ''}$${c.netPnL.toFixed(2)} | ` +
+            `max stake $${c.maxStake.toFixed(2)} | ${durationSec.toFixed(1)}s | ` +
+            `class ${c.tailClass}`,
+            status === 'WIN' ? 'WIN' : 'SYSTEM'
+        );
+
+        window.tailPrecursorLab.render();
+
+        // Legacy cycle recorder is NOT authoritative for WIN publication.
+        // Settlement-confirmed WINs are published only by
+        // publishFastWinToTelegram() after the exact Deriv contract settles.
+        if (String(status || '').toUpperCase() !== 'WIN') {
+            try { window.matchstarPublisher?.publishCycle(c); } catch (_) {}
+        }
+
+        const sessionLedgerPnL =
+            Number(window.pnlTracker?.totalPayout || 0) -
+            Number(window.pnlTracker?.totalInvestment || 0);
+
+        if (
+            status === 'WIN' &&
+            Number.isFinite(sessionLedgerPnL) &&
+            Math.abs(sessionLedgerPnL - c.netPnL) > 0.01
+        ) {
+            log(
+                `⚠️ CYCLE/SESSION P&L MISMATCH | cycle ${c.netPnL.toFixed(2)} vs session ledger ${sessionLedgerPnL.toFixed(2)}`,
+                'WARNING'
+            );
+        }
+
+        // Entry Tick DNA V3.6: synchronously finalize the exact authoritative cycle
+        // BEFORE this.current is cleared.
+        try {
+            if (window.EntryTickDNAV2?.captureFinalize) {
+                const ok = window.EntryTickDNAV2.captureFinalize(c);
+                if (!ok) console.warn('Entry Tick DNA direct final capture returned false');
+            } else {
+                console.warn('Entry Tick DNA direct API unavailable at cycle finalization');
+            }
+        } catch (err) {
+            console.error('Entry Tick DNA direct final capture failed:', err);
+        }
+
+        // Keep lifecycle event as a secondary diagnostic/fallback.
+        try {
+            window.dispatchEvent(new CustomEvent('digitmatchstar:cycle-finalized', {
+                detail: {
+                    cycle: JSON.parse(JSON.stringify(c)),
+                    emittedAt: Date.now()
+                }
+            }));
+        } catch (err) {
+            console.warn('Entry Tick DNA cycle-finalized event failed:', err);
+        }
+
+        this.current = null;
+        this.render();
+
+        return c;
+    },
+
+    abortActiveCycle(reason = 'Stopped before confirmed win') {
+        if (!this.current) return null;
+
+        // Do not count an empty shell as a cycle.
+        if (!Array.isArray(this.current.trades) || !this.current.trades.length) {
+            this.current = null;
+            this.render();
+            return null;
+        }
+
+        return this.completeCycle('STOPPED', reason);
+    },
+
+    getStats(symbol = this.getSymbol()) {
+        const rows = this.load(symbol);
+        const finalized = rows.filter(r =>
+            r &&
+            Array.isArray(r.trades) &&
+            r.trades.length > 0
+        );
+
+        const wins = finalized.filter(r => r.status === 'WIN');
+        const stopped = finalized.filter(r => r.status !== 'WIN');
+
+        const wonWithin5 = wins.filter(r =>
+            Number(r.winningTradeNumber || r.trades.length) <= 5
+        ).length;
+
+        const wonWithin10 = wins.filter(r =>
+            Number(r.winningTradeNumber || r.trades.length) <= 10
+        ).length;
+
+        const tradeCounts = finalized.map(r => Number(r.trades.length || 0));
+        const pnlRows = finalized.map(r => Number(r.netPnL || 0));
+
+        const avgTrades = finalized.length
+            ? tradeCounts.reduce((a, b) => a + b, 0) / finalized.length
+            : 0;
+
+        const longest = finalized.length
+            ? Math.max(...tradeCounts)
+            : 0;
+
+        const totalPnL = pnlRows.reduce((a, b) => a + b, 0);
+
+        const avgPnL = finalized.length
+            ? totalPnL / finalized.length
+            : 0;
+
+        const worstPnL = finalized.length
+            ? Math.min(...pnlRows)
+            : 0;
+
+        return {
+            symbol,
+            completed: finalized.length,
+            wins: wins.length,
+            stopped: stopped.length,
+            wonWithin5,
+            wonWithin10,
+            pctWinsWithin5OfWins: wins.length
+                ? (wonWithin5 / wins.length) * 100
+                : 0,
+            pctWinsWithin10OfWins: wins.length
+                ? (wonWithin10 / wins.length) * 100
+                : 0,
+            pctResolvedWithin10All: finalized.length
+                ? (wonWithin10 / finalized.length) * 100
+                : 0,
+            avgTrades,
+            longest,
+            totalPnL,
+            avgPnL,
+            worstPnL
+        };
+    },
+
+    ensurePanel() {
+        return;
+
+        const edgePanel = document.getElementById('next-tick-edge-panel');
+        if (!edgePanel || !edgePanel.parentElement) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'cycle-performance-panel';
+        panel.className =
+            'mt-3 p-3 bg-gray-800 rounded-lg border border-purple-500/30 text-xs';
+
+        panel.innerHTML = `
+            <div class="font-bold text-purple-300 mb-1">🔁 CYCLE PERFORMANCE</div><div class="text-gray-400 mb-2">Cycle performance history</div>
+
+            <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                <span class="text-gray-400">Current cycle:</span>
+                <span id="cycle-current" class="font-bold text-white">Idle</span>
+
+                <span class="text-gray-400">Current exposure:</span>
+                <span id="cycle-exposure" class="font-bold text-white">$0.00</span>
+
+                <span class="text-gray-400">Max stake this cycle:</span>
+                <span id="cycle-max-stake" class="font-bold text-white">$0.00</span>
+
+                <span class="text-gray-400">Completed cycles:</span>
+                <span id="cycle-completed" class="font-bold text-cyan-300">0</span>
+
+                <span class="text-gray-400">Winning cycles:</span>
+                <span id="cycle-wins" class="font-bold text-green-300">0</span>
+
+                <span class="text-gray-400">Stopped / unresolved:</span>
+                <span id="cycle-stopped" class="font-bold text-yellow-300">0</span>
+
+                <span class="text-gray-400">Wins ≤5 trades:</span>
+                <span id="cycle-win5" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">Wins ≤10 trades:</span>
+                <span id="cycle-win10" class="font-bold text-white">0</span>
+
+                <span class="text-gray-400">% winning cycles ≤10:</span>
+                <span id="cycle-win10pct" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Average trades/cycle:</span>
+                <span id="cycle-avg-trades" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Longest cycle:</span>
+                <span id="cycle-longest" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Average cycle P/L:</span>
+                <span id="cycle-avg-pnl" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Total cycle P/L:</span>
+                <span id="cycle-total-pnl" class="font-bold text-white">-</span>
+
+                <span class="text-gray-400">Worst cycle P/L:</span>
+                <span id="cycle-worst-pnl" class="font-bold text-white">-</span>
+            </div>
+        `;
+
+        edgePanel.parentElement.appendChild(panel);
+    },
+
+    render() {
+        if (typeof document === 'undefined') return;
+
+        this.ensurePanel();
+
+        const symbol = this.getSymbol();
+        const stats = this.getStats(symbol);
+        const cur = this.current && this.current.symbol === symbol
+            ? this.current
+            : null;
+
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+
+        if (cur) {
+            set(
+                'cycle-current',
+                `ACTIVE · digit ${cur.digit} · trade ${cur.trades.length}`
+            );
+            set(
+                'cycle-exposure',
+                `$${cur.totalInvestment.toFixed(2)}`
+            );
+            set(
+                'cycle-max-stake',
+                `$${cur.maxStake.toFixed(2)}`
+            );
+        } else {
+            set('cycle-current', 'Idle');
+            set('cycle-exposure', '$0.00');
+            set('cycle-max-stake', '$0.00');
+        }
+
+        set('cycle-completed', String(stats.completed));
+        set('cycle-wins', String(stats.wins));
+        set('cycle-stopped', String(stats.stopped));
+        set('cycle-win5', String(stats.wonWithin5));
+        set('cycle-win10', String(stats.wonWithin10));
+
+        set(
+            'cycle-win10pct',
+            stats.wins
+                ? `${stats.pctWinsWithin10OfWins.toFixed(1)}%`
+                : '-'
+        );
+
+        set(
+            'cycle-avg-trades',
+            stats.completed
+                ? stats.avgTrades.toFixed(2)
+                : '-'
+        );
+
+        set(
+            'cycle-longest',
+            stats.completed
+                ? `${stats.longest} trades`
+                : '-'
+        );
+
+        set(
+            'cycle-avg-pnl',
+            stats.completed
+                ? `${stats.avgPnL >= 0 ? '+' : ''}$${stats.avgPnL.toFixed(2)}`
+                : '-'
+        );
+
+        set(
+            'cycle-total-pnl',
+            stats.completed
+                ? `${stats.totalPnL >= 0 ? '+' : ''}$${stats.totalPnL.toFixed(2)}`
+                : '-'
+        );
+
+        set(
+            'cycle-worst-pnl',
+            stats.completed
+                ? `${stats.worstPnL >= 0 ? '+' : ''}$${stats.worstPnL.toFixed(2)}`
+                : '-'
+        );
+
+        if (typeof renderTailRiskPanel === 'function') {
+            renderTailRiskPanel();
+        }
+        if (window.tailPrecursorLab) {
+            window.tailPrecursorLab.render();
+        }
+        if (window.postStopDepthTracker) {
+            window.postStopDepthTracker.render();
+        }
+        if (typeof renderCycleDepthPanel === 'function') {
+            renderCycleDepthPanel();
+        }
+        if (typeof decorateDynamicMinimizablePanels === 'function') {
+            decorateDynamicMinimizablePanels();
+        }
+    }
+};
+
+// ============================================================================
+        // MATCHSTAR V16 — DOWNLOADABLE RESEARCH REPORT
+        // One JSON file contains the summary + full research histories so it can
+        // be uploaded back into ChatGPT without copy/pasting panels.
+        // ============================================================================
+
+        function safeClone(value) {
+            try {
+                return JSON.parse(JSON.stringify(value));
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function buildMatchStarResearchReport() {
+            const symbol =
+                document.getElementById('symbol')?.value ||
+                window.tickFormat?.symbol ||
+                'UNKNOWN';
+
+            const cycleRows = window.cyclePerformance?.load(symbol) || [];
+            const cycleStats = window.cyclePerformance?.getStats(symbol) || null;
+            const groups = window.tailPrecursorLab?.eligibleGroups(symbol) || null;
+            const postResolved =
+                window.postStopDepthTracker?.loadResolved(symbol) || [];
+            const postStats =
+                window.postStopDepthTracker?.stats(symbol) || null;
+
+            const ntmState = window.nextTickModel?.state(symbol) || null;
+            const rec = window.digitIntelligenceEngine?.currentRecommendation || null;
+            const currentDigit =
+                (typeof sessionState !== 'undefined' && sessionState.sessionDigit !== null)
+                    ? Number(sessionState.sessionDigit)
+                    : Number(rec?.digit);
+
+            const prediction =
+                Number.isInteger(currentDigit) && window.nextTickModel?.getPrediction
+                    ? window.nextTickModel.getPrediction(symbol, currentDigit)
+                    : null;
+
+            let regime = null;
+            try {
+                regime = window.digitIntelligenceEngine?.computeRegimeStatus?.() || null;
+            } catch (_) {}
+
+            const trajectory = {};
+            const currentComparisons = {};
+            const researchReference =
+                window.tailPrecursorLab?.researchReferenceCycle(symbol) ||
+                { cycle: null, source: 'NONE', label: 'No cycle available' };
+
+            for (const d of [0, 3, 5, 7, 9]) {
+                trajectory[String(d)] =
+                    window.tailPrecursorLab?.featureStatsAtDepth(symbol, d) || [];
+
+                currentComparisons[String(d)] = {
+                    extendRatio:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'extendRatio') || null,
+                    gapP90:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'gapP90') || null,
+                    targetFreq20:
+                        window.tailPrecursorLab?.comparisonForFeature(symbol, d, 'targetFreq20') || null
+                };
+            }
+
+            const report = {
+                schemaVersion: 'MATCHSTAR_RESEARCH_REPORT_V2_OBSERVABILITY',
+                generatedAt: new Date().toISOString(),
+                runtime: 'MATCHSTAR V16',
+                symbol,
+
+                liveState: {
+                    botRunning: !!window.isBotRunning,
+                    mode: (typeof sessionState !== 'undefined' ? sessionState.mode : null),
+                    sessionDigit:
+                        (typeof sessionState !== 'undefined' ? sessionState.sessionDigit : null),
+                    latestTick: safeClone(window.lastTick),
+                    tradeCount: Number(window.tradeCount || 0),
+                    currentStake: Number(window.currentStake || 0),
+                    currentBalance: Number(window.currentBalance || 0),
+                    sessionPnL: Number(window.netProfit || 0),
+                    executionLock: !!window.executionLock,
+                    nextTradeAllowed: !!window.nextTradeAllowed,
+                    stopAfterWin: !!window.stopAfterWin,
+                    activeContract: safeClone(window.activeContract),
+                    pendingProposalCount: Number(window.pendingProposals?.size || 0),
+                    reconciliationMismatch: !!window.reconciliationMismatch
+                },
+
+                configuration: {
+                    baseStake: Number(document.getElementById('baseStake')?.value || window.baseStake || 0),
+                    multiplier: Number(document.getElementById('multiplier')?.value || window.multiplier || 0),
+                    maxTrades: Number(document.getElementById('maxTrades')?.value || window.maxTrades || 0),
+                    maxCycleTrades: Number(document.getElementById('maxTrades')?.value || window.maxTrades || 0),
+                    maxCycleExposure:
+                        typeof getTailDollarCap === 'function'
+                            ? Number(getTailDollarCap())
+                            : null,
+                    maxS20: Number(window.SURVIVAL_CFG?.maxS20 ?? NaN),
+                    evEntryThreshold: Number(window.EV_GATE_CONFIG?.minEdge ?? NaN),
+                    smartOverrideEnabled: !!window.EV_GATE_CONFIG?.smartOverrideEnabled,
+                    smartOverrideFloor: Number(window.EV_GATE_CONFIG?.smartOverrideFloor ?? NaN),
+                    smartOverridePersistence: Number(window.EV_GATE_CONFIG?.smartOverridePersistence ?? NaN),
+                    smartOverrideMaxS20: Number(window.EV_GATE_CONFIG?.smartOverrideMaxS20 ?? NaN),
+                    evRecoveryThreshold: Number(
+                        window.EV_GATE_CONFIG?.recoveryMinEdge ??
+                        window.EV_GATE_CONFIG?.minEdge ??
+                        NaN
+                    ),
+                    recoveryDigitPolicy: 'ADAPTIVE_RENEWABLE_HOLD_THEN_RERANK',
+                    recoveryDigitTradeLock: Number(window.recoveryDigitTradeLimit || 3),
+                    adaptiveRecoveryHoldConfig: safeClone(window.ADAPTIVE_RECOVERY_HOLD_CONFIG),
+                    adaptiveRecoveryHoldState: safeClone(window.adaptiveRecoveryHoldState),
+                    hardCycleTradeCap: null,
+                    cycleTradeCapSource: 'USER_DEFINED_MAX_TRADES',
+                    recoverySubmissionState: safeClone(window.recoverySubmissionState),
+                    minNextTickSupport: Number(window.EV_GATE_CONFIG?.minEffectiveSupport ?? NaN)
+                },
+
+                nextTickResearch: {
+                    currentDigit:
+                        Number.isInteger(currentDigit) ? currentDigit : null,
+                    currentPrediction: safeClone(prediction),
+                    lastEvaluation: safeClone(window.nextTickModel?.lastEvaluation),
+                    shadowTicks: Number(ntmState?.shadowTicks || 0),
+                    topPickHits: Number(ntmState?.topPickHits || 0),
+                    topPickHitRate:
+                        Number(ntmState?.shadowTicks || 0) > 0
+                            ? Number(ntmState.topPickHits || 0) / Number(ntmState.shadowTicks)
+                            : null,
+                    brierScore:
+                        Number(ntmState?.shadowTicks || 0) > 0
+                            ? Number(ntmState.brierSum || 0) / Number(ntmState.shadowTicks)
+                            : null,
+                    regime: safeClone(regime),
+                    recommendation: safeClone(rec)
+                },
+
+                digitDNAResearch: {
+                    version: window.digitDNAEngine?.version || null,
+                    config: safeClone(window.DIGIT_DNA_CONFIG),
+                    snapshot: safeClone(window.digitDNAEngine?.lastSnapshot),
+                    forward: safeClone(window.digitDNAEngine?.forward),
+                    t1Performance: safeClone(window.digitDNAEngine?.t1Performance?.() || null),
+                    realizationPerformance: safeClone(window.digitDNAEngine?.realizationPerformance?.() || null),
+                    interpretation: {
+                        targetHorizon: 'T+1 = first unseen tick after the DNA forecast is frozen',
+                        realizationDepth: 'First future occurrence of the predicted digit after forecast freeze, tracked up to 100 unseen ticks.',
+                        randomTenDigitBaseline: 0.10,
+                        note: 'DNA similarity is descriptive. T+1 measures next-tick prediction; realization depth measures how many unseen ticks until a missed predicted digit first appears.'
+                    }
+                },
+
+                digitFeatureResearch: {
+                    version: window.digitFeatureEngine?.version || null,
+                    config: safeClone(window.DIGIT_FEATURE_CONFIG),
+                    snapshot: safeClone(window.digitFeatureEngine?.lastSnapshot)
+                },
+
+                randomnessAuditorResearch: {
+                    version: window.randomnessAuditor?.version || null,
+                    config: safeClone(window.RANDOMNESS_AUDITOR_CONFIG),
+                    snapshot: safeClone(window.randomnessAuditor?.lastSnapshot)
+                },
+
+                digitIntelligenceResearch: {
+                    warmupDone: !!window.digitIntelligenceEngine?.warmupDone,
+                    tickIndex: Number(window.digitIntelligenceEngine?.tickIndex || 0),
+                    digitStats: safeClone(window.digitIntelligenceEngine?.digitStats || []),
+                    recommendation: safeClone(rec),
+                    regime: safeClone(regime)
+                },
+
+                marketEvidence: {
+                    lastDigits: safeClone((window.lastDigits || []).slice(-1500)),
+                    recentMarketTicks: safeClone((window.recentMarketTicks || []).slice(-250)),
+                    tickFormat: safeClone(window.tickFormat),
+                    totalTicksReceived: Number(window.totalTicksReceived || 0),
+                    tickRateWindowCount: Array.isArray(window.tickTimestamps) ? window.tickTimestamps.length : 0
+                },
+
+                liveLog: {
+                    text: document.getElementById('log-area')?.innerText || '',
+                    html: document.getElementById('log-area')?.innerHTML || ''
+                },
+
+                cyclePerformance: {
+                    stats: safeClone(cycleStats),
+                    currentCycle: safeClone(window.cyclePerformance?.current),
+                    history: safeClone(cycleRows)
+                },
+
+                tailPrecursorResearch: groups ? {
+                    counts: {
+                        normal: groups.normal.length,
+                        resolvedTails: groups.tails.length,
+                        postStop11to15: groups.post11_15.length,
+                        postStop16to20: groups.post16_20.length,
+                        postStop21to30: groups.post21_30.length,
+                        postStop31plus: groups.post31plus.length,
+                        censoredStops: groups.censored.length,
+                        technicalStops: groups.technical.length
+                    },
+                    entryFeatureDifferences:
+                        safeClone(window.tailPrecursorLab.featureStats(symbol)),
+                    trajectoryFeatureDifferences:
+                        safeClone(trajectory),
+                    currentTrajectoryComparisons:
+                        safeClone(currentComparisons),
+                    referenceCycle: {
+                        source: researchReference.source,
+                        label: researchReference.label,
+                        cycle: safeClone(researchReference.cycle),
+                        class: researchReference.cycle
+                            ? window.tailPrecursorLab.classifyCycle(researchReference.cycle)
+                            : null,
+                        targetDigit: researchReference.cycle?.digit ?? null,
+                        tailDigits:
+                            safeClone(
+                                researchReference.cycle?.postStopDepth?.sequence ||
+                                researchReference.cycle?.postStopDepth?.digits ||
+                                researchReference.cycle?.postStopDepth?.observedDigits ||
+                                []
+                            )
+                    },
+                    currentEmpiricalTailScore:
+                        safeClone(
+                            window.tailPrecursorLab.empiricalTailScore(
+                                symbol,
+                                (
+                                    researchReference.cycle?.tailTrajectory?.slice(-1)?.[0] ||
+                                    researchReference.cycle?.entryTailState ||
+                                    null
+                                )
+                            )
+                        )
+                } : null,
+
+                postStopDepthResearch: {
+                    stats: safeClone(postStats),
+                    activeWatches: safeClone(window.postStopDepthTracker?.active || []),
+                    resolvedCycles: safeClone(postResolved)
+                },
+
+                tailGuardAutopilot: {
+                    version: window.DMSTailGuardAutopilot?.version || null,
+                    state: safeClone(window.DMSTailGuardAutopilot?.getState?.() || null),
+                    activeCycleTrades:
+                        Array.isArray(window.cyclePerformance?.current?.trades)
+                            ? window.cyclePerformance.current.trades.length
+                            : 0,
+                    researchMode: 'SHADOW_ONLY',
+                    baseDailyCycleTarget: 5,
+                    extraCyclesToday: Number(window.DMSTailGuardAutopilot?.getState?.()?.extraCyclesToday || 0),
+                    dailyCycleTarget:
+                        5 + Number(window.DMSTailGuardAutopilot?.getState?.()?.extraCyclesToday || 0),
+                    cycleTradeCap: Number(document.getElementById('maxTrades')?.value || 10)
+                },
+
+                tailRiskModel:
+                    safeClone(window.DMSTailRiskModel?.getResearchSnapshot?.() || null),
+
+                buildInfo: {
+                    version: 'DIGITMATCHSTAR-V57.7.6-EXECUTION-INTEGRITY-FIX',
+                    strategyLogicChanged: false,
+                    recoveryLogicChanged: true,
+                    maxTradesBehaviorChanged: true,
+                    performanceResetAvailable: true,
+                    performanceResetPreservesResearch: true,
+                    manualStopPreventsAutoRestart: true,
+                    overnightMode: 'SINGLE_BUTTON_EXPLICIT_RESEARCH_PLUS_DEMO_TRADING',
+                    executionIntegrityFix: 'DUPLICATE_RECOVERY_GUARD_T0_SEPARATION_DERIV_ONLY_CONFIRMED_WIN',
+                    reportIncludesSecrets: false
+                },
+
+                tailGuardOvernightResearch: {
+                    state: safeClone(window.DMSTailGuardAutopilot?.getState?.() || null),
+                    archive: safeClone(window.DMSTailGuardAutopilot?.getOvernightArchive?.() || []),
+                    standaloneController: safeClone(window.OvernightResearchController?.getState?.() || null),
+                    standaloneDetectedAccount: window.OvernightResearchController?.accountMode?.() || null,
+                    standaloneExecutionMode: window.OvernightResearchController?.executionMode?.() || null,
+                    wakeLockSupported: !!navigator.wakeLock,
+                    note: 'Standalone overnight controller is independent of TailGuard admin authorization and auto-runs only on a confirmed DEMO account.'
+                },
+
+                storageKeys: {
+                    cycleHistory: `matchstar_cycle_history_v3_${symbol}`,
+                    forwardShadow: `matchstar_shadow_v1_${symbol}`,
+                    postStopDepth: `matchstar_poststop_depth_v1_${symbol}`
+                },
+
+                notes: [
+                    'Post-stop depth observations use future public ticks only and do not represent real trades after the safety stop.',
+                    'Capped cycles without an observed post-stop target are classified as censored rather than known tails.',
+                    'Technical stops are excluded from market-tail recovery statistics.',
+                    'Empirical tail score is a nearest-state descriptive statistic, not a validated probability forecast.',
+                    'Digit DNA similarity is a descriptive precursor-state similarity score, not a calibrated win probability.',
+                    'This V57.1 build changes observability/export only; trading and recovery selection logic are unchanged from V57.',
+                    'Authentication tokens and private credentials are intentionally excluded from the report.'
+                ]
+            };
+
+            // Add a concise human-readable summary inside the JSON.
+            const ps = postStats || {};
+            const tc = report.tailPrecursorResearch?.counts || {};
+            report.humanSummary = [
+                `MatchStar V16 research report · ${symbol}`,
+                `Generated: ${report.generatedAt}`,
+                '',
+                `Cycles: ${cycleStats?.completed ?? 0} completed · ${cycleStats?.wins ?? 0} wins · ${cycleStats?.stopped ?? 0} stopped`,
+                `Tail research: ${tc.normal ?? 0} normal · ${tc.resolvedTails ?? 0} resolved post-stop tails · ${tc.censoredStops ?? 0} censored · ${tc.technicalStops ?? 0} technical`,
+                `Depth classes: 11–15 ${tc.postStop11to15 ?? 0} · 16–20 ${tc.postStop16to20 ?? 0} · 21–30 ${tc.postStop21to30 ?? 0} · 31+ ${tc.postStop31plus ?? 0}`,
+                `Post-stop resolved: ${ps.resolved ?? 0} · average depth ${Number.isFinite(ps.average) ? ps.average.toFixed(1) : '-'} · deepest ${ps.deepest ?? '-'}`,
+                `Forward shadow: ${ntmState?.shadowTicks ?? 0} ticks · top-pick hit ${report.nextTickResearch.topPickHitRate !== null ? (report.nextTickResearch.topPickHitRate * 100).toFixed(2) + '%' : '-'} · Brier ${report.nextTickResearch.brierScore !== null ? report.nextTickResearch.brierScore.toFixed(4) : '-'}`,
+                `DNA top: ${report.digitDNAResearch?.snapshot?.topDigit ?? '-'} · similarity ${report.digitDNAResearch?.snapshot?.topSimilarity !== undefined ? (Number(report.digitDNAResearch.snapshot.topSimilarity)*100).toFixed(1)+'%' : '-'} · forward ${report.digitDNAResearch?.snapshot?.forwardN ?? 0} / hits ${report.digitDNAResearch?.snapshot?.forwardHits ?? 0}`,
+                `Feature top: ${report.digitFeatureResearch?.snapshot?.topDigit ?? '-'} · signal ${report.digitFeatureResearch?.snapshot?.signalStrength !== undefined ? (Number(report.digitFeatureResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
+                `Auditor top: ${report.randomnessAuditorResearch?.snapshot?.topDigit ?? '-'} · signal ${report.randomnessAuditorResearch?.snapshot?.signalStrength !== undefined ? (Number(report.randomnessAuditorResearch.snapshot.signalStrength)*100).toFixed(1)+'%' : '-'}`,
+                '',
+                'Upload this JSON file directly into ChatGPT for analysis.'
+            ].join('\n');
+
+            return report;
+        }
+
+        function downloadMatchStarResearchReport() {
+            const report = buildMatchStarResearchReport();
+            const json = JSON.stringify(report, null, 2);
+            const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+
+            const symbol = String(report.symbol || 'UNKNOWN').replace(/[^A-Za-z0-9_-]+/g, '_');
+            const stamp = new Date()
+                .toISOString()
+                .replace(/[:.]/g, '-');
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `digitmatchstar-observability-${symbol}-${stamp}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            log(
+                `📥 Full observability report downloaded | ${report.cyclePerformance?.stats?.completed || 0} cycles | ` +
+                `${report.postStopDepthResearch?.stats?.resolved || 0} resolved post-stop continuations`,
+                'SYSTEM'
+            );
+        }
+
+        // ============================================================================
+        // MARTINGALE CALCULATOR FUNCTIONS
+        // ============================================================================
+        
+        let calculatorExpanded = true;
+        
+        function toggleCalculator() {
+            calculatorExpanded = !calculatorExpanded;
+            const calculatorContent = document.getElementById('calculatorContent');
+            const toggleIcon = document.getElementById('calcToggleIcon');
+            
+            if (calculatorExpanded) {
+                calculatorContent.classList.remove('hidden');
+                toggleIcon.textContent = '−';
+            } else {
+                calculatorContent.classList.add('hidden');
+                toggleIcon.textContent = '+';
+            }
+        }
+        
+        function calculateMartingale() {
+            try {
+                const baseStake = parseFloat(document.getElementById('calc_base_stake').value) || 1.0;
+                const multiplier = parseFloat(document.getElementById('calc_multiplier').value) || 1.15;
+                const maxTrades = parseInt(document.getElementById('calc_max_trades').value) || 10;
+                const bankrollLimit = parseFloat(document.getElementById('calc_bankroll_limit').value) || 50.0;
+                
+                if (baseStake <= 0 || multiplier <= 1.0 || maxTrades <= 0) {
+                    alert('Please enter valid values for calculation.');
+                    return;
+                }
+                
+                let currentStake = baseStake;
+                let totalRequired = 0;
+                let progression = [];
+                let finalStake = baseStake;
+                
+                // Calculate progression and totals
+                for (let i = 1; i <= maxTrades; i++) {
+                    if (i === 1) {
+                        currentStake = baseStake;
+                    } else {
+                        currentStake *= multiplier;
+                    }
+                    
+                    // Round to 2 decimal places
+                    currentStake = Math.round(currentStake * 100) / 100;
+                    totalRequired += currentStake;
+                    finalStake = currentStake;
+                    
+                    progression.push({
+                        trade: i,
+                        stake: currentStake.toFixed(2),
+                        cumulative: Math.round(totalRequired * 100) / 100
+                    });
+                }
+                
+                // Round total required
+                totalRequired = Math.round(totalRequired * 100) / 100;
+                
+                // Calculate profit on win (DIGITMATCH pays 9x)
+                const profitOnWin = (finalStake * 9) - totalRequired;
+                
+                // Update main bot controls with calculated values
+                document.getElementById('baseStake').value = baseStake.toFixed(2);
+                document.getElementById('multiplier').value = multiplier.toFixed(2);
+                document.getElementById('maxTrades').value = maxTrades;
+                
+                // Update calculator results
+                document.getElementById('calc_total_required').textContent = `$${totalRequired.toFixed(2)}`;
+                document.getElementById('calc_final_stake').textContent = `$${finalStake.toFixed(2)}`;
+                document.getElementById('calc_profit_on_win').textContent = `$${profitOnWin.toFixed(2)}`;
+                
+                // Update bankroll status
+                const bankrollStatusElem = document.getElementById('calc_bankroll_status');
+                bankrollStatusElem.classList.remove('calculator-safe', 'calculator-warning', 'calculator-highlight');
+                
+                if (totalRequired <= bankrollLimit) {
+                    bankrollStatusElem.textContent = '✅ Within Limit';
+                    bankrollStatusElem.classList.add('calculator-safe');
+                } else if (totalRequired <= bankrollLimit * 1.5) {
+                    bankrollStatusElem.textContent = '⚠️ Close to Limit';
+                    bankrollStatusElem.classList.add('calculator-warning');
+                } else {
+                    bankrollStatusElem.textContent = '❌ Over Limit';
+                    bankrollStatusElem.classList.add('calculator-warning');
+                }
+                
+                // Update progression display
+                const progressionElem = document.getElementById('calc_progression');
+                let progressionHTML = '<div class="grid grid-cols-4 gap-1 text-xs mb-1 font-semibold text-gray-300">';
+                progressionHTML += '<div>Trade #</div><div>Stake</div><div>Cumulative</div><div>Status</div>';
+                progressionHTML += '</div>';
+                
+                progression.forEach(item => {
+                    const status = item.cumulative <= bankrollLimit ? '✅' : '❌';
+                    progressionHTML += `
+                        <div class="grid grid-cols-4 gap-1 text-xs py-1 ${item.trade % 2 === 0 ? 'bg-gray-800/50' : ''}">
+                            <div class="text-gray-300">${item.trade}</div>
+                            <div class="text-green-400">$${item.stake}</div>
+                            <div class="text-blue-400">$${item.cumulative.toFixed(2)}</div>
+                            <div class="${status === '✅' ? 'text-green-400' : 'text-red-400'}">${status}</div>
+                        </div>
+                    `;
+                });
+                
+                progressionElem.innerHTML = progressionHTML;
+                
+                // Add pulse animation
+                document.getElementById('calc_total_required').classList.add('calculator-pulse');
+                setTimeout(() => {
+                    document.getElementById('calc_total_required').classList.remove('calculator-pulse');
+                }, 500);
+                
+                log(`🧮 Calculator: Total required: $${totalRequired.toFixed(2)} for ${maxTrades} trades`, 'CALCULATOR');
+                
+            } catch (error) {
+                console.error('Calculator error:', error);
+                alert('Error in calculation. Please check your inputs.');
+            }
+        }
+        
+        function syncCalculatorWithMain() {
+            const baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
+            const multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
+            const maxTrades = getUserMaxTrades();
+            
+            document.getElementById('calc_base_stake').value = baseStake.toFixed(2);
+            document.getElementById('calc_multiplier').value = multiplier.toFixed(2);
+            document.getElementById('calc_max_trades').value = maxTrades;
+            
+            // Auto-calculate when main controls change
+            calculateMartingale();
+        }
+        
+        // ============================================================================
+        // ENGINE UI FUNCTIONS
+        // ============================================================================
+        
+        function toggleEngine() {
+            window.digitIntelligenceEngine.enabled = !window.digitIntelligenceEngine.enabled;
+            updateEngineButton();
+            
+            log(`🧠 Digit Intelligence Engine ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'ENGINE');
+            
+            if (window.digitIntelligenceEngine.enabled && window.isBotRunning && window.ws && window.ws.readyState === WebSocket.OPEN) {
+                // Re-request warm-up if engine was re-enabled
+                requestWarmupTicks();
+            }
+        }
+        
+        function updateEngineButton() {
+            const indicator = document.getElementById('engineIndicator');
+            if (!indicator) return;
+
+            const isOn = !!window.digitIntelligenceEngine?.enabled && !!window.isBotRunning;
+            indicator.classList.toggle('on', isOn);
+            indicator.classList.toggle('off', !isOn);
+            indicator.title = isOn ? 'AI Engine is ON' : 'AI Engine is OFF';
+        }
+        
+        function updateEngineStatus(text, status, progress) {
+            const badge = document.getElementById('engine-status-badge');
+            const statusText = document.getElementById('engine-status-text');
+            const progressElem = document.getElementById('engine-warmup-progress');
+            
+            if (badge) {
+                badge.classList.remove('engine-status-warmup', 'engine-status-analyzing', 'engine-status-ready');
+                
+                switch(status) {
+                    case 'WARMUP':
+                        badge.textContent = '🔥 ENGINE: WARM-UP';
+                        badge.classList.add('engine-status-warmup');
+                        break;
+                    case 'ANALYZING':
+                        badge.textContent = '🔍 ENGINE: ANALYZING';
+                        badge.classList.add('engine-status-analyzing');
+                        break;
+                    case 'READY':
+                        badge.textContent = '✅ ENGINE: READY';
+                        badge.classList.add('engine-status-ready');
+                        break;
+                }
+            }
+            
+            if (statusText) {
+                statusText.textContent = text;
+            }
+            
+            if (progressElem) {
+                progressElem.textContent = `${progress}%`;
+            }
+        }
+        
+        function toggleDigitAnalysis() {
+            const panel = document.getElementById('digit-analysis-panel');
+            const toggle = document.getElementById('digit-analysis-toggle');
+            
+            if (panel.classList.contains('hidden')) {
+                panel.classList.remove('hidden');
+                toggle.textContent = '▲';
+                updateDigitAnalysisDisplay();
+            } else {
+                panel.classList.add('hidden');
+                toggle.textContent = '▼';
+            }
+        }
+        
+        function updateDigitAnalysisDisplay() {
+            const engine = window.digitIntelligenceEngine;
+            const thresholds = window.AI_THRESHOLDS;
+            const scoreCutoff = 0.50; // ranking hint only
+
+            if (!engine.warmupDone) {
+                document.getElementById('digit-analysis-content').innerHTML = `
+                    <div class="text-center py-4">
+                        <div class="text-yellow-400 mb-2">Engine warming up...</div>
+                        <div class="text-xs text-gray-500">${engine.warmupTicks}/${engine.targetWarmupTicks} ticks analyzed</div>
+                    </div>
+                `;
+                return;
+            }
+
+            const regimeStatus = engine.computeRegimeStatus();
+
+            const baseMaxPersistence =
+                regimeStatus.label === "STABLE"
+                    ? thresholds.maxPersistenceStable
+                    : thresholds.maxPersistenceUnstable;
+
+            // SurvivalEngine top picks (if enough history)
+            let survivalTop3 = [];
+            try {
+                if (window.SurvivalEngine && Array.isArray(window.lastDigits) && window.lastDigits.length >= 200) {
+                    const sStats = window.SurvivalEngine.analyze(window.lastDigits, { window: window.SURVIVAL_WINDOW || 2000 });
+                    survivalTop3 = window.SurvivalEngine.rank(sStats, window.SURVIVAL_CFG || {}).slice(0, 3);
+                }
+            } catch (e) {
+                console.warn('SurvivalEngine display error:', e);
+            }
+
+            let html = `
+                <div class="mb-3">
+                    <div class="text-xs font-semibold text-gray-300 mb-1">Regime Status:</div>
+                    <div class="text-xs ${regimeStatus.ok ? 'text-green-400' : 'text-yellow-400'}">
+                        ${regimeStatus.label} | Entropy: ${regimeStatus.entropy} | Dominance: ${regimeStatus.dominance}
+                    </div>
+                    <div class="text-[11px] text-gray-500 mt-1">
+                        V53 SCORE AUTO uses adaptive entry rules: ordinary AI candidates need support≥14; an auditor-supported candidate may proceed from support≥10. Regime, Gap/P90, Extend, Persistence, H5/P10 and survival remain diagnostics/ranking inputs; only severe tail/structure conditions are hard vetoes.
+                    </div>
+                </div>
+                ${survivalTop3.length ? `
+                <div class="mb-3 p-2 bg-gray-800/60 rounded border border-cyan-500/30">
+                    <div class="text-xs font-semibold text-cyan-300 mb-1">Survival Top Picks (fast + low tail-risk):</div>
+                    ${survivalTop3.map((x, i) => `
+                        <div class="text-[11px] text-gray-300 flex flex-wrap gap-x-3 gap-y-1">
+                            <span class="text-cyan-200 font-bold">#${i + 1} Digit ${x.digit}</span>
+                            <span>gap:${x.gap}</span>
+                            <span>pm5:${Math.round(x.pm5 * 100)}%</span>
+                            <span>pm10:${Math.round(x.pm10 * 100)}%</span>
+                            <span>s20:${Math.round(x.s20 * 100)}%</span>
+                            <span>etm:${Number.isFinite(x.etm) ? x.etm.toFixed(1) : '∞'}</span>
+                            <span class="text-gray-500">score:${x.survivalScore.toFixed(2)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : `
+                <div class="mb-3 text-[11px] text-gray-500">
+                    Survival picks: none (need more history or no digit passes pm5/s20/etm + pressure).
+                </div>
+                `}
+                <div class="grid grid-cols-1 gap-1">
+            `;
+
+            for (let d = 0; d < 10; d++) {
+                const s = engine.digitStats[d];
+                const g = s.currentGap;
+                const support = s.gaps.length;
+
+                const P5 = engine.conditionalReturnProb(d, g, 5);
+                const P10 = engine.conditionalReturnProb(d, g, 10);
+
+                const extendRatio = (s.avgGap && s.avgGap > 0) ? (g / s.avgGap) : Infinity;
+                const effectiveMaxPersistence = (
+                    regimeStatus.label === "STABLE" &&
+                    P10 >= (thresholds.minP10 + 0.05) &&
+                    extendRatio <= 1.3
+                ) ? thresholds.maxPersistenceStableRelax : baseMaxPersistence;
+
+                const p90 = Math.max(s.p90Gap, 1);
+                const p90Ratio = g / p90;
+
+                const passSupport = support >= thresholds.minSupport;
+                const passP90 = !(thresholds.require_g_lt_p90 && g >= p90);
+                const passPressure = !thresholds.pressureZoneEnabled || (
+                    p90Ratio >= thresholds.pressureZoneMinP90Ratio &&
+                    p90Ratio < thresholds.pressureZoneMaxP90Ratio
+                );
+                const passPersistence = s.persistenceScore <= effectiveMaxPersistence;
+                const passExtend = s.consecutiveExtendingGaps <= thresholds.maxExtend;
+                const passUnstable = !s.isUnstable;
+                const passP5 = P5 >= thresholds.minH5;
+                const passP10 = P10 >= thresholds.minP10;
+const denom = Math.max(1 - thresholds.pressureZoneMinP90Ratio, 1e-6);
+                const pressureScore = thresholds.pressureZoneEnabled
+                    ? Math.max(0, Math.min(1, (p90Ratio - thresholds.pressureZoneMinP90Ratio) / denom))
+                    : Math.max(0, Math.min(1, g / p90));
+
+                const score =
+                    0.45 * P10 +
+                    0.25 * P5 +
+                    0.20 * pressureScore +
+                    0.10 * (1 - s.persistenceScore / 100);
+const passScore = score >= scoreCutoff;
+
+                const passAll =
+                    passSupport && passP90 && passPersistence && passExtend && passUnstable;
+const isRecommended = engine.currentRecommendation && engine.currentRecommendation.digit === d;
+
+                const barWidth = Math.min(100, (g / 50) * 100);
+                const barColor = !passAll ? 'bg-red-500' :
+                                isRecommended ? 'bg-green-500' :
+                                s.persistenceScore > 70 ? 'bg-yellow-500' :
+                                g > s.p90Gap ? 'bg-orange-500' : 'bg-blue-500';
+
+                const flag = (ok) => ok ? '✅' : '❌';
+
+                html += `
+                    <div class="p-1 ${isRecommended ? 'bg-green-900/30 rounded' : ''}">
+                        <div class="flex justify-between items-center">
+                            <div class="text-xs font-semibold ${isRecommended ? 'text-green-400' : 'text-gray-200'}">
+                                Digit ${d} ${isRecommended ? '⭐' : ''}
+                            </div>
+                            <div class="text-[11px] text-gray-400">
+                                Gap: <span class="text-gray-200">${g}</span> | P90: <span class="text-gray-200">${s.p90Gap}</span>
+                            </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-400 mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                            <span>Support: <span class="text-gray-200">${support}</span></span>
+                            <span>Count: <span class="text-gray-200">${s.count}</span></span>
+                            <span>AvgGap: <span class="text-gray-200">${s.avgGap.toFixed(1)}</span></span>
+                            <span>ExtendStreak: <span class="text-gray-200">${s.consecutiveExtendingGaps}</span></span>
+                            <span>Unstable: <span class="text-gray-200">${s.isUnstable ? 'YES' : 'NO'}</span></span>
+                        </div>
+
+                        <div class="text-[11px] text-gray-400 mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                            <span>H5(P5): <span class="text-gray-200">${P5.toFixed(2)}</span></span>
+                            <span>P10: <span class="text-gray-200">${P10.toFixed(2)}</span></span>
+                            <span>Persistence: <span class="text-gray-200">${s.persistenceScore}</span> / ${effectiveMaxPersistence}</span>
+                            <span>ExtendRatio(g/avg): <span class="text-gray-200">${Number.isFinite(extendRatio) ? extendRatio.toFixed(2) : '∞'}</span></span>
+                            <span>Score: <span class="text-gray-200">${(score * 100).toFixed(1)}%</span></span>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 mt-1">
+                            Legacy diagnostics: Support${flag(passSupport)} · P90${flag(passP90)} · Persist${flag(passPersistence)} · Extend${flag(passExtend)} · Stable${flag(passUnstable)}
+                            <br>Ranking signals: Pressure${flag(passPressure)} · H5${flag(passP5)} · P10${flag(passP10)} · Score${flag(passScore)}
+                            <br><span class="text-fuchsia-300">Actual V53 execution gate is adaptive and may be assisted by the Randomness Auditor.</span>
+                        </div>
+
+                        <div class="mt-1 bg-gray-700/40 rounded h-2">
+                            <div class="${barColor} h-2 rounded-full" style="width: ${barWidth}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            document.getElementById('digit-analysis-content').innerHTML = html;
+        }
+        
+        function useAIRecommendedDigit() {
+            if (!window.digitIntelligenceEngine.currentRecommendation) {
+                log('❌ No AI recommendation available yet', 'ENGINE');
+                alert('AI engine is still analyzing. Please wait for a recommendation.');
+                return;
+            }
+            
+            const recommendedDigit = window.digitIntelligenceEngine.currentRecommendation.digit;
+            document.getElementById('predictedDigit').value = recommendedDigit;
+            
+            if (sessionState.sessionStarted) {
+                const confirmChange = confirm(`AI recommends digit ${recommendedDigit}. Change current digit?`);
+                if (confirmChange) {
+                    sessionState.sessionDigit = recommendedDigit;
+                    sessionState.manualOverride = true;
+                    updateSessionDisplay();
+                    log(`✅ Digit changed to AI recommendation: ${recommendedDigit}`, 'ENGINE');
+                }
+            } else {
+                sessionState.sessionDigit = recommendedDigit;
+                sessionState.sessionStarted = true;
+                sessionState.manualOverride = true;
+                updateSessionDisplay();
+                log(`✅ Set digit to AI recommendation: ${recommendedDigit}`, 'ENGINE');
+            }
+        }
+        
+        // ============================================================================
+        // MODIFIED WEB SOCKET FUNCTIONS FOR ENGINE INTEGRATION
+        // ============================================================================
+        
+        function requestWarmupTicks() {
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) return;
+            
+            const symbol = document.getElementById('symbol').value;
+            const count = window.digitIntelligenceEngine.targetWarmupTicks;
+            
+            // Reset engine before warm-up
+            window.digitIntelligenceEngine.reset();
+            
+            sendRequest({
+                ticks_history: symbol,
+                count: count,
+                end: "latest",
+                style: "ticks",
+                req_id: getNextReqId()
+            });
+            
+            log(`🧠 Requesting ${count} warm-up ticks for engine analysis`, 'ENGINE');
+        }
+        
+        // ============================================================================
+        // CORE BOT FUNCTIONS - UPDATED FOR 10 SECOND PNL DISPLAY & NETWORK RECOVERY
+        // ============================================================================
+        
+        // Global State
+        window.ws = null;
+        window.req_id = 0;
+        window.isBotRunning = false;
+        window.isConnecting = false;
+        window.soundEnabled = (() => {
+            try {
+                const saved = localStorage.getItem('soundEnabled');
+                return saved === null ? true : saved === 'true';
+            } catch (_) {
+                return true;
+            }
+        })();
+        window.ToneInitialized = false;
+        window.synth = null;
+        
+        // NETWORK RECOVERY SYSTEM
+        window.networkRecoveryEnabled = true;
+        window.reconnectionAttempts = 0;
+        window.maxReconnectionAttempts = 5;
+        window.reconnectionDelay = 2000;
+        window.lastDisconnectTime = 0;
+        window.autoReconnectTimer = null;
+        
+        // Trading State
+        window.baseStake = 1.0;
+        window.currentStake = 1.0;
+        window.multiplier = 1.15;
+        window.maxTrades = 20;
+        window.maxCycleTrades = window.maxTrades;
+        window.cycleRotations = 0;
+        window.tradeCount = 0;
+        window.martingaleStep = 0;
+        window.recoveryDigitLock = null;
+        window.recoveryDigitTrades = 0;
+        window.recoveryDigitTradeLimit = 1;
+
+        // V57.7 — Adaptive recovery hold.
+        // Starts with the existing 3-purchase hold, then renews one trade at a time
+        // only while the currently locked digit remains sufficiently supported.
+        window.ADAPTIVE_RECOVERY_HOLD_CONFIG = {
+            enabled: true,
+            initialHold: 3,
+            minHold: 2,
+            maxHold: 1,
+            extensionStep: 1,
+            minAgreementForExtension: 1,
+            strongAgreementForExtension: 2,
+            minDnaSimilarity: 0.60,
+            minModelProbability: 0.10,
+            maxProbabilityDeficit: 0.015,
+            switchAdvantage: 0.020
+        };
+
+        window.adaptiveRecoveryHoldState = {
+            extensions: 0,
+            reranks: 0,
+            keeps: 0,
+            switches: 0,
+            lastDecision: null,
+            history: []
+        };
+
+        window.smartEntryOverrideState = {
+            digit: null,
+            streak: 0,
+            lastEvaluatedAt: 0
+        };
+        window.cycleLosses = 0;
+        window.accountBalance = 0.0;
+        window.startingBalance = 0.0;
+        window.currentBalance = 0.0;
+        window.netProfit = 0.0;
+        
+        // PnL Tracking - UPDATED TO 10 SECONDS
+        window.pnlTracker = {
+            totalInvestment: 0.0,
+            totalPayout: 0.0,
+            netProfit: 0.0,
+            trades: []
+        };
+        
+        // PnL Update Timer - INCREASED FROM 3 TO 10 SECONDS
+        window.pnlUpdateInterval = null;
+        window.pnlUpdateStartTime = 0;
+        window.pnlUpdateDuration = 10000; // 10 seconds instead of 3
+        
+        // Execution State
+        window.lastTick = null;
+        window.nextTradeAllowed = true;
+        window.stopAfterWin = false;
+        window.pendingProposals = new Map();
+        window.executionLock = false;
+
+        // ACTIVE CONTRACT LIFECYCLE V3
+        window.activeContract = null;
+        window.contractSequence = 0;
+        window.contractMonitorRetries = 0;
+        window.maxContractMonitorRetries = 3;
+        window.settlementLedger = new Map();
+        window.reconciliationMismatch = false;
+        window.fastRecoveryEnabled = true;
+        window.cycleHasPurchasedContract = false;
+
+        // V57.7.6 execution-integrity guards.
+        // A pending proposal/buy is considered part of the execution lane and
+        // blocks any second order until Deriv accepts/rejects the first one.
+        window.recoverySubmissionState = {
+            sourceContractId: null,
+            inFlight: false,
+            startedAt: null,
+            origin: null
+        };
+
+        function hasOpenContract() {
+            return !!(
+                window.activeContract &&
+                window.activeContract.contractId &&
+                !window.activeContract.settled &&
+                !window.activeContract.tickResolved
+            );
+        }
+
+        function mayPlaceNextTrade() {
+            const hasPendingOrder = !!(
+                window.pendingProposals &&
+                window.pendingProposals.size > 0
+            );
+            const recoveryInFlight = !!window.recoverySubmissionState?.inFlight;
+
+            return !!(
+                window.isBotRunning &&
+                !window.stopAfterWin &&
+                !window.executionLock &&
+                !hasOpenContract() &&
+                !hasPendingOrder &&
+                !recoveryInFlight &&
+                window.nextTradeAllowed
+            );
+        }
+        
+        // Statistics
+        window.stats = {
+            totalTicks: 0,
+            tradesExecuted: 0,
+            wins: 0,
+            losses: 0
+        };
+        
+        // Rate tracking
+        window.botTickTimestamps = [];
+        
+        // Queue
+        window.tickQueue = [];
+        window.maxQueueSize = 30;
+        
+        // Session State
+        let sessionState = {
+            active: false,
+            mode: 'instant', // Only instant and ai modes now
+            sessionDigit: null,
+            sessionStarted: false,
+            manualOverride: false
+        };
+        
+        // Tick tracking for connection status
+        window.totalTicksReceived = 0;
+        window.tickTimestamps = [];
+        
+        // Digit zero tracker - FOR DEBUGGING
+        window.digitZeroTracker = {
+            count: 0,
+            lastPrice: null,
+            occurrences: []
+        };
+
+        // Tick decimal auto-detection (preserves trailing zeros for correct digit counting)
+        window.tickFormat = {
+            decimals: 3,
+            symbol: null,
+            source: 'default',
+            pipSizeBySymbol: {}
+        };
+
+        function decimalsFromPipSize(pipSize) {
+            const p = Number(pipSize);
+            if (!Number.isFinite(p) || p <= 0) return null;
+
+            // tick.pip_size may be an integer decimal count; active_symbols.pip_size
+            // is normally a step such as 0.01 or 0.001.
+            if (Number.isInteger(p) && p >= 0 && p <= 10) return p;
+
+            if (p < 1) {
+                const s = p.toString().toLowerCase();
+                if (s.includes('e-')) {
+                    const exp = Number(s.split('e-')[1]);
+                    return Number.isFinite(exp) ? exp : null;
+                }
+                const dot = s.indexOf('.');
+                if (dot >= 0) {
+                    const frac = s.slice(dot + 1).replace(/0+$/, '');
+                    return frac.length;
+                }
+            }
+            return null;
+        }
+
+        function setSymbolPipSize(symbol, pipSize, source = 'api') {
+            if (!symbol) return false;
+            const decimals = decimalsFromPipSize(pipSize);
+            if (!Number.isInteger(decimals) || decimals < 0 || decimals > 10) return false;
+
+            window.tickFormat.pipSizeBySymbol[symbol] = {
+                pipSize: Number(pipSize),
+                decimals,
+                source
+            };
+
+            if (window.tickFormat.symbol === symbol) {
+                window.tickFormat.decimals = decimals;
+                window.tickFormat.source = source;
+            }
+            return true;
+        }
+
+        function getSymbolDecimals(symbol, tick = null) {
+            if (tick && tick.pip_size !== undefined && tick.pip_size !== null) {
+                const d = decimalsFromPipSize(tick.pip_size);
+                if (Number.isInteger(d)) {
+                    setSymbolPipSize(symbol || tick.symbol, tick.pip_size, 'tick.pip_size');
+                    return d;
+                }
+            }
+
+            const cached = window.tickFormat.pipSizeBySymbol[symbol];
+            if (cached && Number.isInteger(cached.decimals)) return cached.decimals;
+
+            return Number.isInteger(window.tickFormat.decimals)
+                ? window.tickFormat.decimals
+                : 3;
+        }
+
+        function canonicalTickString(quote, tick = null, symbolOverride = null) {
+            const q = Number(quote);
+            if (!Number.isFinite(q)) return null;
+
+            const symbol =
+                symbolOverride ||
+                tick?.symbol ||
+                window.tickFormat.symbol ||
+                document.getElementById('symbol')?.value ||
+                null;
+
+            const decimals = getSymbolDecimals(symbol, tick);
+            window.tickFormat.decimals = decimals;
+            if (symbol) window.tickFormat.symbol = symbol;
+
+            return q.toFixed(decimals);
+        }
+
+        // Compatibility wrappers used throughout the existing bot.
+        function updateTickFormatFromQuote(quote, tick = null, symbolOverride = null) {
+            return canonicalTickString(quote, tick, symbolOverride);
+        }
+
+        function initTickFormatFromPrices(prices) {
+            // Do not infer decimal precision from random price differences.
+            // Historical prices are formatted using symbol metadata.
+            return window.tickFormat.decimals;
+        }
+
+        function formatQuoteForDigit(quote, tick = null, symbolOverride = null) {
+            return canonicalTickString(quote, tick, symbolOverride);
+        }
+
+        function getLastDigitFromQuote(quote, tick = null, symbolOverride = null) {
+            const s = canonicalTickString(quote, tick, symbolOverride);
+            if (!s) return NaN;
+            const d = Number.parseInt(s[s.length - 1], 10);
+            return Number.isNaN(d) ? NaN : d;
+        }
+
+        function runCanonicalDigitSelfTest() {
+            const cases = [
+                { quote: 86.732, pip_size: 0.001, expected: '86.732', digit: 2 },
+                { quote: 86.73, pip_size: 0.01, expected: '86.73', digit: 3 },
+                { quote: 86.7, pip_size: 0.01, expected: '86.70', digit: 0 },
+                { quote: 4938.099, pip_size: 0.001, expected: '4938.099', digit: 9 }
+            ];
+
+            for (const c of cases) {
+                const tick = { quote: c.quote, pip_size: c.pip_size, symbol: '__TEST__' };
+                const formatted = canonicalTickString(c.quote, tick, '__TEST__');
+                const digit = getLastDigitFromQuote(c.quote, tick, '__TEST__');
+                if (formatted !== c.expected || digit !== c.digit) {
+                    console.error('❌ Canonical digit self-test failed', { c, formatted, digit });
+                    return false;
+                }
+            }
+
+            console.log('✅ Canonical digit self-test passed');
+            return true;
+        }
+
+        // DOM Elements
+        const toggleButton = document.getElementById('toggleButton');
+        const soundToggleButton = document.getElementById('soundToggle');
+        const networkRecoveryToggle = document.getElementById('networkRecoveryIndicator');
+        const networkRecoveryBadge = document.getElementById('network-recovery-badge');
+        const sessionDisplay = document.getElementById('session_display');
+        const tradeResultContainer = document.getElementById('trade-result-container');
+        const metricPreviousResult = document.getElementById('metricPreviousResult');
+        const metricNextAction = document.getElementById('metricNextAction');
+        const metricTradeResult = document.getElementById('metricTradeResult');
+        const metricTotalProfit = document.getElementById('metricTotalProfit');
+        
+        // ============================================================================
+        // NETWORK RECOVERY SYSTEM
+        // ============================================================================
+        
+        function toggleNetworkRecovery() {
+            window.networkRecoveryEnabled = !window.networkRecoveryEnabled;
+            updateNetworkRecoveryButton();
+            
+            log(`🔄 Network auto-recovery ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
+            
+            if (window.networkRecoveryEnabled) {
+                networkRecoveryBadge.classList.remove('hidden');
+            } else {
+                networkRecoveryBadge.classList.add('hidden');
+                // Clear any pending reconnection attempts
+                if (window.autoReconnectTimer) {
+                    clearTimeout(window.autoReconnectTimer);
+                    window.autoReconnectTimer = null;
+                }
+            }
+        }
+        
+        function updateNetworkRecoveryButton() {
+            const indicator = document.getElementById('networkRecoveryIndicator');
+            if (!indicator) return;
+
+            const isOn = !!window.networkRecoveryEnabled && !!window.isBotRunning;
+            indicator.classList.toggle('on', isOn);
+            indicator.classList.toggle('off', !isOn);
+            indicator.title = isOn ? 'Auto-Recovery is ON' : 'Auto-Recovery is OFF';
+        }
+        
+        function attemptNetworkRecovery() {
+            if (!window.networkRecoveryEnabled || !window.isBotRunning) {
+                return;
+            }
+            
+            window.reconnectionAttempts++;
+            
+            if (window.reconnectionAttempts > window.maxReconnectionAttempts) {
+                log(`❌ Max reconnection attempts (${window.maxReconnectionAttempts}) reached. Stopping bot.`, 'NETWORK');
+                stopBot();
+                return;
+            }
+            
+            const delay = window.reconnectionDelay * Math.pow(1.5, window.reconnectionAttempts - 1);
+            
+            log(`🔄 Network recovery attempt ${window.reconnectionAttempts}/${window.maxReconnectionAttempts} in ${delay/1000}s...`, 'NETWORK');
+            
+            updateTradeStatus('RECONNECTING', 
+                `Network recovery attempt ${window.reconnectionAttempts}/${window.maxReconnectionAttempts}`,
+                `Reconnecting in ${delay/1000}s...`,
+                'normal');
+            
+            window.autoReconnectTimer = setTimeout(() => {
+                if (window.isBotRunning) {
+                    log('🔗 Attempting to reconnect WebSocket...', 'NETWORK');
+                    connectWebSocket();
+                }
+            }, delay);
+        }
+        
+        function resetReconnectionAttempts() {
+            window.reconnectionAttempts = 0;
+            if (window.autoReconnectTimer) {
+                clearTimeout(window.autoReconnectTimer);
+                window.autoReconnectTimer = null;
+            }
+        }
+        
+        // ============================================================================
+        // PnL UPDATE FUNCTIONS - UPDATED FOR 10 SECOND DISPLAY
+        // ============================================================================
+        
+        function startExtendedPnlUpdate(payout) {
+            window.pnlUpdateStartTime = Date.now();
+            
+            // Clear any existing interval
+            if (window.pnlUpdateInterval) {
+                clearInterval(window.pnlUpdateInterval);
+            }
+            
+            // Start with immediate update
+            updatePnL();
+            
+            // Start continuous updates for 10 seconds
+            window.pnlUpdateInterval = setInterval(() => {
+                const elapsed = Date.now() - window.pnlUpdateStartTime;
+                
+                if (elapsed >= window.pnlUpdateDuration) {
+                    // Stop after 10 seconds
+                    clearInterval(window.pnlUpdateInterval);
+                    window.pnlUpdateInterval = null;
+                    log('💰 PnL update sequence completed (10 seconds)', 'PNL');
+                    
+                    // Final update
+                    updatePnL();
+                    
+                    // Stop bot after PnL updates are complete
+                    setTimeout(() => {
+                        if (window.isBotRunning) {
+                            stopBot();
+                        }
+                    }, 100);
+                } else {
+                    // Continue updating PnL with visual feedback
+                    updatePnL();
+                    
+                    // Add visual pulse every 500ms
+                    if (elapsed % 500 < 50) {
+                        metricTotalProfit.classList.add('pnl-update-animation');
+                        setTimeout(() => {
+                            metricTotalProfit.classList.remove('pnl-update-animation');
+                        }, 500);
+                    }
+                    
+                    // Log progress every second
+                    if (elapsed % 1000 < 50) {
+                        const secondsLeft = Math.ceil((window.pnlUpdateDuration - elapsed) / 1000);
+                        log(`💰 PnL updating... ${secondsLeft}s`, 'PNL');
+                    }
+                }
+            }, 100); // Update every 100ms for smooth animation
+        }
+        
+        function updatePnL() {
+            const pnlElem = document.getElementById('metricTotalProfit');
+            
+            if (window.startingBalance > 0 && window.currentBalance > 0) {
+                window.netProfit = window.currentBalance - window.startingBalance;
+                const formattedProfit = window.netProfit.toFixed(2);
+                const isPositive = window.netProfit > 0;
+                const isNegative = window.netProfit < 0;
+                
+                pnlElem.textContent = `${isPositive ? '+' : ''}$${formattedProfit}`;
+                pnlElem.classList.remove('profit-positive', 'profit-negative', 'profit-neutral');
+                
+                if (isPositive) pnlElem.classList.add('profit-positive');
+                else if (isNegative) pnlElem.classList.add('profit-negative');
+                else pnlElem.classList.add('profit-neutral');
+                
+                return window.netProfit;
+            }
+            
+            if (window.pnlTracker.totalPayout > 0 || window.pnlTracker.totalInvestment > 0) {
+                window.netProfit = window.pnlTracker.totalPayout - window.pnlTracker.totalInvestment;
+                const formattedProfit = window.netProfit.toFixed(2);
+                const isPositive = window.netProfit > 0;
+                const isNegative = window.netProfit < 0;
+                
+                pnlElem.textContent = `${isPositive ? '+' : ''}$${formattedProfit}`;
+                pnlElem.classList.remove('profit-positive', 'profit-negative', 'profit-neutral');
+                
+                if (isPositive) pnlElem.classList.add('profit-positive');
+                else if (isNegative) pnlElem.classList.add('profit-negative');
+                else pnlElem.classList.add('profit-neutral');
+                
+                return window.netProfit;
+            }
+            
+            pnlElem.textContent = '$0.00';
+            pnlElem.classList.remove('profit-positive', 'profit-negative');
+            pnlElem.classList.add('profit-neutral');
+            return 0;
+        }
+        
+        function trackTradeInvestment(amount) {
+            window.pnlTracker.totalInvestment += parseFloat(amount);
+            window.pnlTracker.trades.push({
+                type: 'investment',
+                amount: parseFloat(amount),
+                timestamp: Date.now()
+            });
+            updatePnL();
+            log(`💰 Investment tracked: $${amount.toFixed(2)}`, 'PNL');
+        }
+        
+        function trackTradePayout(amount) {
+            window.pnlTracker.totalPayout += parseFloat(amount);
+            window.pnlTracker.trades.push({
+                type: 'payout',
+                amount: parseFloat(amount),
+                timestamp: Date.now()
+            });
+            updatePnL();
+            log(`💰 Payout tracked: $${amount.toFixed(2)}`, 'PNL');
+        }
+        
+        function resetPnL() {
+            window.pnlTracker = { totalInvestment: 0.0, totalPayout: 0.0, netProfit: 0.0, trades: [] };
+            // Preserve live Deriv balance; reset only session P/L.
+            window.startingBalance = Number(window.currentBalance) || 0.0;
+            window.netProfit = 0.0;
+            
+            if (window.pnlUpdateInterval) {
+                clearInterval(window.pnlUpdateInterval);
+                window.pnlUpdateInterval = null;
+            }
+            
+            updatePnL();
+            log('💰 PnL reset', 'PNL');
+        }
+
+
+        function resetAllPerformanceData() {
+            if (window.isBotRunning || hasOpenContract() || window.executionLock) {
+                alert('Stop the bot and wait for any open contract to settle before resetting performance data.');
+                log('⚠️ PERFORMANCE RESET BLOCKED: stop bot and settle any open contract first', 'WARNING');
+                return false;
+            }
+
+            const ok = window.confirm(
+                'Clear ALL saved profit/cycle performance data and start fresh?\n\n' +
+                'This will clear cycle P/L histories, session P/L, win/loss/trade counters, ' +
+                'published-cycle IDs, and overnight performance archive.\n\n' +
+                'DNA, Digit Feature, Randomness Auditor, forward-shadow, post-stop-depth, ' +
+                'and DNA realization research will be preserved.'
+            );
+            if (!ok) return false;
+
+            let removedKeys = 0;
+
+            try {
+                const keys = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key) keys.push(key);
+                }
+
+                const exactKeys = new Set([
+                    'matchstar_published_cycle_ids_v1',
+                    'digitmatchstar_overnight_research_archive_v1'
+                ]);
+
+                for (const key of keys) {
+                    if (key.startsWith('matchstar_cycle_history_v3_') || exactKeys.has(key)) {
+                        localStorage.removeItem(key);
+                        removedKeys++;
+                    }
+                }
+            } catch (err) {
+                console.warn('Performance localStorage reset warning:', err);
+            }
+
+            if (window.cyclePerformance) {
+                window.cyclePerformance.current = null;
+                window.cyclePerformance.historyBySymbol = {};
+            }
+
+            window.pnlTracker = {
+                totalInvestment: 0.0,
+                totalPayout: 0.0,
+                netProfit: 0.0,
+                trades: []
+            };
+            window.netProfit = 0.0;
+            window.startingBalance = Number(window.currentBalance) || 0.0;
+            window.cycleLosses = 0;
+
+            window.stats = {
+                totalTicks: Number(window.stats?.totalTicks || 0),
+                tradesExecuted: 0,
+                wins: 0,
+                losses: 0
+            };
+
+            window.tradeCount = 0;
+            window.currentStake = Number(
+                parseFloat(document.getElementById('baseStake')?.value) || window.baseStake || 1
+            );
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('PERFORMANCE_RESET');
+
+            if (window.adaptiveRecoveryHoldState) {
+                window.adaptiveRecoveryHoldState.extensions = 0;
+                window.adaptiveRecoveryHoldState.reranks = 0;
+                window.adaptiveRecoveryHoldState.keeps = 0;
+                window.adaptiveRecoveryHoldState.switches = 0;
+                window.adaptiveRecoveryHoldState.lastDecision = null;
+                window.adaptiveRecoveryHoldState.history = [];
+                window.adaptiveRecoveryHoldState.lastResetReason = 'PERFORMANCE_RESET';
+                window.adaptiveRecoveryHoldState.lastResetAt = Date.now();
+            }
+
+            try { updatePnL(); } catch (_) {}
+            try {
+                const tradeEl = document.getElementById('metricTradeCount');
+                if (tradeEl) tradeEl.textContent = '0';
+                const stakeEl = document.getElementById('metricCurrentStake');
+                if (stakeEl) stakeEl.textContent = `$${Number(window.currentStake || 0).toFixed(2)}`;
+            } catch (_) {}
+            try { window.cyclePerformance?.render?.(); } catch (_) {}
+
+            log(
+                `♻ PERFORMANCE DATA CLEARED | removed ${removedKeys} saved performance key(s) | research histories preserved`,
+                'SYSTEM'
+            );
+
+            alert(
+                'Performance data cleared. Profit and cycle tracking will now start fresh.\n\n' +
+                'Research data was preserved.'
+            );
+            return true;
+        }
+        
+        // ============================================================================
+        // CORE BOT FUNCTIONS CONTINUED
+        // ============================================================================
+        
+        // Check for authentication token
+        function checkAuthToken() {
+            const authenticated = isBotAuthenticated();
+
+            if (!authenticated) {
+                log('⚠️ Please authenticate first before using the bot.', 'WARNING');
+                window.location.replace('/');
+                return false;
+            }
+
+            // Secure server mode does not require a raw Deriv token in the browser.
+            if (window.SERVER_EXECUTION?.enabled) {
+                return !!getPlatformJwt();
+            }
+
+            // Legacy browser execution still requires the raw Deriv token.
+            if (!getStoredDerivToken()) {
+                log('⚠️ Browser execution requires legacy Deriv credentials. Use SERVER mode.', 'WARNING');
+                return false;
+            }
+
+            return true;
+        }
+        
+        // Initialize account toggle
+        function initializeToggleState() {
+            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            const toggle = document.getElementById('accTypeToggle');
+            if (toggle) toggle.checked = mode === 'REAL';
+
+            const accountId =
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('derivAccount') ||
+                localStorage.getItem(mode === 'REAL' ? 'derivRealAccount' : 'derivDemoAccount');
+
+            if (accountId) {
+                log(`Account: ${mode} (${accountId})`, 'SYSTEM');
+            } else {
+                log(`Account mode: ${mode}`, 'SYSTEM');
+            }
+        }
+
+        async function reconnectDerivForMode(requestedMode) {
+            const mode = String(requestedMode || 'DEMO').toUpperCase();
+            const apiUrl = String(
+                window.SERVER_EXECUTION?.apiUrl ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/, '');
+
+            // Do not let an old DEMO session id pin polling to the wrong account
+            // after a REAL OAuth reconnect (or vice versa).
+            if (window.SERVER_EXECUTION) {
+                window.SERVER_EXECUTION.sessionId = null;
+                window.SERVER_EXECUTION.state = null;
+                window.SERVER_EXECUTION.lastCandidateSent = null;
+            }
+
+            sessionStorage.removeItem('dms_server_session_id');
+            try { localStorage.removeItem('dms_server_session_id'); } catch (_) {}
+
+            sessionStorage.setItem('selectedAccountMode', mode);
+            localStorage.setItem('selectedAccountMode', mode);
+            localStorage.setItem('requestedAccountMode', mode);
+
+            const res = await fetch(
+                `${apiUrl}/auth/deriv/start?mode=${encodeURIComponent(mode)}`,
+                { method: 'GET', cache: 'no-store' }
+            );
+
+            let data = null;
+            try { data = await res.json(); } catch (_) {}
+
+            if (!res.ok || !data?.authorization_url) {
+                throw new Error(
+                    data?.detail ||
+                    `Could not start ${mode} Deriv authorization (${res.status})`
+                );
+            }
+
+            window.location.assign(data.authorization_url);
+        }
+
+        async function switchAccount() {
+            const toggle = document.getElementById('accTypeToggle');
+            const requestedMode = toggle?.checked ? 'REAL' : 'DEMO';
+            const currentMode = (
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            if (requestedMode === currentMode) return;
+
+            try {
+                log(`🔄 Connecting ${requestedMode} Deriv Options account…`, 'SYSTEM');
+                await reconnectDerivForMode(requestedMode);
+            } catch (err) {
+                if (toggle) toggle.checked = currentMode === 'REAL';
+                alert(`Could not connect ${requestedMode} account: ${err.message}`);
+                log(`❌ ${requestedMode} account connection failed: ${err.message}`, 'ERROR');
+            }
+        }
+
+        // TRADE STATUS UI FUNCTIONS
+        function updateTradeStatus(status, result, action, type = 'normal') {
+            tradeResultContainer.classList.remove('win-glow');
+            metricPreviousResult.textContent = result;
+            metricNextAction.textContent = action;
+            
+            switch(type) {
+                case 'win':
+                    metricTradeResult.textContent = 'WIN 🎯';
+                    metricTradeResult.className = 'text-xs font-bold status-win';
+                    metricPreviousResult.className = 'text-sm font-bold status-win';
+                    metricNextAction.className = 'text-sm font-bold text-green-400';
+                    tradeResultContainer.classList.add('win-glow');
+                    log(`🎯 Trade Status: ${result}`, 'WIN');
+                    break;
+                case 'loss':
+                    metricTradeResult.textContent = 'LOSS ❌';
+                    metricTradeResult.className = 'text-xs font-bold status-loss';
+                    metricPreviousResult.className = 'text-sm font-bold status-loss';
+                    metricNextAction.className = 'text-sm font-bold text-red-400';
+                    log(`❌ Trade Status: ${result}`, 'LOSS');
+                    break;
+                case 'trade':
+                    metricTradeResult.textContent = 'TRADING ⚡';
+                    metricTradeResult.className = 'text-xs font-bold status-trade';
+                    metricPreviousResult.className = 'text-sm font-bold status-trade';
+                    metricNextAction.className = 'text-sm font-bold text-yellow-400';
+                    log(`⚡ Trade Status: ${result}`, 'TRADE');
+                    break;
+                default:
+                    metricTradeResult.textContent = status || 'READY';
+                    metricTradeResult.className = 'text-xs font-bold text-gray-400';
+                    metricPreviousResult.className = 'text-sm font-bold text-gray-300';
+                    metricNextAction.className = 'text-sm font-bold text-yellow-400';
+                    break;
+            }
+        }
+        
+        function resetTradeStatus() {
+            updateTradeStatus('READY', 'Waiting for connection...', 'Start bot to begin', 'normal');
+        }
+        
+        // SESSION MANAGEMENT
+        function updateSessionDisplay() {
+            if (sessionState.sessionStarted && sessionState.sessionDigit !== null) {
+                document.getElementById('session_digit').textContent = sessionState.sessionDigit;
+                document.getElementById('session_trades').textContent = `${window.tradeCount}/${window.maxTrades}`;
+                sessionDisplay.classList.remove('hidden');
+            } else {
+                sessionDisplay.classList.add('hidden');
+            }
+        }
+        
+        function lockSessionDigit(digit, force = false, reason = '') {
+            if (!force && sessionState.sessionStarted && sessionState.sessionDigit !== null) {
+                log(`🔒 Digit ${digit} is already locked for this session`, 'SESSION');
+                return sessionState.sessionDigit;
+            }
+
+            sessionState.sessionDigit = digit;
+            sessionState.sessionStarted = true;
+            sessionState.manualOverride = false;
+            document.getElementById('predictedDigit').value = digit;
+            updateSessionDisplay();
+            log(`🔒 Digit ${digit} locked for current session${reason ? ' (' + reason + ')' : ''}`, 'SESSION');
+            return digit;
+        }
+
+        function clearSessionDigitLock(reason = '') {
+            sessionState.sessionDigit = null;
+            sessionState.sessionStarted = false;
+            sessionState.manualOverride = false;
+            updateSessionDisplay();
+            if (reason) log(`🔓 Session digit lock cleared (${reason})`, 'SESSION');
+        }
+
+        // HYBRID UTILITIES (tail-risk gate + cycle rotation)
+        function getSurvivalForDigit(digit) {
+            const d = Number(digit);
+            if (!Number.isFinite(d) || d < 0 || d > 9) return null;
+
+            if (window.latestSurvivalByDigit && window.latestSurvivalByDigit[d]) {
+                return window.latestSurvivalByDigit[d];
+            }
+
+            const rec = window.digitIntelligenceEngine?.currentRecommendation;
+            if (rec && rec.digit === d && rec.survival) return rec.survival;
+
+            return null;
+        }
+
+        function pickBestLowTailRiskDigit(maxS20 = 0.05) {
+            if (!window.latestSurvivalByDigit) return null;
+
+            let best = null;
+            for (let d = 0; d <= 9; d++) {
+                const s = window.latestSurvivalByDigit[d];
+                if (!s) continue;
+
+                const s20 = Number(s.s20);
+                if (!Number.isFinite(s20) || s20 > maxS20) continue;
+
+                const raw =
+                    (2.0 * (s.pm5 || 0)) +
+                    (1.0 * (s.pm10 || 0)) -
+                    (2.5 * (s.s20 || 0)) -
+                    (0.05 * Math.min(Number.isFinite(s.etm) ? s.etm : 100, 100));
+
+                const norm = 1 / (1 + Math.exp(-raw));
+                if (!best || norm > best.norm) best = { digit: d, norm, s };
+            }
+            return best;
+        }
+
+        
+
+        function updateSmartEntryPersistence(digit) {
+            const d = Number(digit);
+            const state = window.smartEntryOverrideState || {
+                digit: null,
+                streak: 0,
+                lastEvaluatedAt: 0
+            };
+
+            if (!Number.isInteger(d) || d < 0 || d > 9) {
+                state.digit = null;
+                state.streak = 0;
+                state.lastEvaluatedAt = Date.now();
+                window.smartEntryOverrideState = state;
+                return 0;
+            }
+
+            if (state.digit === d) {
+                state.streak = Number(state.streak || 0) + 1;
+            } else {
+                state.digit = d;
+                state.streak = 1;
+            }
+
+            state.lastEvaluatedAt = Date.now();
+            window.smartEntryOverrideState = state;
+            return state.streak;
+        }
+
+        function resetSmartEntryPersistence(reason = '') {
+            window.smartEntryOverrideState = {
+                digit: null,
+                streak: 0,
+                lastEvaluatedAt: Date.now()
+            };
+            if (reason) {
+                log(`🧠 SMART OVERRIDE persistence reset (${reason})`, 'ENGINE');
+            }
+        }
+
+        function smartOverrideTailCheck(digit) {
+            const maxS20 = Number(window.EV_GATE_CONFIG?.smartOverrideMaxS20 ?? 0.05);
+            const survival = getSurvivalForDigit(digit);
+
+            // Tail-risk data is advisory. Missing/learning data does not create another delay.
+            if (!survival) {
+                return {
+                    ok: true,
+                    available: false,
+                    reason: 'TAIL_DATA_LEARNING',
+                    s20: null
+                };
+            }
+
+            const s20 = Number(survival.s20);
+            if (!Number.isFinite(s20)) {
+                return {
+                    ok: true,
+                    available: false,
+                    reason: 'TAIL_DATA_LEARNING',
+                    s20: null
+                };
+            }
+
+            return {
+                ok: s20 <= maxS20,
+                available: true,
+                reason: s20 <= maxS20 ? 'TAIL_LOW' : 'TAIL_ELEVATED',
+                s20
+            };
+        }
+
+        function chooseBestRecoveryDigit() {
+            if (!window.nextTickModel || typeof window.nextTickModel.getPrediction !== 'function') {
+                return null;
+            }
+
+            if (sessionState.mode === 'ai') {
+                const aud=window.randomnessAuditor?.lastSnapshot || null;
+                if (aud?.ready && Number.isInteger(Number(aud.topDigit))) {
+                    const m=window.nextTickModel.getPrediction(
+                        window.currentSymbol || document.getElementById('symbol')?.value || 'R_10',
+                        Number(aud.topDigit)
+                    );
+                    if (m) {
+                        return {
+                            digit:Number(aud.topDigit),
+                            probability:Number(m.probability||0.10),
+                            support:Number(m.effectiveSupport||0),
+                            model:m,
+                            source:'AUDITOR_RECOVERY'
+                        };
+                    }
+                }
+            }
+
+            const symbol =
+                window.currentSymbol ||
+                document.getElementById('symbol')?.value ||
+                'R_10';
+
+            let best = null;
+
+            for (let digit = 0; digit <= 9; digit++) {
+                try {
+                    const model = window.nextTickModel.getPrediction(symbol, digit);
+                    if (!model || !model.ready) continue;
+
+                    const probability = Number(model.probability);
+                    const support = Number(model.effectiveSupport || 0);
+
+                    if (!Number.isFinite(probability)) continue;
+                    if (support < Number(window.EV_GATE_CONFIG?.minEffectiveSupport || 0)) continue;
+
+                    if (!best || probability > best.probability) {
+                        best = { digit, probability, support, model };
+                    }
+                } catch (_) {}
+            }
+
+            return best;
+        }
+
+
+        function getAdaptiveRecoveryEvidence(digit) {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const symbol =
+                window.currentSymbol ||
+                document.getElementById('symbol')?.value ||
+                'R_10';
+
+            let model = null;
+            try {
+                model = window.nextTickModel?.getPrediction?.(symbol, Number(digit)) || null;
+            } catch (_) {}
+
+            let dna = window.digitDNAEngine?.lastSnapshot || null;
+            try {
+                if (!dna?.ready && window.digitDNAEngine?.analyze) {
+                    dna = window.digitDNAEngine.analyze(symbol) || dna;
+                }
+            } catch (_) {}
+
+            let feature = window.digitFeatureEngine?.lastSnapshot || null;
+            try {
+                if (!feature?.ready && window.digitFeatureEngine?.analyze) {
+                    feature = window.digitFeatureEngine.analyze(symbol) || feature;
+                }
+            } catch (_) {}
+
+            let auditor = window.randomnessAuditor?.lastSnapshot || null;
+            try {
+                if (!auditor?.ready && window.randomnessAuditor?.analyze) {
+                    auditor = window.randomnessAuditor.analyze(symbol) || auditor;
+                }
+            } catch (_) {}
+
+            const recommendation =
+                window.digitIntelligenceEngine?.currentRecommendation || null;
+
+            const dnaRow = Array.isArray(dna?.rows)
+                ? dna.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+            const featureRow = Array.isArray(feature?.rows)
+                ? feature.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+            const auditorRow = Array.isArray(auditor?.rows)
+                ? auditor.rows.find(r => Number(r.digit) === Number(digit))
+                : null;
+
+            const topVotes = [
+                Number(dna?.topDigit),
+                Number(feature?.topDigit),
+                Number(auditor?.topDigit),
+                Number(recommendation?.digit)
+            ].filter(Number.isInteger);
+
+            const agreementCount = topVotes.filter(d => d === Number(digit)).length;
+
+            let bestPick = null;
+            try { bestPick = chooseBestRecoveryDigit(); } catch (_) {}
+
+            const currentP = Number(model?.probability ?? NaN);
+            const bestP = Number(bestPick?.probability ?? NaN);
+            const probabilityDeficit =
+                Number.isFinite(bestP) && Number.isFinite(currentP)
+                    ? bestP - currentP
+                    : null;
+
+            return {
+                symbol,
+                digit:Number(digit),
+                modelProbability:Number.isFinite(currentP) ? currentP : null,
+                modelSupport:Number(model?.effectiveSupport || 0),
+                dnaTop:Number.isInteger(Number(dna?.topDigit)) ? Number(dna.topDigit) : null,
+                dnaSimilarity:Number.isFinite(Number(dnaRow?.similarity)) ? Number(dnaRow.similarity) : null,
+                featureTop:Number.isInteger(Number(feature?.topDigit)) ? Number(feature.topDigit) : null,
+                featureScore:Number.isFinite(Number(featureRow?.score)) ? Number(featureRow.score) : null,
+                auditorTop:Number.isInteger(Number(auditor?.topDigit)) ? Number(auditor.topDigit) : null,
+                auditorScore:Number.isFinite(Number(auditorRow?.score)) ? Number(auditorRow.score) : null,
+                recommendationTop:Number.isInteger(Number(recommendation?.digit)) ? Number(recommendation.digit) : null,
+                recommendationSource:recommendation?.source || null,
+                agreementCount,
+                bestRecoveryDigit:Number.isInteger(Number(bestPick?.digit)) ? Number(bestPick.digit) : null,
+                bestRecoveryProbability:Number.isFinite(bestP) ? bestP : null,
+                probabilityDeficit,
+                configSnapshot:{
+                    minAgreementForExtension:Number(cfg.minAgreementForExtension ?? 1),
+                    strongAgreementForExtension:Number(cfg.strongAgreementForExtension ?? 2),
+                    minDnaSimilarity:Number(cfg.minDnaSimilarity ?? 0.60),
+                    minModelProbability:Number(cfg.minModelProbability ?? 0.10),
+                    maxProbabilityDeficit:Number(cfg.maxProbabilityDeficit ?? 0.015),
+                    switchAdvantage:Number(cfg.switchAdvantage ?? 0.020)
+                }
+            };
+        }
+
+        function recordAdaptiveRecoveryDecision(decision) {
+            const state = window.adaptiveRecoveryHoldState;
+            if (!state) return;
+
+            state.lastDecision = decision;
+            state.history.push(decision);
+            if (state.history.length > 500) {
+                state.history = state.history.slice(-500);
+            }
+
+            if (decision.action === 'EXTEND') {
+                state.extensions++;
+                state.keeps++;
+            } else if (decision.action === 'RERANK_KEEP') {
+                state.reranks++;
+                state.keeps++;
+            } else if (decision.action === 'RERANK_SWITCH') {
+                state.reranks++;
+                state.switches++;
+            }
+        }
+
+        function shouldExtendRecoveryHold(digit) {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const evidence = getAdaptiveRecoveryEvidence(digit);
+
+            const currentP = Number(evidence.modelProbability);
+            const bestP = Number(evidence.bestRecoveryProbability);
+            const deficit = Number(evidence.probabilityDeficit);
+            const dnaSimilarity = Number(evidence.dnaSimilarity);
+            const agreement = Number(evidence.agreementCount || 0);
+
+            const sameAsFreshBest =
+                Number.isInteger(evidence.bestRecoveryDigit) &&
+                Number(evidence.bestRecoveryDigit) === Number(digit);
+
+            const strongAgreement =
+                agreement >= Number(cfg.strongAgreementForExtension ?? 2);
+
+            const moderateAgreement =
+                agreement >= Number(cfg.minAgreementForExtension ?? 1);
+
+            const dnaSupport =
+                Number.isFinite(dnaSimilarity) &&
+                dnaSimilarity >= Number(cfg.minDnaSimilarity ?? 0.60);
+
+            const modelSupport =
+                Number.isFinite(currentP) &&
+                currentP >= Number(cfg.minModelProbability ?? 0.10);
+
+            const closeToBest =
+                !Number.isFinite(deficit) ||
+                deficit <= Number(cfg.maxProbabilityDeficit ?? 0.015);
+
+            const clearlyOutranked =
+                Number.isFinite(bestP) &&
+                Number.isFinite(currentP) &&
+                evidence.bestRecoveryDigit !== null &&
+                Number(evidence.bestRecoveryDigit) !== Number(digit) &&
+                (bestP - currentP) >= Number(cfg.switchAdvantage ?? 0.020);
+
+            const extend =
+                !clearlyOutranked &&
+                (
+                    sameAsFreshBest ||
+                    strongAgreement ||
+                    (moderateAgreement && dnaSupport && modelSupport && closeToBest) ||
+                    (dnaSupport && modelSupport && closeToBest)
+                );
+
+            return {
+                extend,
+                reason: clearlyOutranked
+                    ? 'FRESH_CANDIDATE_CLEARLY_STRONGER'
+                    : sameAsFreshBest
+                        ? 'CURRENT_DIGIT_STILL_FRESH_BEST'
+                        : strongAgreement
+                            ? 'MULTI_ENGINE_AGREEMENT'
+                            : (dnaSupport && modelSupport && closeToBest)
+                                ? 'DNA_MODEL_SUPPORT'
+                                : 'SUPPORT_WEAKENED',
+                evidence
+            };
+        }
+
+        function resetAdaptiveRecoveryHold(reason = '') {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            window.recoveryDigitTradeLimit = Math.max(
+                1,
+                Number(cfg.initialHold || 3)
+            );
+
+            if (reason) {
+                const state = window.adaptiveRecoveryHoldState;
+                if (state) {
+                    state.lastResetReason = reason;
+                    state.lastResetAt = Date.now();
+                }
+            }
+        }
+
+        function adaptiveRecoveryBoundaryDecision() {
+            const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || {};
+            const currentDigit = Number(window.recoveryDigitLock);
+            const currentLimit = Math.max(1, Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3));
+            const used = Math.min(
+                Number(window.recoveryDigitTrades || 0),
+                currentLimit
+            );
+            if (Number(window.recoveryDigitTrades || 0) !== used) {
+                window.recoveryDigitTrades = used;
+            }
+            const maxHold = Math.max(currentLimit, Number(cfg.maxHold || 6));
+
+            if (!cfg.enabled || !Number.isInteger(currentDigit)) {
+                return { action:'RERANK', reason:'ADAPTIVE_DISABLED_OR_NO_LOCK' };
+            }
+
+            if (used < currentLimit) {
+                return { action:'KEEP_UNTIL_BOUNDARY', reason:'CURRENT_BLOCK_NOT_COMPLETE' };
+            }
+
+            // Hard ceiling reached: force a fresh re-rank.
+            if (currentLimit >= maxHold) {
+                return {
+                    action:'RERANK',
+                    reason:'ADAPTIVE_MAX_HOLD_REACHED',
+                    evidence:getAdaptiveRecoveryEvidence(currentDigit)
+                };
+            }
+
+            const verdict = shouldExtendRecoveryHold(currentDigit);
+
+            if (verdict.extend) {
+                const nextLimit = Math.min(
+                    maxHold,
+                    currentLimit + Math.max(1, Number(cfg.extensionStep || 1))
+                );
+
+                window.recoveryDigitTradeLimit = nextLimit;
+
+                const decision = {
+                    at:Date.now(),
+                    action:'EXTEND',
+                    reason:verdict.reason,
+                    digit:currentDigit,
+                    used,
+                    previousLimit:currentLimit,
+                    newLimit:nextLimit,
+                    evidence:verdict.evidence
+                };
+                recordAdaptiveRecoveryDecision(decision);
+
+                log(
+                    `🧠 ADAPTIVE HOLD EXTEND | digit ${currentDigit} | ` +
+                    `${currentLimit} → ${nextLimit} purchased recovery trades | ` +
+                    `${verdict.reason} | agreement ${verdict.evidence.agreementCount} | ` +
+                    `DNA ${verdict.evidence.dnaSimilarity == null ? '-' : (verdict.evidence.dnaSimilarity*100).toFixed(1)+'%'} | ` +
+                    `model P ${verdict.evidence.modelProbability == null ? '-' : (verdict.evidence.modelProbability*100).toFixed(2)+'%'}`,
+                    'ENGINE'
+                );
+
+                return decision;
+            }
+
+            const decision = {
+                at:Date.now(),
+                action:'RERANK',
+                reason:verdict.reason,
+                digit:currentDigit,
+                used,
+                previousLimit:currentLimit,
+                newLimit:Number(cfg.initialHold || 3),
+                evidence:verdict.evidence
+            };
+            recordAdaptiveRecoveryDecision(decision);
+
+            log(
+                `🧠 ADAPTIVE HOLD RELEASE | digit ${currentDigit} | ` +
+                `re-rank after ${used} purchased recovery trades | ${verdict.reason}`,
+                'ENGINE'
+            );
+
+            return decision;
+        }
+
+function rotateHybridDigit(reason = '') {
+            clearSessionDigitLock(reason || 'Rotate');
+            window.cycleRotations = (window.cycleRotations || 0) + 1;
+
+            // Preserve martingale/recovery stake across AI digit rotations.
+            if (sessionState.mode !== 'ai') return;
+
+            // Prefer a low tail-risk digit (s20 <= 5%), otherwise use current AI rec.
+            const pick = pickBestLowTailRiskDigit(0.05);
+            const nextDigit =
+                (pick && Number.isFinite(pick.digit)) ? pick.digit :
+                (window.digitIntelligenceEngine?.currentRecommendation?.digit ?? null);
+
+            if (nextDigit === null) return;
+
+            lockSessionDigit(nextDigit, true, reason || 'Rotate');
+            log(`🔁 Re-picked HYBRID digit ${nextDigit}${reason ? ' (' + reason + ')' : ''}`, 'SESSION');
+        }
+
+
+// CONNECTION STATUS
+        function updateConnectionStatus() {
+            const publicConnected = window.marketWs && window.marketWs.readyState === WebSocket.OPEN;
+            const tradingConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
+            const isConnected = !!(publicConnected || tradingConnected);
+            const isConnecting = !!(window.marketIsConnecting || window.isConnecting);
+            
+            if (isConnected) {
+                document.getElementById('status-badge').textContent = '🟢 CONNECTED';
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connected text-white shadow-md';
+                document.getElementById('market_status').textContent = 'Live';
+                document.getElementById('market_status').className = 'ml-2 font-bold text-green-400';
+                if (!window.isBotRunning && !hasOpenContract()) {
+                    updateTradeStatus('READY', 'Market analysis active · Trading idle', 'Press START BOT when ready', 'normal');
+                }
+            } else if (isConnecting) {
+                document.getElementById('status-badge').textContent = '🟡 CONNECTING';
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connecting text-white shadow-md';
+                document.getElementById('market_status').textContent = 'Connecting...';
+                document.getElementById('market_status').className = 'ml-2 font-bold text-yellow-400';
+                updateTradeStatus('CONNECTING', 'Connecting to market...', 'Please wait', 'normal');
+            } else {
+                document.getElementById('status-badge').textContent = '🔴 DISCONNECTED';
+                document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-disconnected text-white shadow-md';
+                document.getElementById('market_status').textContent = 'Offline';
+                document.getElementById('market_status').className = 'ml-2 font-bold text-red-400';
+                updateTradeStatus('DISCONNECTED', 'Market offline', 'Reconnecting to market data...', 'normal');
+            }
+            
+            document.getElementById('current_symbol').textContent = 
+                document.getElementById('symbol').options[document.getElementById('symbol').selectedIndex].text;
+            
+            document.getElementById('ticks_received').textContent = window.totalTicksReceived;
+            
+            // Update tick rate
+            const now = Date.now();
+            const recentTicks = window.tickTimestamps.filter(ts => now - ts < 5000);
+            const tickRate = recentTicks.length / 5;
+            document.getElementById('current_tick_rate').textContent = tickRate.toFixed(1) + '/s';
+        }
+        
+        // MODE MANAGEMENT - ONLY INSTANT AND SCORE AUTO
+        function switchMode(mode) {
+            sessionState.mode = mode;
+            
+            // Reset button colors
+            document.getElementById('mode_instant').classList.remove('bg-green-600', 'bg-purple-600');
+            document.getElementById('mode_ai').classList.remove('bg-green-600', 'bg-purple-600');
+            
+            if (mode === 'instant') {
+                document.getElementById('mode_instant').classList.add('bg-green-600');
+                document.getElementById('mode_ai').classList.add('bg-purple-600');
+                document.getElementById('mode_description').textContent = '⚡ INSTANT: Starts trading immediately with your selected digit';
+                log('🔄 Switched to INSTANT mode', 'SYSTEM');
+                window.nextTradeAllowed = true;
+                
+                if (window.isBotRunning && !sessionState.manualOverride) {
+                    const manualDigit = parseInt(document.getElementById('predictedDigit').value);
+                    if (!isNaN(manualDigit) && manualDigit >= 0 && manualDigit <= 9) {
+                        sessionState.sessionDigit = manualDigit;
+                        sessionState.sessionStarted = true;
+                        sessionState.manualOverride = true;
+                        updateSessionDisplay();
+                        log(`🔒 Digit ${manualDigit} set manually for instant mode`, 'SESSION');
+                    }
+                }
+            } else if (mode === 'ai') {
+                document.getElementById('mode_ai').classList.add('bg-green-600');
+                document.getElementById('mode_instant').classList.add('bg-purple-600');
+                document.getElementById('mode_description').textContent = '🧠 SCORE AUTO: Let AI select and lock the current prediction when started';
+                log('🔄 Switched to SCORE AUTO mode', 'SYSTEM');
+
+                // In AI mode we PREVIEW digits while stopped, and LOCK only when the bot is running.
+                if (window.digitIntelligenceEngine.warmupDone && window.digitIntelligenceEngine.currentRecommendation) {
+                    const recommendedDigit = window.digitIntelligenceEngine.currentRecommendation.digit;
+                    document.getElementById('predictedDigit').value = recommendedDigit;
+
+                    if (window.isBotRunning) {
+                        lockSessionDigit(recommendedDigit, true, 'SCORE AUTO (running)');
+                        log(`🤖 AI mode active - Locked digit for trading: ${recommendedDigit}`, 'ENGINE');
+                    } else {
+                        clearSessionDigitLock('SCORE AUTO (preview)');
+                        log(`🤖 AI mode active - Preview digit: ${recommendedDigit} (will lock on START)`, 'ENGINE');
+                        updateTradeStatus('READY', `AI digit ${recommendedDigit} ready`, 'Will lock on Start', 'normal');
+                    }
+                } else {
+                    clearSessionDigitLock('SCORE AUTO (waiting)');
+                    log('🤖 AI mode active - Waiting for engine recommendation...', 'ENGINE');
+                    updateTradeStatus('WAITING', 'AI engine analyzing...', 'Waiting for AI recommendation', 'normal');
+                }
+            }
+            
+            updateExecutionLogic();
+        }
+        
+        function updateExecutionLogic() {
+            if (sessionState.mode === 'ai') {
+                const hasRec = !!window.digitIntelligenceEngine.currentRecommendation;
+                const warmed = !!window.digitIntelligenceEngine.warmupDone;
+
+                if (!warmed || !hasRec) {
+                    if (window.isBotRunning) {
+                        log('🧠 AI Engine not ready yet...', 'ENGINE');
+                        window.nextTradeAllowed = false;
+                        updateTradeStatus('WAITING', 'AI Engine warming up', 'Waiting for AI recommendation', 'normal');
+                    } else {
+                        window.nextTradeAllowed = false;
+                        clearSessionDigitLock('AI not ready (stopped)');
+                        updateTradeStatus('WAITING', 'AI engine analyzing...', 'Will lock on Start when ready', 'normal');
+                    }
+                    return;
+                }
+
+                const recommendedDigit = window.digitIntelligenceEngine.currentRecommendation.digit;
+
+                if (!window.isBotRunning) {
+                    // Preview only while stopped
+                    document.getElementById('predictedDigit').value = recommendedDigit;
+                    clearSessionDigitLock('AI preview (stopped)');
+                    window.nextTradeAllowed = false;
+                    updateTradeStatus('READY', `AI digit ${recommendedDigit} ready`, 'Will lock on Start', 'normal');
+                    return;
+                }
+
+                // Bot is running: lock ONCE (at start) and do NOT overwrite after lock.
+                if (!sessionState.sessionStarted || sessionState.sessionDigit === null) {
+                    lockSessionDigit(recommendedDigit, true, 'START lock');
+                    updateTradeStatus('READY', `AI digit ${recommendedDigit} locked`, 'Ready to trade', 'normal');
+                } else {
+                    // Keep the locked digit for trading
+                    updateTradeStatus('READY', `Digit ${sessionState.sessionDigit} locked`, 'Trading locked session digit', 'normal');
+                }
+
+                window.nextTradeAllowed = true;
+                return;
+            }
+
+            if (sessionState.mode === 'instant') {
+                window.nextTradeAllowed = true;
+                updateTradeStatus('READY', 'Instant mode active', 'Trading on each tick', 'normal');
+            }
+        }
+
+
+        // ============================================================================
+        // DIGITMATCH ELIGIBLE SYMBOL DISCOVERY + MULTI-SYMBOL RESEARCH EDGE MONITOR
+        // Scanner never buys contracts. It only watches public market data.
+        // ============================================================================
+        window.digitMatchScanner = {
+            eligible: new Map(),
+            states: new Map(),
+            maxDigits: 700,
+            minSupport: 20,
+            best: null,
+            scanStarted: false,
+
+            symbolCode(item) {
+                return item?.underlying_symbol || item?.symbol || null;
+            },
+
+            symbolName(item) {
+                return item?.underlying_symbol_name || item?.display_name || this.symbolCode(item) || 'Unknown';
+            },
+
+            ensureState(symbol, name = symbol) {
+                if (!this.states.has(symbol)) {
+                    this.states.set(symbol, {
+                        symbol, name, digits: [],
+                        score: null, bestDigit: null, metrics: null,
+                        ticks: 0, updatedAt: 0
+                    });
+                }
+                const s = this.states.get(symbol);
+                if (name) s.name = name;
+                return s;
+            },
+
+            setEligible(items) {
+                const rows = [];
+                for (const item of (Array.isArray(items) ? items : [])) {
+                    const symbol = this.symbolCode(item);
+                    if (!symbol) continue;
+                    rows.push({
+                        symbol,
+                        name: this.symbolName(item),
+                        pipSize: item?.pip_size ?? item?.pip ?? null,
+                        market: item?.market || '',
+                        submarket: item?.submarket || ''
+                    });
+                }
+
+                rows.sort((a,b) => a.name.localeCompare(b.name));
+                this.eligible.clear();
+
+                for (const row of rows) {
+                    this.eligible.set(row.symbol, row);
+                    this.ensureState(row.symbol, row.name);
+                }
+
+                this.populateSelector(rows);
+                this.render();
+                return rows;
+            },
+
+            populateSelector(rows) {
+                const sel = document.getElementById('symbol');
+                if (!sel || !rows.length) return;
+
+                const previous = sel.value;
+                sel.innerHTML = '';
+
+                const groups = new Map();
+                for (const r of rows) {
+                    const key = r.submarket || r.market || 'Eligible DIGITMATCH';
+                    if (!groups.has(key)) groups.set(key, []);
+                    groups.get(key).push(r);
+                }
+
+                for (const [groupName, list] of groups.entries()) {
+                    const og = document.createElement('optgroup');
+                    og.label = String(groupName)
+                        .replace(/_/g,' ')
+                        .replace(/\b\w/g, c => c.toUpperCase());
+
+                    for (const r of list) {
+                        const opt = document.createElement('option');
+                        opt.value = r.symbol;
+                        opt.textContent = r.name;
+                        og.appendChild(opt);
+                    }
+                    sel.appendChild(og);
+                }
+
+                if (rows.some(r => r.symbol === previous)) sel.value = previous;
+                else {
+                    const preferred = rows.find(r => r.symbol === 'R_10') || rows[0];
+                    sel.value = preferred.symbol;
+                }
+
+                const note = document.getElementById('symbol-eligibility-note');
+                if (note) {
+                    note.textContent = `${rows.length} Deriv symbol${rows.length===1?'':'s'} currently confirmed for DIGITMATCH`;
+                }
+            },
+
+            processHistory(symbol, prices, pipSize = null) {
+                if (!this.eligible.has(symbol) || !Array.isArray(prices)) return;
+                const s = this.ensureState(symbol, this.eligible.get(symbol)?.name || symbol);
+                s.digits = [];
+
+                const fakeTick = pipSize ? {symbol, pip_size:pipSize} : {symbol};
+                for (const quote of prices.slice(-this.maxDigits)) {
+                    const d = getLastDigitFromQuote(quote, fakeTick, symbol);
+                    if (Number.isInteger(d) && d >= 0 && d <= 9) s.digits.push(d);
+                }
+
+                s.ticks = s.digits.length;
+                s.updatedAt = Date.now();
+                if (s.digits.length >= 60) this.evaluateState(s);
+            },
+
+            processTick(tick) {
+                const symbol = tick?.symbol || tick?.underlying_symbol;
+                if (!symbol || !this.eligible.has(symbol)) return;
+
+                const formatted = canonicalTickString(tick.quote, tick, symbol);
+                if (!formatted) return;
+                const digit = Number.parseInt(formatted[formatted.length - 1], 10);
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+
+                const s = this.ensureState(symbol, this.eligible.get(symbol)?.name || symbol);
+                s.digits.push(digit);
+                if (s.digits.length > this.maxDigits) s.digits.shift();
+                s.ticks++;
+                s.updatedAt = Date.now();
+
+                if (s.digits.length >= 60) this.evaluateState(s);
+                if (s.ticks % 8 === 0) this.render();
+            },
+
+            gapMetrics(digits, digit) {
+                const positions = [];
+                for (let i=0;i<digits.length;i++) if (digits[i]===digit) positions.push(i);
+                if (positions.length < 8) return null;
+
+                const gaps = [];
+                for (let i=1;i<positions.length;i++) {
+                    const g = positions[i] - positions[i-1] - 1;
+                    if (g >= 0) gaps.push(g);
+                }
+                if (gaps.length < 7) return null;
+
+                const currentGap = digits.length - 1 - positions[positions.length - 1];
+                const atRisk = gaps.filter(L => L >= currentGap);
+                if (atRisk.length < 5) return null;
+
+                const hitWithin = (k) => atRisk.filter(L => L <= currentGap + k).length / atRisk.length;
+                const p1 = hitWithin(1);
+                const p5 = hitWithin(5);
+                const p10 = hitWithin(10);
+                const s20 = atRisk.filter(L => L > currentGap + 20).length / atRisk.length;
+                const rem = atRisk.map(L => Math.max(0, L-currentGap));
+                const etm = rem.reduce((a,b)=>a+b,0) / Math.max(rem.length,1);
+
+                return {
+                    digit, currentGap, p1, p5, p10, s20, etm,
+                    support: atRisk.length, totalGapSupport: gaps.length
+                };
+            },
+
+            scoreMetrics(m) {
+                if (!m) return 0;
+
+                const supportConfidence = Math.min(1, m.support / 60);
+                const tailQuality = Math.max(0, 1 - m.s20);
+                const etmQuality = Math.max(0, 1 - Math.min(m.etm, 20) / 20);
+
+                const raw =
+                    0.40 * m.p10 +
+                    0.22 * m.p5 +
+                    0.13 * m.p1 +
+                    0.12 * tailQuality +
+                    0.08 * supportConfidence +
+                    0.05 * etmQuality;
+
+                const reliabilityPenalty = m.support < this.minSupport
+                    ? Math.max(0.45, m.support / this.minSupport)
+                    : 1;
+
+                return Math.max(0, Math.min(100, raw * 100 * reliabilityPenalty));
+            },
+
+            evaluateState(s) {
+                let best = null;
+
+                for (let d=0; d<=9; d++) {
+                    const metrics = this.gapMetrics(s.digits, d);
+                    if (!metrics) continue;
+
+                    const score = this.scoreMetrics(metrics);
+                    const candidate = {digit:d, score, metrics};
+
+                    if (!best || candidate.score > best.score) best = candidate;
+                }
+
+                if (best) {
+                    s.score = best.score;
+                    s.bestDigit = best.digit;
+                    s.metrics = best.metrics;
+                }
+
+                this.rankBest();
+            },
+
+            rankBest() {
+                let best = null;
+
+                for (const s of this.states.values()) {
+                    if (!Number.isFinite(s.score) || !s.metrics) continue;
+
+                    if (!best || s.score > best.score) {
+                        best = {
+                            symbol:s.symbol,
+                            name:s.name,
+                            score:s.score,
+                            digit:s.bestDigit,
+                            metrics:s.metrics
+                        };
+                    }
+                }
+
+                this.best = best;
+                return best;
+            },
+
+            requestScannerData() {
+                if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+                if (!this.eligible.size || this.scanStarted) return;
+
+                this.scanStarted = true;
+                let count = 0;
+
+                for (const [symbol] of this.eligible.entries()) {
+                    sendMarketRequest({
+                        ticks_history:symbol,
+                        count:Math.min(this.maxDigits, 600),
+                        end:'latest',
+                        style:'ticks',
+                        req_id:marketNextReqId(),
+                        passthrough:{matchstar_scanner:true,symbol}
+                    });
+
+                    sendMarketRequest({
+                        ticks:symbol,
+                        subscribe:1,
+                        req_id:marketNextReqId(),
+                        passthrough:{matchstar_scanner:true,symbol}
+                    });
+
+                    count++;
+                }
+
+                const status = document.getElementById('edge-scanner-status');
+                if (status) {
+                    status.textContent = `Monitoring ${count} eligible market${count===1?'':'s'}`;
+                    status.className = 'edge-pill text-green-300';
+                }
+
+                log(`🛰️ Edge monitor started across ${count} Deriv-confirmed DIGITMATCH symbols`, 'ENGINE');
+            },
+
+            useBest() {
+                const best = this.best;
+                if (!best) return;
+
+                if (window.isBotRunning) {
+                    alert('Stop the bot before changing to the scanner-recommended market.');
+                    return;
+                }
+
+                const selector = document.getElementById('symbol');
+                if (!selector || !Array.from(selector.options).some(o => o.value === best.symbol)) return;
+
+                selector.value = best.symbol;
+                document.getElementById('predictedDigit').value = best.digit;
+                restartPublicMarketForSymbol();
+
+                log(`🛰️ Scanner selected ${best.name} + digit ${best.digit} | research score ${best.score.toFixed(1)}`, 'ENGINE');
+                updateTradeStatus(
+                    'RESEARCH PICK',
+                    `${best.name} · digit ${best.digit}`,
+                    `Research score ${best.score.toFixed(1)}/100 — review before trading`,
+                    'normal'
+                );
+            },
+
+            render() {
+                const grid = document.getElementById('edge-monitor-grid');
+                const summary = document.getElementById('edge-best-summary');
+                const button = document.getElementById('edge-use-best');
+                if (!grid || !summary) return;
+
+                const rows = Array.from(this.states.values())
+                    .filter(s => Number.isFinite(s.score) && s.metrics)
+                    .sort((a,b) => b.score - a.score);
+
+                if (!rows.length) {
+                    grid.innerHTML = '<div class="text-xs text-gray-500">Collecting enough digit history to rank markets…</div>';
+                    summary.textContent = 'Waiting for enough ticks to compare eligible markets…';
+                    if (button) button.disabled = true;
+                    return;
+                }
+
+                const best = this.rankBest();
+                if (best) {
+                    const m = best.metrics;
+                    summary.innerHTML =
+                        `<div class="flex flex-wrap gap-x-4 gap-y-1 items-center">` +
+                        `<span class="font-bold text-green-300">Best research setup: ${best.name}</span>` +
+                        `<span>Digit <b class="text-white">${best.digit}</b></span>` +
+                        `<span>Score <b class="text-cyan-300">${best.score.toFixed(1)}/100</b></span>` +
+                        `<span>P5 <b>${(m.p5*100).toFixed(0)}%</b></span>` +
+                        `<span>P10 <b>${(m.p10*100).toFixed(0)}%</b></span>` +
+                        `<span>S20 <b>${(m.s20*100).toFixed(0)}%</b></span>` +
+                        `<span>ETM <b>${m.etm.toFixed(1)}</b></span>` +
+                        `<span>Support <b>${m.support}</b></span>` +
+                        `</div>` +
+                        `<div class="text-[10px] text-gray-500 mt-1">Research ranking only. Highest-ranked does not mean profitable or guaranteed.</div>`;
+
+                    if (button) button.disabled = false;
+                }
+
+                grid.innerHTML = rows.slice(0,24).map((s,index)=>{
+                    const m=s.metrics;
+                    const badge =
+                        s.score>=75 && m.support>=this.minSupport ? 'WATCH' :
+                        s.score>=60 ? 'OBSERVE' : 'WEAK';
+
+                    return `<div class="edge-market-card ${index===0?'best':''}">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <div class="font-bold text-sm text-white">${s.name}</div>
+                                <div class="text-[10px] text-gray-500">${s.symbol}</div>
+                            </div>
+                            <span class="edge-pill ${index===0?'text-green-300':'text-gray-300'}">${badge}</span>
+                        </div>
+                        <div class="mt-2 flex items-end justify-between">
+                            <div class="text-xs text-gray-400">Research Edge Score</div>
+                            <div class="text-lg font-black ${index===0?'text-green-300':'text-cyan-300'}">${s.score.toFixed(1)}</div>
+                        </div>
+                        <div class="edge-score-bar"><div class="edge-score-fill" style="width:${Math.max(2,Math.min(100,s.score)).toFixed(1)}%"></div></div>
+                        <div class="grid grid-cols-3 gap-1 mt-2 text-[10px]">
+                            <span>Digit <b class="text-white">${s.bestDigit}</b></span>
+                            <span>P5 <b>${(m.p5*100).toFixed(0)}%</b></span>
+                            <span>P10 <b>${(m.p10*100).toFixed(0)}%</b></span>
+                            <span>S20 <b>${(m.s20*100).toFixed(0)}%</b></span>
+                            <span>ETM <b>${m.etm.toFixed(1)}</b></span>
+                            <span>n <b>${m.support}</b></span>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+        };
+
+
+        // ============================================================================
+        // PUBLIC MARKET DATA CONNECTION
+        // ONLINE status + AI warm-up work before START BOT.
+        // ============================================================================
+        window.marketWs = null;
+        window.marketIsConnecting = false;
+        window.marketReconnectTimer = null;
+        window.marketReconnectAttempts = 0;
+        window.marketReqId = 500000;
+
+        function marketNextReqId() {
+            return ++window.marketReqId;
+        }
+
+        function sendMarketRequest(request) {
+            if (window.marketWs && window.marketWs.readyState === WebSocket.OPEN) {
+                window.marketWs.send(JSON.stringify(request));
+                return request.req_id;
+            }
+            return null;
+        }
+
+        function requestActiveSymbolMetadata() {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            sendMarketRequest({
+                active_symbols: "brief",
+                contract_type: ["DIGITMATCH"],
+                req_id: marketNextReqId()
+            });
+
+            log('🔢 Requesting Deriv DIGITMATCH-eligible symbols + precision metadata', 'SYSTEM');
+        }
+
+        function handleActiveSymbolsMetadata(data) {
+            const items = Array.isArray(data?.active_symbols) ? data.active_symbols : [];
+            let loaded = 0;
+
+            for (const item of items) {
+                const symbol = item?.underlying_symbol || item?.symbol;
+                const pipSize = item?.pip_size ?? item?.pip;
+                if (symbol && setSymbolPipSize(symbol, pipSize, 'active_symbols')) loaded++;
+            }
+
+            const currentSymbol = document.getElementById('symbol')?.value;
+            const current = currentSymbol ? window.tickFormat.pipSizeBySymbol[currentSymbol] : null;
+
+            if (current) {
+                window.tickFormat.symbol = currentSymbol;
+                window.tickFormat.decimals = current.decimals;
+                window.tickFormat.source = current.source;
+                log(`🔢 ${currentSymbol} precision locked: ${current.decimals} d.p. (pip_size ${current.pipSize})`, 'SYSTEM');
+            } else {
+                log(`⚠️ Loaded precision metadata for ${loaded} symbols, but current symbol metadata was not found`, 'WARNING');
+            }
+
+            const eligibleRows = window.digitMatchScanner?.setEligible(items) || [];
+            log(`✅ Deriv confirmed ${eligibleRows.length} active symbol${eligibleRows.length===1?'':'s'} supporting DIGITMATCH`, 'SYSTEM');
+            setTimeout(() => window.digitMatchScanner?.requestScannerData(), 120);
+        }
+
+        function requestPublicWarmupTicks(symbol) {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            window.digitIntelligenceEngine.reset();
+
+            sendMarketRequest({
+                ticks_history: symbol,
+                count: window.digitIntelligenceEngine.targetWarmupTicks,
+                end: "latest",
+                style: "ticks",
+                req_id: marketNextReqId()
+            });
+
+            log(`🧠 Requesting ${window.digitIntelligenceEngine.targetWarmupTicks} public warm-up ticks for ${symbol}`, 'ENGINE');
+        }
+
+        function subscribePublicTicks(symbol) {
+            if (!window.marketWs || window.marketWs.readyState !== WebSocket.OPEN) return;
+
+            window.tickFormat.symbol = symbol;
+            const cachedPrecision = window.tickFormat.pipSizeBySymbol[symbol];
+            if (cachedPrecision) {
+                window.tickFormat.decimals = cachedPrecision.decimals;
+                window.tickFormat.source = cachedPrecision.source;
+            }
+
+            sendMarketRequest({
+                ticks: symbol,
+                subscribe: 1,
+                req_id: marketNextReqId()
+            });
+
+            log(`📡 Public market stream subscribed: ${symbol}`, 'SYSTEM');
+        }
+
+        function schedulePublicMarketReconnect() {
+            if (window.marketReconnectTimer) return;
+
+            const delay = Math.min(30000, 1500 * Math.pow(1.7, window.marketReconnectAttempts));
+            window.marketReconnectAttempts++;
+
+            window.marketReconnectTimer = setTimeout(() => {
+                window.marketReconnectTimer = null;
+                connectPublicMarketData();
+            }, delay);
+
+            log(`🔄 Public market reconnect scheduled in ${(delay / 1000).toFixed(1)}s`, 'NETWORK');
+        }
+
+        window.browserMarketLastTickAt = window.browserMarketLastTickAt || 0;
+        window.browserMarketSocketOpenedAt = window.browserMarketSocketOpenedAt || 0;
+        window.browserMarketConnectStartedAt = window.browserMarketConnectStartedAt || 0;
+        window.browserMarketEndpointMode = window.browserMarketEndpointMode || 'modern';
+        window.browserMarketWatchdogStarted = window.browserMarketWatchdogStarted || false;
+
+        function getPublicMarketWsUrl(mode = window.browserMarketEndpointMode || 'modern') {
+            if (mode === 'binary') {
+                // Deriv's public market-data workflow documents this no-auth socket.
+                return 'wss://ws.binaryws.com/websockets/v3';
+            }
+            if (mode === 'legacy') {
+                const appId = (typeof getDerivAppIdForRest === 'function')
+                    ? getDerivAppIdForRest()
+                    : (localStorage.getItem('deriv_app_id') || localStorage.getItem('deriv_client_id') || '34uXWAMOwfAO5EtltnV4n');
+                return `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`;
+            }
+            return 'wss://api.derivws.com/trading/v1/options/ws/public';
+        }
+
+        function nextPublicMarketEndpointMode(mode = window.browserMarketEndpointMode || 'modern') {
+            if (mode === 'modern') return 'binary';
+            if (mode === 'binary') return 'legacy';
+            return 'modern';
+        }
+
+        function connectPublicMarketData(force = false, endpointMode = null) {
+            const symbolEl = document.getElementById('symbol');
+            const symbol = symbolEl ? symbolEl.value : 'R_10';
+            if (endpointMode) window.browserMarketEndpointMode = endpointMode;
+
+            if (!force && window.marketWs &&
+                (window.marketWs.readyState === WebSocket.OPEN ||
+                 window.marketWs.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            if (window.marketWs) {
+                try { window.marketWs.close(); } catch (_) {}
+                window.marketWs = null;
+            }
+
+            window.marketIsConnecting = true;
+            window.browserMarketConnectStartedAt = Date.now();
+            window.browserMarketSocketOpenedAt = 0;
+            window.browserMarketLastTickAt = 0;
+            if (window.digitMatchScanner) window.digitMatchScanner.scanStarted = false;
+            updateConnectionStatus();
+            log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
+
+            const publicWsUrl = getPublicMarketWsUrl();
+            window.marketWs = new WebSocket(publicWsUrl);
+
+            window.marketWs.onopen = () => {
+                window.browserMarketSocketOpenedAt = Date.now();
+                window.browserMarketConnectStartedAt = 0;
+                window.browserMarketLastTickAt = 0;
+                window.marketIsConnecting = false;
+                window.marketReconnectAttempts = 0;
+                log(`🟢 Public market WebSocket connected · ${window.browserMarketEndpointMode}`, 'SYSTEM');
+                updateConnectionStatus();
+
+                requestActiveSymbolMetadata();
+
+                setTimeout(() => {
+                    subscribePublicTicks(symbol);
+                    requestPublicWarmupTicks(symbol);
+                }, 150);
+
+                updateTradeStatus(
+                    'CONNECTED',
+                    'Market analysis active',
+                    'Trading idle until START BOT',
+                    'normal'
+                );
+            };
+
+            window.marketWs.onmessage = async (event) => {
+                let raw = event?.data;
+                let data = null;
+
+                // Step 1: decode the frame only.
+                try {
+                    if (typeof Blob !== 'undefined' && raw instanceof Blob) {
+                        raw = await raw.text();
+                    } else if (raw instanceof ArrayBuffer) {
+                        raw = new TextDecoder('utf-8').decode(raw);
+                    } else if (ArrayBuffer.isView(raw)) {
+                        raw = new TextDecoder('utf-8').decode(raw.buffer);
+                    }
+
+                    if (typeof raw === 'string') {
+                        const trimmed = raw.trim();
+                        if (!trimmed) return;
+                        data = JSON.parse(trimmed);
+                    } else if (raw && typeof raw === 'object') {
+                        data = raw;
+                    } else {
+                        return;
+                    }
+                } catch (parseError) {
+                    console.warn('Public market frame ignored: unable to decode JSON frame', parseError);
+                    return;
+                }
+
+                // Step 2: handle each message family independently.
+                // A failure in one optional subsystem must not break the public feed.
+                if (data.error || (Array.isArray(data.errors) && data.errors.length)) {
+                    const message =
+                        data?.error?.message ||
+                        data?.errors?.[0]?.message ||
+                        'Public market API error';
+                    log(`❌ Public market error: ${message}`, 'ERROR');
+                    return;
+                }
+
+                if (data.msg_type === 'active_symbols' && Array.isArray(data.active_symbols)) {
+                    try {
+                        handleActiveSymbolsMetadata(data);
+                    } catch (e) {
+                        console.warn('active_symbols handler skipped:', e);
+                    }
+                    return;
+                }
+
+                if (data.msg_type === 'history' && data.history?.prices) {
+                    const historySymbol =
+                        data?.passthrough?.symbol ||
+                        data?.echo_req?.passthrough?.symbol ||
+                        data?.echo_req?.ticks_history ||
+                        null;
+
+                    const isScannerHistory = !!(
+                        data?.passthrough?.matchstar_scanner ||
+                        data?.echo_req?.passthrough?.matchstar_scanner
+                    );
+
+                    if (isScannerHistory && historySymbol) {
+                        try {
+                            const precision =
+                                window.tickFormat?.pipSizeBySymbol?.[historySymbol]?.pipSize || null;
+                            if (window.digitMatchScanner?.processHistory) {
+                                window.digitMatchScanner.processHistory(
+                                    historySymbol,
+                                    data.history.prices,
+                                    precision
+                                );
+                            }
+                            window.digitMatchScanner?.render?.();
+                        } catch (e) {
+                            console.warn(`Scanner history skipped for ${historySymbol}:`, e);
+                        }
+                        return;
+                    }
+
+                    try {
+                        if (window.digitIntelligenceEngine?.processWarmupTicks) {
+                            window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                            log(`🧠 Public warm-up loaded: ${data.history.prices.length} ticks`, 'ENGINE');
+                        }
+                    } catch (e) {
+                        console.warn('Public warm-up processing skipped:', e);
+                    }
+
+                    // Auditor is optional analytics. It must never break market data.
+                    try {
+                        if (window.digitFeatureEngine?.analyze) {
+                            try {
+                                window.digitFeatureEngine.analyze(
+                                    historySymbol ||
+                                    document.getElementById('symbol')?.value ||
+                                    window.currentSymbol ||
+                                    null
+                                );
+                            } catch (e) {
+                                console.warn('Digit Feature Engine warm-up refresh skipped:', e);
+                            }
+                        }
+
+                        if (window.randomnessAuditor?.analyze) {
+                            window.randomnessAuditor.analyze(
+                                historySymbol ||
+                                document.getElementById('symbol')?.value ||
+                                window.currentSymbol ||
+                                null
+                            );
+                        }
+                    } catch (e) {
+                        console.warn('Randomness Auditor warm-up refresh skipped:', e);
+                    }
+                    return;
+                }
+
+                if (data.msg_type === 'tick' && data.tick) {
+                    const selectedSymbol = document.getElementById('symbol')?.value;
+                    const tickSymbol =
+                        data.tick?.symbol ||
+                        data.tick?.underlying_symbol ||
+                        data?.echo_req?.ticks ||
+                        null;
+
+                    // Only selected-market ticks enter the normal bot pipeline.
+                    if (!selectedSymbol || !tickSymbol || tickSymbol === selectedSymbol) {
+                        try {
+                            handleTick(data.tick);
+                        } catch (e) {
+                            console.error('Selected tick handler error:', e, data.tick);
+                            const msg = e?.message ? String(e.message).slice(0,160) : 'unknown tick handler error';
+                            log(`❌ Tick processing error: ${msg}`, 'ERROR');
+                        }
+                    }
+                    return;
+                }
+
+                // History fallback for replies without msg_type.
+                if (data.history?.prices) {
+                    try {
+                        window.digitIntelligenceEngine?.processWarmupTicks?.(data.history.prices);
+                    } catch (e) {
+                        console.warn('Fallback history processing skipped:', e);
+                    }
+
+                    try {
+                        window.randomnessAuditor?.analyze?.(
+                            document.getElementById('symbol')?.value ||
+                            window.currentSymbol ||
+                            null
+                        );
+                    } catch (e) {
+                        console.warn('Fallback auditor refresh skipped:', e);
+                    }
+                    return;
+                }
+
+                // Ignore ping/authorize/subscription housekeeping or unknown frames.
+            };
+            window.marketWs.onerror = (error) => {
+                console.error('Public market WebSocket error:', error);
+                log(`❌ Public market connection error · ${window.browserMarketEndpointMode}`, 'ERROR');
+                // Some browsers leave a failed WebSocket in CONNECTING for a long time.
+                // Force it closed so the watchdog can rotate immediately.
+                try { window.marketWs?.close?.(); } catch (_) {}
+            };
+
+            window.marketWs.onclose = () => {
+                window.marketIsConnecting = false;
+                window.browserMarketConnectStartedAt = 0;
+                log('🔌 Public market WebSocket disconnected', 'NETWORK');
+                updateConnectionStatus();
+                schedulePublicMarketReconnect();
+            };
+        }
+
+
+        function startPublicMarketWatchdog() {
+            if (window.browserMarketWatchdogStarted) return;
+            window.browserMarketWatchdogStarted = true;
+
+            setInterval(() => {
+                try {
+                    const now = Date.now();
+                    const ws = window.marketWs;
+                    const open = !!(ws && ws.readyState === WebSocket.OPEN);
+                    const connecting = !!(ws && ws.readyState === WebSocket.CONNECTING);
+                    const openedAt = Number(window.browserMarketSocketOpenedAt || 0);
+                    const lastTickAt = Number(window.browserMarketLastTickAt || 0);
+                    const silentFor = lastTickAt ? now - lastTickAt : (openedAt ? now - openedAt : Infinity);
+
+                    const connectStartedAt = Number(window.browserMarketConnectStartedAt || 0);
+                    const connectingFor = connecting && connectStartedAt ? now - connectStartedAt : 0;
+
+                    // Critical: a browser WebSocket can remain stuck in CONNECTING
+                    // without firing open/close promptly. Never wait forever.
+                    if (connecting && connectingFor > 7000) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Connect timeout ${(connectingFor/1000).toFixed(1)}s; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        try {
+                            ws.onclose = null;
+                            ws.close();
+                        } catch (_) {}
+                        window.marketWs = null;
+                        window.marketIsConnecting = false;
+                        window.browserMarketEndpointMode = nextMode;
+                        window.browserMarketConnectStartedAt = 0;
+                        window.browserMarketSocketOpenedAt = 0;
+                        window.browserMarketLastTickAt = 0;
+                        connectPublicMarketData(true, nextMode);
+                        return;
+                    }
+
+                    if (!open && !connecting) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Browser public feed absent; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        connectPublicMarketData(true, nextMode);
+                        return;
+                    }
+
+                    // A healthy R_10 stream should not remain silent for many seconds.
+                    if (open && silentFor > 9000) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Feed silent ${(silentFor/1000).toFixed(1)}s; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        try {
+                            ws.onclose = null;
+                            ws.close();
+                        } catch (_) {}
+                        window.marketWs = null;
+                        window.marketIsConnecting = false;
+                        window.browserMarketEndpointMode = nextMode;
+                        window.browserMarketConnectStartedAt = 0;
+                        window.browserMarketSocketOpenedAt = 0;
+                        window.browserMarketLastTickAt = 0;
+                        connectPublicMarketData(true, nextMode);
+                    }
+                } catch (e) {
+                    console.warn('[MARKET-FEED] watchdog check skipped:', e);
+                }
+            }, 3000);
+        }
+
+        function restartPublicMarketForSymbol() {
+            window.totalTicksReceived = 0;
+            window.tickTimestamps = [];
+            document.getElementById('ticks_received').textContent = '0';
+            document.getElementById('current_tick_rate').textContent = '0/s';
+
+            if (window.marketWs) {
+                try {
+                    window.marketWs.onclose = null;
+                    window.marketWs.close();
+                } catch (_) {}
+                window.marketWs = null;
+            }
+
+            connectPublicMarketData(true);
+        }
+
+
+// DOM Ready
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🤖 Bot initialized');
+            setTimeout(() => {
+                renderServerExecutionState();
+                ensureServerExecutionPolling();
+            }, 250);
+            startMinimizablePanelUI();
+            runCanonicalDigitSelfTest();
+            setTimeout(() => {
+
+                // V53: always show the Randomness Auditor panel immediately.
+                if (window.digitDNAEngine) {
+                    window.digitDNAEngine.ensurePanel();
+                    window.digitDNAEngine.render(
+                        window.digitDNAEngine.lastSnapshot ||
+                        window.digitDNAEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        )
+                    );
+                }
+
+                if (window.digitFeatureEngine) {
+                    window.digitFeatureEngine.ensurePanel();
+                    window.digitFeatureEngine.render(
+                        window.digitFeatureEngine.lastSnapshot ||
+                        window.digitFeatureEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        )
+                    );
+                }
+
+                if (window.randomnessAuditor) {
+                    window.randomnessAuditor.ensurePanel();
+                    if (!window.randomnessAuditor.lastSnapshot) {
+                        window.randomnessAuditor.lastSnapshot = {
+                            ready:false,
+                            historyN:Array.isArray(window.lastDigits) ? window.lastDigits.length : 0,
+                            reason:'WARMING',
+                            topDigit:null,
+                            signalStrength:0,
+                            normalizedEntropy:null,
+                            mutualInformation:null,
+                            ngramSupport:0
+                        };
+                    }
+                    window.randomnessAuditor.render();
+                }
+            }, 50);
+            initializeToggleState();
+            startLiveDerivBalanceRefresh();
+            updateS20Label();
+            
+            // Initialize intelligence engine
+            window.digitIntelligenceEngine.init();
+            
+            // Initialize network recovery
+            updateNetworkRecoveryButton();
+            
+            // Initialize engine button
+            updateEngineButton();
+            
+            if (!checkAuthToken()) {
+                document.getElementById('prediction_text').textContent = 'Please authenticate first';
+            }
+            
+            setInterval(calculateRates, 1000);
+            startQueueProcessor();
+            
+            // Update digit analysis display periodically
+            setInterval(() => {
+                const digitPanel = document.getElementById('digit-analysis-panel');
+                if (digitPanel && !digitPanel.classList.contains('hidden')) {
+                    updateDigitAnalysisDisplay();
+                }
+
+                // V53: auditor UI is independent of the collapsible digit statistics panel.
+                // UI refresh is render-only. Heavy analytics run once per unique
+                // canonical market tick in analyzeAndRecommend(), not on this timer.
+                if (window.digitDNAEngine) {
+                    try {
+                        if (window.digitDNAEngine.lastSnapshot)
+                            window.digitDNAEngine.render(window.digitDNAEngine.lastSnapshot);
+                    } catch (e) {
+                        console.warn('Digit DNA Engine render skipped:', e);
+                    }
+                }
+
+                if (window.digitFeatureEngine) {
+                    try {
+                        if (window.digitFeatureEngine.lastSnapshot)
+                            window.digitFeatureEngine.render(window.digitFeatureEngine.lastSnapshot);
+                    } catch (e) {
+                        console.warn('Digit Feature Engine render skipped:', e);
+                    }
+                }
+
+                if (window.randomnessAuditor) {
+                    try {
+                        window.randomnessAuditor.ensurePanel();
+                        if (window.randomnessAuditor.lastSnapshot)
+                            window.randomnessAuditor.render(window.randomnessAuditor.lastSnapshot);
+                    } catch (e) {
+                        console.warn('Randomness Auditor UI render skipped:', e);
+                    }
+                }
+            }, 2000);
+            
+            calculateMartingale();
+            
+            document.getElementById('baseStake').addEventListener('change', syncCalculatorWithMain);
+            document.getElementById('multiplier').addEventListener('change', syncCalculatorWithMain);
+            const marginInput = document.getElementById('minV1Margin');
+            if (marginInput) {
+                const savedMargin = Number(localStorage.getItem('dms_min_v1_margin'));
+                if (
+                    Number.isFinite(savedMargin) &&
+                    savedMargin >= 0 &&
+                    savedMargin <= 50
+                ) {
+                    marginInput.value = savedMargin.toFixed(1);
+                }
+
+                marginInput.addEventListener('change', async () => {
+                    const value = getConfiguredMinimumV1Margin();
+                    marginInput.value = value.toFixed(1);
+                    localStorage.setItem('dms_min_v1_margin', String(value));
+
+                    try {
+                        await syncServerMarginGate(true);
+                        if (typeof pollServerExecutionState === 'function') {
+                            await pollServerExecutionState();
+                        }
+                        if (typeof log === 'function') {
+                            log(`🎯 Minimum V1 Margin updated to ${value.toFixed(2)}`, 'CONFIG');
+                        }
+                    } catch (err) {
+                        if (typeof log === 'function') {
+                            log(`⚠️ Margin gate sync failed: ${err.message}`, 'WARNING');
+                        }
+                    }
+                });
+            }
+
+            document.getElementById('maxTrades').addEventListener('change', () => {
+                syncCalculatorWithMain();
+                window.maxTrades = getUserMaxTrades();
+                window.maxCycleTrades = window.maxTrades;
+                window.TAIL_RISK_CONFIG.maxCycleLoss = null;
+                if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
+                if (typeof log === 'function') log(`🧯 Max Trades updated to ${window.maxTrades}; exposure cap recalculated automatically`, 'CONFIG');
+            });
+            document.getElementById('calc_base_stake').addEventListener('change', () => {
+                document.getElementById('baseStake').value = document.getElementById('calc_base_stake').value;
+            });
+            document.getElementById('calc_multiplier').addEventListener('change', () => {
+                document.getElementById('multiplier').value = document.getElementById('calc_multiplier').value;
+            });
+            document.getElementById('calc_max_trades').addEventListener('change', () => {
+                document.getElementById('maxTrades').value = document.getElementById('calc_max_trades').value;
+            });
+            
+            log('🤖 Bot ready', 'SYSTEM');
+            log('🚀 Runtime: MATCHSTAR V16 · persistent trajectory percentiles · depth-aware tails · downloadable report · histories preserved', 'SYSTEM');
+            switchMode('instant');
+            updatePnL();
+            resetTradeStatus();
+
+            // Connect market data immediately and keep an independent watchdog.
+            // The watchdog survives optional analytics/UI failures and restores the
+            // browser-side feed if the socket opens but no ticks arrive.
+            startPublicMarketWatchdog();
+            setTimeout(() => connectPublicMarketData(), 250);
+
+            // Connect the authenticated account channel too, so balance is visible
+            // before START BOT. This alone does not place trades.
+            setTimeout(() => {
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);
+
+            const symbolControl = document.getElementById('symbol');
+            if (symbolControl) {
+                symbolControl.addEventListener('change', restartPublicMarketForSymbol);
+            }
+
+            const edgeBestBtn = document.getElementById('edge-use-best');
+            if (edgeBestBtn) {
+                edgeBestBtn.addEventListener('click', () => window.digitMatchScanner?.useBest());
+            }
+
+            const edgeScannerMinBtn = document.getElementById('edge-scanner-minimize');
+            const edgeScannerBody = document.getElementById('edge-scanner-body');
+            if (edgeScannerMinBtn && edgeScannerBody) {
+                let minimized = false;
+                try {
+                    const sessionSaved = sessionStorage.getItem('matchstar_edge_scanner_minimized');
+                    minimized = sessionSaved !== null
+                        ? sessionSaved === '1'
+                        : localStorage.getItem('matchstar_edge_scanner_minimized') === '1';
+                } catch (_) {}
+
+                const applyEdgeScannerState = () => {
+                    edgeScannerBody.classList.toggle('hidden', minimized);
+                    edgeScannerMinBtn.textContent = minimized ? '+' : '−';
+                    edgeScannerMinBtn.title = minimized ? 'Expand edge monitor' : 'Minimize edge monitor';
+                    edgeScannerMinBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                    try {
+                        sessionStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
+                    } catch (_) {}
+                    try {
+                        localStorage.setItem('matchstar_edge_scanner_minimized', minimized ? '1' : '0');
+                    } catch (_) {}
+                };
+
+                edgeScannerMinBtn.addEventListener('click', () => {
+                    minimized = !minimized;
+                    applyEdgeScannerState();
+                });
+
+                applyEdgeScannerState();
+            }
+            
+            document.getElementById('predictedDigit').addEventListener('change', function() {
+                const newDigit = parseInt(this.value);
+                if (!isNaN(newDigit) && newDigit >= 0 && newDigit <= 9) {
+                    
+                    if (sessionState.sessionStarted) {
+                        const confirmChange = confirm('⚠️ Changing digit will reset current session. Continue?');
+                        if (!confirmChange) {
+                            this.value = sessionState.sessionDigit || 5;
+                            return;
+                        }
+                    }
+                    
+                    sessionState.sessionDigit = newDigit;
+                    sessionState.sessionStarted = true;
+                    sessionState.manualOverride = true;
+                    updateSessionDisplay();
+                    log(`🔢 Digit manually set to ${newDigit}`, 'SESSION');
+                    updateTradeStatus('MANUAL', `Digit manually set to ${newDigit}`, 'Ready to trade', 'normal');
+                }
+            });
+            
+            // Test digit extraction
+            testDigitExtraction();
+        });
+        
+        // Test function for digit extraction
+        function testDigitExtraction() {
+            // Test cases including digit 0
+            const testPrices = [
+                '1234.560', // ends with 0
+                '987.650',  // ends with 0
+                '1234.567',
+                '987.654',
+                '1000.000', // all zeros
+                '999.990'   // ends with 0
+            ];
+            
+            console.log('=== Testing Digit Extraction ===');
+            testPrices.forEach(price => {
+                const priceStr = String(price);
+                const lastChar = priceStr[priceStr.length - 1];
+                const digit = parseInt(lastChar);
+                console.log(`Price: ${price}, Last char: "${lastChar}", Digit: ${digit}, Valid: ${!isNaN(digit)}`);
+            });
+        }
+        
+        // WEBSOCKET CONNECTION - UPDATED FOR NEW DERIV OTP WEBSOCKET FLOW
+        async function getAuthenticatedDerivWebSocketUrl() {
+            const token = getStoredDerivToken();
+            const account_id = getStoredDerivAccount();
+            const app_id = getDerivAppIdForRest();
+
+            if (!token) {
+                throw new Error('No Deriv access token found. Please login again.');
+            }
+
+            if (!account_id) {
+                throw new Error('No Deriv account ID found. Please login again.');
+            }
+
+            const response = await fetch('/api/deriv-ws-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    token,
+                    account_id,
+                    app_id
+                })
+            });
+
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (e) {
+                throw new Error('Invalid response from /api/deriv-ws-url');
+            }
+
+            if (!response.ok || !data.websocket_url) {
+                throw new Error(data.error || 'Failed to get authenticated Deriv WebSocket URL');
+            }
+
+            return data.websocket_url;
+        }
+
+        async function connectWebSocket() {
+            if (window.ws) {
+                try {
+                    window.ws.close();
+                } catch (e) {}
+            }
+
+            window.isConnecting = true;
+            updateConnectionStatus();
+
+            log('🔗 Getting authenticated Deriv WebSocket URL...', 'SYSTEM');
+
+            let wsUrl;
+            try {
+                wsUrl = await getAuthenticatedDerivWebSocketUrl();
+            } catch (error) {
+                window.isConnecting = false;
+                updateConnectionStatus();
+                log(`❌ ${error.message}`, 'ERROR');
+                updateTradeStatus('ERROR', error.message, 'Login again or check api/deriv-ws-url.js', 'loss');
+
+                if (window.isBotRunning && window.networkRecoveryEnabled) {
+                    attemptNetworkRecovery();
+                }
+                return;
+            }
+
+            log('🔗 Connecting to authenticated Deriv WebSocket...', 'SYSTEM');
+
+            window.ws = new WebSocket(wsUrl);
+
+            window.ws.onopen = () => {
+                window.isConnecting = false;
+                resetReconnectionAttempts();
+                log('✅ Authenticated trading WebSocket connected', 'SYSTEM');
+                updateConnectionStatus();
+
+                // OTP URL is already authenticated. Do not send legacy authorize.
+                subscribeToBalance();
+                log('🔐 Trading account channel ready', 'SYSTEM');
+
+                if (window.isBotRunning) {
+                    updateTradeStatus(
+                        'READY',
+                        'Trading connection ready',
+                        'Waiting for next live tick',
+                        'normal'
+                    );
+                }
+            };
+
+            window.ws.onmessage = (msg) => {
+                try {
+                    const data = JSON.parse(msg.data);
+                    console.log('API Response:', data.msg_type, data);
+
+                    // 🔥 CRITICAL FIX: Handle tick messages
+                    if (data.msg_type === 'tick') {
+                        console.log('Tick received:', data.tick);
+
+                        const authFormattedTick = canonicalTickString(
+                            data.tick.quote,
+                            data.tick,
+                            data.tick.symbol
+                        );
+                        const digit = authFormattedTick
+                            ? Number.parseInt(authFormattedTick[authFormattedTick.length - 1], 10)
+                            : NaN;
+
+                        if (digit === 0) {
+                            console.log('🎯 DIGIT 0 DETECTED in canonical tick:', authFormattedTick);
+                        }
+
+                        handleTick(data.tick);
+                        return;
+                    }
+
+                    handleAPIResponse(data);
+                } catch (e) {
+                    console.error('WebSocket message error:', e);
+                    log('❌ Error parsing WebSocket message', 'ERROR');
+                }
+            };
+
+            window.ws.onclose = () => {
+                window.isConnecting = false;
+                updateConnectionStatus();
+                log('🔌 WebSocket disconnected', 'SYSTEM');
+
+                if (window.isBotRunning) {
+                    window.lastDisconnectTime = Date.now();
+
+                    if (window.networkRecoveryEnabled) {
+                        attemptNetworkRecovery();
+                    } else {
+                        log('⚠️ Network recovery disabled. Manual restart required.', 'NETWORK');
+                        updateTradeStatus('DISCONNECTED', 'WebSocket disconnected', 'Click START to reconnect', 'normal');
+                    }
+                }
+            };
+
+            window.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                log('❌ WebSocket connection error', 'ERROR');
+                updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check token/API route/network', 'loss');
+            };
+        }
+
+
+        // ============================================================================
+        // ✅ FIXED: TICK HANDLER - PROPER DIGIT EXTRACTION INCLUDING DIGIT 0
+        // ============================================================================
+        
+        // TICK HANDLER - FIXED DIGIT EXTRACTION (SPECIAL FIX FOR DIGIT 0)
+        function handleTick(tick) {
+            // Process market ticks even while trading is stopped.
+            if (!tick || tick.quote === undefined || tick.quote === null) return;
+            window.browserMarketLastTickAt = Date.now();
+            
+            const price = parseFloat(tick.quote);
+
+            // One canonical representation drives BOTH display and digit logic.
+            // Precision comes from tick.pip_size when available, otherwise the
+            // active_symbols pip_size cached for this exact symbol.
+            const formattedTick = canonicalTickString(tick.quote, tick, tick.symbol);
+            const digit = formattedTick
+                ? Number.parseInt(formattedTick[formattedTick.length - 1], 10)
+                : NaN;
+
+            if (digit === 0) {
+                console.log('Digit 0 detected:', tick.quote, 'Canonical:', formattedTick);
+            }
+
+            if (isNaN(digit) || digit < 0 || digit > 9) {
+                log(`⚠️ Invalid digit from tick: ${tick.quote}`, 'WARNING');
+                return;
+            }
+            
+            // Track digit 0 occurrences for debugging
+            if (digit === 0) {
+                window.digitZeroTracker.count++;
+                window.digitZeroTracker.lastPrice = price;
+                window.digitZeroTracker.occurrences.push({
+                    price: price,
+                    time: Date.now(),
+                    tickData: tick
+                });
+                
+                // Log to console for debugging
+                console.log(`🎯 DIGIT 0 FOUND! Total: ${window.digitZeroTracker.count}, Price: ${price}`);
+                
+                // Also update a debug display if needed
+                if (window.digitZeroTracker.count % 10 === 0) {
+                    log(`🔢 Digit 0 has appeared ${window.digitZeroTracker.count} times`, 'DEBUG');
+                }
+            }
+            
+            const tickData = {
+                digit: digit,
+                price: price,
+                formattedPrice: formattedTick,
+                decimals: getSymbolDecimals(tick.symbol || window.tickFormat.symbol, tick),
+                time: Date.now(),
+                raw: tick
+            };
+            
+            window.lastTick = tickData;
+
+            // Tick DNA / SAFE-TICK research: expose ONLY the exact Deriv canonical tick.
+            // IMPORTANT: research alignment must never invent an epoch from Date.now().
+            // If Deriv did not provide a positive epoch, the research event is skipped.
+            try {
+                const canonicalEpoch = Number(tick.epoch);
+                if (Number.isFinite(canonicalEpoch) && canonicalEpoch > 0) {
+                    window.dispatchEvent(new CustomEvent('digitmatchstar:tick', {
+                        detail: {
+                            symbol: tick.symbol || document.getElementById('symbol')?.value || 'UNKNOWN',
+                            quote: Number(tick.quote),
+                            formattedQuote: formattedTick,
+                            epoch: canonicalEpoch,
+                            pip_size: Number.isFinite(Number(tick.pip_size))
+                                ? Number(tick.pip_size)
+                                : getSymbolDecimals(tick.symbol || window.tickFormat?.symbol, tick),
+                            digit,
+                            receivedAt: Date.now(),
+                            canonical: true
+                        }
+                    }));
+                } else {
+                    console.warn('[SAFE-TICK] Canonical Deriv epoch missing; research tick skipped.');
+                }
+            } catch (_) {}
+
+            rememberMarketTick(tickData);
+            
+            // Update UI - show the digit clearly
+            document.getElementById('metricLiveTick').textContent = formattedTick;
+            document.getElementById('metricLastDigit').textContent = `Digit: ${digit}`;
+            document.getElementById('metricLiveTick').classList.add('tick-flash');
+            setTimeout(() => document.getElementById('metricLiveTick').classList.remove('tick-flash'), 50);
+            
+            window.stats.totalTicks++;
+            window.botTickTimestamps.push(Date.now());
+            
+            // Track ticks for connection status
+            window.totalTicksReceived++;
+            window.tickTimestamps.push(Date.now());
+            const tenSecondsAgo = Date.now() - 10000;
+            window.tickTimestamps = window.tickTimestamps.filter(ts => ts > tenSecondsAgo);
+            
+            // FORWARD-ONLY VALIDATION:
+            // score the forecast that existed before this tick, then let the
+            // statistical engine learn this tick, then freeze a forecast for the
+            // NEXT unseen tick.
+            const modelSymbol =
+                tick.symbol ||
+                document.getElementById('symbol')?.value ||
+                window.tickFormat.symbol;
+
+            // CANONICAL PIPELINE GATE: one Deriv market tick may update the
+            // statistical/AI stack exactly once. Previously only the bias audit
+            // rejected duplicates, while DNA/features/entropy still recomputed and
+            // learned them. That caused both lag and apparent UI hangs.
+            let canonicalBiasMeta = null;
+            try {
+                canonicalBiasMeta = window.currentTickBiasAudit?.observeTick?.(
+                    tickData,
+                    Number(digit)
+                ) || null;
+            } catch (e) {
+                console.warn('Canonical model gate unavailable:', e);
+            }
+            if (canonicalBiasMeta && !canonicalBiasMeta.accepted) {
+                updateConnectionStatus();
+                return;
+            }
+
+            window.nextTickModel.onTickBeforeEngine(modelSymbol, digit);
+
+            // Update the AI continuously even before START.
+            if (window.digitIntelligenceEngine.enabled) {
+                window.digitIntelligenceEngine.processLiveTick(digit, canonicalBiasMeta);
+            }
+
+            window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
+
+            // V56 forward-only DNA validation:
+            // score prior DNA forecast against this tick, then arm the next forecast.
+            try {
+                window.digitDNAEngine?.onNewTick?.(digit, modelSymbol);
+            } catch (e) {
+                console.warn('Digit DNA tick update skipped:', e);
+            }
+
+            // Post-stop depth research uses only future public ticks and never
+            // enters the proposal/buy path.
+            if (window.postStopDepthTracker) {
+                window.postStopDepthTracker.onPublicTick(tickData);
+            }
+
+            // Exact-outcome tick pipeline. Settlement confirmation remains subscribed
+            // and reconciles in the background.
+            const fastResult = observeActiveContractTick(tickData);
+
+            if (
+                window.isBotRunning &&
+                fastResult?.fastLoss &&
+                !window.stopAfterWin
+            ) {
+                if (window.tradeCount >= window.maxTrades) {
+                    window.nextTradeAllowed = false;
+                    stopBot('Maximum trades reached');
+                    return;
+                }
+
+                submitRecoveryOnce(
+                    fastResult.contractId,
+                    tickData,
+                    'EXACT_PUBLIC_OUTCOME_FAST_LOSS'
+                );
+            } else if (
+                window.isBotRunning &&
+                !hasOpenContract() &&
+                !window.stopAfterWin
+            ) {
+                addTickToQueue(tickData);
+            }
+
+            // Update connection status UI
+            updateConnectionStatus();
+        }
+        
+        // API RESPONSE HANDLER - MODIFIED FOR ENGINE INTEGRATION
+        function handleAPIResponse(data) {
+            const apiError = data?.error || (Array.isArray(data?.errors) ? data.errors[0] : null);
+
+            if (apiError) {
+                const message = apiError.message || 'Unknown Deriv API error';
+                const code = apiError.code || apiError.error_code || '';
+
+                log(`API Error: ${message}`, 'ERROR');
+
+                const failedPending = data?.req_id
+                    ? window.pendingProposals.get(data.req_id)
+                    : null;
+
+                if (failedPending && !hasOpenContract()) {
+                    window.pendingProposals.delete(data.req_id);
+                    rollbackUnsentTrade(failedPending.stake || window.currentStake);
+                }
+
+                if (hasOpenContract()) {
+                    window.executionLock = true;
+                    window.nextTradeAllowed = false;
+                } else {
+                    window.executionLock = false;
+                    window.nextTradeAllowed = true;
+                }
+
+                if (code === 'InvalidToken' || code === 'AuthorizationRequired') {
+                    log('❌ Trading authorization is no longer valid. Please reconnect.', 'CRITICAL');
+                    stopBot();
+                } else {
+                    updateTradeStatus('ERROR', message, 'Waiting for next tick', 'loss');
+                }
+                return;
+            }
+        
+            if (data.msg_type === 'authorize') {
+                if (data.authorize) {
+                    log(`🔐 Authorized as ${data.authorize.loginid}`, 'SYSTEM');
+
+                    // V57: market ticks and warm-up history come ONLY from the
+                    // dedicated public-market WebSocket. The authenticated channel
+                    // is reserved for balance, proposals, buys and settlement.
+                    // This prevents duplicate R_10 subscriptions and double-learning.
+                    window.tickSubscriptionSent = false;
+                    subscribeToBalance();
+                    log('📡 Trading socket ready · market data remains on the public feed only', 'SYSTEM');
+                }
+            } else if (data.msg_type === 'history') {
+                // Process warm-up ticks for engine
+                if (window.digitIntelligenceEngine.enabled && data.history && data.history.prices) {
+                    window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
+                    log(`🧠 Processed ${data.history.prices.length} warm-up ticks`, 'ENGINE');
+                }
+            
+            } else if (data.msg_type === 'proposal') {
+                handleProposalResponse(data.proposal, data.req_id);
+            } else if (data.msg_type === 'buy') {
+                handleBuyResponse(data.buy, data.req_id);
+            } else if (data.msg_type === 'proposal_open_contract') {
+                handleOpenContractUpdate(data.proposal_open_contract, data);
+            } else if (data.msg_type === 'balance') {
+                handleBalanceUpdate(data.balance);
+            }
+        }
+        
+        // Add tick to queue
+        function addTickToQueue(tick) {
+            window.tickQueue.push(tick);
+            if (window.tickQueue.length > window.maxQueueSize) {
+                window.tickQueue.shift();
+            }
+            
+            return true;
+        }
+        
+        // PROCESS TICK IMMEDIATELY - CRITICAL TRADE EXECUTION FUNCTION
+        // ============================================================================
+        // MATCHSTAR V16 — POST-STOP DEPTH TRACKER
+        // After the live safety stop, keep watching the SAME target digit on
+        // FUTURE PUBLIC TICKS ONLY. No proposals. No buys. No stake changes.
+        // ============================================================================
+
+        window.postStopDepthTracker = {
+            version: 'PSD-1',
+            active: [],
+            maxStored: 500,
+
+            getSymbol() {
+                return (
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+            },
+
+            storageKey(symbol = this.getSymbol()) {
+                return `matchstar_poststop_depth_v1_${symbol}`;
+            },
+
+            isRiskCapReason(reason) {
+                const r = String(reason || '').toLowerCase();
+                return (
+                    r.includes('tail risk') ||
+                    r.includes('maximum cycle trades') ||
+                    r.includes('maximum cycle dollar exposure') ||
+                    r.includes('maximum trades reached')
+                );
+            },
+
+            loadResolved(symbol = this.getSymbol()) {
+                try {
+                    const raw = localStorage.getItem(this.storageKey(symbol));
+                    const parsed = raw ? JSON.parse(raw) : [];
+                    return Array.isArray(parsed) ? parsed : [];
+                } catch (_) {
+                    return [];
+                }
+            },
+
+            saveResolved(symbol, rows) {
+                try {
+                    localStorage.setItem(
+                        this.storageKey(symbol),
+                        JSON.stringify((rows || []).slice(-this.maxStored))
+                    );
+                } catch (_) {}
+            },
+
+            startFromCurrentCycle(reason, snapshot = null) {
+                const cycle = window.cyclePerformance?.current;
+                if (!cycle || !Array.isArray(cycle.trades) || !cycle.trades.length) return null;
+                if (!this.isRiskCapReason(reason)) return null;
+
+                if (this.active.some(x => String(x.cycleId) === String(cycle.id))) {
+                    return this.active.find(x => String(x.cycleId) === String(cycle.id));
+                }
+
+                const stopDepth = Number(cycle.trades.length || snapshot?.currentTrades || 0);
+                const targetDigit = Number(cycle.digit);
+                const symbol = cycle.symbol || this.getSymbol();
+
+                if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) {
+                    return null;
+                }
+
+                const tracker = {
+                    id: `psd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    cycleId: cycle.id,
+                    symbol,
+                    targetDigit,
+                    stopDepth,
+                    stopReason: String(reason || 'Tail risk stop'),
+                    stoppedAt: Date.now(),
+                    stoppedEpoch: Number(window.lastTick?.raw?.epoch || 0) || null,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    resolvedAt: null,
+                    resolvedEpoch: null,
+                    status: 'TRACKING',
+                    digits: [],
+                    stateSnapshots: []
+                };
+
+                // This placeholder is saved into the EXISTING CPR-3 cycle record
+                // when stopBot() finalizes the live cycle.
+                cycle.postStopDepth = {
+                    status: 'TRACKING',
+                    targetDigit,
+                    stopDepth,
+                    postStopTicks: 0,
+                    wouldWinTradeNumber: null,
+                    stoppedAt: tracker.stoppedAt,
+                    stoppedEpoch: tracker.stoppedEpoch,
+                    digits: []
+                };
+
+                this.active.push(tracker);
+
+                log(
+                    `🔭 POST-STOP TRACKING START | cycle ${cycle.id} | target ${targetDigit} | ` +
+                    `live stopped @ trade ${stopDepth} | next eligible public tick = hypothetical trade ${stopDepth + 1} | NO MONEY`,
+                    'ENGINE'
+                );
+
+                this.render();
+                return tracker;
+            },
+
+            findStoredCycle(symbol, cycleId) {
+                const rows = window.cyclePerformance?.load(symbol) || [];
+                const row = rows.find(r => String(r.id) === String(cycleId));
+                return { rows, row };
+            },
+
+            syncIntoCycleHistory(tracker) {
+                if (!tracker || !window.cyclePerformance) return;
+
+                const { rows, row } = this.findStoredCycle(
+                    tracker.symbol,
+                    tracker.cycleId
+                );
+
+                if (!row) return;
+
+                row.postStopDepth = {
+                    status: tracker.status,
+                    targetDigit: tracker.targetDigit,
+                    stopDepth: tracker.stopDepth,
+                    postStopTicks: tracker.postStopTicks,
+                    wouldWinTradeNumber: tracker.wouldWinTradeNumber,
+                    stoppedAt: tracker.stoppedAt,
+                    resolvedAt: tracker.resolvedAt,
+                    stoppedEpoch: tracker.stoppedEpoch,
+                    resolvedEpoch: tracker.resolvedEpoch,
+                    stopReason: tracker.stopReason,
+                    digits: tracker.digits.slice(),
+                    stateSnapshots: tracker.stateSnapshots.slice()
+                };
+
+                window.cyclePerformance.historyBySymbol[tracker.symbol] = rows;
+                window.cyclePerformance.save(tracker.symbol);
+            },
+
+            captureState(targetDigit, impliedTrade) {
+                try {
+                    if (window.tailPrecursorLab?.captureState) {
+                        return window.tailPrecursorLab.captureState(
+                            Number(targetDigit),
+                            'POST_STOP_TICK',
+                            Number(impliedTrade)
+                        );
+                    }
+                } catch (_) {}
+                return null;
+            },
+
+            onPublicTick(tickData) {
+                if (!tickData || !this.active.length) return;
+
+                const symbol =
+                    tickData?.raw?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN';
+
+                const digit = Number(tickData.digit);
+                const epoch = Number(tickData?.raw?.epoch || 0) || null;
+                const remaining = [];
+
+                for (const tracker of this.active) {
+                    if (!tracker || tracker.status !== 'TRACKING') continue;
+
+                    if (
+                        tracker.symbol &&
+                        tracker.symbol !== 'UNKNOWN' &&
+                        symbol &&
+                        symbol !== 'UNKNOWN' &&
+                        tracker.symbol !== symbol
+                    ) {
+                        remaining.push(tracker);
+                        continue;
+                    }
+
+                    // Do not count the same tick that triggered the live stop.
+                    if (
+                        tracker.stoppedEpoch &&
+                        epoch &&
+                        epoch <= tracker.stoppedEpoch
+                    ) {
+                        remaining.push(tracker);
+                        continue;
+                    }
+
+                    tracker.postStopTicks += 1;
+                    const impliedTrade =
+                        tracker.stopDepth + tracker.postStopTicks;
+                    const matched =
+                        digit === Number(tracker.targetDigit);
+
+                    tracker.digits.push({
+                        postStopTick: tracker.postStopTicks,
+                        impliedTrade,
+                        digit,
+                        matched,
+                        epoch,
+                        at: Date.now()
+                    });
+
+                    const state = this.captureState(
+                        tracker.targetDigit,
+                        impliedTrade
+                    );
+
+                    if (state) {
+                        tracker.stateSnapshots.push({
+                            postStopTick: tracker.postStopTicks,
+                            impliedTrade,
+                            state
+                        });
+                    }
+
+                    if (matched) {
+                        tracker.status = 'RESOLVED';
+                        tracker.wouldWinTradeNumber = impliedTrade;
+                        tracker.resolvedAt = Date.now();
+                        tracker.resolvedEpoch = epoch;
+
+                        this.syncIntoCycleHistory(tracker);
+
+                        const resolved = this.loadResolved(tracker.symbol);
+                        resolved.push(JSON.parse(JSON.stringify(tracker)));
+                        this.saveResolved(tracker.symbol, resolved);
+
+                        log(
+                            `🔭 POST-STOP RESOLVED | cycle ${tracker.cycleId} | target ${tracker.targetDigit} | ` +
+                            `appeared ${tracker.postStopTicks} tick(s) after live stop | ` +
+                            `would have matched @ trade ${impliedTrade} | NO MONEY TRADED`,
+                            'ENGINE'
+                        );
+
+                        continue;
+                    }
+
+                    this.syncIntoCycleHistory(tracker);
+                    remaining.push(tracker);
+                }
+
+                this.active = remaining;
+                this.render();
+            },
+
+            stats(symbol = this.getSymbol()) {
+                const rows = this.loadResolved(symbol);
+                const depths = rows
+                    .map(x => Number(x.wouldWinTradeNumber))
+                    .filter(Number.isFinite);
+
+                const bucket = (lo, hi) => depths.filter(d => d >= lo && d <= hi).length;
+
+                return {
+                    resolved: depths.length,
+                    active: this.active.filter(x =>
+                        x.symbol === symbol || symbol === 'UNKNOWN'
+                    ).length,
+                    average: depths.length
+                        ? depths.reduce((a, b) => a + b, 0) / depths.length
+                        : null,
+                    deepest: depths.length ? Math.max(...depths) : null,
+                    win11to15: bucket(11, 15),
+                    win16to20: bucket(16, 20),
+                    win21plus: depths.filter(d => d >= 21).length,
+                    rows
+                };
+            },
+
+            ensurePanel() {
+                return;
+
+                const anchor =
+                    document.getElementById('tail-precursor-panel') ||
+                    document.getElementById('tail-risk-panel') ||
+                    document.getElementById('cycle-performance-panel');
+
+                if (!anchor || !anchor.parentElement) return;
+
+                const panel = document.createElement('div');
+                panel.id = 'post-stop-depth-panel';
+                panel.className =
+                    'mt-3 p-3 bg-gray-800 rounded-lg border border-sky-500/30 text-xs';
+
+                panel.innerHTML = `
+                    <div class="font-bold text-sky-300 mb-1">🔭 POST-STOP DEPTH TRACKER</div>
+                    <div class="text-gray-400 mb-2">
+                        When live trading stops at the cycle safety cap, the same target digit is followed on future public ticks only. No purchases.
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                        <span class="text-gray-400">Tracker status:</span>
+                        <span id="psd-status" class="font-bold text-cyan-300">READY</span>
+
+                        <span class="text-gray-400">Active watches:</span>
+                        <span id="psd-active" class="font-bold text-cyan-300">0</span>
+
+                        <span class="text-gray-400">Resolved stopped cycles:</span>
+                        <span id="psd-resolved" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Average would-win trade:</span>
+                        <span id="psd-average" class="font-bold text-white">-</span>
+
+                        <span class="text-gray-400">Deepest observed:</span>
+                        <span id="psd-deepest" class="font-bold text-yellow-300">-</span>
+
+                        <span class="text-gray-400">Would win 11–15:</span>
+                        <span id="psd-11-15" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 16–20:</span>
+                        <span id="psd-16-20" class="font-bold text-white">0</span>
+
+                        <span class="text-gray-400">Would win 21+:</span>
+                        <span id="psd-21plus" class="font-bold text-white">0</span>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Current watch:</div>
+                        <div id="psd-live" class="font-mono text-gray-200">
+                            Waiting for a risk-capped cycle.
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="text-gray-400 mb-1">Latest resolved sequence:</div>
+                        <div id="psd-latest" class="font-mono text-gray-200">-</div>
+                    </div>
+                `;
+
+                anchor.parentElement.appendChild(panel);
+
+                if (typeof makePanelMinimizable === 'function') {
+                    makePanelMinimizable(panel, {
+                        key: 'post-stop-depth'
+                    });
+                }
+            },
+
+            render() {
+                this.ensurePanel();
+
+                const symbol = this.getSymbol();
+                const s = this.stats(symbol);
+
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set(
+                    'psd-status',
+                    s.active > 0
+                        ? 'TRACKING FUTURE TICKS'
+                        : 'READY · waiting for capped cycle'
+                );
+                set('psd-active', String(s.active));
+                set('psd-resolved', String(s.resolved));
+                set(
+                    'psd-average',
+                    Number.isFinite(s.average)
+                        ? `Trade ${s.average.toFixed(1)}`
+                        : '-'
+                );
+                set(
+                    'psd-deepest',
+                    Number.isFinite(s.deepest)
+                        ? `Trade ${s.deepest}`
+                        : '-'
+                );
+                set('psd-11-15', String(s.win11to15));
+                set('psd-16-20', String(s.win16to20));
+                set('psd-21plus', String(s.win21plus));
+
+                const live = document.getElementById('psd-live');
+                if (live) {
+                    const current =
+                        this.active.find(x => x.symbol === symbol) ||
+                        this.active[0];
+
+                    if (current) {
+                        const digits = current.digits
+                            .slice(-25)
+                            .map(x => x.digit)
+                            .join(' ');
+
+                        live.textContent =
+                            `TRACKING target ${current.targetDigit} | LIVE STOP @ trade ${current.stopDepth} | ` +
+                            `observed ${current.postStopTicks} future tick(s) | ` +
+                            `next hypothetical trade ${current.stopDepth + current.postStopTicks + 1}` +
+                            (digits ? ` | after-stop digits: ${digits}` : '');
+                    } else {
+                        live.textContent = 'No active post-stop watch.';
+                    }
+                }
+
+                const latest = document.getElementById('psd-latest');
+                if (latest) {
+                    const rows = s.rows
+                        .slice()
+                        .sort((a, b) =>
+                            Number(b.resolvedAt || 0) -
+                            Number(a.resolvedAt || 0)
+                        );
+
+                    const row = rows[0];
+
+                    if (row) {
+                        const seq = (row.digits || [])
+                            .map(x => x.digit)
+                            .join(' ');
+
+                        latest.textContent =
+                            `stopped @${row.stopDepth} → target ${row.targetDigit} appeared after ` +
+                            `${row.postStopTicks} tick(s) → would win @${row.wouldWinTradeNumber}` +
+                            (seq ? ` | sequence: ${seq}` : '');
+                    } else {
+                        latest.textContent = '-';
+                    }
+                }
+            }
+        };
+
+        // ============================================================================
+        // MATCHSTAR V15 — TAIL RISK MEASUREMENT + HARD CYCLE GUARDS
+        // ============================================================================
+
+        window.TAIL_RISK_CONFIG = window.TAIL_RISK_CONFIG || {
+            enabled: true,
+            maxCycleLoss: null
+        };
+
+        function projectedProgressionExposure(baseStake, multiplier, trades) {
+            let stake = Number(baseStake || 0);
+            const mult = Number(multiplier || 1);
+            const count = Math.max(0, Number(trades || 0));
+            let total = 0;
+
+            for (let i = 0; i < count; i++) {
+                total += stake;
+                stake = Number((stake * mult).toFixed(2));
+            }
+            return Number(total.toFixed(2));
+        }
+
+        function defaultTailDollarCap() {
+            const base = Number(document.getElementById('baseStake')?.value || window.baseStake || 1);
+            const mult = Number(document.getElementById('multiplier')?.value || window.multiplier || 1.15);
+            const hardTrades = Number(document.getElementById('maxTrades')?.value || window.maxTrades || 10);
+            return projectedProgressionExposure(base, mult, hardTrades);
+        }
+
+        function getTailDollarCap() {
+            // FLEXIBLE MAX TRADES:
+            // The cycle exposure ceiling always follows the user's selected Max Trades.
+            // No stale saved $20.30 / 10-trade exposure cap can silently stop a longer cycle.
+            return defaultTailDollarCap();
+        }
+
+        function getCurrentCycleExposure() {
+            const c = window.cyclePerformance?.current;
+            if (c) return Number(c.totalInvestment || 0);
+            return window.cycleHasPurchasedContract
+                ? Number(window.pnlTracker?.totalInvestment || 0)
+                : 0;
+        }
+
+        function getCurrentCycleTradeCount() {
+            const c = window.cyclePerformance?.current;
+            if (c) return Number(c.trades?.length || 0);
+            return window.cycleHasPurchasedContract ? Number(window.tradeCount || 0) : 0;
+        }
+
+        function tailRiskSnapshot() {
+            const exposure = getCurrentCycleExposure();
+            const nextStake = Number(window.currentStake || window.baseStake || 0);
+            const nextLossExposure = Number((exposure + nextStake).toFixed(2));
+            const dollarCap = getTailDollarCap();
+            const maxCycleTrades = Number(window.maxTrades || window.maxCycleTrades || 10);
+            const currentTrades = getCurrentCycleTradeCount();
+
+            return {
+                exposure,
+                nextStake,
+                nextLossExposure,
+                dollarCap,
+                maxCycleTrades,
+                currentTrades,
+                remainingBudget: Number(Math.max(0, dollarCap - exposure).toFixed(2)),
+                projected10: projectedProgressionExposure(window.baseStake, window.multiplier, 10),
+                projected15: projectedProgressionExposure(window.baseStake, window.multiplier, 15),
+                projected20: projectedProgressionExposure(window.baseStake, window.multiplier, 20)
+            };
+        }
+
+        function tailRiskAllowsNextTrade() {
+            if (!window.cycleHasPurchasedContract) {
+                return { ok: true, reason: 'ENTRY' };
+            }
+
+            const s = tailRiskSnapshot();
+
+            if (s.currentTrades >= s.maxCycleTrades) {
+                return { ok: false, reason: 'MAX_CYCLE_TRADES', snapshot: s };
+            }
+
+            if (
+                window.TAIL_RISK_CONFIG.enabled &&
+                s.nextLossExposure > s.dollarCap + 1e-9
+            ) {
+                return { ok: false, reason: 'MAX_CYCLE_LOSS', snapshot: s };
+            }
+
+            return { ok: true, reason: 'WITHIN_LIMIT', snapshot: s };
+        }
+
+        function hardStopForTailRisk(verdict) {
+            const s = verdict.snapshot || tailRiskSnapshot();
+
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            if (verdict.reason === 'MAX_CYCLE_TRADES') {
+                log(
+                    `🛡️ TAIL STOP | selected cycle cap ${s.maxCycleTrades} trades reached | exposure $${s.exposure.toFixed(2)} | no further recovery contract`,
+                    'CRITICAL'
+                );
+                updateTradeStatus(
+                    'TAIL RISK STOP 🛡️',
+                    `User-selected cycle cap reached: ${s.currentTrades}/${s.maxCycleTrades} trades`,
+                    `Exposure frozen at $${s.exposure.toFixed(2)}`,
+                    'loss'
+                );
+                window.postStopDepthTracker.startFromCurrentCycle(
+                    'Tail risk: maximum cycle trades reached',
+                    s
+                );
+                stopBot('Tail risk: maximum cycle trades reached');
+                return;
+            }
+
+            log(
+                `🛡️ TAIL STOP | next loss exposure $${s.nextLossExposure.toFixed(2)} would exceed $${s.dollarCap.toFixed(2)} cycle-loss cap | current exposure $${s.exposure.toFixed(2)} | next stake $${s.nextStake.toFixed(2)}`,
+                'CRITICAL'
+            );
+            updateTradeStatus(
+                'TAIL RISK STOP 🛡️',
+                `Projected exposure $${s.nextLossExposure.toFixed(2)} exceeds cap $${s.dollarCap.toFixed(2)}`,
+                `Current exposure frozen at $${s.exposure.toFixed(2)}`,
+                'loss'
+            );
+            window.postStopDepthTracker.startFromCurrentCycle(
+                'Tail risk: maximum cycle dollar exposure reached',
+                s
+            );
+            stopBot('Tail risk: maximum cycle dollar exposure reached');
+        }
+
+        function ensureTailRiskPanel() {
+            if (document.getElementById('tail-risk-panel')) return;
+
+            const cyclePanel = document.getElementById('cycle-performance-panel');
+            if (!cyclePanel || !cyclePanel.parentElement) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'tail-risk-panel';
+            panel.className = 'mt-3 p-3 bg-gray-800 rounded-lg border border-red-500/30 text-xs';
+
+            panel.innerHTML = `
+                <div class="font-bold text-red-300 mb-2">🛡️ TAIL RISK CONTROL</div>
+                <div class="mb-2 text-gray-300">
+                    <span class="font-bold text-cyan-300">Runtime: MATCHSTAR V16</span>
+                    <span class="mx-1">·</span>
+                    <span class="font-bold text-cyan-300">Settlement: DERIV EPOCH-ALIGNED</span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-x-2 gap-y-1">
+                    <span class="text-gray-400">Current exposure:</span>
+                    <span id="tail-current-exposure" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">Next stake:</span>
+                    <span id="tail-next-stake" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">If next trade loses:</span>
+                    <span id="tail-next-loss" class="font-bold text-yellow-300">$0.00</span>
+
+                    <span class="text-gray-400">Remaining risk budget:</span>
+                    <span id="tail-remaining" class="font-bold text-white">$0.00</span>
+
+                    <span class="text-gray-400">Hard cycle trade cap:</span>
+                    <span id="tail-trade-cap" class="font-bold text-white">10</span>
+
+                    <span class="text-gray-400">Current cycle trades:</span>
+                    <span id="tail-current-trades" class="font-bold text-white">0</span>
+
+                    <span class="text-gray-400">Projected exposure @10:</span>
+                    <span id="tail-proj10" class="font-bold text-white">-</span>
+
+                    <span class="text-gray-400">Projected exposure @15:</span>
+                    <span id="tail-proj15" class="font-bold text-white">-</span>
+
+                    <span class="text-gray-400">Projected exposure @20:</span>
+                    <span id="tail-proj20" class="font-bold text-white">-</span>
+                </div>
+
+                <div class="mt-3 flex items-center gap-2">
+                    <label for="tail-max-loss-input" class="text-gray-400">Auto exposure for selected Max Trades $</label>
+                    <input id="tail-max-loss-input" type="number" min="0.01" step="0.01"
+                           class="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white" />
+                    <span id="tail-cap-state" class="font-bold text-green-300">ACTIVE</span>
+                </div>
+
+                <div class="mt-2 text-gray-400">
+                    <span id="tail-risk-mode-note">
+                        Browser mode applies the trade and dollar exposure stops.
+                    </span>
+                </div>
+            `;
+
+            cyclePanel.parentElement.appendChild(panel);
+
+            const input = document.getElementById('tail-max-loss-input');
+            if (input) {
+                input.value = getTailDollarCap().toFixed(2);
+                input.readOnly = true;
+                input.title = 'Automatically calculated from Base Stake, Multiplier and Max Trades';
+                input.classList.add('opacity-70', 'cursor-not-allowed');
+            }
+        }
+
+        function renderTailRiskPanel() {
+            ensureTailRiskPanel();
+            const s = tailRiskSnapshot();
+            const set = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+
+            set('tail-current-exposure', `$${s.exposure.toFixed(2)}`);
+            set('tail-next-stake', `$${s.nextStake.toFixed(2)}`);
+            set('tail-next-loss', `$${s.nextLossExposure.toFixed(2)}`);
+            set('tail-remaining', `$${s.remainingBudget.toFixed(2)}`);
+            set('tail-trade-cap', String(s.maxCycleTrades));
+            set('tail-current-trades', String(s.currentTrades));
+            set('tail-proj10', `$${s.projected10.toFixed(2)}`);
+            set('tail-proj15', `$${s.projected15.toFixed(2)}`);
+            set('tail-proj20', `$${s.projected20.toFixed(2)}`);
+
+            const input = document.getElementById('tail-max-loss-input');
+            if (input && document.activeElement !== input) {
+                input.value = s.dollarCap.toFixed(2);
+            }
+
+            const state = document.getElementById('tail-cap-state');
+            const serverExecution = window.SERVER_EXECUTION?.enabled === true;
+            if (state) {
+                state.textContent = serverExecution
+                    ? 'CLIENT ONLY'
+                    : window.TAIL_RISK_CONFIG.enabled ? 'ACTIVE' : 'OFF';
+                state.className = serverExecution
+                    ? 'font-bold text-yellow-300'
+                    : 'font-bold text-green-300';
+            }
+            const modeNote = document.getElementById('tail-risk-mode-note');
+            if (modeNote) {
+                modeNote.textContent = serverExecution
+                    ? 'Server mode: Max Trades is enforced by the worker; this browser-side dollar estimate does not block server purchases.'
+                    : 'Browser mode: blocks the next recovery purchase at the selected trade or dollar exposure limit.';
+            }
+        }
+
+        // Flexible Max Trades: ignore/remove any legacy fixed cycle-dollar cap.
+        try { localStorage.removeItem('matchstar_tail_max_loss'); } catch (_) {}
+        window.TAIL_RISK_CONFIG.maxCycleLoss = null;
+
+        function submitRecoveryOnce(sourceContractId, tick, origin = 'STREAM') {
+            const id = Number(sourceContractId || 0);
+            if (!id || !tick) return false;
+
+            const sourceContract = window.settlementLedger?.get(id) || null;
+            if (sourceContract?.recoverySubmitted) {
+                log(
+                    `🛡️ DUPLICATE RECOVERY BLOCKED | source contract ${id} | ${origin}`,
+                    'WARNING'
+                );
+                return false;
+            }
+
+            if (
+                window.recoverySubmissionState?.inFlight ||
+                (window.pendingProposals && window.pendingProposals.size > 0)
+            ) {
+                log(
+                    `🛡️ RECOVERY SUBMISSION BUSY | source contract ${id} | existing order still in flight`,
+                    'WARNING'
+                );
+                return false;
+            }
+
+            const beforePending = Number(window.pendingProposals?.size || 0);
+
+            window.recoverySubmissionState = {
+                sourceContractId: id,
+                inFlight: true,
+                startedAt: Date.now(),
+                origin
+            };
+
+            processTickImmediately(tick);
+
+            const afterPending = Number(window.pendingProposals?.size || 0);
+            const submitted =
+                afterPending > beforePending ||
+                window.executionLock === true;
+
+            if (submitted) {
+                if (sourceContract) {
+                    sourceContract.recoverySubmitted = true;
+                    sourceContract.recoverySubmittedAt = Date.now();
+                    sourceContract.recoverySubmissionOrigin = origin;
+                }
+
+                log(
+                    `🛡️ RECOVERY SUBMISSION LOCKED | source contract ${id} | ${origin}`,
+                    'TRADE'
+                );
+                return true;
+            }
+
+            // No proposal/buy was actually armed; allow a later legitimate retry.
+            window.recoverySubmissionState = {
+                sourceContractId: null,
+                inFlight: false,
+                startedAt: null,
+                origin: null
+            };
+            return false;
+        }
+
+        function processTickImmediately(tick) {
+            if (window.SERVER_EXECUTION?.enabled) return;
+            if (window.stopAfterWin) return;
+
+            // Never allow a second order while a proposal/buy is still awaiting
+            // an API response. This closes the FAST LOSS vs reconciliation race.
+            if (window.pendingProposals && window.pendingProposals.size > 0) return;
+
+            if (!mayPlaceNextTrade()) return;
+
+            // V21: INSTANT may attempt at most ONE order from any market epoch.
+            // This prevents duplicate proposals if the same tick is seen through
+            // more than one execution path.
+            const instantEntryEpoch = Number(tick?.raw?.epoch || 0);
+            if (
+                sessionState.mode === 'instant' &&
+                instantEntryEpoch > 0 &&
+                Number(window.lastInstantEntryEpoch || 0) === instantEntryEpoch
+            ) {
+                return;
+            }
+
+            // Public market ticks may arrive before the authenticated trading
+            // WebSocket is ready. Never attempt an order until it is OPEN.
+            if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            // In AI mode, wait for engine recommendation
+            if (sessionState.mode === 'ai' && (!window.digitIntelligenceEngine.warmupDone || !window.digitIntelligenceEngine.currentRecommendation)) {
+                log('🧠 SCORE AUTO armed · Evaluating safe entries', 'ENGINE');
+                updateTradeStatus(
+                    'SCORE AUTO ARMED',
+                    'Evaluating safe entries',
+                    'Waiting for an approved digit',
+                    'normal'
+                );
+                return;
+            }
+            
+            // SCORE AUTO: lock the CURRENT prediction for trading when the bot is running (once per START)
+            if (sessionState.mode === 'ai' && window.isBotRunning && (!sessionState.sessionStarted || sessionState.sessionDigit === null)) {
+                const d = window.digitIntelligenceEngine.currentRecommendation.digit;
+                lockSessionDigit(d, true, 'AUTO start lock');
+                updateTradeStatus(
+                    'SCORE AUTO ACTIVE',
+                    `Digit ${d} locked`,
+                    'Evaluating execution safety gates',
+                    'trade'
+                );
+            }
+
+            if (checkForImmediateWin(tick)) {
+                return;
+            }
+            
+            if (window.tradeCount >= window.maxTrades) {
+                log(`🛑 Max trades reached (${window.maxTrades})`, 'CRITICAL');
+                updateTradeStatus('MAX TRADES', `Maximum trades reached (${window.maxTrades})`, 'Bot stopped', 'loss');
+                stopBot('Maximum trades reached');
+                return;
+            }
+
+            if (window.cycleHasPurchasedContract) {
+                const tailVerdict = tailRiskAllowsNextTrade();
+                if (!tailVerdict.ok) {
+                    hardStopForTailRisk(tailVerdict);
+                    return;
+                }
+            }
+
+            renderTailRiskPanel();
+
+            // 🧱 ENTRY SAFETY GATES
+            // Apply these only before the first real purchase in a cycle.
+            if (
+                sessionState.mode === 'ai' &&
+                window.isBotRunning &&
+                !window.cycleHasPurchasedContract
+            ) {
+                const lockedDigit = (sessionState.sessionDigit !== null)
+                    ? sessionState.sessionDigit
+                    : parseInt(document.getElementById('predictedDigit').value);
+
+                const d = buildDigitDecision(lockedDigit);
+                if (!d) {
+                    log('🧱 Trade veto: digit metrics not ready — no trade', 'ENGINE');
+                    updateTradeStatus('NO TRADE', 'Metrics not ready', 'Waiting for more ticks', 'loss');
+                    return;
+                }
+
+                const regime = getCurrentRegimeNumbers();
+                const verdict = canTradeDigit(d, regime, window.tradeCount);
+
+                if (!verdict.ok) {
+                    log(`🧱 Trade veto (${verdict.reason}) — no trade`, 'ENGINE');
+                    updateTradeStatus('SCORE AUTO ARMED', verdict.reason, 'Re-picking safer entry digit', 'normal');
+
+                    if (typeof rotateHybridDigit === 'function') {
+                        rotateHybridDigit(`VETO:${verdict.reason}`);
+                    }
+                    return;
+                }
+            }
+
+window.executionLock = true;
+            window.nextTradeAllowed = false;
+
+            if (sessionState.mode === 'instant') {
+                window.lastInstantEntryEpoch = Number(tick?.raw?.epoch || 0) || window.lastInstantEntryEpoch || 0;
+            }
+
+            try {
+                const nextTradeNumber = window.tradeCount + 1;
+                let selectedDigit = parseInt(document.getElementById('predictedDigit').value);
+
+                if (window.cycleHasPurchasedContract) {
+                    const cfg = window.ADAPTIVE_RECOVERY_HOLD_CONFIG || { initialHold:3, maxHold:6 };
+
+                    const approvedLimit = Math.max(
+                        1,
+                        Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3)
+                    );
+                    if (Number(window.recoveryDigitTrades || 0) > approvedLimit) {
+                        window.recoveryDigitTrades = approvedLimit;
+                    }
+
+                    // At the end of the current hold block, ask whether the locked digit
+                    // still deserves another purchased attempt. If yes, extend by one.
+                    // If no, release it and perform a full fresh recovery re-rank.
+                    if (
+                        Number.isInteger(window.recoveryDigitLock) &&
+                        Number(window.recoveryDigitTrades || 0) >=
+                            Math.max(1, Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3))
+                    ) {
+                        const boundary = adaptiveRecoveryBoundaryDecision();
+                        if (boundary?.action === 'RERANK') {
+                            window.recoveryDigitLock = null;
+                            window.recoveryDigitTrades = 0;
+                            resetAdaptiveRecoveryHold(`RERANK:${boundary.reason || 'BOUNDARY'}`);
+                        }
+                    }
+
+                    if (!Number.isInteger(window.recoveryDigitLock)) {
+                        const recoveryPick = chooseBestRecoveryDigit();
+
+                        if (recoveryPick && Number.isInteger(recoveryPick.digit)) {
+                            const previousDigit = Number.isInteger(Number(selectedDigit))
+                                ? Number(selectedDigit)
+                                : null;
+
+                            window.recoveryDigitLock = recoveryPick.digit;
+                            window.recoveryDigitTrades = 0;
+                            resetAdaptiveRecoveryHold('NEW_RECOVERY_SELECTION');
+
+                            const evidence = getAdaptiveRecoveryEvidence(window.recoveryDigitLock);
+                            const action =
+                                previousDigit !== null &&
+                                previousDigit === Number(window.recoveryDigitLock)
+                                    ? 'RERANK_KEEP'
+                                    : 'RERANK_SWITCH';
+
+                            recordAdaptiveRecoveryDecision({
+                                at:Date.now(),
+                                action,
+                                reason:'FRESH_RECOVERY_RANK',
+                                previousDigit,
+                                digit:Number(window.recoveryDigitLock),
+                                used:0,
+                                previousLimit:null,
+                                newLimit:Number(window.recoveryDigitTradeLimit),
+                                evidence
+                            });
+
+                            log(
+                                `🔄 RECOVERY DIGIT SELECTED | digit ${window.recoveryDigitLock} | ` +
+                                `adaptive initial hold ${window.recoveryDigitTradeLimit} | ` +
+                                `max adaptive hold ${Number(cfg.maxHold || 6)} | ` +
+                                `model P ${(recoveryPick.probability * 100).toFixed(2)}% | ` +
+                                `support ${recoveryPick.support}`,
+                                'ENGINE'
+                            );
+                        }
+                    }
+
+                    if (Number.isInteger(window.recoveryDigitLock)) {
+                        selectedDigit = window.recoveryDigitLock;
+
+                        const predictedDigitEl = document.getElementById('predictedDigit');
+                        if (predictedDigitEl) predictedDigitEl.value = String(selectedDigit);
+
+                        const limit = Math.max(
+                            1,
+                            Number(window.recoveryDigitTradeLimit || cfg.initialHold || 3)
+                        );
+
+                        log(
+                            `🔒 ADAPTIVE RECOVERY HOLD | digit ${selectedDigit} | ` +
+                            `purchase ${(window.recoveryDigitTrades || 0) + 1}/${limit} | ` +
+                            `ceiling ${Number(cfg.maxHold || 6)}`,
+                            'ENGINE'
+                        );
+                    }
+                }
+
+                const isT0Coincidence = Number(tick.digit) === Number(selectedDigit);
+
+                updateTradeStatus(
+                    window.cycleHasPurchasedContract ? 'RECOVERY CHECK' : 'ENTRY CHECK',
+                    isT0Coincidence
+                        ? `T+0 observed digit ${tick.digit} = target ${selectedDigit} · NOT a contract win`
+                        : `Evaluating trade #${nextTradeNumber}: $${window.currentStake.toFixed(2)} on digit ${selectedDigit}`,
+                    isT0Coincidence
+                        ? 'Current tick arrived before purchase · waiting for purchased T+1 settlement'
+                        : (
+                            window.cycleHasPurchasedContract
+                                ? 'Checking live recovery quote'
+                                : 'Checking live probability and break-even edge'
+                        ),
+                    'normal'
+                );
+
+                if (isT0Coincidence) {
+                    log(
+                        `🟡 T+0 MATCH OBSERVED | digit ${tick.digit} = target ${selectedDigit} | ` +
+                        `pre-purchase coincidence only · NOT eligible for settlement`,
+                        'WARNING'
+                    );
+                }
+
+                log(
+                    `${window.cycleHasPurchasedContract ? '🔄 RECOVERY' : '🔎 ENTRY'} attempt #${nextTradeNumber}: ` +
+                    `${tick.formattedPrice || tick.price} (Digit ${tick.digit}) → target ${selectedDigit}` +
+                    `${isT0Coincidence ? ' [T+0 ONLY — NOT A WIN]' : ''}`,
+                    'TRADE'
+                );
+
+                playAudioFeedback('EXECUTION');
+
+                // Candidate Tick DNA V3.7 — EXACT T0 ALIGNMENT.
+                // Research-only: on the FIRST purchase opportunity in a cycle,
+                // freeze this exact tick and define the research target as THIS
+                // tick's own last digit. Trading selection/execution is unchanged.
+                if (!window.cycleHasPurchasedContract) {
+
+                    try {
+                        window.CandidateTickDNAV3?.captureCandidate?.(tick);
+                    } catch (err) {
+                        console.warn('Candidate Tick DNA V3.7 capture failed:', err);
+                    }
+                }
+
+                executeTrade(tick);
+
+            } catch (error) {
+                log(`❌ Error: ${error}`, 'ERROR');
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+                updateTradeStatus('ERROR', `Trade failed: ${error}`, 'Retrying...', 'loss');
+            }
+        }
+
+        // ============================================================================
+        // SERVER EXECUTION BRIDGE V1
+        // Server execution uses the selected account for both DEMO and REAL.
+        // ============================================================================
+        
+        window.DMS_BALANCE_REFRESH = window.DMS_BALANCE_REFRESH || {
+            timer: null,
+            inFlight: false,
+            lastRefreshAt: 0,
+            intervalMs: 5000
+        };
+
+        function renderLiveAccountBalance(account) {
+            if (!account) return;
+
+            const balance = Number(account.balance);
+            if (!Number.isFinite(balance)) return;
+
+            const candidates = [
+                document.getElementById('metricAccountBalance'),
+                document.getElementById('metricBalance'),
+                document.getElementById('account-balance'),
+                document.getElementById('balanceDisplay'),
+                window.metricBalance || null
+            ].filter(Boolean);
+
+            for (const el of candidates) {
+                try {
+                    el.textContent = `$${balance.toFixed(2)}`;
+                } catch (_) {}
+            }
+        }
+
+        async function refreshLiveDerivBalances({ silent = true } = {}) {
+            const state = window.DMS_BALANCE_REFRESH;
+            if (state.inFlight) return null;
+
+            const token = getPlatformJwt();
+            if (!token) return null;
+
+            const apiUrl = String(
+                window.SERVER_EXECUTION?.apiUrl ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/, '');
+
+            state.inFlight = true;
+
+            try {
+                const res = await fetch(
+                    `${apiUrl}/accounts/refresh-balances`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            Accept: 'application/json'
+                        },
+                        cache: 'no-store'
+                    }
+                );
+
+                const data = await res.json().catch(() => null);
+
+                if (!res.ok) {
+                    const detail =
+                        data?.detail ||
+                        data?.error ||
+                        `HTTP ${res.status}`;
+
+                    if (!silent) {
+                        log(`⚠️ Live balance refresh failed: ${detail}`, 'WARNING');
+                    }
+                    return null;
+                }
+
+                state.lastRefreshAt = Date.now();
+
+                const selectedMode = String(
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                const selectedAccountId = String(
+                    localStorage.getItem('active_account') ||
+                    localStorage.getItem(
+                        selectedMode === 'REAL'
+                            ? 'derivRealAccount'
+                            : 'derivDemoAccount'
+                    ) ||
+                    ''
+                );
+
+                const accounts = Array.isArray(data?.accounts)
+                    ? data.accounts
+                    : [];
+
+                let account = null;
+
+                if (selectedAccountId) {
+                    account = accounts.find(
+                        a => String(a?.account_id || '') === selectedAccountId
+                    ) || null;
+                }
+
+                if (!account) {
+                    account = accounts.find(
+                        a => String(a?.account_type || '').toUpperCase() === selectedMode
+                    ) || null;
+                }
+
+                if (account) {
+                    localStorage.setItem(
+                        'active_account',
+                        String(account.account_id)
+                    );
+
+                    localStorage.setItem(
+                        selectedMode === 'REAL'
+                            ? 'derivRealAccount'
+                            : 'derivDemoAccount',
+                        String(account.account_id)
+                    );
+
+                    renderLiveAccountBalance(account);
+                }
+
+                if (typeof pollServerExecutionState === 'function') {
+                    try {
+                        await pollServerExecutionState();
+                    } catch (_) {}
+                }
+
+                return data;
+
+            } catch (err) {
+                if (!silent) {
+                    log(
+                        `⚠️ Live balance refresh error: ${err.message}`,
+                        'WARNING'
+                    );
+                }
+                return null;
+
+            } finally {
+                state.inFlight = false;
+            }
+        }
+
+        function startLiveDerivBalanceRefresh() {
+            const state = window.DMS_BALANCE_REFRESH;
+
+            if (state.timer) {
+                clearInterval(state.timer);
+            }
+
+            refreshLiveDerivBalances({ silent: true });
+
+            state.timer = setInterval(() => {
+                if (document.visibilityState === 'visible') {
+                    refreshLiveDerivBalances({ silent: true });
+                }
+            }, state.intervalMs);
+        }
+
+window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+            enabled: (
+                sessionStorage.getItem('dms_server_execution_enabled') ??
+                localStorage.getItem('dms_server_execution_enabled')
+            ) !== '0',
+            apiUrl: (
+                sessionStorage.getItem('dms_server_execution_url') ||
+                localStorage.getItem('dms_server_execution_url') ||
+                'https://digitmatchstar-api.onrender.com'
+            ).replace(/\/+$/,''),
+            state: null,
+            sessionId: Number(
+                sessionStorage.getItem('dms_server_session_id') ||
+                localStorage.getItem('dms_server_session_id') ||
+                0
+            ) || null,
+            pollTimer: null,
+            lastCandidateSent: null,
+            lastTaeCandidateSyncAt: 0,
+            taeCandidateSyncPending: false,
+            researchSessionCreatePending: false,
+            continuousResearch: false,
+            continuousRestartPending: false,
+            continuousRestartTimer: null,
+            continuousRestartAttempts: 0,
+            lastAutoRestartPhase: null,
+            lastCompletedServerCycleTrade: 0,
+            marginSyncPending: false,
+            lastMarginSyncAt: 0,
+            aiSignalPending: false,
+            lastAiSignalSentAt: 0,
+            lastAiSignalDigit: null
+        };
+
+        function serverExecEl(id){ return document.getElementById(id); }
+
+        function formatServerMoney(value) {
+            const n = Number(value);
+            return Number.isFinite(n)
+                ? `${n >= 0 ? '+' : ''}$${n.toFixed(2)}`
+                : '$0.00';
+        }
+
+        function renderTargetAttractionStatus(st) {
+            const tae = st?.tae || null;
+
+            const setText = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+
+            const pct = (value, digits = 1) => {
+                if (value === null || value === undefined || value === '') {
+                    return '—';
+                }
+                const n = Number(value);
+                return Number.isFinite(n)
+                    ? `${(n * 100).toFixed(digits)}%`
+                    : '—';
+            };
+
+            if (!tae) {
+                setText('tae-live-state', 'WAITING');
+                return;
+            }
+
+            const trained = Number(tae.trained_samples || 0);
+            const minTrain = Number(tae.min_train_samples || 250);
+            const history = Number(tae.history_count || 0);
+            const minHistory = Number(tae.minimum_history || 100);
+            const pending = Number(tae.pending_observations || 0);
+            const next = tae.next_sample_matures_in_ticks;
+            const target = tae.current_target ?? st?.candidate_digit ?? '—';
+            const progress = Math.max(
+                0,
+                Math.min(
+                    100,
+                    Number(tae.training_progress || 0) * 100
+                )
+            );
+
+            setText('tae-live-target', String(target));
+            setText(
+                'tae-live-history',
+                `${history} / ${minHistory}${tae.history_ready ? ' ✓' : ''}`
+            );
+            setText('tae-live-pending', String(pending));
+            setText(
+                'tae-live-next',
+                (
+                    next !== null &&
+                    next !== undefined &&
+                    next !== '' &&
+                    Number.isFinite(Number(next))
+                )
+                    ? `${Number(next)} tick${Number(next) === 1 ? '' : 's'}`
+                    : '—'
+            );
+            setText('tae-live-trained', `${trained} / ${minTrain}`);
+            setText('tae-live-progress-text', `${progress.toFixed(1)}%`);
+            setText('tae-live-hit', pct(tae.forward_hit_rate));
+            setText('tae-live-stop10', pct(tae.selected_stop10_rate));
+            setText('tae-live-prob', pct(tae.current_probability_t10));
+
+            let state = 'WARMING';
+            if (tae.armed_now) state = 'ARMED';
+            else if (tae.ready) state = 'SCORING / WAITING';
+            else if (!tae.history_ready) state = 'HISTORY WARMING';
+            else state = 'MODEL WARMING';
+
+            setText('tae-live-state', state);
+
+            const stateEl = document.getElementById('tae-live-state');
+            if (stateEl) {
+                stateEl.className =
+                    tae.armed_now
+                        ? 'font-black text-emerald-300'
+                        : tae.ready
+                            ? 'font-black text-cyan-300'
+                            : 'font-black text-yellow-300';
+            }
+
+            const bar = document.getElementById('tae-live-progress-bar');
+            if (bar) bar.style.width = `${progress.toFixed(1)}%`;
+
+            const stream = tae.research_stream || {};
+            setText(
+                'tae-stream-state',
+                stream.connected ? 'LIVE ✓' : 'RECONNECTING'
+            );
+            setText(
+                'tae-stream-ticks',
+                String(Number(stream.ticks_seen || 0))
+            );
+            setText(
+                'tae-stream-last',
+                stream.last_epoch
+                    ? `e:${stream.last_epoch} · digit ${stream.last_digit ?? '—'}`
+                    : '—'
+            );
+            setText(
+                'tae-stream-error',
+                stream.last_error || '—'
+            );
+
+            const streamState = document.getElementById('tae-stream-state');
+            if (streamState) {
+                streamState.className = stream.connected
+                    ? 'font-bold text-emerald-300'
+                    : 'font-bold text-yellow-300';
+            }
+        }
+
+
+        function renderServerTradeNarrative(st) {
+            if (!window.SERVER_EXECUTION?.enabled || !st) return;
+
+            const resultEl = document.getElementById('metricTradeResult');
+            const statusEl = document.getElementById('metricPreviousResult');
+            const actionEl = document.getElementById('metricNextAction');
+
+            if (!resultEl || !statusEl || !actionEl) return;
+
+            const phase = String(st.phase || 'IDLE').toUpperCase();
+            const tradeNo = Number(st.current_trade || 0);
+            const maxTrades = Number(st.max_trades || 0);
+            const digit = Number(st.candidate_digit);
+            const hasDigit = Number.isInteger(digit) && digit >= 0 && digit <= 9;
+            const stake = Number(st.current_stake || 0);
+            const pnl = Number(st.pnl || 0);
+            const contract = st.open_contract_id ? String(st.open_contract_id) : '';
+            const continuous = !!window.SERVER_EXECUTION?.continuousResearch &&
+                String(st.account_mode || '').toUpperCase() === 'DEMO';
+
+            let result = 'SERVER';
+            let status = 'Server worker ready';
+            let action = 'Waiting for the next action';
+            let resultClass = 'text-xs font-bold text-cyan-300';
+
+            if (phase.startsWith('LIVE_RANK_SWITCH_')) {
+                const parts = phase.replace('LIVE_RANK_SWITCH_', '').split('_TO_');
+                result = 'LIVE V1 SWITCH ⚡';
+                status = `Target ${parts[0] || '—'} → ${parts[1] || '—'} · next stake $${stake.toFixed(2)}`;
+                action = 'Latest V1 rank #1 is pre-armed for the next trade';
+                resultClass = 'text-xs font-bold text-cyan-300';
+                resultEl.textContent = result;
+                resultEl.className = resultClass;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
+                return;
+            }
+
+            if (phase.startsWith('LIVE_RANK_KEEP_')) {
+                const d = phase.replace('LIVE_RANK_KEEP_', '');
+                result = 'LIVE V1 HOLD';
+                status = `Digit ${d} remains V1 rank #1 · next stake $${stake.toFixed(2)}`;
+                action = 'Same top-ranked digit is pre-armed for the next trade';
+                resultClass = 'text-xs font-bold text-cyan-300';
+                resultEl.textContent = result;
+                resultEl.className = resultClass;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
+                return;
+            }
+
+            switch (phase) {
+                case 'CONFIGURED':
+                    result = 'READY';
+                    status = hasDigit
+                        ? `Candidate digit ${digit} locked · base stake $${stake.toFixed(2)}`
+                        : 'Server session configured';
+                    action = 'Press START BOT to begin';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'STARTING':
+                    result = 'STARTING ⚡';
+                    status = hasDigit
+                        ? `Starting cycle with digit ${digit}`
+                        : 'Starting server cycle';
+                    action = `Preparing trade ${tradeNo + 1}${maxTrades ? ` of ${maxTrades}` : ''}`;
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_HISTORY_WARMING':
+                    result = 'LEARNING 🧠';
+                    status = `Target ${hasDigit ? digit : '—'} · collecting live history`;
+                    action = st.tae
+                        ? `History ${Number(st.tae.history_count || 0)}/${Number(st.tae.minimum_history || 100)} · no trade placed yet`
+                        : 'Collecting forward-only context';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_MODEL_WARMING':
+                    result = 'LEARNING 🧠';
+                    status = `Target Attraction forward-training`;
+                    action = st.tae
+                        ? `${Number(st.tae.trained_samples || 0)}/${Number(st.tae.min_train_samples || 250)} matured · ${Number(st.tae.pending_observations || 0)} pending`
+                        : 'Waiting for matured T10 samples';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'TAE_SCORING':
+                case 'TAE_WAITING':
+                    result = 'TAE SCORING';
+                    status = hasDigit
+                        ? `Target ${digit} · waiting for stronger T10 entry`
+                        : 'Target Attraction scoring';
+                    action = st.tae && Number.isFinite(Number(st.tae.current_probability_t10))
+                        ? `P(return≤T10) ${(Number(st.tae.current_probability_t10) * 100).toFixed(1)}% · arm at ${(Number(st.tae.arm_probability || 0.8) * 100).toFixed(0)}%`
+                        : 'Waiting for current probability';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'TAE_ARMED':
+                    result = 'TAE ARMED ✅';
+                    status = hasDigit
+                        ? `Target ${digit} passed the T10 entry threshold`
+                        : 'Target Attraction armed';
+                    action = 'Preparing Trade 1';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'RECOVERY_PREARMED':
+                    result = 'NEXT TRADE PREARMED ⚡';
+                    status = hasDigit
+                        ? `Trade ${tradeNo}/${maxTrades || '—'} active · target ${digit}`
+                        : `Trade ${tradeNo}/${maxTrades || '—'} active`;
+                    action = 'Next-loss proposal is already prepared · no proposal wait on recovery';
+                    resultClass = 'text-xs font-bold text-emerald-300';
+                    break;
+
+                case 'FAST_RECOVERING':
+                    result = 'FAST RECOVERY ⚡';
+                    status = hasDigit
+                        ? `Switch/continue target ${digit} · next stake $${stake.toFixed(2)}`
+                        : `Preparing immediate recovery trade ${tradeNo + 1}`;
+                    action = 'Using pre-armed proposal → BUY';
+                    resultClass = 'text-xs font-bold text-orange-300';
+                    break;
+
+                case 'BUY_UNCERTAIN_STOPPED':
+                case 'BUY_CLAIM_LOST':
+                case 'BUY_SEQUENCE_MISMATCH':
+                    result = 'EXECUTION STOPPED';
+                    status = 'Database execution-integrity guard stopped the cycle';
+                    action = st.last_error || 'Review the last contract before restarting';
+                    resultClass = 'text-xs font-bold text-red-300';
+                    break;
+
+                case 'FAST_RECOVERY_PREFETCH_MISSED':
+                    result = 'PREFETCH FALLBACK';
+                    status = hasDigit
+                        ? `Target ${digit} · stake $${stake.toFixed(2)}`
+                        : 'Recovery proposal was not ready';
+                    action = 'Exceptional fallback proposal request · fast pipeline retained';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+
+                case 'REQUESTING_PROPOSAL':
+                    result = 'PREPARING TRADE';
+                    status = hasDigit
+                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}`
+                        : `Preparing trade ${tradeNo + 1}/${maxTrades || '—'}`;
+                    action = 'Requesting live proposal from Deriv…';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'BUYING':
+                    result = 'BUYING ⚡';
+                    status = hasDigit
+                        ? `Trade ${tradeNo + 1}/${maxTrades || '—'} · Buying DIGITMATCH ${digit} for $${stake.toFixed(2)}`
+                        : `Buying trade ${tradeNo + 1}`;
+                    action = 'Waiting for Deriv to confirm the contract…';
+                    resultClass = 'text-xs font-bold text-yellow-300';
+                    break;
+
+                case 'WAITING_SETTLEMENT':
+                    result = `TRADE ${tradeNo} OPEN`;
+                    status = hasDigit
+                        ? `DIGITMATCH ${digit} · Stake $${stake.toFixed(2)}${contract ? ` · Contract ${contract}` : ''}`
+                        : `Trade ${tradeNo}/${maxTrades || '—'} is open`;
+                    action = 'Watching the contract · waiting for authoritative Deriv settlement…';
+                    resultClass = 'text-xs font-bold text-blue-300';
+                    break;
+
+                case 'RECOVERING':
+                    result = 'LOSS · RECOVERY';
+                    status = `Trade ${tradeNo} settled as a loss · Cycle P/L ${formatServerMoney(pnl)}`;
+                    action = hasDigit
+                        ? `Keeping digit ${digit} · next stake $${stake.toFixed(2)} · preparing trade ${tradeNo + 1}`
+                        : `Preparing recovery trade ${tradeNo + 1} at $${stake.toFixed(2)}`;
+                    resultClass = 'text-xs font-bold text-orange-300';
+                    break;
+
+                case 'WON':
+                    result = 'WIN ✅';
+                    status = `Cycle won on trade ${tradeNo} · Cycle P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Auto Continue After Win ON · selecting and freezing the next AI candidate…'
+                        : 'Cycle complete · press START BOT for another cycle';
+                    resultClass = 'text-lg font-black text-emerald-400';
+                    break;
+
+                case 'FAST_WON':
+                    result = 'WIN ✅';
+                    status = `Cycle won on trade ${tradeNo} · P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
+                        : 'Cycle complete · START BOT is ready for another cycle';
+                    resultClass = 'text-lg font-black text-emerald-400';
+                    break;
+
+                case 'MAX_TRADES_REACHED':
+                    result = 'LOSS ❌';
+                    status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
+                    action = continuous
+                        ? 'Auto Continue After Win ON · preparing a fresh research cycle…'
+                        : 'Cycle stopped at your maximum trade limit';
+                    resultClass = 'text-lg font-black text-rose-400';
+                    break;
+
+                case 'WAITING_CANDIDATE':
+                    result = 'WAITING FOR AI';
+                    status = 'Server is ready but no candidate digit is locked';
+                    action = 'Waiting for the Digit Intelligence Engine to produce the next candidate…';
+                    resultClass = 'text-xs font-bold text-cyan-300';
+                    break;
+
+                case 'RECONCILING':
+                case 'WAITING_SETTLEMENT_RECONCILE':
+                    result = 'RECONCILING';
+                    status = contract
+                        ? `Checking unresolved contract ${contract}`
+                        : 'Reconciling the previous server contract';
+                    action = 'Waiting for authoritative settlement before any new trade…';
+                    resultClass = 'text-xs font-bold text-purple-300';
+                    break;
+
+                case 'BUY_RATE_LIMIT_BACKOFF': {
+                    const rows = Array.isArray(st?.digit_score?.ranking)
+                        ? st.digit_score.ranking
+                        : [];
+                    const liveV1 = (
+                        rows.length &&
+                        rows[0]?.digit !== null &&
+                        rows[0]?.digit !== undefined &&
+                        Number.isInteger(Number(rows[0].digit))
+                    ) ? Number(rows[0].digit) : null;
+
+                    result = 'RATE LIMIT';
+                    status = 'Deriv temporarily throttled the BUY request';
+                    action = liveV1 !== null
+                        ? `Holding trade ${tradeNo}/${maxTrades || '—'} · next V1 ${liveV1} · stake $${stake.toFixed(2)}`
+                        : `Holding trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`;
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+                }
+
+                case 'WAITING_V1_MARGIN':
+                case 'RECOVERY_WAITING_MARGIN': {
+                    const scoreRows = Array.isArray(st?.digit_score?.ranking)
+                        ? st.digit_score.ranking
+                        : [];
+                    const liveV1 = (
+                        scoreRows.length &&
+                        scoreRows[0]?.digit !== null &&
+                        scoreRows[0]?.digit !== undefined &&
+                        Number.isInteger(Number(scoreRows[0].digit))
+                    ) ? Number(scoreRows[0].digit) : null;
+                    const liveMargin = Number(st?.digit_score?.top_margin);
+                    const minMargin = Number(
+                        st?.digit_score?.minimum_v1_margin ??
+                        getConfiguredMinimumV1Margin()
+                    );
+
+                    result = 'WAITING ⏸';
+                    status = phase === 'RECOVERY_WAITING_MARGIN'
+                        ? 'Recovery paused until the V1 margin qualifies'
+                        : 'Entry paused until the V1 margin qualifies';
+                    action = (
+                        Number.isFinite(liveMargin) &&
+                        Number.isFinite(minMargin)
+                    )
+                        ? `V1 ${liveV1 ?? '—'} · margin ${liveMargin.toFixed(2)} / ${minMargin.toFixed(2)} required`
+                        : 'Waiting for a qualifying V1 margin';
+                    resultClass = 'text-xs font-bold text-amber-300';
+                    break;
+                }
+
+                case 'PAUSED':
+                    result = 'PAUSED';
+                    status = `Cycle paused after trade ${tradeNo}`;
+                    action = 'Resume when ready';
+                    resultClass = 'text-xs font-bold text-gray-300';
+                    break;
+
+                case 'STOPPED':
+                case 'STOPPED_WAITING_SETTLEMENT':
+                    result = 'STOPPED';
+                    status = phase === 'STOPPED_WAITING_SETTLEMENT'
+                        ? 'Stop requested · an open contract is still being reconciled'
+                        : 'Server trading stopped';
+                    action = phase === 'STOPPED_WAITING_SETTLEMENT'
+                        ? 'Waiting for the existing contract to settle'
+                        : 'Press START BOT when you want to trade again';
+                    resultClass = 'text-xs font-bold text-gray-300';
+                    break;
+
+                case 'ERROR':
+                    result = 'SERVER ERROR';
+                    status = String(st.last_error || 'The server worker encountered an error');
+                    action = 'Review Worker Error above, then restart after the issue is resolved';
+                    resultClass = 'text-xs font-bold text-red-300';
+                    break;
+
+                default:
+                    if (st.running) {
+                        result = 'TRADING ⚡';
+                        status = `Server worker active · phase ${phase}`;
+                        const scoreRows = Array.isArray(st?.digit_score?.ranking)
+                            ? st.digit_score.ranking
+                            : [];
+                        const liveV1 = (
+                            scoreRows.length &&
+                            scoreRows[0]?.digit !== null &&
+                            scoreRows[0]?.digit !== undefined &&
+                            Number.isInteger(Number(scoreRows[0].digit))
+                        ) ? Number(scoreRows[0].digit) : null;
+
+                        action = liveV1 !== null
+                            ? `Next V1 ${liveV1} · trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`
+                            : `Trade ${tradeNo}/${maxTrades || '—'} · stake $${stake.toFixed(2)}`;
+                        resultClass = 'text-xs font-bold text-yellow-300';
+                    } else {
+                        result = phase || 'READY';
+                        status = 'Server worker is not currently buying';
+                        action = continuous
+                            ? 'Auto Continue After Win is waiting for the next eligible cycle'
+                            : 'Press START BOT to begin';
+                        resultClass = 'text-xs font-bold text-gray-300';
+                    }
+            }
+
+            resultEl.textContent = result;
+            resultEl.className = resultClass;
+            statusEl.textContent = status;
+            actionEl.textContent = action;
+        }
+
+
+        // ============================================================================
+        // AI CURRENT-TICK BIAS AUDIT — strict forward T -> T+1 evaluation
+        // Purpose: distinguish genuine next-tick forecasting from a model that
+        // merely tends to echo the current digit. Only resolved unseen ticks are
+        // counted; the current tick can never score the forecast it generated.
+        // ============================================================================
+        window.currentTickBiasAudit = window.currentTickBiasAudit || {
+            version: 'CURRENT-TICK-BIAS-AUDIT-V2-CANONICAL',
+            pending: null,
+            symbol: null,
+            records: [],
+            maxRecords: 10000,
+            uniqueSeq: 0,
+            lastCanonicalKey: null,
+            duplicateDrops: 0,
+            invalidCanonicalDrops: 0,
+
+            storageKey(symbol) {
+                // V2 deliberately starts a clean evidence set. V1 contained
+                // duplicate tick deliveries and must not contaminate this audit.
+                return `matchstar_current_tick_bias_v2_${String(symbol || 'UNKNOWN')}`;
+            },
+
+            canonicalIdentity(tickData, digit = null) {
+                const raw = tickData?.raw || tickData?.tick || {};
+                const symbol = String(
+                    raw?.symbol ||
+                    tickData?.symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.currentSymbol ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+                const epoch = Number(raw?.epoch ?? tickData?.epoch ?? 0);
+                const quote = String(
+                    tickData?.formattedPrice ??
+                    tickData?.formatted_quote ??
+                    raw?.formatted_quote ??
+                    ''
+                );
+                const d = Number(
+                    digit ??
+                    tickData?.digit ??
+                    (quote ? Number(quote.slice(-1)) : NaN)
+                );
+
+                if (!(epoch > 0) || !quote || !Number.isInteger(d) || d < 0 || d > 9) {
+                    return null;
+                }
+
+                return {
+                    symbol,
+                    epoch,
+                    quote,
+                    digit: d,
+                    key: `${symbol}|${epoch}|${quote}|${d}`
+                };
+            },
+
+            load(symbol) {
+                const sym = String(symbol || 'UNKNOWN');
+                if (this.symbol === sym && Array.isArray(this.records)) return this.records;
+                this.symbol = sym;
+                this.pending = null;
+                this.uniqueSeq = 0;
+                this.lastCanonicalKey = null;
+                this.duplicateDrops = 0;
+                this.invalidCanonicalDrops = 0;
+                try {
+                    const raw = JSON.parse(localStorage.getItem(this.storageKey(sym)) || '[]');
+                    this.records = Array.isArray(raw) ? raw.slice(-this.maxRecords) : [];
+                } catch (_) {
+                    this.records = [];
+                }
+                return this.records;
+            },
+
+            save() {
+                if (!this.symbol) return;
+                try {
+                    localStorage.setItem(
+                        this.storageKey(this.symbol),
+                        JSON.stringify((this.records || []).slice(-this.maxRecords))
+                    );
+                } catch (_) {}
+            },
+
+            observeTick(tickData, digit) {
+                const identity = this.canonicalIdentity(tickData, digit);
+                if (!identity) {
+                    this.invalidCanonicalDrops++;
+                    this.render();
+                    return { accepted: false, reason: 'INVALID_CANONICAL_TICK' };
+                }
+
+                this.load(identity.symbol);
+
+                // Exact consecutive duplicates are the bug observed in the V1
+                // export: one Deriv market tick reached the browser pipeline more
+                // than once. It must count as one market observation only.
+                if (identity.key === this.lastCanonicalKey) {
+                    this.duplicateDrops++;
+                    this.render();
+                    return {
+                        accepted: false,
+                        reason: 'DUPLICATE_CANONICAL_TICK',
+                        key: identity.key,
+                        epoch: identity.epoch,
+                        quote: identity.quote,
+                        digit: identity.digit,
+                        seq: this.uniqueSeq,
+                        symbol: identity.symbol
+                    };
+                }
+
+                this.lastCanonicalKey = identity.key;
+                this.uniqueSeq += 1;
+                return {
+                    accepted: true,
+                    reason: 'NEW_CANONICAL_TICK',
+                    ...identity,
+                    seq: this.uniqueSeq
+                };
+            },
+
+            arm(recommendation, sourceDigit, symbol, tickMeta) {
+                const sym = String(symbol || 'UNKNOWN');
+                this.load(sym);
+
+                const predictedDigit = Number(recommendation?.digit);
+                const src = Number(sourceDigit);
+                const sourceSeq = Number(tickMeta?.seq);
+                if (!tickMeta?.accepted || !Number.isInteger(sourceSeq) || sourceSeq <= 0) {
+                    return false;
+                }
+                if (!Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+                if (!Number.isInteger(src) || src < 0 || src > 9) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+
+                // Forecast generated from unique canonical tick T is valid ONLY
+                // for the immediately following unique canonical tick T+1.
+                this.pending = {
+                    symbol: sym,
+                    sourceDigit: src,
+                    predictedDigit,
+                    sameAsCurrent: predictedDigit === src,
+                    score: Number.isFinite(Number(recommendation?.score))
+                        ? Number(recommendation.score)
+                        : null,
+                    source: String(recommendation?.source || 'AI'),
+                    generatedAtMs: Number(recommendation?.generatedAtMs || Date.now()),
+                    sourceSeq,
+                    validForSeq: sourceSeq + 1,
+                    sourceTickKey: String(tickMeta?.key || ''),
+                    sourceTickEpoch: Number(tickMeta?.epoch || 0),
+                    sourceTickQuote: String(tickMeta?.quote || '')
+                };
+                this.render();
+                return true;
+            },
+
+            settle(observedNextDigit, tickMeta) {
+                const p = this.pending;
+                const actual = Number(observedNextDigit);
+                if (!p || !tickMeta?.accepted || !Number.isInteger(actual) || actual < 0 || actual > 9) {
+                    return false;
+                }
+
+                this.load(p.symbol);
+                const actualSeq = Number(tickMeta?.seq);
+                if (!Number.isInteger(actualSeq) || actualSeq <= 0) return false;
+
+                // Never score on the source tick itself and never reuse a stale
+                // forecast on T+2 or later. Only sourceSeq + 1 is a valid label.
+                if (actualSeq < Number(p.validForSeq)) return false;
+                if (actualSeq > Number(p.validForSeq)) {
+                    this.pending = null;
+                    this.render();
+                    return false;
+                }
+
+                const hit = Number(p.predictedDigit) === actual;
+                const actualRepeatedCurrent = Number(p.sourceDigit) === actual;
+                const score = Number(p.score);
+                const scorePct = Number.isFinite(score) ? score * 100 : null;
+                let scoreBand = 'UNKNOWN';
+                if (Number.isFinite(scorePct)) {
+                    if (scorePct < 70) scoreBand = '<70%';
+                    else if (scorePct < 80) scoreBand = '70–79%';
+                    else if (scorePct < 85) scoreBand = '80–84%';
+                    else if (scorePct < 90) scoreBand = '85–89%';
+                    else scoreBand = '90%+';
+                }
+
+                this.records.push({
+                    ts: Date.now(),
+                    symbol: p.symbol,
+                    sourceSeq: Number(p.sourceSeq),
+                    actualSeq,
+                    sourceTickKey: p.sourceTickKey,
+                    actualTickKey: String(tickMeta?.key || ''),
+                    sourceTickEpoch: Number(p.sourceTickEpoch || 0),
+                    actualTickEpoch: Number(tickMeta?.epoch || 0),
+                    sourceTickQuote: String(p.sourceTickQuote || ''),
+                    actualTickQuote: String(tickMeta?.quote || ''),
+                    sourceDigit: Number(p.sourceDigit),
+                    predictedDigit: Number(p.predictedDigit),
+                    actualNextDigit: actual,
+                    sameAsCurrent: !!p.sameAsCurrent,
+                    actualRepeatedCurrent,
+                    hit,
+                    score: Number.isFinite(score) ? score : null,
+                    scoreBand,
+                    source: p.source
+                });
+                if (this.records.length > this.maxRecords) {
+                    this.records.splice(0, this.records.length - this.maxRecords);
+                }
+                this.pending = null;
+                this.save();
+                this.render();
+                return true;
+            },
+
+            stats(symbol = null) {
+                const sym = String(
+                    symbol ||
+                    document.getElementById('symbol')?.value ||
+                    window.currentSymbol ||
+                    window.tickFormat?.symbol ||
+                    'UNKNOWN'
+                );
+                const rows = this.load(sym);
+                const n = rows.length;
+                const same = rows.filter(r => r.sameAsCurrent);
+                const different = rows.filter(r => !r.sameAsCurrent);
+                const actualRepeats = rows.filter(r => r.actualRepeatedCurrent).length;
+                const hits = rows.filter(r => r.hit).length;
+                const sameHits = same.filter(r => r.hit).length;
+                const differentHits = different.filter(r => r.hit).length;
+
+                const bands = ['<70%','70–79%','80–84%','85–89%','90%+'].map(label => {
+                    const b = rows.filter(r => r.scoreBand === label);
+                    const bh = b.filter(r => r.hit).length;
+                    return { label, n: b.length, hits: bh, rate: b.length ? bh / b.length : null };
+                });
+
+                const sameRate = n ? same.length / n : null;
+                const actualRepeatRate = n ? actualRepeats / n : null;
+                const excessCopy = (sameRate != null && actualRepeatRate != null)
+                    ? sameRate - actualRepeatRate
+                    : null;
+
+                let biasLabel = 'WAITING';
+                if (n >= 30 && Number.isFinite(excessCopy)) {
+                    if (excessCopy >= 0.15) biasLabel = 'HIGH COPY BIAS';
+                    else if (excessCopy >= 0.05) biasLabel = 'ELEVATED';
+                    else biasLabel = 'LOW';
+                } else if (n > 0) {
+                    biasLabel = 'COLLECTING DATA';
+                }
+
+                return {
+                    version: this.version,
+                    symbol: sym,
+                    n,
+                    hits,
+                    hitRate: n ? hits / n : null,
+                    sameN: same.length,
+                    sameHits,
+                    sameRate,
+                    sameHitRate: same.length ? sameHits / same.length : null,
+                    differentN: different.length,
+                    differentHits,
+                    differentHitRate: different.length ? differentHits / different.length : null,
+                    actualRepeats,
+                    actualRepeatRate,
+                    excessCopy,
+                    biasLabel,
+                    duplicateDrops: Number(this.duplicateDrops || 0),
+                    invalidCanonicalDrops: Number(this.invalidCanonicalDrops || 0),
+                    uniqueSeq: Number(this.uniqueSeq || 0),
+                    bands,
+                    pending: this.pending && this.pending.symbol === sym ? this.pending : null
+                };
+            },
+
+            render() {
+                const panel = document.getElementById('current-tick-bias-panel');
+                if (!panel) return;
+                const st = this.stats();
+                const pct = v => Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(1)}%` : '—';
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set('ctba-sample', st.n
+                    ? `${st.n} canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`
+                    : `Collecting canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
+                set('ctba-ai-copy', `${st.sameN}/${st.n || 0} · ${pct(st.sameRate)}`);
+                set('ctba-natural-repeat', `${st.actualRepeats}/${st.n || 0} · ${pct(st.actualRepeatRate)}`);
+                set('ctba-copy-hit', `${st.sameHits}/${st.sameN || 0} · ${pct(st.sameHitRate)}`);
+                set('ctba-different-hit', `${st.differentHits}/${st.differentN || 0} · ${pct(st.differentHitRate)}`);
+                set('ctba-overall-hit', `${st.hits}/${st.n || 0} · ${pct(st.hitRate)}`);
+                set('ctba-bias-label', st.biasLabel);
+                set('ctba-excess-copy', Number.isFinite(st.excessCopy)
+                    ? `${st.excessCopy >= 0 ? '+' : ''}${(st.excessCopy * 100).toFixed(1)} pp vs natural repeat`
+                    : 'Need resolved forecasts');
+                set('ctba-duplicate-drops', `${st.duplicateDrops} exact duplicate canonical tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
+
+                const pending = st.pending;
+                set('ctba-pending', pending
+                    ? `Waiting for unique T+1 seq ${pending.validForSeq}: T=${pending.sourceDigit} · AI=${pending.predictedDigit}${pending.sameAsCurrent ? ' · SAME AS CURRENT' : ' · DIFFERENT'}${Number.isFinite(Number(pending.score)) ? ` · score ${(Number(pending.score)*100).toFixed(1)}%` : ''}`
+                    : 'Waiting for the next unique canonical live AI forecast');
+
+                const bandsEl = document.getElementById('ctba-score-bands');
+                if (bandsEl) {
+                    bandsEl.innerHTML = st.bands.map(b => `
+                        <div class="flex items-center justify-between gap-3 py-1 border-b border-slate-800/70 last:border-b-0">
+                            <span class="text-slate-400">${b.label}</span>
+                            <span class="font-black text-white">${b.hits}/${b.n} · ${pct(b.rate)}</span>
+                        </div>
+                    `).join('');
+                }
+            }
+        };
+
+        function downloadCurrentTickBiasAudit(format = 'json') {
+            const audit = window.currentTickBiasAudit;
+            if (!audit) {
+                alert('Current-tick bias audit is not available yet.');
+                return false;
+            }
+
+            const symbol = String(
+                document.getElementById('symbol')?.value ||
+                window.currentSymbol ||
+                window.tickFormat?.symbol ||
+                audit.symbol ||
+                'UNKNOWN'
+            );
+
+            const rows = [...(audit.load(symbol) || [])];
+            const summary = audit.stats(symbol);
+            const now = new Date();
+            const stamp = now.toISOString().replace(/[:.]/g, '-');
+            const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]+/g, '_');
+
+            const triggerDownload = (filename, content, mime) => {
+                const blob = new Blob([content], { type: mime });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1500);
+            };
+
+            if (String(format).toLowerCase() === 'csv') {
+                const headers = [
+                    'timestamp_iso','symbol','source_seq','actual_seq','source_tick_epoch','actual_tick_epoch','source_tick_quote','actual_tick_quote','source_digit_t','ai_prediction_t1',
+                    'actual_t1','ai_equals_current_t','actual_t1_repeats_t',
+                    'hit','ai_score','ai_score_pct','score_band','source','source_tick_key','actual_tick_key'
+                ];
+
+                const esc = (value) => {
+                    if (value === null || value === undefined) return '';
+                    const text = String(value);
+                    return /[",\n\r]/.test(text)
+                        ? `"${text.replace(/"/g, '""')}"`
+                        : text;
+                };
+
+                const lines = [headers.join(',')];
+                for (const r of rows) {
+                    const score = Number(r.score);
+                    lines.push([
+                        Number.isFinite(Number(r.ts)) ? new Date(Number(r.ts)).toISOString() : '',
+                        r.symbol,
+                        r.sourceSeq,
+                        r.actualSeq,
+                        r.sourceTickEpoch,
+                        r.actualTickEpoch,
+                        r.sourceTickQuote,
+                        r.actualTickQuote,
+                        r.sourceDigit,
+                        r.predictedDigit,
+                        r.actualNextDigit,
+                        r.sameAsCurrent ? 1 : 0,
+                        r.actualRepeatedCurrent ? 1 : 0,
+                        r.hit ? 1 : 0,
+                        Number.isFinite(score) ? score : '',
+                        Number.isFinite(score) ? (score * 100).toFixed(3) : '',
+                        r.scoreBand,
+                        r.source,
+                        r.sourceTickKey,
+                        r.actualTickKey
+                    ].map(esc).join(','));
+                }
+
+                triggerDownload(
+                    `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.csv`,
+                    lines.join('\n'),
+                    'text/csv;charset=utf-8'
+                );
+                return true;
+            }
+
+            const payload = {
+                schema: 'DIGITMATCHSTAR_CURRENT_TICK_BIAS_AUDIT_V2_CANONICAL',
+                exportedAt: now.toISOString(),
+                symbol,
+                interpretation: {
+                    targetHorizon: 'T+1: first unseen live tick after the forecast is frozen',
+                    sameAsCurrent: 'AI prediction for T+1 equals source/current digit T',
+                    naturalRepeat: 'actual T+1 equals source/current digit T',
+                    hit: 'AI prediction frozen at T equals actual unseen T+1',
+                    canonicalScoring: 'Only the next unique canonical Deriv tick may score a forecast; exact duplicate deliveries are rejected.',
+                    caution: 'AI score is an internal model score, not a calibrated probability.'
+                },
+                summary,
+                pending: audit.pending && audit.pending.symbol === symbol
+                    ? { ...audit.pending }
+                    : null,
+                records: rows
+            };
+
+            triggerDownload(
+                `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.json`,
+                JSON.stringify(payload, null, 2),
+                'application/json;charset=utf-8'
+            );
+            return true;
+        }
+
+        function toggleCurrentTickBiasPanel() {
+            const body = document.getElementById('current-tick-bias-body');
+            const btn = document.getElementById('current-tick-bias-min-btn');
+            if (!body) return;
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
+            }
+            savePanelMinimizedState('current-tick-bias', minimized);
+        }
+
+        function restoreCurrentTickBiasPanelState() {
+            const minimized = getPanelMinimizedState('current-tick-bias', false);
+            const body = document.getElementById('current-tick-bias-body');
+            const btn = document.getElementById('current-tick-bias-min-btn');
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
+            }
+        }
+
+        // ============================================================================
+        // CYCLE DEPTH — winning-cycle resolution distribution
+        // Uses completed cycle history for the currently selected symbol.
+        // ============================================================================
+        function cycleDepthQuantile(sortedDepths, q) {
+            if (!Array.isArray(sortedDepths) || !sortedDepths.length) return null;
+            const qq = Math.max(0, Math.min(1, Number(q)));
+            // Nearest-rank percentile: "90% resolved by Trade N" means at least
+            // 90% of observed winning cycles resolved on or before N.
+            const rank = Math.max(1, Math.ceil(qq * sortedDepths.length));
+            return Number(sortedDepths[rank - 1]);
+        }
+
+        window.CYCLE_DEPTH_SERVER = window.CYCLE_DEPTH_SERVER || {
+            sessionId: null, data: null, lastFetchAt: 0, pending: false, error: null
+        };
+
+        async function refreshCycleDepthFromServer(st = null, force = false) {
+            const cache = window.CYCLE_DEPTH_SERVER;
+            const sid = Number(st?.id ?? window.SERVER_EXECUTION?.state?.id ?? window.SERVER_EXECUTION?.sessionId ?? 0);
+            if (!Number.isInteger(sid) || sid <= 0) return false;
+
+            const now = Date.now();
+            const sameSession = Number(cache.sessionId || 0) === sid;
+            if (!force && cache.pending) return false;
+            if (!force && sameSession && cache.data && now - Number(cache.lastFetchAt || 0) < 3000) return false;
+
+            cache.pending = true;
+            cache.sessionId = sid;
+            cache.lastFetchAt = now;
+            try {
+                const data = await serverExecRequest(`/sessions/${sid}/cycle-depth`, { method: 'GET' });
+                cache.data = data && typeof data === 'object' ? data : null;
+                cache.error = null;
+                renderCycleDepthPanel();
+                return true;
+            } catch (err) {
+                cache.error = String(err?.message || err || 'Cycle depth fetch failed');
+                console.warn('Cycle depth server history fetch failed:', err);
+                renderCycleDepthPanel();
+                return false;
+            } finally {
+                cache.pending = false;
+            }
+        }
+
+        function getCycleDepthStats() {
+            const symbol = document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
+            const cache = window.CYCLE_DEPTH_SERVER || {};
+            const server = cache.data;
+            if (server && Number(server.session_id || 0) === Number(cache.sessionId || 0) && (!server.symbol || String(server.symbol) === String(symbol))) {
+                return {
+                    symbol: String(server.symbol || symbol),
+                    sample: Number(server.sample || 0),
+                    median: server.median == null ? null : Number(server.median),
+                    p90: server.p90 == null ? null : Number(server.p90),
+                    p95: server.p95 == null ? null : Number(server.p95),
+                    reached20Pct: server.reached20_pct == null ? null : Number(server.reached20_pct),
+                    reached20Count: Number(server.reached20_count || 0),
+                    worst: server.worst == null ? null : Number(server.worst),
+                    source: 'SERVER_SETTLED_HISTORY', loading: false, error: null
+                };
+            }
+            return {
+                symbol, sample: 0, median: null, p90: null, p95: null, reached20Pct: null,
+                reached20Count: 0, worst: null, source: 'SERVER_SETTLED_HISTORY',
+                loading: !!cache.pending, error: cache.error || null
+            };
+        }
+
+        function toggleCycleDepthPanel() {
+            const body = document.getElementById('cycle-depth-body');
+            const btn = document.getElementById('cycle-depth-min-btn');
+            if (!body) return;
+            const minimized = !body.classList.contains('hidden');
+            body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
+            }
+            savePanelMinimizedState('cycle-depth', minimized);
+        }
+
+        function restoreCycleDepthPanelState() {
+            const minimized = getPanelMinimizedState('cycle-depth', false);
+            const body = document.getElementById('cycle-depth-body');
+            const btn = document.getElementById('cycle-depth-min-btn');
+            if (body) body.classList.toggle('hidden', minimized);
+            if (btn) {
+                btn.textContent = minimized ? '+' : '−';
+                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
+            }
+        }
+
+        function renderCycleDepthPanel() {
+            const panel = document.getElementById('cycle-depth-panel');
+            if (!panel) return;
+            const stats = getCycleDepthStats();
+            const set = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+            const tradeLabel = value => Number.isFinite(Number(value)) ? `Trade ${Number(value)}` : '—';
+
+            set('cycle-depth-median', tradeLabel(stats.median));
+            set('cycle-depth-p90', tradeLabel(stats.p90));
+            set('cycle-depth-p95', tradeLabel(stats.p95));
+            set(
+                'cycle-depth-reached20',
+                stats.sample
+                    ? `${stats.reached20Pct.toFixed(1)}% (${stats.reached20Count}/${stats.sample})`
+                    : '—'
+            );
+            set('cycle-depth-worst', tradeLabel(stats.worst));
+            set(
+                'cycle-depth-sample',
+                stats.sample
+                    ? `${stats.sample} settled winning cycle${stats.sample === 1 ? '' : 's'} · ${stats.symbol} · SERVER`
+                    : stats.loading
+                        ? `Loading settled cycle history… · ${stats.symbol}`
+                        : stats.error
+                            ? `Server history unavailable · ${stats.symbol}`
+                            : `No settled winning cycles found · ${stats.symbol}`
+            );
+        }
+
+        function ensureRecycleRuntimePanel() {
+            if (document.getElementById('recycle-runtime-panel')) return;
+            const host = document.getElementById('trade-result-container');
+            if (!host) return;
+
+            const el = document.createElement('div');
+            el.id = 'recycle-runtime-panel';
+            el.className = 'mt-3 rounded-xl border border-cyan-500/30 bg-slate-950/70 p-3 text-xs';
+            el.innerHTML = `
+                <div class="mb-3">
+                    <div class="text-[10px] uppercase tracking-wider text-cyan-400 font-black">DIGIT SCORE 0–9</div>
+                    <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
+                </div>
+
+                <div id="final-target-card" class="mb-3 rounded-2xl border border-emerald-400/40 bg-gradient-to-br from-emerald-950/70 to-slate-950/80 p-4 shadow-lg">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div>
+                            <div class="text-[10px] uppercase tracking-[0.20em] text-emerald-300 font-black">FINAL MATCH TARGET</div>
+                            <div class="flex items-end gap-3 mt-1">
+                                <div id="final-match-target" class="text-5xl font-black text-white leading-none">—</div>
+                                <div>
+                                    <div id="final-target-status" class="text-xs font-black text-amber-300">WAITING</div>
+                                    <div id="final-target-source" class="text-[11px] font-bold text-slate-300">Source: —</div>
+                                </div>
+                            </div>
+                            <div id="final-target-help" class="mt-2 text-[10px] text-slate-400">This is the only digit to treat as the active DIGITMATCH target.</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 min-w-[280px]">
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AI</div>
+                                <div id="final-ai-digit" class="text-lg font-black text-white">—</div>
+                                <div id="final-ai-score" class="text-[9px] text-slate-400">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">V1 #1</div>
+                                <div id="final-v1-digit" class="text-lg font-black text-white">—</div>
+                                <div id="final-v1-margin" class="text-[9px] text-slate-400">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
+                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">ALIGNMENT</div>
+                                <div id="final-alignment" class="text-sm font-black text-slate-300">—</div>
+                                <div id="final-alignment-detail" class="text-[9px] text-slate-500">—</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <div class="rounded-lg border border-emerald-500/25 bg-emerald-950/30 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-emerald-300 font-black">GREEN AI ≥85%</div>
+                            <div id="perf-green-ai" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                        <div class="rounded-lg border border-cyan-500/25 bg-cyan-950/25 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-cyan-300 font-black">V1 NEXT-TICK</div>
+                            <div id="perf-v1" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                        <div class="rounded-lg border border-violet-500/25 bg-violet-950/25 px-3 py-2">
+                            <div class="text-[8px] uppercase tracking-wider text-violet-300 font-black">FINAL FUSION</div>
+                            <div id="perf-fusion" class="text-sm font-black text-white">0 / 0 matched</div>
+                        </div>
+                    </div>
+
+
+                    <div id="cycle-depth-panel" class="mt-3 rounded-xl border border-fuchsia-500/30 bg-fuchsia-950/20 px-3 py-3">
+                        <div class="flex items-center gap-2">
+                            <div>
+                                <div class="text-[9px] uppercase tracking-[0.18em] text-fuchsia-300 font-black">CYCLE DEPTH</div>
+                                <div id="cycle-depth-sample" class="text-[9px] text-slate-500">No completed winning cycles yet</div>
+                            </div>
+                            <button
+                                id="cycle-depth-min-btn"
+                                type="button"
+                                aria-controls="cycle-depth-body"
+                                aria-expanded="true"
+                                onclick="toggleCycleDepthPanel()"
+                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
+                                title="Minimize cycle depth"
+                            >−</button>
+                        </div>
+                        <div id="cycle-depth-body" class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2">
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Median win</div>
+                                <div id="cycle-depth-median" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">90% resolved by</div>
+                                <div id="cycle-depth-p90" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">95% resolved by</div>
+                                <div id="cycle-depth-p95" class="mt-1 text-sm font-black text-white">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Reached trade 20</div>
+                                <div id="cycle-depth-reached20" class="mt-1 text-sm font-black text-amber-300">—</div>
+                            </div>
+                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 col-span-2 md:col-span-1">
+                                <div class="text-[8px] uppercase text-slate-500 font-bold">Worst observed</div>
+                                <div id="cycle-depth-worst" class="mt-1 text-sm font-black text-rose-300">—</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="current-tick-bias-panel" class="mt-3 rounded-xl border border-amber-500/30 bg-amber-950/15 px-3 py-3">
+                        <div class="flex items-center gap-2">
+                            <div>
+                                <div class="text-[9px] uppercase tracking-[0.18em] text-amber-300 font-black">AI CURRENT-TICK BIAS AUDIT</div>
+                                <div id="ctba-sample" class="text-[9px] text-slate-500">Collecting strictly forward T→T+1 forecasts</div>
+                            </div>
+                            <button
+                                id="current-tick-bias-min-btn"
+                                type="button"
+                                aria-controls="current-tick-bias-body"
+                                aria-expanded="true"
+                                onclick="toggleCurrentTickBiasPanel()"
+                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
+                                title="Minimize current-tick bias audit"
+                            >−</button>
+                        </div>
+                        <div id="current-tick-bias-body" class="mt-3">
+                            <div id="ctba-pending" class="mb-2 rounded-lg border border-amber-500/20 bg-slate-950/60 px-2 py-2 text-[10px] font-bold text-amber-200">Waiting for the next live AI forecast</div>
+                            <div id="ctba-duplicate-drops" class="mb-2 text-[9px] font-bold text-slate-500">0 exact duplicate canonical ticks rejected</div>
+                            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">AI = current T</div>
+                                    <div id="ctba-ai-copy" class="mt-1 text-sm font-black text-white">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Actual T+1 repeats T</div>
+                                    <div id="ctba-natural-repeat" class="mt-1 text-sm font-black text-white">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI = T</div>
+                                    <div id="ctba-copy-hit" class="mt-1 text-sm font-black text-emerald-300">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI ≠ T</div>
+                                    <div id="ctba-different-hit" class="mt-1 text-sm font-black text-cyan-300">0/0 · —</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
+                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Overall AI T+1</div>
+                                    <div id="ctba-overall-hit" class="mt-1 text-sm font-black text-violet-300">0/0 · —</div>
+                                </div>
+                            </div>
+                            <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                <div class="rounded-lg border border-amber-500/20 bg-slate-900/60 p-2">
+                                    <div class="text-[8px] uppercase text-amber-300 font-black">Copy-bias diagnostic</div>
+                                    <div id="ctba-bias-label" class="mt-1 text-sm font-black text-white">WAITING</div>
+                                    <div id="ctba-excess-copy" class="text-[9px] text-slate-400">Need resolved forecasts</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                                    <div class="text-[8px] uppercase text-slate-400 font-black">T+1 hit rate by AI score band</div>
+                                    <div id="ctba-score-bands" class="mt-1 text-[9px]">—</div>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button type="button" onclick="downloadCurrentTickBiasAudit('json')" class="text-[10px] font-black rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-2 text-amber-200" title="Export summary plus every resolved T→T+1 observation as JSON">⬇ EXPORT JSON</button>
+                                <button type="button" onclick="downloadCurrentTickBiasAudit('csv')" class="text-[10px] font-black rounded-lg border border-cyan-400/30 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-2 text-cyan-200" title="Export every resolved T→T+1 observation as CSV">⬇ EXPORT CSV</button>
+                            </div>
+                            <div class="mt-2 text-[9px] text-slate-500">Strict rule: a forecast created after unique canonical tick T is scored only by the immediately following unique canonical tick T+1. Exact duplicate deliveries are rejected before scoring. “Copy bias” is descriptive, not proof of causal leakage.</div>
+                        </div>
+                    </div>
+                </div>
+
+                                <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
+                    <div class="grid grid-cols-3 md:grid-cols-6 divide-x divide-slate-700/50">
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Purchased</div>
+                            <div id="recycle-current-target" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Decision</div>
+                            <div id="recycle-decision-digit" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Next V1</div>
+                            <div id="recycle-attempt" class="mt-0.5 text-base font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Trade</div>
+                            <div id="recycle-trade" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Stake</div>
+                            <div id="recycle-stake" class="mt-0.5 text-sm font-black text-white leading-none">$0.00</div>
+                        </div>
+                        <div class="px-2 py-1 text-center">
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Margin</div>
+                            <div id="recycle-margin-gate" class="mt-0.5 text-sm font-black text-white leading-none">—</div>
+                        </div>
+                    </div>
+                </div>
+<div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
+                <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
+                    FINAL MATCH TARGET is authoritative. A purchased target is the actual Deriv barrier; otherwise the card shows the prepared AI+V1 fused target for the next BUY.
+                </div>
+            `;
+            host.appendChild(el);
+            restoreCycleDepthPanelState();
+            renderCycleDepthPanel();
+            restoreCurrentTickBiasPanelState();
+            window.currentTickBiasAudit?.render?.();
+        }
+
+        function renderRecycleRuntimePanel(st) {
+            ensureRecycleRuntimePanel();
+            renderCycleDepthPanel();
+            window.currentTickBiasAudit?.render?.();
+            try { refreshCycleDepthFromServer(st).catch(() => {}); } catch (_) {}
+
+            const score = st?.digit_score || null;
+            const currentTrade = Number(st?.current_trade || 0);
+            const maxTrades = Number(st?.max_trades || 0);
+            const attempt = currentTrade > 0 ? (((currentTrade - 1) % 3) + 1) : 0;
+
+            const targetEl = document.getElementById('recycle-current-target');
+            const attemptEl = document.getElementById('recycle-attempt');
+            const decisionEl = document.getElementById('recycle-decision-digit');
+            const tradeEl = document.getElementById('recycle-trade');
+            const stakeEl = document.getElementById('recycle-stake');
+            const marginGateEl = document.getElementById('recycle-margin-gate');
+            const stateEl = document.getElementById('score-engine-state');
+            const rankingEl = document.getElementById('digit-score-ranking');
+
+            // Never coerce null/undefined to digit 0. In JavaScript,
+            // Number(null) === 0, which previously rendered a missing target
+            // as both "null" and "0" in this panel.
+            const execution = score?.execution_contract || null;
+            const rawPurchasedTarget = execution?.target_digit;
+            const purchasedTarget = (
+                rawPurchasedTarget !== null &&
+                rawPurchasedTarget !== undefined &&
+                rawPurchasedTarget !== '' &&
+                Number.isInteger(Number(rawPurchasedTarget))
+            ) ? Number(rawPurchasedTarget) : null;
+
+            const rawDecisionDigit = execution?.decision_digit;
+            const decisionDigit = (
+                rawDecisionDigit !== null &&
+                rawDecisionDigit !== undefined &&
+                rawDecisionDigit !== '' &&
+                Number.isInteger(Number(rawDecisionDigit))
+            ) ? Number(rawDecisionDigit) : null;
+
+            const rankingTopDigit = (
+                Array.isArray(score?.ranking) &&
+                score.ranking.length &&
+                score.ranking[0]?.digit !== null &&
+                score.ranking[0]?.digit !== undefined &&
+                Number.isInteger(Number(score.ranking[0].digit))
+            ) ? Number(score.ranking[0].digit) : null;
+
+            const rawLiveNext = (
+                st?.live_next_target !== null &&
+                st?.live_next_target !== undefined &&
+                st?.live_next_target !== ''
+            ) ? st.live_next_target : rankingTopDigit;
+
+            const liveNextTarget = (
+                rawLiveNext !== null &&
+                rawLiveNext !== undefined &&
+                rawLiveNext !== '' &&
+                Number.isInteger(Number(rawLiveNext))
+            ) ? Number(rawLiveNext) : rankingTopDigit;
+
+            // FINAL MATCH TARGET: when a contract is open, the purchased barrier
+            // is authoritative and immutable. Otherwise show the prepared fused
+            // target for the next BUY. Never ask the user to infer between AI/V1.
+            const fusion = st?.fusion || score?.fusion || null;
+            const purchasedFusion = execution?.fusion || null;
+            const hasOpenContract = !!st?.open_contract_id && purchasedTarget !== null;
+            const preparedFusionDigit = (
+                fusion?.final_digit !== null &&
+                fusion?.final_digit !== undefined &&
+                Number.isInteger(Number(fusion.final_digit))
+            ) ? Number(fusion.final_digit) : null;
+            const finalTarget = hasOpenContract ? purchasedTarget : preparedFusionDigit;
+            const finalSource = hasOpenContract
+                ? String(execution?.selector_source || purchasedFusion?.source || 'PURCHASED')
+                : String(fusion?.source || 'WAITING');
+
+            const finalTargetEl = document.getElementById('final-match-target');
+            const finalStatusEl = document.getElementById('final-target-status');
+            const finalSourceEl = document.getElementById('final-target-source');
+            const finalHelpEl = document.getElementById('final-target-help');
+            const finalAiDigitEl = document.getElementById('final-ai-digit');
+            const finalAiScoreEl = document.getElementById('final-ai-score');
+            const finalV1DigitEl = document.getElementById('final-v1-digit');
+            const finalV1MarginEl = document.getElementById('final-v1-margin');
+            const finalAlignmentEl = document.getElementById('final-alignment');
+            const finalAlignmentDetailEl = document.getElementById('final-alignment-detail');
+
+            const displayFusion = hasOpenContract ? (purchasedFusion || fusion || {}) : (fusion || {});
+            const aiDigitRaw = displayFusion?.ai_digit;
+            const aiDigit = (aiDigitRaw !== null && aiDigitRaw !== undefined && Number.isInteger(Number(aiDigitRaw)))
+                ? Number(aiDigitRaw) : null;
+            const aiScore = Number(displayFusion?.ai_score);
+            const v1DigitRaw = displayFusion?.v1_digit;
+            const v1Digit = (v1DigitRaw !== null && v1DigitRaw !== undefined && Number.isInteger(Number(v1DigitRaw)))
+                ? Number(v1DigitRaw) : rankingTopDigit;
+            const v1Margin = Number(displayFusion?.v1_top_margin ?? score?.top_margin);
+            const tickAligned = displayFusion?.tick_aligned === true;
+            const mismatchReason = String(displayFusion?.tick_mismatch_reason || '');
+
+            if (finalTargetEl) {
+                finalTargetEl.textContent = finalTarget !== null ? String(finalTarget) : '—';
+                finalTargetEl.className = finalTarget !== null
+                    ? 'text-5xl font-black text-emerald-300 leading-none'
+                    : 'text-5xl font-black text-slate-500 leading-none';
+            }
+            if (finalStatusEl) {
+                finalStatusEl.textContent = hasOpenContract
+                    ? 'PURCHASED · MATCH THIS DIGIT'
+                    : (preparedFusionDigit !== null ? 'PREPARED FOR NEXT BUY' : 'WAITING · NO BUY TARGET');
+                finalStatusEl.className = hasOpenContract
+                    ? 'text-xs font-black text-emerald-300'
+                    : (preparedFusionDigit !== null
+                        ? 'text-xs font-black text-cyan-300'
+                        : 'text-xs font-black text-amber-300');
+            }
+            if (finalSourceEl) {
+                const greenPrimary = finalSource === 'GREEN_AI_PRIMARY';
+                finalSourceEl.textContent = greenPrimary
+                    ? 'Source: GREEN AI PRIMARY'
+                    : `Source: ${finalSource}`;
+                finalSourceEl.className = greenPrimary
+                    ? 'text-xs font-black text-emerald-300'
+                    : 'text-xs font-bold text-slate-300';
+            }
+            if (finalHelpEl) {
+                const greenPrimary = finalSource === 'GREEN_AI_PRIMARY';
+                finalHelpEl.textContent = hasOpenContract
+                    ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
+                    : (preparedFusionDigit !== null
+                        ? (greenPrimary
+                            ? `Digit ${preparedFusionDigit} is the T+1 target from a server-canonical GREEN AI signal and has execution priority over a disagreeing V1 target.`
+                            : `Digit ${preparedFusionDigit} is the server-selected T+1 fused target waiting for the next purchase opportunity.`)
+                        : 'No executable fused target yet; the server should not buy until a target qualifies.');
+            }
+            if (finalAiDigitEl) {
+                finalAiDigitEl.textContent = aiDigit !== null ? String(aiDigit) : '—';
+                finalAiDigitEl.className = Number.isFinite(aiScore) && aiScore >= 0.85
+                    ? 'text-lg font-black text-emerald-300'
+                    : 'text-lg font-black text-white';
+            }
+            if (finalAiScoreEl) finalAiScoreEl.textContent = Number.isFinite(aiScore)
+                ? `${(aiScore * 100).toFixed(1)}%${aiScore >= 0.85 ? ' · GREEN' : ''}`
+                : '—';
+            if (finalV1DigitEl) finalV1DigitEl.textContent = v1Digit !== null ? String(v1Digit) : '—';
+            if (finalV1MarginEl) finalV1MarginEl.textContent = Number.isFinite(v1Margin)
+                ? `margin ${v1Margin.toFixed(2)}` : '—';
+            if (finalAlignmentEl) {
+                finalAlignmentEl.textContent = tickAligned ? 'CANONICAL ✓' : 'WAITING';
+                finalAlignmentEl.className = tickAligned
+                    ? 'text-sm font-black text-emerald-300'
+                    : 'text-sm font-black text-amber-300';
+            }
+            if (finalAlignmentDetailEl) {
+                finalAlignmentDetailEl.textContent = tickAligned
+                    ? `server seq ${displayFusion?.ai_bound_source_seq ?? displayFusion?.expected_tick?.rank_seq ?? '—'}`
+                    : (mismatchReason || displayFusion?.ai_binding_status || 'waiting');
+            }
+
+            const perf = st?.prediction_performance || score?.prediction_performance || {};
+            const perfText = (matches, total, rate) => {
+                const m = Number(matches || 0), t = Number(total || 0), r = Number(rate);
+                return `${m} / ${t} matched${t > 0 && Number.isFinite(r) ? ` · ${(r * 100).toFixed(1)}%` : ''}`;
+            };
+            const greenPerfEl = document.getElementById('perf-green-ai');
+            const v1PerfEl = document.getElementById('perf-v1');
+            const fusionPerfEl = document.getElementById('perf-fusion');
+            if (greenPerfEl) greenPerfEl.textContent = perfText(perf.green_ai_matches, perf.green_ai_total, perf.green_ai_rate);
+            if (v1PerfEl) v1PerfEl.textContent = perfText(perf.v1_matches, perf.v1_total, perf.v1_rate);
+            if (fusionPerfEl) fusionPerfEl.textContent = perfText(perf.fusion_matches, perf.fusion_total, perf.fusion_rate);
+
+            if (targetEl) {
+                targetEl.textContent = purchasedTarget !== null
+                    ? String(purchasedTarget)
+                    : '—';
+            }
+            if (decisionEl) {
+                const mode = String(execution?.decision_mode || '');
+                decisionEl.textContent = decisionDigit !== null
+                    ? String(decisionDigit)
+                    : (mode === 'OFFICIAL_ONLY_INFLIGHT_TICK' ? 'OFFICIAL' : '—');
+                decisionEl.title = mode || '';
+            }
+            if (attemptEl) {
+                attemptEl.textContent = liveNextTarget !== null
+                    ? String(liveNextTarget)
+                    : '—';
+            }
+            if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
+            if (stakeEl) stakeEl.textContent = `$${Number(st?.current_stake || 0).toFixed(2)}`;
+
+            const liveMargin = Number(score?.top_margin);
+            const minimumMargin = Number(score?.minimum_v1_margin ?? getConfiguredMinimumV1Margin());
+            const marginReady = (
+                Number.isFinite(liveMargin) &&
+                Number.isFinite(minimumMargin) &&
+                liveMargin >= minimumMargin
+            );
+
+            if (marginGateEl) {
+                marginGateEl.textContent = Number.isFinite(liveMargin)
+                    ? `${liveMargin.toFixed(2)} / ${minimumMargin.toFixed(2)} ${marginReady ? 'READY' : 'WAIT'}`
+                    : `— / ${minimumMargin.toFixed(2)}`;
+                marginGateEl.title = Number.isFinite(minimumMargin)
+                    ? `Minimum required margin: ${minimumMargin.toFixed(2)}`
+                    : '';
+                marginGateEl.className = marginReady
+                    ? 'mt-0.5 text-sm font-black text-green-400 leading-none'
+                    : 'mt-0.5 text-sm font-black text-amber-300 leading-none';
+            }
+
+            if (!score?.ready || !Array.isArray(score.ranking) || !score.ranking.length) {
+                if (stateEl) {
+                    const have = Number(score?.history_count || 0);
+                    const need = Number(score?.minimum_history || 10);
+                    stateEl.textContent = `Warming history ${have}/${need}`;
+                }
+                if (rankingEl) rankingEl.innerHTML = '';
+                return;
+            }
+
+            const ranked = [...score.ranking].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+
+            // V1 #1 is always the actual first ranked digit.
+            // Never use Number(score.selected_digit): Number(null) becomes 0
+            // and previously manufactured a fake V1 target.
+            const topRow = ranked[0] || null;
+            const selected = (
+                topRow &&
+                topRow.digit !== null &&
+                topRow.digit !== undefined &&
+                Number.isInteger(Number(topRow.digit))
+            ) ? Number(topRow.digit) : null;
+
+            const selectedRow = topRow;
+            const activeTarget = purchasedTarget;
+            const shadow = score?.shadow || {};
+            const shadowSelected = Number(shadow?.selected_digit);
+            const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
+            const shadowRow = shadowRows.find(row => Number(row.digit) === shadowSelected) || shadowRows[0] || null;
+
+            if (stateEl) {
+                const margin = Number(score.top_margin);
+                const marginText = Number.isFinite(margin)
+                    ? ` · V1 margin ${margin.toFixed(3)}`
+                    : '';
+
+                // The browser market stream and Render strategy stream are
+                // separate Deriv WebSockets. Only label them synchronized when
+                // the exact epoch + canonical formatted quote match.
+                const canonicalTick = score?.canonical_tick || {};
+                const serverEpoch = Number(
+                    canonicalTick?.epoch ?? score?.rank_epoch ?? 0
+                );
+                const serverQuote = String(
+                    canonicalTick?.formatted_quote ?? ''
+                );
+                const serverDigitRaw = canonicalTick?.digit;
+                const serverDigit = (
+                    serverDigitRaw !== null &&
+                    serverDigitRaw !== undefined &&
+                    Number.isInteger(Number(serverDigitRaw))
+                ) ? Number(serverDigitRaw) : null;
+                const rankSeq = Number(
+                    score?.rank_seq ?? canonicalTick?.seq ?? 0
+                );
+
+                const browserEpoch = Number(
+                    window.lastTick?.raw?.epoch ?? 0
+                );
+                const browserQuote = String(
+                    window.lastTick?.formattedPrice ?? ''
+                );
+
+                const syncKnown = (
+                    serverEpoch > 0 &&
+                    browserEpoch > 0 &&
+                    serverQuote.length > 0 &&
+                    browserQuote.length > 0
+                );
+                const exactSync = (
+                    syncKnown &&
+                    serverEpoch === browserEpoch &&
+                    serverQuote === browserQuote
+                );
+
+                const syncText = exactSync
+                    ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC ✓`
+                    : syncKnown
+                        ? ` · SERVER D${serverDigit ?? '—'} S${rankSeq || '—'} · SYNC WAIT`
+                        : ` · SERVER D${serverDigit ?? '—'} · SYNC —`;
+
+                const executionMode = String(
+                    execution?.decision_mode || ''
+                );
+                const decisionText = decisionDigit !== null
+                    ? String(decisionDigit)
+                    : (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK'
+                        ? 'OFFICIAL'
+                        : '—');
+
+                // Keep the main trading panel intentionally simple.
+                // Detailed SERVER/SYNC/margin diagnostics are not needed here;
+                // the cards below are the authoritative execution view.
+                if (executionMode === 'OFFICIAL_ONLY_INFLIGHT_TICK') {
+                    stateEl.textContent = 'Deriv settlement confirming alignment';
+                } else if (selected !== null && Number.isFinite(liveMargin)) {
+                    stateEl.textContent =
+                        `V1 ${selected} · margin ${liveMargin.toFixed(2)} · ` +
+                        `${marginReady ? 'READY' : 'WAIT'}`;
+                } else if (selected !== null) {
+                    stateEl.textContent = `V1 ${selected} · waiting for margin`;
+                } else {
+                    stateEl.textContent = 'Waiting for V1 ranking';
+                }
+            }
+
+            if (rankingEl) {
+                rankingEl.innerHTML = ranked.map((row, idx) => {
+                    const digit = Number(row.digit);
+                    const isSelected = digit === selected;
+                    const isExcluded = Number(score.excluded_digit) === digit;
+                    const cls = isSelected
+                        ? 'border-cyan-400 bg-cyan-500/20 text-white'
+                        : isExcluded
+                            ? 'border-rose-500/30 bg-rose-950/20 text-rose-300'
+                            : 'border-slate-700 bg-slate-900/70 text-gray-300';
+
+                    return `
+                        <div class="rounded-lg border ${cls} p-1.5 text-center">
+                            <div class="text-base font-black">${digit}</div>
+                            <div class="text-[9px]">${Number(row.score || 0).toFixed(2)}</div>
+                            <div class="text-[8px] opacity-70">V1 rank #${idx + 1}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        // Telegram settlement-safe publisher.
+        // FAST_WON is used for immediate sound/strategy stop only.
+        // A Telegram WIN is sent only after the exact winning contract has
+        // an authoritative Deriv settlement in st.last_settlement.
+        window.__dmsPendingTelegramWins = window.__dmsPendingTelegramWins || new Map();
+        window.__dmsPublishedSettlementWins = window.__dmsPublishedSettlementWins || new Set();
+
+        function publishFastWinToTelegram(st) {
+            try {
+                const phase = String(st?.phase || '').toUpperCase();
+                const contractId = st?.open_contract_id ? String(st.open_contract_id) : '';
+                const tradeNo = Number(st?.current_trade || 1);
+
+                // 1) Capture the winning contract immediately at FAST_WON,
+                // but DO NOT publish yet because its profit is not settled.
+                if (phase === 'FAST_WON' && contractId) {
+                    if (!window.__dmsPendingTelegramWins.has(contractId)) {
+                        window.__dmsPendingTelegramWins.set(contractId, {
+                            contractId,
+                            sessionId: Number(st?.id || 0),
+                            symbol: st?.symbol || document.getElementById('symbol')?.value || 'R_10',
+                            digit: Number(st?.candidate_digit),
+                            tradeNo,
+                            stakeAtWin: Number(st?.current_stake || 0),
+                            capturedAt: Date.now()
+                        });
+                    }
+                    return;
+                }
+
+                // 2) Wait for the server to expose the authoritative settlement
+                // generated from Deriv proposal_open_contract.
+                const settlement = st?.last_settlement || null;
+                const settledContractId = settlement?.contract_id
+                    ? String(settlement.contract_id)
+                    : '';
+
+                if (!settledContractId) return;
+                if (String(settlement?.result || '').toUpperCase() !== 'WIN') return;
+                if (window.__dmsPublishedSettlementWins.has(settledContractId)) return;
+
+                let pending = window.__dmsPendingTelegramWins.get(settledContractId);
+                if (!pending) {
+                    // A 1-tick WIN can settle between browser polls. Recover the
+                    // notification from authoritative terminal settlement state.
+                    const terminalWin =
+                        (phase === 'FAST_WON' || phase === 'WON') &&
+                        settlement?.cycle_pnl_authoritative === true;
+
+                    if (!terminalWin) {
+                        return;
+                    }
+
+                    pending = {
+                        contractId: settledContractId,
+                        sessionId: Number(st?.id || 0),
+                        symbol: st?.symbol || document.getElementById('symbol')?.value || 'R_10',
+                        digit: Number(settlement?.digit ?? st?.candidate_digit),
+                        tradeNo: Number(settlement?.trade_no ?? st?.current_trade ?? 1),
+                        stakeAtWin: Number(
+                            settlement?.stake ??
+                            settlement?.buy_price ??
+                            st?.current_stake ??
+                            0
+                        ),
+                        capturedAt: Date.now()
+                    };
+
+                    window.__dmsPendingTelegramWins.set(
+                        settledContractId,
+                        pending
+                    );
+                }
+
+                const winningProfit = Number(settlement?.profit);
+                if (!Number.isFinite(winningProfit) || winningProfit <= 0) {
+                    return;
+                }
+
+                // Telegram now waits for the WHOLE CYCLE, not merely the final
+                // winning contract. Earlier losses may still be settling in the
+                // background when FAST_WON occurs.
+                const cyclePnlAuthoritative =
+                    settlement?.cycle_pnl_authoritative === true;
+                const actualCyclePnl = Number(settlement?.cycle_pnl);
+
+                if (
+                    !cyclePnlAuthoritative ||
+                    !Number.isFinite(actualCyclePnl)
+                ) {
+                    // Keep pending entry. A later settlement refresh will expose
+                    // the exact summed Deriv P/L for trades 1..winning trade.
+                    return;
+                }
+
+                const stake = Number(
+                    settlement?.stake ??
+                    settlement?.buy_price ??
+                    pending.stakeAtWin ??
+                    0
+                );
+                const payout = Number(
+                    settlement?.payout ??
+                    (Math.max(stake, 0) + winningProfit)
+                );
+                const cycleTotalStake = Number(
+                    settlement?.cycle_total_stake ?? stake
+                );
+                const cycleTradeCount = Number(
+                    settlement?.cycle_trade_count ??
+                    settlement?.trade_no ??
+                    pending.tradeNo
+                );
+
+                // Safe to publish only now: exact contract WIN + exact whole-cycle
+                // Deriv P/L are both authoritative.
+                window.__dmsPublishedSettlementWins.add(settledContractId);
+                window.__dmsPendingTelegramWins.delete(settledContractId);
+
+                window.matchstarPublisher?.publishCycle?.({
+                    id: `settled-win-${settledContractId}`,
+                    symbol: pending.symbol,
+                    digit: Number(settlement?.digit ?? pending.digit),
+                    startedAt: pending.capturedAt,
+                    endedAt: Date.now(),
+                    status: 'WIN',
+                    finalReason: 'Official Deriv cycle settlement confirmed',
+                    winningTradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
+                    totalInvestment: Number.isFinite(cycleTotalStake)
+                        ? Math.max(cycleTotalStake, 0)
+                        : Math.max(stake, 0.01),
+                    totalPayout: 0,
+                    netPnL: actualCyclePnl,
+                    cyclePnlAuthoritative: true,
+                    maxStake: Math.max(stake, 0.01),
+                    settlementConfirmed: true,
+                    settlementContractId: settledContractId,
+                    trades: [{
+                        tradeNumber: Number(settlement?.trade_no ?? pending.tradeNo),
+                        digit: Number(settlement?.digit ?? pending.digit),
+                        stake: Math.max(stake, 0.01),
+                        result: 'WIN',
+                        finalDigit: Number(settlement?.digit ?? pending.digit),
+                        payout: Math.max(payout, stake + winningProfit),
+                        profit: winningProfit,
+                        contractId: settledContractId,
+                        settled: true
+                    }],
+                    cycleTradeCount
+                });
+            } catch (err) {
+                console.warn('Settlement-confirmed Telegram WIN publish failed:', err);
+            }
+        }
+
+
+        function syncServerTerminalLifecycle(st) {
+            try {
+                if (!window.SERVER_EXECUTION?.enabled || !st) return;
+
+                const phase = String(st.phase || '').toUpperCase();
+                const demoMode = String(st.account_mode || '').toUpperCase() === 'DEMO';
+                const autoContinue = !!window.SERVER_EXECUTION.continuousResearch && demoMode;
+
+                // A win is terminal at FAST_WON. Wait until the authoritative
+                // settlement has cleared open_contract_id before either
+                // restarting or resetting the local START/STOP control.
+                if (phase === 'FAST_WON' || phase === 'WON') {
+                    if (st.open_contract_id) return;
+
+                    if (autoContinue) {
+                        maybeScheduleContinuousServerResearch();
+                        return;
+                    }
+
+                    // Server has already stopped buying. Mirror that state in
+                    // the browser so the button becomes START BOT again.
+                    if (window.isBotRunning === true) {
+                        stopBot('Confirmed DIGITMATCH win');
+                    }
+                    return;
+                }
+
+                // A tail/max-trade stop is always terminal. Do not silently
+                // restart another cycle after hitting the user's loss cap.
+                if (phase === 'MAX_TRADES_REACHED') {
+                    if (window.SERVER_EXECUTION) {
+                        window.SERVER_EXECUTION.continuousRestartPending = false;
+                        if (window.SERVER_EXECUTION.continuousRestartTimer) {
+                            clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
+                            window.SERVER_EXECUTION.continuousRestartTimer = null;
+                        }
+                    }
+
+                    if (window.isBotRunning === true) {
+                        stopBot('Maximum trades reached');
+                    }
+                    return;
+                }
+
+                // Any server-side hard stop should also release the stale STOP
+                // button in the browser.
+                if (
+                    ['STOPPED', 'BUY_UNCERTAIN_STOPPED', 'BUY_CLAIM_LOST',
+                     'BUY_SEQUENCE_MISMATCH', 'RECONCILE_MISMATCH'].includes(phase)
+                    && !st.running
+                    && !st.open_contract_id
+                    && window.isBotRunning === true
+                ) {
+                    stopBot(st.last_error || phase);
+                }
+
+            } catch (err) {
+                console.warn('Server terminal lifecycle sync failed:', err);
+            }
+        }
+
+
+        function isTop4ExecutionOwner() {
+            return false;
+        }
+
+        function renderServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            const st = s.state || {};
+
+            // SERVER-AUTHORITATIVE START/STOP BUTTON.
+            // While START is in-flight, st can still be the previous completed
+            // cycle. Do not let that stale running=false cancel the handshake.
+            if (
+                s.enabled &&
+                s.startPending !== true &&
+                typeof st.running === 'boolean'
+            ) {
+                const serverRunning = st.running === true;
+                if (window.isBotRunning !== serverRunning) {
+                    window.isBotRunning = serverRunning;
+                    try { updateButtonState(); } catch (_) {}
+                }
+            }
+
+            try { renderRecycleRuntimePanel(st); } catch (_) {}
+            try { publishFastWinToTelegram(st); } catch (_) {}
+            try {
+                if (String(st?.last_settlement?.result || '').toUpperCase() === 'WIN' && st?.last_settlement?.settled_at) {
+                    const settleKey = String(st.last_settlement.contract_id || st.last_settlement.settled_at);
+                    if (window.__cycleDepthLastWinRefresh !== settleKey) {
+                        window.__cycleDepthLastWinRefresh = settleKey;
+                        refreshCycleDepthFromServer(st, true).catch(() => {});
+                    }
+                }
+            } catch (_) {}
+
+            // V1.6 deterministic server audio.
+            // Compare the newly received server state with the previous state;
+            // this avoids depending on seeing every short-lived polling phase.
+            try {
+                const phase = String(st.phase || '').toUpperCase();
+                const tradeNo = Number(st.current_trade || 0);
+                const contractId = st.open_contract_id ? String(st.open_contract_id) : '';
+                const pnl = Number(st.pnl || 0);
+                const settlement = st.last_settlement || null;
+                const settlementId = settlement?.contract_id
+                    ? String(settlement.contract_id)
+                    : '';
+                const settlementResult = String(
+                    settlement?.result || ''
+                ).toUpperCase();
+
+                const prev = window.__dmsPrevServerAudioState || {
+                    phase: '',
+                    tradeNo: 0,
+                    contractId: '',
+                    settlementId: '',
+                    pnl: 0
+                };
+
+                if (
+                    contractId &&
+                    (
+                        contractId !== prev.contractId ||
+                        tradeNo > prev.tradeNo
+                    )
+                ) {
+                    playAudioFeedback('EXECUTION');
+                }
+
+                let outcomePlayed = false;
+                if (settlementId && settlementId !== prev.settlementId) {
+                    if (settlementResult === 'WIN') {
+                        playAudioFeedback('WIN');
+                        outcomePlayed = true;
+                    } else if (settlementResult === 'LOSS') {
+                        playAudioFeedback('LOSS');
+                        outcomePlayed = true;
+                    }
+                }
+
+                if (
+                    !outcomePlayed &&
+                    (phase === 'WON' || phase === 'FAST_WON') &&
+                    !['WON','FAST_WON'].includes(prev.phase)
+                ) {
+                    playAudioFeedback('WIN');
+                } else if (
+                    !outcomePlayed &&
+                    phase === 'RECOVERING' &&
+                    (
+                        prev.phase !== 'RECOVERING' ||
+                        tradeNo > prev.tradeNo
+                    )
+                ) {
+                    playAudioFeedback('LOSS');
+                } else if (
+                    !outcomePlayed &&
+                    phase === 'MAX_TRADES_REACHED' &&
+                    prev.phase !== 'MAX_TRADES_REACHED'
+                ) {
+                    playAudioFeedback('LOSS');
+                } else if (phase === 'ERROR' && prev.phase !== 'ERROR') {
+                    playAudioFeedback('ERROR');
+                }
+
+                window.__dmsPrevServerAudioState = {
+                    phase,
+                    tradeNo,
+                    contractId,
+                    settlementId,
+                    pnl
+                };
+            } catch (_) {}
+            const badge = serverExecEl('serverExecBadge');
+            const toggle = serverExecEl('serverExecToggleBtn');
+            const continuousBtn = serverExecEl('serverContinuousResearchBtn');
+            if (serverExecEl('serverExecBackend')) serverExecEl('serverExecBackend').textContent = s.apiUrl || 'not set';
+            if (serverExecEl('serverExecMode')) {
+                serverExecEl('serverExecMode').textContent = s.enabled
+                    ? `SERVER · ${(st.account_mode || sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
+                    : 'BROWSER';
+            }
+            if (serverExecEl('serverExecPhase')) {
+                const phaseEl = serverExecEl('serverExecPhase');
+                const rr = s.top4RealRecovery || null;
+                const recoveryActive =
+                    rr &&
+                    Number(rr.rounds_completed || 0) > 0 &&
+                    rr.won !== true &&
+                    rr.final_loss !== true;
+
+                phaseEl.textContent = recoveryActive
+                    ? `TOP4_REAL_RECOVERY_R${Number(rr.next_round || 1)}`
+                    : (st.phase || '—');
+            }
+
+            const errorCard = serverExecEl('serverExecErrorCard');
+            const errorEl = serverExecEl('serverExecError');
+            const workerError = String(st.last_error || '').trim();
+
+            if (errorEl) errorEl.textContent = workerError || '—';
+            if (errorCard) errorCard.classList.toggle('hidden', !workerError);
+
+            // Trade Status card is rendered from the complete server phase below.
+
+            if (serverExecEl('serverExecContract')) serverExecEl('serverExecContract').textContent = st.open_contract_id || '—';
+            if (serverExecEl('serverExecTrade')) {
+                serverExecEl('serverExecTrade').textContent =
+                    Number.isFinite(Number(st.current_trade)) ? `${st.current_trade}/${st.max_trades ?? '—'}` : '—';
+            }
+            if (serverExecEl('serverExecPnl')) {
+                const pnl = Number(st.pnl || 0);
+                const el = serverExecEl('serverExecPnl');
+
+                el.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+
+                const won = String(st.phase || '').toUpperCase() === 'WON';
+                if (won || pnl > 0) {
+                    el.style.color = '#4ade80';
+                    el.style.fontWeight = '900';
+                } else if (pnl < 0) {
+                    el.style.color = '#f87171';
+                    el.style.fontWeight = '900';
+                } else {
+                    el.style.color = '#e2e8f0';
+                    el.style.fontWeight = '900';
+                }
+            }
+
+            // Secure OAuth server mode has no raw Deriv token in the browser,
+            // so the old browser balance subscription cannot run. Use the
+            // server-maintained account balance instead.
+            const serverBalance = Number(st.account_balance);
+            if (Number.isFinite(serverBalance)) {
+                window.currentBalance = serverBalance;
+                if (!Number.isFinite(Number(window.startingBalance)) || Number(window.startingBalance) <= 0) {
+                    window.startingBalance = serverBalance - Number(st.pnl || 0);
+                }
+                const balanceElem = document.getElementById('metricAccountBalance');
+                if (balanceElem) {
+                    balanceElem.textContent = `$${serverBalance.toFixed(2)}`;
+                    balanceElem.className = 'text-lg font-bold balance-green';
+                }
+            }
+
+            if (badge) {
+                if (!s.apiUrl) {
+                    badge.textContent = 'NOT CONFIGURED';
+                    badge.className = 'edge-pill text-yellow-300';
+                } else if (s.enabled && st.running) {
+                    badge.textContent = 'SERVER ACTIVE';
+                    badge.className = 'edge-pill text-emerald-300';
+                } else if (s.enabled) {
+                    badge.textContent = 'SERVER READY';
+                    badge.className = 'edge-pill text-cyan-300';
+                } else {
+                    badge.textContent = 'BROWSER MODE';
+                    badge.className = 'edge-pill text-gray-300';
+                }
+            }
+
+            if (toggle) {
+                toggle.textContent = s.enabled ? 'Use Browser' : 'Use Server';
+                toggle.className = s.enabled
+                    ? 'server-exec-btn bg-rose-700 hover:bg-rose-600'
+                    : 'server-exec-btn bg-sky-700 hover:bg-sky-600';
+            }
+
+            if (continuousBtn) {
+                const demoMode = String(
+                    st.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase() === 'DEMO';
+
+                continuousBtn.textContent =
+                    `Auto Continue After Win: ${s.continuousResearch && demoMode ? 'ON' : 'OFF'}`;
+
+                continuousBtn.disabled = !demoMode;
+                continuousBtn.className = s.continuousResearch && demoMode
+                    ? 'server-exec-btn bg-emerald-700 hover:bg-emerald-600'
+                    : 'server-exec-btn bg-slate-700 hover:bg-slate-600';
+            }
+
+
+            if (s.enabled && st) {
+                const tc = document.getElementById('metricTradeCount');
+                const stake = document.getElementById('metricCurrentStake');
+                const pnl = document.getElementById('metricTotalProfit');
+                if (tc && Number.isFinite(Number(st.current_trade))) tc.textContent = String(st.current_trade);
+                if (stake && Number.isFinite(Number(st.current_stake))) stake.textContent = `$${Number(st.current_stake).toFixed(2)}`;
+                if (pnl && Number.isFinite(Number(st.pnl))) {
+                    const serverPnl = Number(st.pnl);
+                    pnl.textContent = `${serverPnl >= 0 ? '+' : ''}$${serverPnl.toFixed(2)}`;
+
+                    // Research display requirement:
+                    // red while the cycle has not yet produced a positive win,
+                    // bold green once the cycle is net-positive / WON.
+                    const won = String(st.phase || '').toUpperCase() === 'WON';
+                    const positive = serverPnl > 0;
+
+                    if (won || positive) {
+                        pnl.className = 'text-lg font-black text-green-400';
+                    } else {
+                        pnl.className = 'text-lg font-black text-red-400';
+                    }
+                }
+            }
+            renderServerTradeNarrative(st);
+            if (
+                st?.last_settlement?.settled_at &&
+                Date.now() - Number(
+                    window.DMS_BALANCE_REFRESH?.lastRefreshAt || 0
+                ) > 1500
+            ) {
+                refreshLiveDerivBalances({ silent: true });
+            }
+
+            try { syncServerTerminalLifecycle(st); } catch (_) {}
+        }
+
+        async function serverExecRequest(path, options = {}) {
+            const s = window.SERVER_EXECUTION;
+            if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
+            const jwt = getPlatformJwt();
+            if (!jwt) {
+                sessionStorage.removeItem('bot_authenticated');
+                localStorage.removeItem('bot_authenticated');
+                throw new Error('DigitMatchStar session expired. Reconnect through Deriv.');
+            }
+            const res = await fetch(`${s.apiUrl}${path}`, {
+                method: options.method || 'GET',
+                headers: {
+                    'Content-Type':'application/json',
+                    'Authorization': `Bearer ${jwt}`,
+                    ...(options.headers || {})
+                },
+                body: options.body === undefined ? undefined : JSON.stringify(options.body),
+                cache: 'no-store'
+            });
+            let data = null;
+            try { data = await res.json(); } catch (_) {}
+            if (res.status === 401) {
+                sessionStorage.removeItem('dms_platform_jwt');
+                sessionStorage.removeItem('bot_authenticated');
+                localStorage.removeItem('dms_platform_jwt');
+                localStorage.removeItem('bot_authenticated');
+            }
+            if (!res.ok) {
+                throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
+            }
+            return data;
+        }
+
+        // ------------------------------------------------------------------
+        // AI FUSION V1 — browser intelligence -> server execution evidence
+        // ------------------------------------------------------------------
+        async function publishAISignalToServer(best) {
+  const s = window.SERVER_EXECUTION;
+  if (!s?.enabled || !s.sessionId || !best) return false;
+  if (s.aiSignalPending) return false;
+
+  const digit = Number(best.digit);
+  const score = Number(best.score);
+  if (!Number.isInteger(digit) || digit < 0 || digit > 9) return false;
+  if (!Number.isFinite(score)) return false;
+
+  const now = Date.now();
+  if (now - Number(s.lastAiSignalSentAt || 0) < 120) return false;
+
+  const survival = best.survival || null;
+  const dna = best.digitDNA || null;
+  const features = best.digitFeatures || null;
+  const auditor = best.auditor || null;
+
+  const n = (value) => {
+      const x = Number(value);
+      return Number.isFinite(x) ? x : null;
+  };
+
+  const lastTick = window.lastTick || null;
+  const tickEpoch = n(
+      lastTick?.raw?.epoch ??
+      lastTick?.epoch ??
+      lastTick?.tick?.epoch ??
+      window.lastTickEpoch
+  );
+  const tickQuote = String(
+      lastTick?.formattedPrice ??
+      lastTick?.formatted_quote ??
+      lastTick?.tick?.formatted_quote ??
+      ''
+  );
+  const tickDigit = (() => {
+      if (!tickQuote) return null;
+      const match = tickQuote.match(/(\d)(?!.*\d)/);
+      return match ? Number(match[1]) : null;
+  })();
+
+  // Exact cross-stream tick identity is mandatory for AI execution.
+  // Browser/server websocket sequence numbers are process-local, so fusion
+  // binds by canonical epoch + formatted quote + last digit instead.
+  if (!(tickEpoch > 0) || !tickQuote || !Number.isInteger(tickDigit)) {
+      return false;
+  }
+
+  const payload = {
+      digit,
+      score,
+      source: String(best.source || 'AI'),
+      symbol: String(
+          document.getElementById('symbol')?.value ||
+          window.currentSymbol ||
+          ''
+      ),
+      pm5: n(survival?.pm5 ?? best.pm5),
+      pm10: n(survival?.pm10 ?? best.pm10),
+      s20: n(survival?.s20 ?? best.s20),
+      etm: n(survival?.etm ?? best.etm),
+      dna: n(dna?.topSimilarity),
+      features: n(features?.signalStrength),
+      auditor: n(auditor?.signalStrength),
+      source_tick_epoch: tickEpoch,
+      source_tick_quote: tickQuote,
+      source_tick_digit: tickDigit,
+      client_ts_ms: now
+  };
+
+  s.aiSignalPending = true;
+  s.lastAiSignalSentAt = now;
+
+  try {
+      const result = await serverExecRequest(
+          `/sessions/${s.sessionId}/ai-signal`,
+          { method: 'POST', body: payload }
+      );
+      s.lastAiSignalDigit = digit;
+      return !!result?.ok;
+  } catch (error) {
+      console.warn('AI fusion signal sync failed:', error);
+      return false;
+  } finally {
+      s.aiSignalPending = false;
+  }
+        }
+function toggleServerContinuousResearch() {
+            const s = window.SERVER_EXECUTION;
+            const mode = String(
+                s.state?.account_mode ||
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            if (mode !== 'DEMO') {
+                alert('Auto Continue is available only for DEMO accounts.');
+                return;
+            }
+
+            s.continuousResearch = !s.continuousResearch;
+
+            sessionStorage.setItem(
+                'dms_server_continuous_research',
+                s.continuousResearch ? '1' : '0'
+            );
+            try {
+                localStorage.setItem(
+                    'dms_server_continuous_research',
+                    s.continuousResearch ? '1' : '0'
+                );
+            } catch (_) {}
+
+            if (!s.continuousResearch) {
+                s.continuousRestartPending = false;
+                s.continuousRestartAttempts = 0;
+                if (s.continuousRestartTimer) {
+                    clearTimeout(s.continuousRestartTimer);
+                    s.continuousRestartTimer = null;
+                }
+            }
+
+            renderServerExecutionState();
+
+            log(
+                `🔁 Auto Continue After Win ${s.continuousResearch ? 'ON' : 'OFF'}`,
+                'SYSTEM'
+            );
+        }
+
+        function freshDigitForContinuousServerCycle() {
+            if (sessionState.mode === 'ai') {
+                clearSessionDigitLock('Continuous server research cycle');
+                sessionState.manualOverride = false;
+                sessionState.sessionStarted = false;
+                sessionState.sessionDigit = null;
+
+                if (
+                    window.digitIntelligenceEngine?.warmupDone &&
+                    window.digitIntelligenceEngine?.currentRecommendation
+                ) {
+                    const digit = Number(
+                        window.digitIntelligenceEngine.currentRecommendation.digit
+                    );
+
+                    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+                        const input = document.getElementById('predictedDigit');
+                        if (input) input.value = String(digit);
+
+                        lockSessionDigit(
+                            digit,
+                            true,
+                            'Continuous DEMO research'
+                        );
+
+                        return digit;
+                    }
+                }
+
+                return null;
+            }
+
+            const digit = Number(
+                document.getElementById('predictedDigit')?.value
+            );
+
+            if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+                sessionState.sessionDigit = digit;
+                sessionState.sessionStarted = true;
+                sessionState.manualOverride = true;
+                return digit;
+            }
+
+            return null;
+        }
+
+        async function stopCompletedServerCycleForResearch() {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.sessionId) return;
+
+            try {
+                const state = s.state || {};
+                if (state.running || state.open_contract_id) return;
+
+                await serverExecRequest(`/sessions/${s.sessionId}/stop`, {
+                    method: 'POST'
+                });
+            } catch (err) {
+                // Terminal WON / MAX_TRADES states can already be stopped;
+                // a redundant STOP failure should not prevent the next cycle.
+                console.warn('Auto Continue stop-cycle warning:', err);
+            }
+        }
+
+        async function restartContinuousServerResearchCycle(triggerPhase) {
+            const s = window.SERVER_EXECUTION;
+
+            if (
+                !s.enabled ||
+                !s.continuousResearch ||
+                s.continuousRestartPending ||
+                window.__dmsManualStopRequested === true ||
+                window.isBotRunning !== true
+            ) {
+                return;
+            }
+
+            const state = s.state || {};
+            const mode = String(state.account_mode || '').toUpperCase();
+
+            if (mode !== 'DEMO') return;
+            if (state.running || state.open_contract_id) return;
+
+            const terminalPhase = String(
+                triggerPhase || state.phase || ''
+            ).toUpperCase();
+
+            if (!['WON', 'FAST_WON'].includes(terminalPhase)) {
+                return;
+            }
+
+            s.continuousRestartPending = true;
+            s.continuousRestartAttempts += 1;
+
+            try {
+                updateTradeStatus(
+                    'WIN ✅',
+                    `Cycle won · preparing next DEMO cycle`,
+                    'Waiting for final settlement, then starting a fresh cycle…',
+                    'win'
+                );
+
+                // User requirement: the bot should STOP the completed cycle
+                // and then START a completely fresh cycle.
+                await stopCompletedServerCycleForResearch();
+
+                // Clear the completed server session identity locally so the
+                // next start is treated as a fresh cycle by the browser layer.
+                s.sessionId = null;
+                s.state = null;
+                s.lastCandidateSent = null;
+
+                sessionStorage.removeItem('dms_server_session_id');
+                try {
+                    localStorage.removeItem('dms_server_session_id');
+                } catch (_) {}
+
+                // Give AI a short moment to update after the terminal tick.
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                let digit = freshDigitForContinuousServerCycle();
+
+                if (!Number.isInteger(digit)) {
+                    // Do not silently stop research just because AI is between
+                    // recommendations. Retry for a short period.
+                    if (s.continuousRestartAttempts < 10) {
+                        s.continuousRestartPending = false;
+                        s.continuousRestartTimer = setTimeout(() => {
+                            s.continuousRestartTimer = null;
+                            restartContinuousServerResearchCycle(terminalPhase);
+                        }, 1000);
+                        return;
+                    }
+
+                    throw new Error(
+                        'AI did not provide a valid candidate digit for the next research cycle.'
+                    );
+                }
+
+                updateTradeStatus(
+                    'RESTARTING ⚡',
+                    `Fresh DEMO cycle · AI digit ${digit}`,
+                    'Freezing research candidate and starting trade 1…',
+                    'normal'
+                );
+
+                log(
+                    `🔁 Auto Continue · ${terminalPhase} → STOP → fresh START · digit ${digit}`,
+                    'SYSTEM'
+                );
+
+                await startServerExecutionSession();
+
+                s.lastAutoRestartPhase = terminalPhase;
+                s.continuousRestartAttempts = 0;
+
+                updateTradeStatus(
+                    'TRADING ⚡',
+                    `Fresh server research cycle started · digit ${digit}`,
+                    'Waiting for trade 1 proposal…',
+                    'trade'
+                );
+
+            } catch (err) {
+                s.continuousRestartAttempts = 0;
+
+                log(
+                    `❌ Auto Continue restart failed: ${err.message}`,
+                    'ERROR'
+                );
+
+                updateTradeStatus(
+                    'SERVER ERROR',
+                    'Auto Continue restart failed',
+                    err.message,
+                    'loss'
+                );
+
+            } finally {
+                s.continuousRestartPending = false;
+            }
+        }
+
+        function maybeScheduleContinuousServerResearch() {
+            const s = window.SERVER_EXECUTION;
+            const st = s.state || {};
+
+            if (
+                !s.enabled ||
+                !s.continuousResearch ||
+                s.continuousRestartPending ||
+                window.__dmsManualStopRequested === true ||
+                window.isBotRunning !== true ||
+                String(st.account_mode || '').toUpperCase() !== 'DEMO' ||
+                st.running ||
+                st.open_contract_id
+            ) {
+                return;
+            }
+
+            const phase = String(st.phase || '').toUpperCase();
+
+            if (!['WON', 'FAST_WON'].includes(phase)) {
+                return;
+            }
+
+            if (s.continuousRestartTimer) return;
+
+            // Let settlement + SAFE-TICK outcome/rendering complete, then
+            // perform an explicit STOP -> fresh START lifecycle.
+            s.continuousRestartTimer = setTimeout(async () => {
+                s.continuousRestartTimer = null;
+                await restartContinuousServerResearchCycle(phase);
+            }, 1200);
+        }
+
+        function currentResearchTargetDigit() {
+            // SCORE AUTO research follows the current AI recommendation directly.
+            // Do not depend on stale sessionState.mode flags.
+            const aiDigit = Number(
+                window.digitIntelligenceEngine
+                    ?.currentRecommendation
+                    ?.digit
+            );
+
+            if (
+                Number.isInteger(aiDigit) &&
+                aiDigit >= 0 &&
+                aiDigit <= 9
+            ) {
+                return aiDigit;
+            }
+
+            const fallback = Number(
+                sessionState?.sessionDigit ??
+                document.getElementById('predictedDigit')?.value
+            );
+
+            return (
+                Number.isInteger(fallback) &&
+                fallback >= 0 &&
+                fallback <= 9
+            ) ? fallback : null;
+        }
+
+        async function ensureServerResearchSession() {
+            const s = window.SERVER_EXECUTION;
+
+            const selectedMode = String(
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            // Background research-session bootstrap is DEMO-only. Never create
+            // a DEMO session behind the user's back while REAL is selected.
+            if (selectedMode !== 'DEMO') {
+                return;
+            }
+
+            if (
+                !s?.enabled ||
+                !s.apiUrl ||
+                s.sessionId ||
+                s.researchSessionCreatePending
+            ) {
+                return;
+            }
+
+            const digit = currentResearchTargetDigit();
+            if (!Number.isInteger(digit)) return;
+
+            s.researchSessionCreatePending = true;
+
+            try {
+                const cfg = serverSessionConfigFromUi();
+                const accounts = await serverExecRequest('/auth/platform/me');
+                const account = (accounts.accounts || []).find(
+                    a => String(a.account_type || '').toLowerCase() === 'demo'
+                );
+
+                if (!account) return;
+
+                const created = await serverExecRequest('/sessions', {
+                    method: 'POST',
+                    body: {
+                        account_id: account.account_id,
+                        symbol: cfg.symbol,
+                        base_stake: cfg.base_stake,
+                        multiplier: cfg.multiplier,
+                        max_trades: cfg.max_trades
+                    }
+                });
+
+                s.sessionId = Number(created.id);
+                await syncServerMarginGate(true);
+                sessionStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+                try {
+                    localStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                } catch (_) {}
+
+                if (!created.reconcile_required) {
+                    await serverExecRequest(
+                        `/sessions/${s.sessionId}/candidate`,
+                        {
+                            method: 'POST',
+                            body: { digit }
+                        }
+                    );
+                    s.lastCandidateSent = digit;
+                }
+
+                // IMPORTANT: do NOT call /start here.
+                // This creates a research session only. The server TAE tick
+                // collector learns while Trade 0 remains idle.
+                log(
+                    `🧠 TAE research session ready · target ${digit} · no trade started`,
+                    'SYSTEM'
+                );
+
+            } catch (error) {
+                console.warn(
+                    'TAE research-session bootstrap failed:',
+                    error
+                );
+            } finally {
+                s.researchSessionCreatePending = false;
+            }
+        }
+
+        async function syncServerResearchCandidate() {
+            const s = window.SERVER_EXECUTION;
+            const st = s?.state || null;
+
+            if (
+                !s?.enabled ||
+                !s.sessionId ||
+                !st ||
+                String(st.account_mode || '').toUpperCase() !== 'DEMO' ||
+                st.open_contract_id ||
+                Number(st.current_trade || 0) > 0 ||
+                s.taeCandidateSyncPending
+            ) {
+                return;
+            }
+
+            const digit = currentResearchTargetDigit();
+            if (!Number.isInteger(digit)) return;
+
+            // Avoid hammering the API. A changed target syncs immediately;
+            // unchanged targets need no repeated POST.
+            if (
+                Number(st.candidate_digit) === digit &&
+                Number(s.lastCandidateSent) === digit
+            ) {
+                return;
+            }
+
+            const now = Date.now();
+            if (now - Number(s.lastTaeCandidateSyncAt || 0) < 750) {
+                return;
+            }
+
+            s.lastTaeCandidateSyncAt = now;
+            s.taeCandidateSyncPending = true;
+
+            try {
+                const result = await serverExecRequest(
+                    `/sessions/${s.sessionId}/candidate`,
+                    {
+                        method: 'POST',
+                        body: { digit }
+                    }
+                );
+
+                if (!result?.reconcile_required) {
+                    s.lastCandidateSent = digit;
+                    if (s.state) s.state.candidate_digit = digit;
+                }
+
+            } catch (error) {
+                console.warn('TAE target sync failed:', error);
+            } finally {
+                s.taeCandidateSyncPending = false;
+            }
+        }
+
+
+        async function pollServerExecutionState() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+
+            try {
+                const rows = await serverExecRequest('/sessions');
+
+                const selectedMode = String(
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                const modeRow = (rows || []).find(
+                    x => String(x.account_mode || '').toUpperCase() === selectedMode
+                ) || null;
+
+                const idRow = s.sessionId
+                    ? (rows || []).find(
+                        x => Number(x.id) === Number(s.sessionId)
+                    ) || null
+                    : null;
+
+                // Prefer the stored id only when it belongs to the currently
+                // selected DEMO/REAL mode. Otherwise adopt the correct-mode row.
+                s.state = (
+                    idRow &&
+                    String(idRow.account_mode || '').toUpperCase() === selectedMode
+                )
+                    ? idRow
+                    : (modeRow || null);
+
+                if (
+                    s.state &&
+                    Number(s.sessionId || 0) !== Number(s.state.id || 0)
+                ) {
+                    s.sessionId = Number(s.state.id);
+                    sessionStorage.setItem('dms_server_session_id', String(s.sessionId));
+                    try {
+                        localStorage.setItem('dms_server_session_id', String(s.sessionId));
+                    } catch (_) {}
+                }
+
+                // Adopt an already-persisted backend session after browser
+                // reload rather than waiting for START BOT.
+                if (!s.sessionId && s.state?.id) {
+                    s.sessionId = Number(s.state.id);
+                    sessionStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                    try {
+                        localStorage.setItem(
+                            'dms_server_session_id',
+                            String(s.sessionId)
+                        );
+                    } catch (_) {}
+                }
+
+                if (!s.state) {
+                    
+                } else {
+                    
+                }
+
+                if (s.state && s.sessionId) {
+                    syncServerMarginGate(false).catch(() => {});
+                }
+
+                renderServerExecutionState();
+} catch (e) {
+                const badge = serverExecEl('serverExecBadge');
+                if (badge) {
+                    badge.textContent = 'SERVER OFFLINE';
+                    badge.className = 'edge-pill text-rose-300';
+                }
+            }
+        }
+
+
+        function ensureServerExecutionPolling() {
+            const s = window.SERVER_EXECUTION;
+
+            if (s.pollTimer) clearInterval(s.pollTimer);
+s.pollTimer = setInterval(
+                pollServerExecutionState,
+                750
+            );
+pollServerExecutionState();
+}
+
+        function configureServerExecutionUrl() {
+            const current = window.SERVER_EXECUTION.apiUrl || '';
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-api.onrender.com');
+            if (raw === null) return;
+            const value = String(raw).trim().replace(/\/+$/,'');
+            window.SERVER_EXECUTION.apiUrl = value;
+            sessionStorage.setItem('dms_server_execution_url', value);
+            try { localStorage.setItem('dms_server_execution_url', value); } catch (_) {}
+            renderServerExecutionState();
+            if (window.SERVER_EXECUTION.enabled) ensureServerExecutionPolling();
+        }
+
+        async function toggleServerExecutionMode() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled && !s.apiUrl) {
+                configureServerExecutionUrl();
+                if (!s.apiUrl) return;
+            }
+
+            if (window.isBotRunning || s.state?.running || s.state?.open_contract_id) {
+                alert('Stop the current session and let any open contract settle before changing execution engine.');
+                return;
+            }
+
+            if (s.enabled && !getStoredDerivToken()) {
+                alert('Browser trading mode requires a raw Deriv token and is disabled for secure OAuth users. Keep SERVER mode enabled.');
+                return;
+            }
+            s.enabled = !s.enabled;
+            sessionStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
+            try { localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0'); } catch (_) {}
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+            log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
+        }
+
+        function getConfiguredMinimumV1Margin() {
+            const input = document.getElementById('minV1Margin');
+            const stored = localStorage.getItem('dms_min_v1_margin');
+            const raw = input?.value ?? stored ?? '3.0';
+            const value = Number(raw);
+            return Number.isFinite(value)
+                ? Math.max(0, Math.min(50, value))
+                : 3.0;
+        }
+
+        function serverSessionConfigFromUi() {
+            const mode = (sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase();
+            return {
+                requested_mode: mode,
+                symbol: document.getElementById('symbol')?.value || 'R_10',
+                base_stake: Number(document.getElementById('baseStake')?.value || 1),
+                multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
+                max_trades: Number(document.getElementById('maxTrades')?.value || 10),
+                minimum_v1_margin: getConfiguredMinimumV1Margin()
+            };
+        }
+
+        async function syncServerMarginGate(force = false) {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.enabled || !s.sessionId || s.marginSyncPending) return null;
+
+            const desired = getConfiguredMinimumV1Margin();
+            const serverValue = Number(
+                s.state?.digit_score?.minimum_v1_margin
+            );
+
+            if (
+                !force &&
+                Number.isFinite(serverValue) &&
+                Math.abs(serverValue - desired) < 0.0001
+            ) {
+                return null;
+            }
+
+            const now = Date.now();
+            if (!force && now - Number(s.lastMarginSyncAt || 0) < 1200) {
+                return null;
+            }
+
+            s.marginSyncPending = true;
+            s.lastMarginSyncAt = now;
+
+            try {
+                const result = await serverExecRequest(
+                    `/sessions/${s.sessionId}/margin-gate`,
+                    {
+                        method: 'POST',
+                        body: { minimum_margin: desired }
+                    }
+                );
+
+                if (s.state?.digit_score) {
+                    s.state.digit_score.minimum_v1_margin =
+                        Number(result.minimum_v1_margin);
+                    s.state.digit_score.margin_eligible =
+                        Boolean(result.margin_eligible);
+                    s.state.digit_score.margin_status =
+                        result.margin_status || null;
+                }
+                return result;
+            } finally {
+                s.marginSyncPending = false;
+            }
+        }
+
+        async function startServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+
+            if (!s.enabled) return false;
+            if (!s.apiUrl) {
+                throw new Error(
+                    'Configure the server execution backend URL first.'
+                );
+            }
+
+            const cfg = serverSessionConfigFromUi();
+            const digit = Number(
+                sessionState.sessionDigit ??
+                document.getElementById('predictedDigit')?.value
+            );
+
+            if (
+                !Number.isInteger(digit) ||
+                digit < 0 ||
+                digit > 9
+            ) {
+                throw new Error(
+                    'A valid digit 0–9 is required before starting server execution.'
+                );
+            }
+
+            const accounts = await serverExecRequest(
+                '/auth/platform/me'
+            );
+
+            const wanted = String(
+                cfg.requested_mode || 'DEMO'
+            ).toLowerCase();
+
+            const account = (accounts.accounts || []).find(
+                a => String(
+                    a.account_type || ''
+                ).toLowerCase() === wanted
+            );
+
+            if (!account) {
+                throw new Error(
+                    `No ${cfg.requested_mode} Deriv Options account is connected.`
+                );
+            }
+
+            if (wanted === 'real') {
+                // The selected account mode is part of the server session
+                // configuration. START begins the shared execution loop for
+                // either DEMO or REAL; the server connection is account-bound.
+                sessionStorage.setItem('selectedAccountMode', 'REAL');
+                localStorage.setItem('selectedAccountMode', 'REAL');
+                
+           }
+
+            // FIRST inspect existing server sessions.
+            // V34 may already have created a Trade-0 research session.
+            const existingRows = await serverExecRequest('/sessions');
+
+            let existing = null;
+
+            if (s.sessionId) {
+                existing = (existingRows || []).find(
+                    row =>
+                        Number(row.id) === Number(s.sessionId) &&
+                        String(row.account_id) === String(account.account_id) &&
+                        String(row.account_mode || '').toLowerCase() === wanted
+                ) || null;
+            }
+
+            if (!existing) {
+                existing = (existingRows || []).find(
+                    row =>
+                        String(row.account_id) === String(account.account_id) &&
+                        String(row.account_mode || '').toLowerCase() === wanted
+                ) || null;
+            }
+
+            // If the worker is already running, START is a no-op.
+            // This covers:
+            //   - repeated START clicks
+            //   - browser reload while server worker remains active
+            //   - TAE warming/scoring that was already started
+            if (existing?.running) {
+                s.sessionId = Number(existing.id);
+                s.state = existing;
+
+                sessionStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+                try {
+                    localStorage.setItem(
+                        'dms_server_session_id',
+                        String(s.sessionId)
+                    );
+                } catch (_) {}
+
+                // A candidate may still be updated while Trade 0 has no open
+                // contract. Never change it mid-cycle.
+                if (
+                    !existing.open_contract_id &&
+                    Number(existing.current_trade || 0) === 0 &&
+                    Number(existing.candidate_digit) !== digit
+                ) {
+                    const candidateResult = await serverExecRequest(
+                        `/sessions/${s.sessionId}/candidate`,
+                        {
+                            method: 'POST',
+                            body: { digit }
+                        }
+                    );
+
+                    if (!candidateResult?.reconcile_required) {
+                        s.lastCandidateSent = digit;
+                    }
+                }
+
+                await syncServerMarginGate(true);
+                await pollServerExecutionState();
+                renderServerExecutionState();
+                ensureServerExecutionPolling();
+
+                log(
+                    `☁ SERVER ALREADY ACTIVE · ${existing.account_mode} · ` +
+                    `${existing.symbol} · phase ${existing.phase}`,
+                    'SYSTEM'
+                );
+
+                return true;
+            }
+
+            // Session exists but is idle: reconfigure it from current UI.
+            // No session exists: create it. Backend handles both using the
+            // same account-scoped POST /sessions endpoint.
+            const created = await serverExecRequest('/sessions', {
+                method: 'POST',
+                body: {
+                    account_id: account.account_id,
+                    symbol: cfg.symbol,
+                    base_stake: cfg.base_stake,
+                    multiplier: cfg.multiplier,
+                    max_trades: cfg.max_trades
+                }
+            });
+
+            s.sessionId = Number(created.id);
+                await syncServerMarginGate(true);
+
+            sessionStorage.setItem(
+                'dms_server_session_id',
+                String(s.sessionId)
+            );
+            try {
+                localStorage.setItem(
+                    'dms_server_session_id',
+                    String(s.sessionId)
+                );
+            } catch (_) {}
+
+            // Browser-side research capture for a genuinely new/reconfigured
+            // cycle only. Do not create another candidate while reconciling.
+            if (!created.reconcile_required && window.lastTick) {
+
+                try {
+                    window.CandidateTickDNAV3?.captureCandidate?.(
+                        window.lastTick
+                    );
+                } catch (err) {
+                    console.warn(
+                        'Candidate Tick DNA server-mode capture failed:',
+                        err
+                    );
+                }
+            }
+
+            if (!created.reconcile_required) {
+                const candidateResult = await serverExecRequest(
+                    `/sessions/${s.sessionId}/candidate`,
+                    {
+                        method: 'POST',
+                        body: { digit }
+                    }
+                );
+
+                if (!candidateResult?.reconcile_required) {
+                    s.lastCandidateSent = digit;
+                }
+            }
+
+            // Idempotent backend START:
+            // calling it on an already-started worker returns success rather
+            // than "Session is already running".
+            const started = await serverExecRequest(
+                `/sessions/${s.sessionId}/start`,
+                { method: 'POST' }
+            );
+
+            await pollServerExecutionState();
+            renderServerExecutionState();
+            ensureServerExecutionPolling();
+
+            log(
+                started?.already_running
+                    ? `☁ SERVER ALREADY ACTIVE · ${created.account_mode} · ${cfg.symbol}`
+                    : `☁ SERVER STARTED · ${created.account_mode} · ${cfg.symbol} · digit ${digit}`,
+                'SYSTEM'
+            );
+
+            return true;
+        }
+
+
+        async function stopServerExecutionSession() {
+            const s = window.SERVER_EXECUTION;
+            if (!s.enabled || !s.apiUrl) return;
+            if (!s.sessionId) return; await serverExecRequest(`/sessions/${s.sessionId}/stop`, {method:'POST'}); await pollServerExecutionState();
+            renderServerExecutionState();
+            log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
+        }
+
+
+        // Single-target server execution only.
+
+
+        // In SERVER mode, the browser must never submit proposals/buys.
+
+        // EXECUTE TRADE - CRITICAL FUNCTION
+        function executeTrade(tick) {
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Browser trade submission suppressed — server owns execution.', 'SYSTEM');
+                return;
+            }
+            const contractType = document.getElementById('contractType').value;
+            const symbol = document.getElementById('symbol').value;
+            const predictedDigit = parseInt(document.getElementById('predictedDigit').value);
+            
+            let stake = window.currentStake;
+            
+            const proposalRequest = {
+                proposal: 1,
+                amount: Number(stake.toFixed(2)),
+                basis: "stake",
+                contract_type: contractType,
+                currency: "USD",
+                duration: 1,
+                duration_unit: "t",
+                underlying_symbol: symbol,
+                barrier: predictedDigit.toString(),
+                req_id: getNextReqId()
+            };
+            
+            const modelSnapshot = getFrozenNextTickSnapshot(
+                symbol,
+                predictedDigit
+            );
+
+            window.pendingProposals.set(proposalRequest.req_id, {
+                tick: tick,
+                stake: stake,
+                contractType: contractType,
+                predictedDigit: predictedDigit,
+                startTime: Date.now(),
+                tradeNumber: window.tradeCount + 1,
+                martingaleStep: window.martingaleStep,
+                symbol,
+                executionMode: sessionState.mode,
+                modelSnapshot,
+                recoverySourceContractId:
+                    window.cycleHasPurchasedContract
+                        ? Number(window.recoverySubmissionState?.sourceContractId || 0) || null
+                        : null
+            });
+            
+            const sentReqId = sendRequest(proposalRequest);
+            if (sentReqId === null) {
+                window.pendingProposals.delete(proposalRequest.req_id);
+                rollbackUnsentTrade(stake);
+                log('⏳ Proposal not sent — trading socket unavailable', 'ERROR');
+            }
+        }
+        
+        // CHECK FOR IMMEDIATE WIN - CRITICAL FUNCTION
+        function checkForImmediateWin(tick) {
+            return false;
+        }
+
+        // UPDATE STAKE - CRITICAL FUNCTION
+        function updateStake(winOrLoss) {
+            window.baseStake = parseFloat(document.getElementById('baseStake').value) || 1.0;
+            window.multiplier = parseFloat(document.getElementById('multiplier').value) || 1.15;
+            window.maxTrades = getUserMaxTrades();
+            window.maxCycleTrades = window.maxTrades;
+
+            if (winOrLoss === 'win') {
+                window.lastTradeWon = true;
+                window.martingaleStep = 0;
+                window.cycleLosses = 0;
+                window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('CYCLE_RESET');
+                window.cycleHasPurchasedContract = false;
+                log(`✅ CONFIRMED WIN! Cycle complete. Stake reset to $${window.currentStake.toFixed(2)}`, 'WIN');
+                updatePnL();
+            } else if (winOrLoss === 'loss') {
+                window.lastTradeWon = false;
+                window.martingaleStep = (window.martingaleStep || 0) + 1;
+                window.cycleLosses = (window.cycleLosses || 0) + 1;
+                window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
+
+                // V1.6: do not keep a stale recovery digit across losses.
+                // The next eligible tick must re-score all 10 digits and either
+                // keep the current leader or switch to the stronger candidate.
+                window.recoveryDigitLock = null;
+                window.recoveryDigitTrades = 0;
+                window.recoveryDigitTradeLimit = 1;
+                resetAdaptiveRecoveryHold('PER_TRADE_RERANK');
+
+                renderTailRiskPanel();
+                log(`❌ CONFIRMED LOSS. Next stake: $${window.currentStake.toFixed(2)} (Step: ${window.martingaleStep})`, 'LOSS');
+                updatePnL();
+            } else {
+                window.martingaleStep = 0;
+                window.cycleLosses = 0;
+                window.currentStake = window.baseStake;
+            window.recoveryDigitLock = null;
+            window.recoveryDigitTrades = 0;
+            resetAdaptiveRecoveryHold('CYCLE_RESET');
+                log(`Starting. Base stake: $${window.currentStake.toFixed(2)}`, 'SYSTEM');
+                updateTradeStatus('STARTING', `Base stake: $${window.currentStake.toFixed(2)}`, 'Waiting for trades', 'normal');
+            }
+            const stakeElem = document.getElementById('metricCurrentStake');
+            stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+            stakeElem.className = winOrLoss === 'win' ? 'text-lg font-bold text-green-400' : 'text-lg font-bold text-white';
+        }
+
+        function getUserMaxTrades() {
+            const input = document.getElementById('maxTrades');
+            const raw = Number.parseInt(input?.value, 10);
+            // Tick DNA V2.2 validation requires an uncensored 20-trade observation window.
+            const value = Number.isFinite(raw) && raw >= 20 ? raw : 20;
+            if (input && String(value) !== String(input.value).trim()) {
+                input.value = String(value);
+            }
+            return value;
+        }
+
+        // START BOT - CRITICAL FUNCTION
+        function startBot() {
+            window.__dmsManualStopRequested = false;
+            if (window.isBotRunning) {
+                stopBot();
+                return;
+            }
+
+            // Explicit START is the only action that re-enables live trade execution.
+            window.manualTradingStopped = false;
+            
+            window.maxTrades = getUserMaxTrades();
+            window.maxCycleTrades = window.maxTrades;
+            
+            const token = getStoredDerivToken();
+            const platformJwt = getPlatformJwt();
+            if (window.SERVER_EXECUTION?.enabled) {
+                if (!platformJwt) {
+                    log('❌ DigitMatchStar session missing. Reconnect through Deriv.', 'CRITICAL');
+                    updateTradeStatus('ERROR', 'Session missing', 'Reconnect through Deriv', 'loss');
+                    return;
+                }
+            } else if (!token) {
+                log('❌ Legacy browser mode requires a Deriv token. Use SERVER mode.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'Browser token unavailable', 'Use SERVER mode', 'loss');
+                return;
+            }
+            
+            resetAllState();
+            
+            // Preserve AI warm-up collected before START.
+            // START controls trading only; market analysis keeps running.
+
+            // Always re-lock using the CURRENT prediction when START is pressed.
+            clearSessionDigitLock('Start');
+
+            if (sessionState.mode === 'instant') {
+                const manualDigit = parseInt(document.getElementById('predictedDigit').value);
+                sessionState.sessionDigit = (Number.isFinite(manualDigit) && manualDigit >= 0 && manualDigit <= 9) ? manualDigit : 5;
+                sessionState.sessionStarted = true;
+                sessionState.manualOverride = true;
+                updateSessionDisplay();
+            } else {
+                // AI mode: preview exists while stopped, but lock happens only after START when engine is ready.
+                sessionState.manualOverride = false;
+                sessionState.sessionStarted = false;
+                sessionState.sessionDigit = null;
+                updateSessionDisplay();
+            }
+window.isBotRunning = true;
+            updateButtonState();
+            
+            log('🚀 Starting bot...', 'SYSTEM');
+            log(`📊 Mode: ${sessionState.mode}`, 'SYSTEM');
+            log(`📊 Max Trades: ${window.maxTrades}`, 'SYSTEM');
+            log(`🧯 User-defined cycle cap: ${window.maxTrades} purchased contracts`, 'SYSTEM');
+
+            // Recalculate from the user's CURRENT Max Trades every time START is pressed.
+            window.maxCycleTrades = window.maxTrades;
+            window.TAIL_RISK_CONFIG.maxCycleLoss = null;
+
+            if (window.SERVER_EXECUTION?.enabled) {
+                log(
+                    `🛡️ Server Max Trades stop: ${window.maxTrades} contracts | ` +
+                    'browser dollar-exposure estimate does not cap server purchases',
+                    'SYSTEM'
+                );
+            } else {
+                log(
+                    `🛡️ Tail risk guard: ACTIVE | max cycle exposure $${getTailDollarCap().toFixed(2)} | ` +
+                    `projected @${window.maxCycleTrades} trades $${defaultTailDollarCap().toFixed(2)}`,
+                    'SYSTEM'
+                );
+            }
+            renderTailRiskPanel();
+
+            log(
+                '🧬 Tail Precursor Lab: FORWARD-ONLY LEARNING | ' +
+                `model gate ≥${window.tailPrecursorLab.minNormalForModel} normal wins + ` +
+                `≥${window.tailPrecursorLab.minTailForModel} natural tails`,
+                'ENGINE'
+            );
+            window.tailPrecursorLab.render();
+
+            log('🔐 Trading credential loaded', 'SYSTEM');
+            log(`🌐 Network auto-recovery: ${window.networkRecoveryEnabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
+            log(`🧠 Digit Intelligence Engine: ${window.digitIntelligenceEngine.enabled ? 'ENABLED' : 'DISABLED'}`, 'SYSTEM');
+            log('🧬 Digit DNA Engine: learns the precursor fingerprint BEFORE each digit 0–9 and forward-tests the closest current DNA', 'ENGINE');
+            log('🧬 Digit Feature Engine: SCORE AUTO ranking · frequencies + transitions + 2/3/4-grams + entropy trend + market context', 'ENGINE');
+            log('🔐 Randomness Auditor: SCORE AUTO only · entropy + mutual information + transition + 2-gram analysis', 'ENGINE');
+            log('⚡ INSTANT mode remains unchanged by the Randomness Auditor', 'SYSTEM');
+            
+            updateTradeStatus('STARTING', 'Initializing bot...', 'Connecting to market', 'normal');
+            updateStake('initial');
+            log(
+                '🧠 AI recovery policy: adaptive hold starts at 3 purchased trades, then extends one trade at a time while evidence remains supportive (max 6), otherwise re-ranks all 10 digits',
+                'ENGINE'
+            );
+            initTone();
+
+            if (window.SERVER_EXECUTION?.enabled) {
+                log('☁ Server execution selected · browser will not request a Deriv trading WebSocket', 'SYSTEM');
+            } else if (!window.ws || window.ws.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+            } else {
+                log('✅ Reusing authenticated trading connection', 'SYSTEM');
+            }
+            
+            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
+                control.disabled = true;
+                control.classList.add('opacity-50', 'cursor-not-allowed');
+            });
+            
+            // Add connection verification
+            setTimeout(() => {
+                if (!window.SERVER_EXECUTION?.enabled && window.isBotRunning && (!window.ws || window.ws.readyState !== WebSocket.OPEN)) {
+                    log('❌ WebSocket failed to connect', 'ERROR');
+                    updateTradeStatus('ERROR', 'WebSocket connection failed', 'Check network and API token', 'loss');
+                }
+            }, 3000);
+        }
+        
+        // STOP BOT - CRITICAL FUNCTION
+        function stopBot(reason) {
+            if (!window.isBotRunning) return;
+
+            // V2.4 CONTINUOUS OVERNIGHT:
+            // The overnight controller now exposes its state on window so this
+            // core trading function can reliably distinguish manual stops from
+            // normal cycle completion.
+            const reasonText = String(reason || '');
+            const hardFault = /settlement reconciliation mismatch|invalid token|authorization/i.test(reasonText);
+            const explicitManual =
+                window.__dmsManualStopRequested === true ||
+                /manual stop|overnight switched off|autopilot manually paused/i.test(reasonText);
+
+            // A genuine manual stop is a MASTER STOP: cancel both the live
+            // trading session and the persisted Overnight watchdog state.
+            if (explicitManual && typeof window.__dmsDisableOvernightState === 'function') {
+                try { window.__dmsDisableOvernightState(reasonText || 'Manual STOP'); } catch (_) {}
+            }
+
+            const overnightAutoContinue =
+                window.__dmsOvernightEnabled === true &&
+                window.__dmsOvernightAccount === 'DEMO' &&
+                !hardFault &&
+                !explicitManual;
+
+            window.manualTradingStopped = !overnightAutoContinue;
+
+            if (!overnightAutoContinue) {
+                window.__dmsOvernightRestartPending = false;
+                if (explicitManual || hardFault) {
+                    window.__dmsOvernightEnabled = false;
+                }
+            } else {
+                window.__dmsOvernightRestartPending = true;
+                try {
+                    log(`🌙 Overnight cycle finished (${reasonText || 'automatic stop'}) · next DEMO cycle will auto-start`, 'SYSTEM');
+                } catch (_) {}
+            }
+
+            // Start the no-money post-stop watch BEFORE archiving the live cycle.
+            // This catches the normal "Maximum trades reached" path too.
+            if (
+                window.postStopDepthTracker &&
+                window.cyclePerformance?.current &&
+                window.postStopDepthTracker.isRiskCapReason(reason)
+            ) {
+                window.postStopDepthTracker.startFromCurrentCycle(
+                    reason,
+                    typeof tailRiskSnapshot === 'function'
+                        ? tailRiskSnapshot()
+                        : null
+                );
+            }
+
+            window.isBotRunning = false;
+            window.nextTradeAllowed = false;
+            window.stopAfterWin = false;
+            updateButtonState();
+
+            // Restart only after stopBot cleanup has completed. The watchdog
+            // below also retries every 2 seconds while Overnight remains ON.
+            if (overnightAutoContinue) {
+                setTimeout(() => {
+                    try {
+                        if (
+                            window.__dmsOvernightEnabled === true &&
+                            window.__dmsOvernightAccount === 'DEMO' &&
+                            window.isBotRunning !== true
+                        ) {
+                            window.__dmsOvernightRestartPending = false;
+                            startBot();
+                        }
+                    } catch (err) {
+                        try { console.error('Overnight restart failed:', err); } catch (_) {}
+                    }
+                }, 2200);
+            }
+            
+            log('⏹️ Bot stopped', 'SYSTEM');
+            if (reason) log(`🛑 Stop reason: ${reason}`, 'SYSTEM');
+
+            // A confirmed win is already finalized before stopBot().
+            // Any other stop with purchased contracts is retained as a STOPPED cycle.
+            if (
+                window.cyclePerformance?.current &&
+                reason !== 'Confirmed DIGITMATCH win'
+            ) {
+                window.cyclePerformance.abortActiveCycle(
+                    reason || 'Bot stopped before confirmed win'
+                );
+            }
+            
+            // Stop any ongoing PnL updates
+            if (window.pnlUpdateInterval) {
+                clearInterval(window.pnlUpdateInterval);
+                window.pnlUpdateInterval = null;
+            }
+            
+            // Stop any network recovery attempts
+            resetReconnectionAttempts();
+            
+            if (window.ws) {
+                window.ws.close();
+                window.ws = null;
+            }
+            window.tickSubscriptionSent = false;
+            window.pendingProposals.clear();
+            window.executionLock = false;
+            
+            // Keep public market monitoring and AI analysis active after STOP.
+            if (window.digitIntelligenceEngine.warmupDone) {
+                updateEngineStatus('Market analysis active · Trading idle', 'ANALYZING', 100);
+            }
+            
+            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
+                control.disabled = false;
+                control.classList.remove('opacity-50', 'cursor-not-allowed');
+            });
+            
+            updateConnectionStatus();
+            
+            // Ensure PnL is updated one more time before showing final status
+            const finalPnL = updatePnL();
+            log(`💰 Final PnL: ${finalPnL >= 0 ? '+' : ''}$${finalPnL.toFixed(2)}`, 'PNL');
+            
+            updateTradeStatus(
+                'STOPPED',
+                `Final PnL: ${finalPnL >= 0 ? '+' : ''}$${finalPnL.toFixed(2)}`,
+                'Bot stopped - Ready for new session',
+                finalPnL > 0 ? 'win' : 'normal'
+            );
+            
+            sessionState.sessionStarted = false;
+            sessionState.sessionDigit = null;
+            sessionState.manualOverride = false;
+
+            if (window.nextTickModel) {
+                window.nextTickModel.lastEvaluation = null;
+                window.nextTickModel.render();
+            }
+
+            sessionDisplay.classList.add('hidden');
+        }
+        
+        async function toggleBot() {
+            const serverMode = window.SERVER_EXECUTION?.enabled === true;
+
+            if (window.isBotRunning) {
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.startPending = false;
+                }
+                window.__dmsManualStopRequested = true;
+
+                if (window.SERVER_EXECUTION?.continuousRestartTimer) {
+                    clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
+                    window.SERVER_EXECUTION.continuousRestartTimer = null;
+                }
+
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.continuousRestartPending = false;
+                    window.SERVER_EXECUTION.continuousRestartAttempts = 0;
+                }
+                if (typeof window.__dmsDisableOvernightState === 'function') {
+                    try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
+                }
+
+                if (serverMode) {
+                    try {
+                        await stopServerExecutionSession();
+                    } catch (e) {
+                        alert(`Server STOP failed: ${e.message}`);
+                        return;
+                    }
+                }
+
+                stopBot('Manual STOP');
+                return;
+            }
+
+            window.__dmsManualStopRequested = false;
+
+            if (!serverMode) {
+                startBot();
+                return;
+            }
+
+            // Mark START pending BEFORE startBot() updates the button. The old
+            // completed server state must not overwrite this new user action.
+            window.SERVER_EXECUTION.startPending = true;
+
+            log('🚀 START BOT clicked · preparing SERVER session', 'SYSTEM');
+            startBot();
+
+            // startBot() can still reject a genuine local prerequisite such as
+            // a missing platform session. In that case release the handshake.
+            if (!window.isBotRunning) {
+                window.SERVER_EXECUTION.startPending = false;
+                try { updateButtonState(); } catch (_) {}
+                log('❌ START aborted before server request', 'ERROR');
+                return;
+            }
+
+            try {
+                log('☁ Sending START to server worker…', 'SYSTEM');
+                await startServerExecutionSession();
+
+                window.SERVER_EXECUTION.startPending = false;
+
+                // Pull the new backend state immediately. A successful fresh
+                // cycle must now show Trade 0/1 progression, not the old
+                // completed Trade 13 snapshot.
+                await pollServerExecutionState();
+                try { updateButtonState(); } catch (_) {}
+
+                const startedMode = String(
+                    window.SERVER_EXECUTION?.state?.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    'DEMO'
+                ).toUpperCase();
+
+                log(
+                    startedMode === 'REAL'
+                        ? '✅ REAL START accepted · server executing the selected account'
+                        : '✅ Server START accepted',
+                    'SYSTEM'
+                );
+
+                if (startedMode === 'REAL') {
+                    updateTradeStatus(
+                        'REAL STRATEGY ACTIVE',
+                        'Server is scoring V1 and enforcing the margin gate',
+                        'Eligible trades execute automatically · press STOP BOT to halt new purchases',
+                        'trade'
+                    );
+                } else {
+                    updateTradeStatus(
+                        'SERVER ACTIVE',
+                        'Server worker owns execution',
+                        'Dashboard may be closed; worker continues',
+                        'trade'
+                    );
+                }
+            } catch (e) {
+                if (window.SERVER_EXECUTION) {
+                    window.SERVER_EXECUTION.startPending = false;
+                }
+                try { updateButtonState(); } catch (_) {}
+                log(`❌ Server START failed: ${e.message}`, 'ERROR');
+                stopBot('Server start failed');
+                alert(`Server START failed: ${e.message}`);
+            }
+        }
+
+        // V2.5: explicitly expose the core controls. The overnight controller
+        // must not depend on indirect eval/globalBinding lookup.
+        window.startBot = startBot;
+        window.stopBot = stopBot;
+        window.toggleBot = toggleBot;
+        window.toggleServerContinuousResearch = toggleServerContinuousResearch;
+
+
+        function updateS20Label() {
+            const v = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
+                ? window.SURVIVAL_CFG.maxS20
+                : 0.05;
+            const el = document.getElementById("s20Value");
+            if (el) el.textContent = String(Math.round(v * 100));
+        }
+
+        function openS20Config() {
+            const cur = (window.SURVIVAL_CFG && typeof window.SURVIVAL_CFG.maxS20 === "number")
+                ? window.SURVIVAL_CFG.maxS20
+                : 0.05;
+
+            const raw = prompt("Set max S20 tail risk cap (percent, e.g. 5). Lower = stricter.", String(Math.round(cur * 100)));
+            if (raw === null) return;
+
+            const pct = Number.parseFloat(raw);
+            if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+                alert("Invalid S20 value. Use a number between 0 and 100.");
+                return;
+            }
+
+            window.SURVIVAL_CFG = window.SURVIVAL_CFG || {};
+            window.SURVIVAL_CFG.maxS20 = pct / 100;
+
+            updateS20Label();
+            try { log(`🧯 S20 cap set to ${pct.toFixed(1)}%`, "CONFIG"); } catch (_) {}
+        }
+
+        // HELPER FUNCTIONS
+        function calculateRates() {
+            const now = Date.now();
+            window.botTickTimestamps = window.botTickTimestamps.filter(ts => now - ts < 5000);
+            const tickRate = window.botTickTimestamps.length / 5;
+            document.getElementById('metricTickRate').textContent = `Ticks/sec: ${tickRate.toFixed(1)}`;
+        }
+        
+        async function toggleSound() {
+            window.soundEnabled = !window.soundEnabled;
+            try {
+                localStorage.setItem('soundEnabled', String(window.soundEnabled));
+            } catch (_) {}
+
+            updateSoundButton();
+
+            if (window.soundEnabled) {
+                await initTone();
+                if (window.ToneInitialized && window.synth) {
+                    try {
+                        window.synth.triggerAttackRelease("G4", "16n");
+                    } catch (_) {}
+                }
+            }
+
+            log(`🔊 Sound ${window.soundEnabled ? 'ON' : 'OFF'}`, 'SYSTEM');
+        }
+        
+        function updateSoundButton() {
+            if (!soundToggleButton) return;
+            const isOn = !!window.soundEnabled;
+            soundToggleButton.textContent = isOn ? '🔊' : '🔇';
+            soundToggleButton.title = isOn ? 'Sound ON' : 'Sound OFF';
+        }
+        
+        async function initTone() {
+            if (!window.soundEnabled) return;
+            
+            if (typeof Tone === 'undefined') {
+                console.error("Tone.js not loaded");
+                return;
+            }
+            
+            try {
+                await Tone.start();
+                window.synth = new Tone.Synth().toDestination();
+                window.ToneInitialized = true;
+            } catch (e) {
+                console.error("Audio init error:", e);
+            }
+        }
+        
+        function playAudioFeedback(type) {
+            if (!window.soundEnabled || !window.ToneInitialized || !window.synth) return;
+            
+            try {
+                if (type === 'WIN') {
+                    window.synth.triggerAttackRelease("C5", "8n");
+                    setTimeout(() => window.synth.triggerAttackRelease("E5", "8n"), 100);
+                    setTimeout(() => window.synth.triggerAttackRelease("G5", "8n"), 200);
+                } else if (type === 'TICK') {
+                    window.synth.triggerAttackRelease("C4", "32n", Tone.now(), 0.3);
+                } else if (type === 'EXECUTION') {
+                    window.synth.triggerAttackRelease("E5", "16n", Tone.now(), 0.5);
+                } else if (type === 'LOSS') {
+                    window.synth.triggerAttackRelease("G3", "8n", Tone.now(), 0.55);
+                    setTimeout(() => {
+                        try { window.synth.triggerAttackRelease("E3", "8n", Tone.now(), 0.45); } catch (_) {}
+                    }, 120);
+                } else if (type === 'ERROR') {
+                    window.synth.triggerAttackRelease("C3", "4n", Tone.now(), 0.6);
+                }
+            } catch (e) {
+                console.error("Audio error:", e);
+            }
+        }
+        
+        function log(message, type = 'INFO') {
+            const logArea = document.getElementById('log-area');
+            const timestamp = new Date().toLocaleTimeString('en-US', { 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            
+            let color = 'text-lime-400';
+            if (type === 'ERROR') color = 'text-red-500 font-bold'; 
+            if (type === 'WARNING') color = 'text-yellow-400';
+            if (type === 'TRADE') color = 'text-green-300';
+            if (type === 'WIN') color = 'text-green-400 font-bold';
+            if (type === 'LOSS') color = 'text-red-400 font-bold';
+            if (type === 'TICK') color = 'text-cyan-300';
+            if (type === 'SYSTEM') color = 'text-white';
+            if (type === 'PNL') color = 'text-purple-300 font-bold';
+            if (type === 'SESSION') color = 'text-blue-300 font-bold';
+            if (type === 'CALCULATOR') color = 'text-purple-300 font-bold';
+            if (type === 'NETWORK') color = 'text-yellow-300 font-bold';
+            if (type === 'ENGINE') color = 'text-purple-300 font-bold';
+            if (type === 'DEBUG') color = 'text-gray-400 font-bold';
+            
+            logArea.innerHTML += `\n[${timestamp}] <span class="${color}">${message}</span>`;
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+        
+        function updateButtonState() {
+            if (!toggleButton) return;
+
+            const serverExecution = window.SERVER_EXECUTION || {};
+            const serverState = serverExecution.enabled
+                ? serverExecution.state
+                : null;
+            const startPending = serverExecution.startPending === true;
+
+            // During a new SERVER START request, the most recent polled state
+            // may still belong to a previous completed cycle. Do not let that
+            // stale snapshot cancel the click before the server start request.
+            const authoritativeRunning = startPending
+                ? true
+                : (
+                        serverState &&
+                        typeof serverState.running === 'boolean'
+                    )
+                        ? serverState.running === true
+                        : window.isBotRunning === true;
+
+            window.isBotRunning = authoritativeRunning;
+
+            if (startPending) {
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏳</span> STARTING...</span>';
+                toggleButton.disabled = true;
+                toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active', 'stop-button-active', 'hover:bg-red-700');
+                toggleButton.classList.add('bg-amber-600', 'opacity-80', 'cursor-wait');
+            } else if (authoritativeRunning) {
+                toggleButton.disabled = false;
+                toggleButton.classList.remove('bg-amber-600', 'opacity-80', 'cursor-wait', 'bg-slate-700', 'cursor-default');
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏹️</span> STOP BOT</span>';
+                toggleButton.classList.remove('bg-green-600', 'hover:bg-green-700', 'start-button-active');
+                toggleButton.classList.add('stop-button-active', 'hover:bg-red-700');
+            } else {
+                toggleButton.disabled = false;
+                toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">🚀</span> START BOT</span>';
+                toggleButton.classList.remove('stop-button-active', 'hover:bg-red-700', 'bg-amber-600', 'opacity-80', 'cursor-wait', 'bg-slate-700', 'cursor-default');
+                toggleButton.classList.add('bg-green-600', 'hover:bg-green-700', 'start-button-active');
+            }
+        
+            try { updateEngineButton(); } catch(e) {}
+            try { updateNetworkRecoveryButton(); } catch(e) {}
+            try { updateSoundButton(); } catch(e) {}
+        }
+        
+
+        // Restore the saved sound state immediately; Tone itself is initialized
+        // only after a user gesture (START or the sound button), as required by browsers.
+        document.addEventListener('DOMContentLoaded', () => {
+            try { updateSoundButton(); } catch (_) {}
+        });
+
+        // V1.6 AUDIO BOOTSTRAP:
+        // Initialize Tone on the first user trading gesture so later settlement
+        // events cannot be lost merely because the sound engine was still locked.
+        document.addEventListener('click', (event) => {
+            try {
+                const target = event.target?.closest?.(
+                    '#toggleButton, #soundToggle, button'
+                );
+                if (!target || !window.soundEnabled) return;
+                initTone();
+            } catch (_) {}
+        }, { passive: true });
+
+        // QUEUE PROCESSOR - CRITICAL FOR TRADE EXECUTION
+        function startQueueProcessor() {
+            setInterval(() => {
+                if (!window.isBotRunning || window.stopAfterWin) return;
+                if (!mayPlaceNextTrade()) return;
+
+                while (window.tickQueue.length > 0 && mayPlaceNextTrade()) {
+                    const tick = window.tickQueue.shift();
+                    processTickImmediately(tick);
+                }
+            }, 50);
+        }
+
+        function sendRequest(request) {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                const message = JSON.stringify(request);
+                window.ws.send(message);
+                return request.req_id;
+            }
+            return null;
+        }
+        
+        function getNextReqId() {
+            return ++window.req_id;
+        }
+        
+        function subscribeToBalance() {
+            sendRequest({ balance: 1, subscribe: 1, req_id: getNextReqId() });
+            log('💰 Subscribed to balance', 'SYSTEM');
+        }
+        
+        function handleBalanceUpdate(balanceData) {
+            const newBalance = parseFloat(balanceData.balance);
+            
+            if (window.startingBalance === 0) {
+                window.startingBalance = newBalance;
+                log(`💰 Starting Balance: $${window.startingBalance.toFixed(2)}`, 'PNL');
+            }
+            
+            window.currentBalance = newBalance;
+            const balanceElem = document.getElementById('metricAccountBalance');
+            balanceElem.textContent = `$${window.currentBalance.toFixed(2)}`;
+            balanceElem.className = 'text-lg font-bold balance-green';
+            updatePnL();
+        }
+        
+        function subscribeToTicks(symbol) {
+            // V57 compatibility no-op.
+            // The dedicated public market socket is the single source of ticks.
+            window.tickSubscriptionSent = false;
+            if (typeof log === 'function') {
+                log(`📡 Public feed owns ${symbol} ticks · authenticated duplicate subscription skipped`, 'SYSTEM');
+            }
+            return false;
+        }
+
+        function handleProposalResponse(proposal, req_id) {
+            const pending = window.pendingProposals.get(req_id) || null;
+            if (pending) window.pendingProposals.delete(req_id);
+
+            if (!pending) {
+                log(`⚠️ Proposal response ${req_id} has no pending context`, 'WARNING');
+                window.executionLock = false;
+                window.nextTradeAllowed = true;
+                return;
+            }
+
+            if (!proposal || !proposal.id) {
+                log('❌ Proposal failed', 'ERROR');
+                rollbackUnsentTrade(pending.stake || window.currentStake);
+                updateTradeStatus('WAITING', 'Proposal unavailable', 'No trade counted · waiting for next tick', 'normal');
+                return;
+            }
+
+            pending.proposalId = proposal.id;
+            pending.askPrice = Number(proposal.ask_price);
+            pending.quotedPayout = Number(proposal.payout);
+
+            const quoteValid =
+                Number.isFinite(pending.askPrice) &&
+                pending.askPrice > 0 &&
+                Number.isFinite(pending.quotedPayout) &&
+                pending.quotedPayout > 0;
+
+            if (!quoteValid) {
+                log('❌ Invalid Deriv proposal economics', 'ERROR');
+                rollbackUnsentTrade(pending.stake);
+                updateTradeStatus('WAITING', 'Invalid proposal economics', 'No trade counted · waiting for next tick', 'normal');
+                return;
+            }
+
+            const quotedProfit = pending.quotedPayout - pending.askPrice;
+            const priorLosses = Math.max(
+                0,
+                (window.pnlTracker?.totalInvestment || 0) -
+                (window.pnlTracker?.totalPayout || 0)
+            );
+            const recoveryNet = quotedProfit - priorLosses;
+            const isRecovery = !!window.cycleHasPurchasedContract;
+
+            const evaluation = window.nextTickModel.evaluateProposal({
+                symbol: pending.symbol,
+                digit: pending.predictedDigit,
+                askPrice: pending.askPrice,
+                payout: pending.quotedPayout,
+                modelSnapshot: pending.modelSnapshot,
+                mode: isRecovery ? 'recovery' : pending.executionMode
+            });
+
+            log(
+                `📐 LIVE EDGE | digit ${pending.predictedDigit} | ` +
+                `next-tick P ${(evaluation.modelProbability * 100).toFixed(2)}% | ` +
+                `break-even ${(evaluation.breakEvenProbability * 100).toFixed(2)}% | ` +
+                `edge ${evaluation.edge >= 0 ? '+' : ''}${(evaluation.edge * 100).toFixed(2)} pp | ` +
+                `EV ${evaluation.expectedValue >= 0 ? '+' : ''}$${evaluation.expectedValue.toFixed(3)}`,
+                evaluation.approved ? 'PNL' : 'ENGINE'
+            );
+
+            log(
+                `📐 Quote: cost $${pending.askPrice.toFixed(2)} → payout $${pending.quotedPayout.toFixed(2)} | ` +
+                `win profit $${quotedProfit.toFixed(2)} | cycle net if win ≈ ` +
+                `${recoveryNet >= 0 ? '+' : ''}$${recoveryNet.toFixed(2)}`,
+                'PNL'
+            );
+
+            // V27 AI EDGE GATE + SMART ENTRY OVERRIDE
+            // Preferred entry threshold stays at +0.10 pp.
+            // A new-cycle AI entry can override that preferred threshold when:
+            //   1) the same digit has persisted for >= 2 consecutive proposal evaluations,
+            //   2) live edge is no worse than -0.05 pp,
+            //   3) the next-tick model is ready / support is sufficient,
+            //   4) available tail-risk evidence is not elevated (s20 <= 5%).
+            // Recovery remains at its separate 0.00 pp rule.
+            let smartOverride = null;
+
+            if (
+                pending.executionMode === 'ai' &&
+                !isRecovery &&
+                window.EV_GATE_CONFIG?.smartOverrideEnabled
+            ) {
+                const persistence = updateSmartEntryPersistence(pending.predictedDigit);
+                const floor = Number(window.EV_GATE_CONFIG.smartOverrideFloor ?? -0.0005);
+                const requiredPersistence = Math.max(
+                    1,
+                    Number(window.EV_GATE_CONFIG.smartOverridePersistence ?? 2)
+                );
+                const tailCheck = smartOverrideTailCheck(pending.predictedDigit);
+
+                const modelReady =
+                    !!pending.modelSnapshot?.ready &&
+                    Number(pending.modelSnapshot?.effectiveSupport || 0) >=
+                        Number(window.EV_GATE_CONFIG?.minEffectiveSupport || 0);
+
+                const qualifies =
+                    evaluation.reason === 'EDGE_BELOW_THRESHOLD' &&
+                    modelReady &&
+                    Number.isFinite(evaluation.edge) &&
+                    evaluation.edge >= floor &&
+                    persistence >= requiredPersistence &&
+                    tailCheck.ok;
+
+                smartOverride = {
+                    qualifies,
+                    persistence,
+                    requiredPersistence,
+                    floor,
+                    tailCheck,
+                    modelReady
+                };
+
+                if (qualifies) {
+                    evaluation.approved = true;
+                    evaluation.reason = 'SMART_OVERRIDE';
+                    evaluation.smartOverride = smartOverride;
+
+                    log(
+                        `🧠 SMART OVERRIDE → BUY | digit ${pending.predictedDigit} | ` +
+                        `edge ${(evaluation.edge * 100).toFixed(2)} pp | ` +
+                        `preferred +${(Number(window.EV_GATE_CONFIG.minEdge) * 100).toFixed(2)} pp | ` +
+                        `floor ${(floor * 100).toFixed(2)} pp | ` +
+                        `persistence ${persistence}/${requiredPersistence} | ` +
+                        (
+                            tailCheck.available
+                                ? `tail s20 ${(tailCheck.s20 * 100).toFixed(1)}%`
+                                : 'tail risk learning'
+                        ),
+                        'PNL'
+                    );
+
+                    updateTradeStatus(
+                        'SMART OVERRIDE 🧠',
+                        `Digit ${pending.predictedDigit} persisted ${persistence} evaluations`,
+                        `Edge ${(evaluation.edge * 100).toFixed(2)} pp · executing without waiting for +0.10 pp`,
+                        'trade'
+                    );
+                }
+            }
+
+            if (
+                pending.executionMode === 'ai' &&
+                !evaluation.approved
+            ) {
+                rollbackUnsentTrade(pending.stake);
+
+                const thresholdPp = Number(
+                    evaluation.minEdgeRequired ??
+                    (isRecovery
+                        ? window.EV_GATE_CONFIG.recoveryMinEdge
+                        : window.EV_GATE_CONFIG.minEdge)
+                ) * 100;
+                const phase = isRecovery ? 'RECOVERY' : 'ENTRY';
+
+                let extra = '';
+                if (!isRecovery && smartOverride) {
+                    const floorPp = smartOverride.floor * 100;
+                    const tailText = smartOverride.tailCheck.available
+                        ? `tail s20 ${(smartOverride.tailCheck.s20 * 100).toFixed(1)}%`
+                        : 'tail learning';
+                    extra =
+                        ` | override: ${smartOverride.persistence}/${smartOverride.requiredPersistence} persistence` +
+                        ` | floor ${floorPp.toFixed(2)} pp | ${tailText}`;
+                }
+
+                log(
+                    `🧱 ${phase} EV VETO: ${evaluation.reason} | ` +
+                    `edge ${(evaluation.edge * 100).toFixed(2)} pp < ` +
+                    `${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp | ` +
+                    `no contract purchased | trade count unchanged${extra}`,
+                    'ENGINE'
+                );
+
+                updateTradeStatus(
+                    isRecovery ? 'RECOVERY WAIT' : 'SCORE AUTO ARMED',
+                    isRecovery
+                        ? `Waiting for recovery edge ≥ ${thresholdPp >= 0 ? '+' : ''}${thresholdPp.toFixed(2)} pp`
+                        : `Preferred +0.10 pp · smart override available after 2 persistent evaluations`,
+                    `Current edge ${(evaluation.edge * 100).toFixed(2)} pp · no trade counted`,
+                    'normal'
+                );
+
+                // IMPORTANT: do not clear the entry digit lock merely because +0.10 pp
+                // was missed; persistence needs the same selected digit to survive long
+                // enough for the smart override to become eligible.
+                return;
+            }
+
+            if (!isRecovery && pending.executionMode === 'ai' && evaluation.approved) {
+                // This candidate has now been accepted for purchase; the next new cycle
+                // must earn its own persistence streak.
+                resetSmartEntryPersistence(
+                    evaluation.reason === 'SMART_OVERRIDE' ? 'smart entry accepted' : 'standard entry accepted'
+                );
+            }
+
+            executeBuy(
+                proposal.id,
+                proposal.ask_price,
+                {
+                    ...pending,
+                    liveEdgeEvaluation: evaluation,
+                    isRecovery
+                }
+            );
+        }
+
+        function rollbackUnsentTrade(stake) {
+            // Proposal attempts are not real trades in V10.
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
+
+            if (window.recoverySubmissionState?.inFlight) {
+                const sourceId = Number(window.recoverySubmissionState.sourceContractId || 0);
+                const source = window.settlementLedger?.get(sourceId) || null;
+                if (source && !source.settled) {
+                    source.recoverySubmitted = false;
+                    source.recoverySubmittedAt = null;
+                    source.recoverySubmissionOrigin = null;
+                }
+                window.recoverySubmissionState = {
+                    sourceContractId: null,
+                    inFlight: false,
+                    startedAt: null,
+                    origin: null
+                };
+            }
+            updateSessionDisplay();
+            updatePnL();
+        }
+
+        function executeBuy(proposal_id, ask_price, pending) {
+            const numericAskPrice = Number(ask_price);
+            if (!Number.isFinite(numericAskPrice) || numericAskPrice <= 0) {
+                log(`❌ Invalid proposal ask price: ${ask_price}`, 'ERROR');
+                rollbackUnsentTrade(pending?.stake || window.currentStake);
+                return;
+            }
+
+            const buyRequest = { buy: proposal_id, price: numericAskPrice, req_id: getNextReqId() };
+            log(`✅ Buying: $${pending.stake.toFixed(2)} on digit ${pending.predictedDigit}`, 'TRADE');
+            window.pendingProposals.set(buyRequest.req_id, { ...pending, proposal_id, askPrice: numericAskPrice, buyStartTime: Date.now() });
+            const sent = sendRequest(buyRequest);
+            if (sent === null) {
+                window.pendingProposals.delete(buyRequest.req_id);
+                rollbackUnsentTrade(pending.stake);
+                log('⏳ Buy not sent — trading socket unavailable', 'ERROR');
+            }
+        }
+
+        function subscribeToActiveContract(contractId) {
+            if (!contractId || !window.ws || window.ws.readyState !== WebSocket.OPEN) return false;
+            const reqId = getNextReqId();
+            const sent = sendRequest({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1, req_id: reqId });
+            if (sent === null) return false;
+            if (window.activeContract && Number(window.activeContract.contractId) === Number(contractId)) window.activeContract.monitorReqId = reqId;
+            log(`👁️ Monitoring contract ${contractId} until Deriv settlement`, 'TRADE');
+            return true;
+        }
+
+        function retryContractMonitor(contractId) {
+            if (!window.activeContract || window.activeContract.settled) return;
+            if (window.contractMonitorRetries >= window.maxContractMonitorRetries) {
+                log(`❌ Settlement monitor failed for contract ${contractId}. SAFETY FREEZE.`, 'CRITICAL');
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+                updateTradeStatus('SAFETY FREEZE', 'Contract settlement monitor unavailable', 'Do not continue until contract state is known', 'loss');
+                return;
+            }
+            window.contractMonitorRetries++;
+            setTimeout(() => { if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId); }, 300 * window.contractMonitorRetries);
+        }
+
+        function handleBuyResponse(buyData, req_id) {
+            const pending = window.pendingProposals.get(req_id) || null;
+            if (pending) window.pendingProposals.delete(req_id);
+            if (!buyData || !buyData.contract_id) {
+                log('❌ Trade purchase failed — no trade counted', 'ERROR');
+                rollbackUnsentTrade(pending?.stake || window.currentStake);
+                updateTradeStatus('WAITING', 'Buy was not confirmed', 'No trade counted · waiting for next tick', 'normal');
+                return;
+            }
+
+            const actualBuyPrice = Number(
+                buyData.buy_price ?? pending?.askPrice ?? pending?.stake ?? 0
+            );
+
+            if (
+                pending?.recoverySourceContractId &&
+                Number(window.recoverySubmissionState?.sourceContractId || 0) ===
+                    Number(pending.recoverySourceContractId)
+            ) {
+                window.recoverySubmissionState = {
+                    sourceContractId: null,
+                    inFlight: false,
+                    startedAt: null,
+                    origin: null
+                };
+            }
+
+            // A trade becomes real only after Deriv confirms the purchase.
+            window.tradeCount++;
+            window.stats.tradesExecuted++;
+            window.cycleHasPurchasedContract = true;
+
+            if (
+                sessionState.mode === 'ai' &&
+                Number.isInteger(window.recoveryDigitLock) &&
+                window.tradeCount > 1
+            ) {
+                window.recoveryDigitTrades = Math.min(
+                    Number(window.recoveryDigitTrades || 0) + 1,
+                    Math.max(
+                        1,
+                        Number(
+                            window.recoveryDigitTradeLimit ||
+                            window.ADAPTIVE_RECOVERY_HOLD_CONFIG?.initialHold ||
+                            3
+                        )
+                    )
+                );
+            }
+
+            trackTradeInvestment(
+                Number.isFinite(actualBuyPrice) && actualBuyPrice > 0
+                    ? actualBuyPrice
+                    : Number(pending?.stake || window.currentStake)
+            );
+
+            document.getElementById('metricTradeCount').textContent = window.tradeCount;
+            updateSessionDisplay();
+
+            log(
+                `⚡ Trade #${window.tradeCount} CONFIRMED PURCHASE | ` +
+                `$${Number(pending?.stake || window.currentStake).toFixed(2)} on digit ` +
+                `${Number(pending?.predictedDigit ?? document.getElementById('predictedDigit').value)}`,
+                'TRADE'
+            );
+
+            const contractId = Number(buyData.contract_id);
+            window.contractSequence++;
+            window.contractMonitorRetries = 0;
+            window.activeContract = {
+                sequence: window.contractSequence,
+                contractId,
+                predictedDigit: Number(pending?.predictedDigit ?? document.getElementById('predictedDigit').value),
+                stake: Number(pending?.stake ?? window.currentStake),
+                askPrice: Number(buyData.buy_price ?? pending?.askPrice ?? 0),
+                quotedPayout: Number(pending?.quotedPayout ?? 0),
+                proposalId: pending?.proposal_id || pending?.proposalId || null,
+                status: 'OPEN',
+                settled: false,
+                tickResolved: false,
+                matchDetected: false,
+                settlementTickObserved: false,
+                observedDigit: null,
+                fastOutcome: null,
+                fastOutcomeAt: null,
+                progressionApplied: false,
+                recoverySubmitted: false,
+                recoverySubmittedAt: null,
+                recoverySubmissionOrigin: null,
+                proposalSourceEpoch: Number(pending?.tick?.raw?.epoch || 0),
+                buyConfirmedMarketEpoch: Number(window.lastTick?.raw?.epoch || 0),
+                armedAfterEpoch: Number(pending?.tick?.raw?.epoch || 0),
+                serverStartEpoch: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0),
+                alignmentReady: Number(buyData?.entry_tick_time ?? buyData?.date_start ?? buyData?.start_time ?? 0) > 0,
+                alignmentSource: Number(buyData?.entry_tick_time || 0) > 0
+                    ? 'buy.entry_tick_time'
+                    : (Number(buyData?.date_start || 0) > 0
+                        ? 'buy.date_start'
+                        : (Number(buyData?.start_time || 0) > 0 ? 'buy.start_time' : null)),
+                alignmentLogged: false,
+                confirmedAtMs: Date.now(),
+                monitorReqId: null,
+                subscriptionId: null,
+                nextTickProbability: Number(pending?.modelSnapshot?.probability ?? NaN),
+                liveBreakEvenProbability: Number(pending?.liveEdgeEvaluation?.breakEvenProbability ?? NaN),
+                liveEdge: Number(pending?.liveEdgeEvaluation?.edge ?? NaN),
+                expectedValueAtEntry: Number(pending?.liveEdgeEvaluation?.expectedValue ?? NaN)
+            };
+
+            window.settlementLedger.set(contractId, window.activeContract);
+
+            // Persistent cycle recorder: first confirmed BUY starts the cycle,
+            // every confirmed BUY becomes one trade inside that cycle.
+            window.cyclePerformance.recordPurchase(window.activeContract, pending);
+
+            window.executionLock = true;
+            window.nextTradeAllowed = false;
+            log(`🟣 CONTRACT OPEN ${contractId} | digit ${window.activeContract.predictedDigit} | stake $${window.activeContract.stake.toFixed(2)}`, 'TRADE');
+            updateTradeStatus(
+                'TICK PIPELINE ACTIVE',
+                `Target digit ${window.activeContract.predictedDigit}`,
+                'Exact next outcome tick drives execution · settlement reconciles in background',
+                'trade'
+            );
+            if (!subscribeToActiveContract(contractId)) retryContractMonitor(contractId);
+        }
+
+        function applyFastLossProgression(contract) {
+            if (!contract || contract.progressionApplied) return;
+
+            contract.progressionApplied = true;
+            contract.fastOutcome = 'LOSS';
+            contract.fastOutcomeAt = Date.now();
+
+            window.lastTradeWon = false;
+            window.martingaleStep = (window.martingaleStep || 0) + 1;
+            window.cycleLosses = (window.cycleLosses || 0) + 1;
+
+            window.currentStake = parseFloat((window.currentStake * window.multiplier).toFixed(2));
+
+            // V16: capture the post-loss state before any next recovery order.
+            if (window.cyclePerformance?.current) {
+                window.cyclePerformance.recordTailSnapshot(
+                    'LOSS_AFTER_TICK',
+                    contract.predictedDigit
+                );
+            }
+
+            // V15 hard caps remain active.
+            renderTailRiskPanel();
+
+            const stakeElem = document.getElementById('metricCurrentStake');
+            if (stakeElem) {
+                stakeElem.textContent = `$${window.currentStake.toFixed(2)}`;
+                stakeElem.className = 'text-lg font-bold text-white';
+            }
+
+            log(`✅ DERIV-CONFIRMED LOSS: contract ${contract.contractId} missed digit ${contract.predictedDigit}. Next stake: $${window.currentStake.toFixed(2)} (Step ${window.martingaleStep})`, 'LOSS');
+        }
+
+        function freezeForPossibleWin(contract, observedDigit) {
+            if (!contract) return;
+            contract.fastOutcome = 'WIN';
+            contract.fastOutcomeAt = Date.now();
+            contract.matchDetected = true;
+            contract.status = 'MATCH_DETECTED';
+
+            window.stopAfterWin = true;
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            if (window.cyclePerformance?.current) {
+                window.cyclePerformance.recordTailSnapshot(
+                    'MATCH_DETECTED',
+                    contract.predictedDigit
+                );
+            }
+
+            log(
+                `🟠 PROVISIONAL PUBLIC-TICK MATCH | ${observedDigit} = ${contract.predictedDigit} | ` +
+                `contract ${contract.contractId} | NOT YET A WIN · waiting for Deriv settlement`,
+                'WARNING'
+            );
+            updateTradeStatus(
+                'MATCH PENDING CONFIRMATION',
+                `Public tick digit ${observedDigit} matched target ${contract.predictedDigit}`,
+                'No win shown until Deriv confirms the paid settlement tick',
+                'trade'
+            );
+        }
+
+        // V14: epoch-aligned public tick buffer for one-tick contracts.
+        window.recentMarketTicks = window.recentMarketTicks || [];
+
+        function rememberMarketTick(tickData) {
+            const epoch = Number(tickData?.raw?.epoch || 0);
+            if (!epoch) return;
+            const last = window.recentMarketTicks[window.recentMarketTicks.length - 1];
+            if (last && Number(last?.raw?.epoch || 0) === epoch && Number(last.digit) === Number(tickData.digit)) return;
+            window.recentMarketTicks.push(tickData);
+            if (window.recentMarketTicks.length > 40) {
+                window.recentMarketTicks.splice(0, window.recentMarketTicks.length - 40);
+            }
+        }
+
+        function getDerivContractStartEpoch(contract) {
+            for (const value of [contract?.entry_tick_time, contract?.date_start, contract?.start_time]) {
+                const n = Number(value || 0);
+                if (Number.isFinite(n) && n > 0) return n;
+            }
+            return 0;
+        }
+
+        function updateContractAlignmentFromDeriv(ac, contract) {
+            if (!ac || !contract) return false;
+            const start = getDerivContractStartEpoch(contract);
+            if (!start) return false;
+
+            ac.serverStartEpoch = Math.max(Number(ac.serverStartEpoch || 0), start);
+            ac.alignmentReady = true;
+            ac.alignmentSource = Number(contract.entry_tick_time || 0) > 0
+                ? 'entry_tick_time'
+                : (Number(contract.date_start || 0) > 0 ? 'date_start' : 'start_time');
+
+            if (!ac.alignmentLogged) {
+                ac.alignmentLogged = true;
+                log(`🧭 CONTRACT ALIGNMENT | ${ac.contractId} | server start ${ac.serverStartEpoch} (${ac.alignmentSource}) | local arm ${Number(ac.armedAfterEpoch || 0)}`, 'TRADE');
+            }
+            return true;
+        }
+
+        function expectedPaidOutcomeEpoch(ac) {
+            // R_10 canonical public ticks are on the 2-second cadence.
+            // Use ONLY Deriv's contract-start epoch. Never use the browser's
+            // latest tick at buy-confirmation time; that was the desync source.
+            const start = Number(ac?.serverStartEpoch || 0);
+            if (!start) return 0;
+            return start + 2;
+        }
+
+        function contractTickBarrierEpoch(ac) {
+            // Diagnostic only in V23.
+            return Number(ac?.serverStartEpoch || 0);
+        }
+
+        function findBufferedSettlementTick(ac) {
+            if (!ac || !ac.alignmentReady || ac.tickResolved) return null;
+
+            const expectedEpoch = expectedPaidOutcomeEpoch(ac);
+            if (!expectedEpoch) return null;
+
+            // Exact epoch only. Never slide a later tick into the paid outcome slot.
+            return window.recentMarketTicks.find(
+                t => Number(t?.raw?.epoch || 0) === expectedEpoch
+            ) || null;
+        }
+
+        function resolveBufferedSettlementTick(ac) {
+            if (!ac || ac.settled || ac.tickResolved) return false;
+            const buffered = findBufferedSettlementTick(ac);
+            if (!buffered) return false;
+
+            const result = observeActiveContractTick(buffered);
+
+            if (
+                result?.fastLoss &&
+                window.isBotRunning &&
+                !window.stopAfterWin &&
+                window.tradeCount < window.maxTrades
+            ) {
+                submitRecoveryOnce(
+                    result.contractId,
+                    buffered,
+                    'EXACT_BUFFERED_OUTCOME_FAST_LOSS'
+                );
+            }
+
+            return !!result?.handled;
+        }
+
+        function observeActiveContractTick(tickData) {
+            const ac = window.activeContract;
+            if (!ac || ac.settled || !ac.contractId || ac.tickResolved) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: null };
+            }
+
+            if (!ac.alignmentReady || !Number(ac.serverStartEpoch || 0)) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
+            }
+
+            const epoch = Number(tickData?.raw?.epoch || 0);
+            const digit = Number(tickData?.digit);
+            const expectedEpoch = expectedPaidOutcomeEpoch(ac);
+
+            if (!epoch || !Number.isInteger(digit) || !expectedEpoch) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
+            }
+
+            // Consume ONLY the exact expected outcome epoch.
+            if (epoch !== expectedEpoch) {
+                return { handled: false, fastLoss: false, fastWin: false, contractId: ac.contractId };
+            }
+
+            ac.tickResolved = true;
+            ac.settlementTickObserved = true;
+            ac.observedDigit = digit;
+            ac.observedPrice = Number(tickData?.price);
+            ac.observedEpoch = epoch;
+            ac.expectedOutcomeEpoch = expectedEpoch;
+
+            if (digit === Number(ac.predictedDigit)) {
+                ac.fastOutcome = 'WIN';
+                ac.fastOutcomeAt = Date.now();
+                ac.matchDetected = true;
+                ac.status = 'EXACT_TICK_MATCH';
+
+                // Stop immediately on the exact matching paid-outcome tick.
+                // Deriv settlement confirmation runs in the background.
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+
+                log(
+                    `🎯 EXACT OUTCOME MATCH | Contract ${ac.contractId} | e:${epoch} | ` +
+                    `digit ${digit} = target ${ac.predictedDigit} | settlement confirming in background`,
+                    'WIN'
+                );
+
+                updateTradeStatus(
+                    'WIN DETECTED 🎯',
+                    `Digit ${digit} matched target ${ac.predictedDigit} on exact outcome tick`,
+                    'Settlement confirmation running in background',
+                    'win'
+                );
+
+                return {
+                    handled: true,
+                    fastLoss: false,
+                    fastWin: true,
+                    contractId: ac.contractId,
+                    outcomeEpoch: epoch
+                };
+            }
+
+            ac.fastOutcome = 'LOSS';
+            ac.fastOutcomeAt = Date.now();
+            ac.status = 'EXACT_TICK_LOSS';
+
+            if (!ac.progressionApplied) {
+                applyFastLossProgression(ac);
+            }
+
+            // Release immediately so recovery can be purchased before the next tick.
+            window.executionLock = false;
+            window.nextTradeAllowed = true;
+
+            log(
+                `⚡ EXACT TICK LOSS | Contract ${ac.contractId} | e:${epoch} digit ${digit} ≠ ` +
+                `target ${ac.predictedDigit} | recovery arming now`,
+                'LOSS'
+            );
+
+            updateTradeStatus(
+                'NEXT TICK ARMED',
+                `Digit ${digit} ≠ target ${ac.predictedDigit}`,
+                `Preparing trade ${window.tradeCount + 1} now · settlement reconciles in background`,
+                'trade'
+            );
+
+            return {
+                handled: true,
+                fastLoss: true,
+                fastWin: false,
+                contractId: ac.contractId,
+                outcomeEpoch: epoch
+            };
+        }
+
+        function getContractFinalDigit(contract) {
+            const exitSpot = contract?.exit_spot ?? contract?.current_spot ?? null;
+            if (exitSpot === null || exitSpot === undefined) return null;
+
+            const symbol =
+                contract?.underlying_symbol ||
+                contract?.symbol ||
+                window.tickFormat.symbol ||
+                document.getElementById('symbol')?.value ||
+                null;
+
+            const pseudoTick = {
+                symbol,
+                pip_size: contract?.pip_size
+            };
+
+            const d = getLastDigitFromQuote(exitSpot, pseudoTick, symbol);
+            return Number.isFinite(d) ? d : null;
+        }
+
+        function hardStopOnReconciliationMismatch(ac, contract, reason) {
+            window.reconciliationMismatch = true;
+            window.stopAfterWin = true;
+            window.nextTradeAllowed = false;
+            window.executionLock = true;
+            window.tickQueue.length = 0;
+
+            const finalDigit = getContractFinalDigit(contract);
+            log(`🚨 RECONCILIATION MISMATCH — ${reason}. Contract ${ac?.contractId ?? contract?.contract_id}, fast=${ac?.fastOutcome ?? 'UNKNOWN'}, observed=${ac?.observedDigit ?? '?'}, Deriv final=${finalDigit ?? '?'}. TRADING FROZEN.`, 'CRITICAL');
+            updateTradeStatus('SAFETY STOP 🚨', 'Fast tick and Deriv settlement disagree', 'Trading frozen — inspect logs before restarting', 'loss');
+            setTimeout(() => stopBot('Settlement reconciliation mismatch'), 50);
+        }
+
+        function handleOpenContractUpdate(contract, envelope = {}) {
+            if (!contract || !contract.contract_id) return;
+
+            const contractId = Number(contract.contract_id);
+            const ac = window.settlementLedger.get(contractId) ||
+                (window.activeContract && Number(window.activeContract.contractId) === contractId ? window.activeContract : null);
+
+            if (!ac) {
+                log(`⚠️ Settlement update received for untracked contract ${contractId}`, 'WARNING');
+                return;
+            }
+
+            if (envelope?.subscription?.id) ac.subscriptionId = envelope.subscription.id;
+
+            const alignmentBecameReady = updateContractAlignmentFromDeriv(ac, contract);
+
+            if (alignmentBecameReady && !ac.tickResolved) {
+                resolveBufferedSettlementTick(ac);
+            }
+
+            const status = String(contract.status || '').toLowerCase();
+            const isSold = contract.is_sold === true || Number(contract.is_sold) === 1 || ['won','lost','sold'].includes(status);
+            if (!isSold || ac.settled) return;
+
+            ac.settled = true;
+            ac.status = 'SETTLED';
+
+            const actualProfit = Number(contract.profit ?? 0);
+            const actualBuyPrice = Number(contract.buy_price ?? ac.askPrice ?? ac.stake ?? 0);
+            let actualPayout = Number(contract.payout);
+            if (!Number.isFinite(actualPayout)) actualPayout = Math.max(0, actualBuyPrice + actualProfit);
+
+            const finalDigit = getContractFinalDigit(contract);
+            const confirmedWin = actualProfit > 0 || status === 'won';
+
+            ac.actualProfit = actualProfit;
+            ac.actualBuyPrice = actualBuyPrice;
+            ac.actualPayout = actualPayout;
+            ac.finalDigit = finalDigit;
+            ac.confirmedOutcome = confirmedWin ? 'WIN' : 'LOSS';
+
+            const derivExitEpochForOutcome = Number(
+                contract?.exit_spot_time ?? contract?.sell_spot_time ?? 0
+            );
+
+            const observedEpochForOutcome = Number(ac.observedEpoch || 0);
+            const sameProvenSettlementEpoch =
+                observedEpochForOutcome > 0 &&
+                derivExitEpochForOutcome > 0 &&
+                observedEpochForOutcome === derivExitEpochForOutcome;
+
+            // Background reconciliation: fast execution can continue, but Deriv
+            // remains authoritative if the paid contract disagrees.
+            if (ac.fastOutcome === 'WIN' && !confirmedWin) {
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(
+                        ac,
+                        contract,
+                        'same settlement epoch: stream WIN but Deriv LOSS'
+                    );
+                    return;
+                }
+                log(
+                    `🧭 BACKGROUND ALIGNMENT CORRECTION | Contract ${contractId}: ` +
+                    `stream WIN e:${observedEpochForOutcome || '?'}; Deriv LOSS e:${derivExitEpochForOutcome || '?'}`,
+                    'WARNING'
+                );
+            }
+
+            if (ac.fastOutcome === 'LOSS' && confirmedWin) {
+                if (sameProvenSettlementEpoch) {
+                    hardStopOnReconciliationMismatch(
+                        ac,
+                        contract,
+                        'same settlement epoch: stream LOSS but Deriv WIN'
+                    );
+                    return;
+                }
+                log(
+                    `🧭 BACKGROUND ALIGNMENT CORRECTION | Contract ${contractId}: ` +
+                    `stream LOSS e:${observedEpochForOutcome || '?'}; Deriv WIN e:${derivExitEpochForOutcome || '?'}`,
+                    'WARNING'
+                );
+            }
+
+            if (
+                sameProvenSettlementEpoch &&
+                ac.observedDigit !== null &&
+                finalDigit !== null &&
+                Number(ac.observedDigit) !== Number(finalDigit)
+            ) {
+                hardStopOnReconciliationMismatch(
+                    ac,
+                    contract,
+                    'same settlement epoch but public digit differs from Deriv exit digit'
+                );
+                return;
+            }
+
+            if (confirmedWin) {
+                window.stopAfterWin = true;
+                window.nextTradeAllowed = false;
+                window.executionLock = true;
+                window.tickQueue.length = 0;
+                window.stats.wins = (window.stats.wins || 0) + 1;
+                window.lastTradeResult = 'win';
+                window.lastTradeWon = true;
+
+                if (actualPayout > 0) trackTradePayout(actualPayout);
+
+                window.cyclePerformance.settleTrade(
+                    contractId,
+                    'WIN',
+                    finalDigit,
+                    actualPayout,
+                    actualProfit
+                );
+                window.cyclePerformance.completeCycle(
+                    'WIN',
+                    'Confirmed DIGITMATCH win'
+                );
+
+                log(`🏁 CONFIRMED DERIV WIN | Contract ${contractId} | final digit ${finalDigit ?? '?'} | prediction ${ac.predictedDigit} | profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)}`, 'WIN');
+
+                updateStake('win');
+                window.settlementLedger.delete(contractId);
+                if (window.activeContract && Number(window.activeContract.contractId) === contractId) window.activeContract = null;
+
+                updateTradeStatus('WIN CONFIRMED 🎯', `Profit ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(2)} · digit ${finalDigit ?? ac.predictedDigit}`, 'Cycle complete · Trading idle · Market analysis continues', 'win');
+                setTimeout(() => stopBot('Confirmed DIGITMATCH win'), 50);
+                return;
+            }
+
+            // SAFETY FIX V17:
+            // If this settlement arrives after the cycle has already been finalized,
+            // clean up the contract but never advance martingale or reopen trading.
+            if (!window.cyclePerformance?.current) {
+                log(
+                    `🧹 LATE SETTLEMENT IGNORED FOR PROGRESSION | Contract ${contractId} | outcome LOSS | cycle already finalized`,
+                    'WARNING'
+                );
+                window.settlementLedger.delete(contractId);
+                if (window.activeContract && Number(window.activeContract.contractId) === contractId) {
+                    window.activeContract = null;
+                }
+                return;
+            }
+
+            window.stats.losses = (window.stats.losses || 0) + 1;
+            window.lastTradeResult = 'loss';
+            window.lastTradeWon = false;
+
+            log(
+                `✅ BACKGROUND DERIV LOSS | Contract ${contractId} | final digit ${finalDigit ?? '?'} | ` +
+                `prediction ${ac.predictedDigit} | profit $${actualProfit.toFixed(2)}`,
+                'LOSS'
+            );
+
+            window.cyclePerformance.settleTrade(
+                contractId,
+                'LOSS',
+                finalDigit,
+                actualPayout,
+                actualProfit
+            );
+
+            // Usually progression already happened on the exact public outcome tick.
+            // If the browser missed that tick, apply confirmed progression once here.
+            if (!ac.progressionApplied) {
+                log(
+                    `⚠️ Exact public outcome unavailable for contract ${contractId}; ` +
+                    `applying confirmed settlement progression once`,
+                    'WARNING'
+                );
+                applyFastLossProgression(ac);
+            }
+
+            window.settlementLedger.delete(contractId);
+
+            const isStillCurrentContract =
+                window.activeContract &&
+                Number(window.activeContract.contractId) === contractId;
+
+            if (isStillCurrentContract) {
+                window.activeContract = null;
+
+                const pendingOrderExists =
+                    window.pendingProposals &&
+                    window.pendingProposals.size > 0;
+
+                if (
+                    window.isBotRunning &&
+                    !window.stopAfterWin &&
+                    !pendingOrderExists &&
+                    !window.recoverySubmissionState?.inFlight &&
+                    window.tradeCount < window.maxTrades
+                ) {
+                    window.executionLock = false;
+                    window.nextTradeAllowed = true;
+
+                    const triggerTick = window.lastTick;
+                    if (triggerTick) {
+                        submitRecoveryOnce(
+                            contractId,
+                            triggerTick,
+                            'SETTLEMENT_FALLBACK_ONLY'
+                        );
+                    }
+                }
+            }
+
+            // If a newer pipelined contract is already active, do not touch its state.
+            log(
+                `✅ SETTLEMENT RECONCILED IN BACKGROUND | Contract ${contractId} | ` +
+                `progressionApplied=${!!ac.progressionApplied}`,
+                'SYSTEM'
+            );
+
+        }
+
+
+        function onTradeComplete(isSuccess = true) {
+            if (!isSuccess && !hasOpenContract()) { window.executionLock = false; window.nextTradeAllowed = true; }
+            updateSessionDisplay();
+        }
+
+        // Reset all state
+        function resetAllState() {
+            window.maxTrades = getUserMaxTrades();
+            window.maxCycleTrades = window.maxTrades;
+            window.cycleRotations = 0;
+            
+            updateStake('initial');
+            resetPnL();
+            resetTradeStatus();
+            
+            window.startingBalance = 0.0;
+            window.currentBalance = 0.0;
+            window.netProfit = 0.0;
+            
+            document.getElementById('metricTradeCount').textContent = '0';
+            document.getElementById('metricAccountBalance').textContent = '$---';
+            document.getElementById('metricLiveTick').textContent = '---';
+            document.getElementById('metricLastDigit').textContent = 'Digit: ?';
+            
+            window.stats = { totalTicks: 0, tradesExecuted: 0, wins: 0, losses: 0 };
+            window.tickQueue = [];
+            window.lastTick = null;
+            window.lastTradeResult = null;
+            window.lastTradeWon = null;
+            window.tradeCount = 0;
+            window.martingaleStep = 0;
+            window.pendingProposals.clear();
+            window.botTickTimestamps = [];
+            window.activeContract = null;
+            window.contractMonitorRetries = 0;
+            window.settlementLedger.clear();
+            window.recentMarketTicks = [];
+            window.reconciliationMismatch = false;
+            window.cycleHasPurchasedContract = false;
+            
+            window.executionLock = false;
+            window.lastInstantEntryEpoch = 0;
+            window.waitingForTradeResult = false;
+            window.nextTradeAllowed = true;
+            window.stopAfterWin = false;
+            
+            // Reset digit zero tracker
+            window.digitZeroTracker = {
+                count: 0,
+                lastPrice: null,
+                occurrences: []
+            };
+            
+            const logArea = document.getElementById('log-area');
+            logArea.innerHTML = '[00:00:00] 🤖 Bot reset. Ready.';
+            
+            log('🔄 Bot reset', 'SYSTEM');
+            if (typeof renderTailRiskPanel === 'function') renderTailRiskPanel();
+        }
+        
+        // ========================================
+        // PRECISION DIGIT MATCHER ENGINE
+        // Tracks digit patterns and predicts which digit will appear in 2-4 trades
+        // ========================================
+        
+        window.precisionMatcher = {
+            digitHistory: [],
+            maxHistory: 100,
+            digitFreq: new Array(10).fill(0),
+            digitGaps: {},
+            digitStreaks: {},
+            patterns: { hotDigits: [], coldDigits: [], cyclePatterns: {}, gapPatterns: {} },
+            currentPrediction: null,
+            tradesInCycle: 0,
+            maxTradesPerCycle: 4,
+            minConfidence: 65, // Minimum confidence to trade
+            
+            init() {
+                for (let i = 0; i < 10; i++) {
+                    this.digitGaps[i] = [];
+                    this.digitStreaks[i] = 0;
+                }
+                log('🎯 Precision Digit Matcher initialized', 'SYSTEM');
+            },
+            
+            addDigit(digit) {
+                this.digitHistory.push(digit);
+                if (this.digitHistory.length > this.maxHistory) this.digitHistory.shift();
+                this.digitFreq[digit]++;
+                this.updateGapTracking(digit);
+                this.updateStreakTracking(digit);
+                this.analyzePatterns();
+            },
+            
+            updateGapTracking(currentDigit) {
+                for (let digit = 0; digit < 10; digit++) {
+                    if (digit === currentDigit) {
+                        this.digitGaps[digit].push(0);
+                        if (this.digitGaps[digit].length > 20) this.digitGaps[digit].shift();
+                    } else {
+                        if (this.digitGaps[digit].length > 0) {
+                            this.digitGaps[digit][this.digitGaps[digit].length - 1]++;
+                        } else {
+                            this.digitGaps[digit].push(1);
+                        }
+                    }
+                }
+            },
+            
+            updateStreakTracking(digit) {
+                const lastDigit = this.digitHistory[this.digitHistory.length - 2];
+                if (lastDigit === digit) {
+                    this.digitStreaks[digit]++;
+                } else {
+                    this.digitStreaks[digit] = 1;
+                }
+            },
+            
+            analyzePatterns() {
+                if (this.digitHistory.length < 20) return;
+                this.patterns.hotDigits = this.findHotDigits();
+                this.patterns.coldDigits = this.findColdDigits();
+                this.patterns.cyclePatterns = this.detectCyclePatterns();
+                this.patterns.gapPatterns = this.calculateAverageGaps();
+            },
+            
+            findHotDigits() {
+                const recentWindow = 20;
+                const recentDigits = this.digitHistory.slice(-recentWindow);
+                const recentFreq = new Array(10).fill(0);
+                recentDigits.forEach(d => recentFreq[d]++);
+                return recentFreq
+                    .map((freq, digit) => ({ digit, freq, percentage: (freq/recentWindow)*100 }))
+                    .sort((a, b) => b.freq - a.freq);
+            },
+            
+            findColdDigits() {
+                const currentGaps = [];
+                for (let digit = 0; digit < 10; digit++) {
+                    const gaps = this.digitGaps[digit];
+                    if (gaps.length > 0) {
+                        const currentGap = gaps[gaps.length - 1];
+                        const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+                        currentGaps.push({ digit, currentGap, avgGap, overdue: currentGap - avgGap });
+                    }
+                }
+                return currentGaps.sort((a, b) => b.overdue - a.overdue);
+            },
+            
+            detectCyclePatterns() {
+                const cycles = {};
+                const lastDigit = this.digitHistory[this.digitHistory.length - 1];
+                for (let i = 0; i < this.digitHistory.length - 5; i++) {
+                    if (this.digitHistory[i] === lastDigit) {
+                        for (let j = 2; j <= 4; j++) {
+                            if (i + j < this.digitHistory.length) {
+                                const followingDigit = this.digitHistory[i + j];
+                                const key = `${lastDigit}->${followingDigit}@${j}`;
+                                cycles[key] = (cycles[key] || 0) + 1;
+                            }
+                        }
+                    }
+                }
+                return cycles;
+            },
+            
+            calculateAverageGaps() {
+                const avgGaps = {};
+                for (let digit = 0; digit < 10; digit++) {
+                    const gaps = this.digitGaps[digit];
+                    if (gaps.length > 0) {
+                        avgGaps[digit] = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+                    }
+                }
+                return avgGaps;
+            },
+            
+            getPrediction() {
+                if (this.digitHistory.length < 20) {
+                    return { digit: null, confidence: 0, reason: 'Need 20+ ticks for analysis', shouldTrade: false };
+                }
+                
+                const lastDigit = this.digitHistory[this.digitHistory.length - 1];
+                const cycleScores = this.scoreByCyclePattern(lastDigit);
+                const overdueScores = this.scoreByOverdue();
+                const hotScores = this.scoreByHotDigits();
+                const gapScores = this.scoreByGapPattern();
+                
+                const combinedScores = [];
+                for (let digit = 0; digit < 10; digit++) {
+                    const score = 
+                        (cycleScores[digit] || 0) * 0.40 +
+                        (overdueScores[digit] || 0) * 0.25 +
+                        (hotScores[digit] || 0) * 0.20 +
+                        (gapScores[digit] || 0) * 0.15;
+                    combinedScores.push({ digit, score });
+                }
+                
+                combinedScores.sort((a, b) => b.score - a.score);
+                const topPrediction = combinedScores[0];
+                const confidence = Math.min(topPrediction.score * 10, 95);
+                
+                const reason = this.buildPredictionReason(topPrediction.digit, {
+                    cycle: cycleScores[topPrediction.digit],
+                    overdue: overdueScores[topPrediction.digit],
+                    hot: hotScores[topPrediction.digit],
+                    gap: gapScores[topPrediction.digit]
+                });
+                
+                return {
+                    digit: topPrediction.digit,
+                    confidence: Math.round(confidence),
+                    score: topPrediction.score,
+                    reason: reason,
+                    shouldTrade: confidence >= this.minConfidence,
+                    alternativeDigits: combinedScores.slice(1, 4).map(p => p.digit)
+                };
+            },
+            
+            scoreByCyclePattern(lastDigit) {
+                const scores = {};
+                const cycles = this.patterns.cyclePatterns;
+                for (let digit = 0; digit < 10; digit++) {
+                    let totalScore = 0;
+                    for (let gap = 2; gap <= 4; gap++) {
+                        const key = `${lastDigit}->${digit}@${gap}`;
+                        if (cycles[key]) {
+                            totalScore += cycles[key] * (5 - gap);
+                        }
+                    }
+                    scores[digit] = totalScore;
+                }
+                const maxScore = Math.max(...Object.values(scores));
+                if (maxScore > 0) {
+                    for (let digit in scores) {
+                        scores[digit] = (scores[digit] / maxScore) * 10;
+                    }
+                }
+                return scores;
+            },
+            
+            scoreByOverdue() {
+                const scores = {};
+                const coldDigits = this.patterns.coldDigits;
+                coldDigits.forEach((item, index) => {
+                    if (item.currentGap >= 2 && item.currentGap <= 6) {
+                        scores[item.digit] = 10 - index;
+                    }
+                });
+                return scores;
+            },
+            
+            scoreByHotDigits() {
+                const scores = {};
+                const hotDigits = this.patterns.hotDigits;
+                hotDigits.forEach((item, index) => {
+                    if (item.freq >= 3) {
+                        scores[item.digit] = 10 - index;
+                    }
+                });
+                return scores;
+            },
+            
+            scoreByGapPattern() {
+                const scores = {};
+                const gapPatterns = this.patterns.gapPatterns;
+                for (let digit = 0; digit < 10; digit++) {
+                    const avgGap = gapPatterns[digit];
+                    const currentGap = this.digitGaps[digit][this.digitGaps[digit].length - 1] || 0;
+                    if (avgGap && currentGap >= (avgGap - 1) && currentGap <= (avgGap + 1)) {
+                        scores[digit] = 8;
+                    } else if (avgGap && currentGap >= 2 && currentGap <= 4) {
+                        scores[digit] = 5;
+                    }
+                }
+                return scores;
+            },
+            
+            buildPredictionReason(digit, scores) {
+                const reasons = [];
+                if (scores.cycle > 5) reasons.push(`Cycle pattern`);
+                if (scores.overdue > 5) reasons.push(`Digit ${digit} overdue`);
+                if (scores.hot > 5) reasons.push(`Hot trend`);
+                if (scores.gap > 5) reasons.push(`Gap alignment`);
+                return reasons.length > 0 ? reasons.join(' + ') : 'Weak signals';
+            },
+            
+            checkForMatch(digit) {
+                if (this.currentPrediction === null) return false;
+                
+                this.tradesInCycle++;
+                
+                if (digit === this.currentPrediction) {
+                    log(`🎯 PRECISION MATCH! Digit ${digit} appeared on trade ${this.tradesInCycle}/4`, 'WIN');
+                    this.resetCycle();
+                    return true;
+                }
+                
+                if (this.tradesInCycle >= this.maxTradesPerCycle) {
+                    log(`❌ No match after ${this.tradesInCycle} trades. Prediction failed.`, 'WARNING');
+                    this.resetCycle();
+                    return false;
+                }
+                
+                log(`⏳ Waiting... Trade ${this.tradesInCycle}/${this.maxTradesPerCycle}, looking for digit ${this.currentPrediction}`, 'TRADE');
+                return null; // Still waiting
+            },
+            
+            startNewCycle() {
+                const prediction = this.getPrediction();
+                
+                if (!prediction.shouldTrade) {
+                    log(`⚠️ Confidence too low (${prediction.confidence}%). Need ${this.minConfidence}%+`, 'WARNING');
+                    return false;
+                }
+                
+                this.currentPrediction = prediction.digit;
+                this.tradesInCycle = 0;
+                
+                // Update the predicted digit in the UI
+                const predictedDigitInput = document.getElementById('predictedDigit');
+                if (predictedDigitInput) {
+                    predictedDigitInput.value = this.currentPrediction;
+                }
+                
+                log(`🎯 NEW PRECISION CYCLE: Predicting digit ${this.currentPrediction}`, 'PREDICTION');
+                log(`📊 Confidence: ${prediction.confidence}% | Reason: ${prediction.reason}`, 'PREDICTION');
+                log(`🔄 Will trade up to ${this.maxTradesPerCycle} times to match this digit`, 'PREDICTION');
+                
+                return true;
+            },
+            
+            resetCycle() {
+                this.currentPrediction = null;
+                this.tradesInCycle = 0;
+            }
+        };
+        
+        // Initialize precision matcher on page load
+        window.precisionMatcher.init();
+        
+        // Override the original handleTick to include precision matcher tracking
+        const originalHandleTick = handleTick;
+        handleTick = function(tick) {
+            // Add digit to precision matcher
+            if (tick && tick.quote) {
+                const price = parseFloat(tick.quote);
+                const precisionFormattedTick = canonicalTickString(tick.quote, tick, tick.symbol);
+                const digit = precisionFormattedTick
+                    ? Number.parseInt(precisionFormattedTick[precisionFormattedTick.length - 1], 10)
+                    : NaN;
+                
+                if (!isNaN(digit) && digit >= 0 && digit <= 9) {
+                    window.precisionMatcher.addDigit(digit);
+                }
+            }
+            
+            // Call original handler
+            return originalHandleTick(tick);
+        };
+        
+        // Precision Matcher is ANALYTICS ONLY in V5.
+        // It must never declare a financial win, create payouts, increment trade
+        // counters, or stop the bot. Contract outcome is owned exclusively by the
+        // active-contract fast tick mapper + Deriv proposal_open_contract settlement.
+        const originalCheckForImmediateWin = checkForImmediateWin;
+        checkForImmediateWin = function(tick) {
+            return originalCheckForImmediateWin(tick);
+        };
+
+        // Override START behavior by execution mode.
+        // INSTANT starts immediately.
+        // SCORE AUTO is armed immediately and waits for the Digit Intelligence Engine;
+        // the legacy Precision Matcher no longer controls trading eligibility.
+        const originalStartBot = startBot;
+
+        startBot = function() {
+            if (sessionState.mode === 'instant') {
+                // V20: one entry path only. originalStartBot() clears the queue,
+                // locks the selected digit and opens/reuses the authenticated socket.
+                // The normal queue processor then executes on the first NEW market tick.
+                log('⚡ INSTANT V21 armed · tick-pipelined execution · selected digit locked', 'SYSTEM');
+                return originalStartBot();
+            }
+
+            log('🧠 SCORE AUTO armed · Evaluating safe entries', 'ENGINE');
+            return originalStartBot();
+        };
+
+        window.DMSInstantLifecycleV21 = {
+            version: 'INSTANT-LIFECYCLE-V21-TICK-PIPELINED',
+            getState() {
+                return {
+                    mode: sessionState?.mode || null,
+                    running: !!window.isBotRunning,
+                    executionLock: !!window.executionLock,
+                    nextTradeAllowed: !!window.nextTradeAllowed,
+                    activeContractId: window.activeContract?.contractId || null,
+                    activeContractStatus: window.activeContract?.status || null,
+                    progressionApplied: !!window.activeContract?.progressionApplied,
+                    pendingProposals: window.pendingProposals?.size || 0,
+                    queuedTicks: window.tickQueue?.length || 0,
+                    lastInstantEntryEpoch: Number(window.lastInstantEntryEpoch || 0),
+                    tradeCount: Number(window.tradeCount || 0),
+                    martingaleStep: Number(window.martingaleStep || 0),
+                    currentStake: Number(window.currentStake || 0)
+                };
+            }
+        };
+
+        log('📊 Precision Matcher loaded', 'SYSTEM');
+    
+;
+
+;
+
+(function () {
+    function installBalanceRefreshButton() {
+        if (document.getElementById('dms-balance-refresh-btn')) return;
+
+        const balance =
+            document.getElementById('metricAccountBalance') ||
+            document.getElementById('metricBalance') ||
+            document.getElementById('account-balance') ||
+            document.getElementById('balanceDisplay');
+
+        if (!balance || !balance.parentElement) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'dms-balance-refresh-btn';
+        btn.type = 'button';
+        btn.textContent = '↻';
+        btn.title = 'Refresh current balance from Deriv';
+        btn.className =
+            'ml-2 px-2 py-1 rounded border border-emerald-500/30 ' +
+            'text-emerald-300 text-xs font-black hover:bg-emerald-500/10';
+
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            const old = btn.textContent;
+            btn.textContent = '…';
+
+            await refreshLiveDerivBalances({ silent: false });
+
+            btn.textContent = old;
+            btn.disabled = false;
+        });
+
+        balance.parentElement.appendChild(btn);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            installBalanceRefreshButton
+        );
+    } else {
+        installBalanceRefreshButton();
+    }
+})();
+
+;
+
+(function(){
+  function ensureBrowserFeedBoot(){
+    try {
+      if (typeof startPublicMarketWatchdog === 'function') startPublicMarketWatchdog();
+      if (typeof connectPublicMarketData === 'function') {
+        const ws = window.marketWs;
+        if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+          connectPublicMarketData(true);
+        }
+      }
+    } catch (e) { console.warn('[MARKET-FEED] independent boot skipped:', e); }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(ensureBrowserFeedBoot, 800));
+  else setTimeout(ensureBrowserFeedBoot, 800);
+})();

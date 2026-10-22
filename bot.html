@@ -9152,10 +9152,15 @@ function rotateHybridDigit(reason = '') {
 
         window.browserMarketLastTickAt = window.browserMarketLastTickAt || 0;
         window.browserMarketSocketOpenedAt = window.browserMarketSocketOpenedAt || 0;
+        window.browserMarketConnectStartedAt = window.browserMarketConnectStartedAt || 0;
         window.browserMarketEndpointMode = window.browserMarketEndpointMode || 'modern';
         window.browserMarketWatchdogStarted = window.browserMarketWatchdogStarted || false;
 
         function getPublicMarketWsUrl(mode = window.browserMarketEndpointMode || 'modern') {
+            if (mode === 'binary') {
+                // Deriv's public market-data workflow documents this no-auth socket.
+                return 'wss://ws.binaryws.com/websockets/v3';
+            }
             if (mode === 'legacy') {
                 const appId = (typeof getDerivAppIdForRest === 'function')
                     ? getDerivAppIdForRest()
@@ -9163,6 +9168,12 @@ function rotateHybridDigit(reason = '') {
                 return `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`;
             }
             return 'wss://api.derivws.com/trading/v1/options/ws/public';
+        }
+
+        function nextPublicMarketEndpointMode(mode = window.browserMarketEndpointMode || 'modern') {
+            if (mode === 'modern') return 'binary';
+            if (mode === 'binary') return 'legacy';
+            return 'modern';
         }
 
         function connectPublicMarketData(force = false, endpointMode = null) {
@@ -9182,6 +9193,9 @@ function rotateHybridDigit(reason = '') {
             }
 
             window.marketIsConnecting = true;
+            window.browserMarketConnectStartedAt = Date.now();
+            window.browserMarketSocketOpenedAt = 0;
+            window.browserMarketLastTickAt = 0;
             if (window.digitMatchScanner) window.digitMatchScanner.scanStarted = false;
             updateConnectionStatus();
             log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
@@ -9191,6 +9205,7 @@ function rotateHybridDigit(reason = '') {
 
             window.marketWs.onopen = () => {
                 window.browserMarketSocketOpenedAt = Date.now();
+                window.browserMarketConnectStartedAt = 0;
                 window.browserMarketLastTickAt = 0;
                 window.marketIsConnecting = false;
                 window.marketReconnectAttempts = 0;
@@ -9373,11 +9388,15 @@ function rotateHybridDigit(reason = '') {
             };
             window.marketWs.onerror = (error) => {
                 console.error('Public market WebSocket error:', error);
-                log('❌ Public market connection error', 'ERROR');
+                log(`❌ Public market connection error · ${window.browserMarketEndpointMode}`, 'ERROR');
+                // Some browsers leave a failed WebSocket in CONNECTING for a long time.
+                // Force it closed so the watchdog can rotate immediately.
+                try { window.marketWs?.close?.(); } catch (_) {}
             };
 
             window.marketWs.onclose = () => {
                 window.marketIsConnecting = false;
+                window.browserMarketConnectStartedAt = 0;
                 log('🔌 Public market WebSocket disconnected', 'NETWORK');
                 updateConnectionStatus();
                 schedulePublicMarketReconnect();
@@ -9399,24 +9418,47 @@ function rotateHybridDigit(reason = '') {
                     const lastTickAt = Number(window.browserMarketLastTickAt || 0);
                     const silentFor = lastTickAt ? now - lastTickAt : (openedAt ? now - openedAt : Infinity);
 
-                    if (!open && !connecting) {
-                        console.warn('[MARKET-FEED] Browser public feed absent; reconnecting.');
-                        connectPublicMarketData(true, window.browserMarketEndpointMode || 'modern');
-                        return;
-                    }
+                    const connectStartedAt = Number(window.browserMarketConnectStartedAt || 0);
+                    const connectingFor = connecting && connectStartedAt ? now - connectStartedAt : 0;
 
-                    // A healthy R_10 stream should not remain silent for many seconds.
-                    // If the modern public endpoint opens but no ticks arrive, fail over
-                    // to the legacy public market endpoint; alternate on future stalls.
-                    if (open && silentFor > 9000) {
-                        const nextMode = window.browserMarketEndpointMode === 'modern' ? 'legacy' : 'modern';
-                        console.warn(`[MARKET-FEED] Feed silent ${(silentFor/1000).toFixed(1)}s; failing over ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                    // Critical: a browser WebSocket can remain stuck in CONNECTING
+                    // without firing open/close promptly. Never wait forever.
+                    if (connecting && connectingFor > 7000) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Connect timeout ${(connectingFor/1000).toFixed(1)}s; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
                         try {
                             ws.onclose = null;
                             ws.close();
                         } catch (_) {}
                         window.marketWs = null;
+                        window.marketIsConnecting = false;
                         window.browserMarketEndpointMode = nextMode;
+                        window.browserMarketConnectStartedAt = 0;
+                        window.browserMarketSocketOpenedAt = 0;
+                        window.browserMarketLastTickAt = 0;
+                        connectPublicMarketData(true, nextMode);
+                        return;
+                    }
+
+                    if (!open && !connecting) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Browser public feed absent; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        connectPublicMarketData(true, nextMode);
+                        return;
+                    }
+
+                    // A healthy R_10 stream should not remain silent for many seconds.
+                    if (open && silentFor > 9000) {
+                        const nextMode = nextPublicMarketEndpointMode(window.browserMarketEndpointMode);
+                        console.warn(`[MARKET-FEED] Feed silent ${(silentFor/1000).toFixed(1)}s; rotating ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        try {
+                            ws.onclose = null;
+                            ws.close();
+                        } catch (_) {}
+                        window.marketWs = null;
+                        window.marketIsConnecting = false;
+                        window.browserMarketEndpointMode = nextMode;
+                        window.browserMarketConnectStartedAt = 0;
                         window.browserMarketSocketOpenedAt = 0;
                         window.browserMarketLastTickAt = 0;
                         connectPublicMarketData(true, nextMode);
