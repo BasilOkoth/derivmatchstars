@@ -9316,12 +9316,10 @@ function rotateHybridDigit(reason = '') {
                         return;
                     }
 
-                    // In SERVER mode warm-up comes from the same authoritative
-                    // backend history used by V1, avoiding two different histories.
-                    if (window.SERVER_EXECUTION?.enabled) {
-                        return;
-                    }
-
+                    // Market analysis is connection-owned, not START/STOP-owned.
+                    // Always accept the public 200-tick history so the browser AI can
+                    // reach 200/200 immediately after connection, even in SERVER mode.
+                    // Trading execution remains server-controlled and is unaffected.
                     try {
                         if (window.digitIntelligenceEngine?.processWarmupTicks) {
                             window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
@@ -9361,10 +9359,17 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 if (data.msg_type === 'tick' && data.tick) {
-                    // SERVER mode has one authoritative market clock: the backend
-                    // canonical ledger. Do not let the direct browser websocket
-                    // feed a second, competing AI/UI tick stream.
-                    if (window.SERVER_EXECUTION?.enabled) {
+                    // Market streaming starts at connection and continues while the
+                    // bot is stopped. Only when the SERVER worker is actively running
+                    // do we suppress browser ticks and use the backend canonical ledger
+                    // as the single authoritative AI/trading clock.
+                    const serverState = window.SERVER_EXECUTION?.state || null;
+                    const serverWorkerActive = !!(
+                        window.SERVER_EXECUTION?.enabled &&
+                        serverState &&
+                        (serverState.running || serverState.open_contract_id || Number(serverState.current_trade || 0) > 0)
+                    );
+                    if (serverWorkerActive) {
                         return;
                     }
 
