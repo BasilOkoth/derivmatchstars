@@ -14017,6 +14017,148 @@ function toggleServerContinuousResearch() {
         }
 
 
+
+        // =====================================================================
+        // SERVER CANONICAL TICK FALLBACK
+        // If direct browser WebSockets are unavailable/stuck, reuse the exact
+        // canonical tick stream already held by the Render execution engine.
+        // This path updates browser research/AI only; it NEVER submits trades.
+        // =====================================================================
+        window.SERVER_AI_FEED = window.SERVER_AI_FEED || {
+            warmupLoaded: false,
+            lastSeq: 0,
+            lastKey: null,
+            source: 'server-poll'
+        };
+
+        function processServerWarmupDigits(digits) {
+            const engine = window.digitIntelligenceEngine;
+            if (!engine?.enabled || !Array.isArray(digits) || !digits.length) return false;
+
+            const clean = digits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9);
+            if (!clean.length) return false;
+
+            const needed = Number(engine.targetWarmupTicks || 200);
+            const seed = clean.slice(-Math.max(needed, Math.min(clean.length, 200)));
+
+            // Do not overwrite a healthy browser feed that has already warmed.
+            if (engine.warmupDone && Number(engine.warmupTicks || 0) >= needed) return true;
+
+            engine.reset();
+            window.lastDigits = [];
+
+            for (const digit of seed) {
+                window.lastDigits.push(digit);
+                if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
+                engine.tickIndex++;
+                engine.updateRegime(digit);
+                engine.onNewDigit(digit);
+                engine.warmupTicks++;
+            }
+
+            const progress = Math.min(100, Math.round((engine.warmupTicks / needed) * 100));
+            if (engine.warmupTicks >= needed) {
+                engine.warmupDone = true;
+                updateEngineStatus('Analyzing market...', 'ANALYZING', 100);
+                try { engine.analyzeAndRecommend(); } catch (e) { console.warn('[SERVER-AI-FEED] warm-up analysis skipped:', e); }
+            } else {
+                updateEngineStatus(`Warming up... ${engine.warmupTicks}/${needed}`, 'WARMUP', progress);
+            }
+
+            window.SERVER_AI_FEED.warmupLoaded = true;
+            console.info(`[SERVER-AI-FEED] Warmed browser AI from ${seed.length} canonical server digits.`);
+            return true;
+        }
+
+        function ingestServerCanonicalTick(state) {
+            try {
+                if (!state) return false;
+                const feed = state.server_tick_feed || null;
+                const latest = feed?.latest || state.digit_score?.canonical_tick || null;
+                const history = Array.isArray(feed?.history_digits) ? feed.history_digits : [];
+
+                // Use server history when the direct browser feed has not warmed.
+                if (!window.SERVER_AI_FEED.warmupLoaded && history.length) {
+                    processServerWarmupDigits(history);
+                }
+
+                if (!latest || typeof latest !== 'object') return false;
+                const seq = Number(feed?.seq || latest._dms_seq || latest.seq || state.digit_score?.rank_seq || 0);
+                const epoch = Number(latest.epoch || feed?.epoch || state.digit_score?.rank_epoch || 0);
+                const symbol = String(latest.symbol || state.symbol || document.getElementById('symbol')?.value || 'R_10');
+                const quote = latest.quote ?? state.digit_score?.canonical_tick?.quote;
+                const formatted = String(
+                    latest.formatted_quote ||
+                    state.digit_score?.canonical_tick?.formatted_quote ||
+                    (quote ?? '')
+                );
+                let digit = Number(latest.digit ?? state.digit_score?.canonical_tick?.digit);
+                if (!Number.isInteger(digit) && formatted) {
+                    digit = Number.parseInt(formatted[formatted.length - 1], 10);
+                }
+                if (!Number.isInteger(digit) || digit < 0 || digit > 9 || !epoch) return false;
+
+                const key = `${symbol}|${epoch}|${formatted}|${digit}`;
+                if ((seq && seq <= Number(window.SERVER_AI_FEED.lastSeq || 0)) || key === window.SERVER_AI_FEED.lastKey) {
+                    return false;
+                }
+
+                window.SERVER_AI_FEED.lastSeq = seq || (Number(window.SERVER_AI_FEED.lastSeq || 0) + 1);
+                window.SERVER_AI_FEED.lastKey = key;
+                window.browserMarketLastTickAt = Date.now();
+
+                // Canonical tick object expected by bias audit / UI.
+                const tick = {
+                    symbol,
+                    epoch,
+                    quote,
+                    formattedQuote: formatted,
+                    formatted_quote: formatted,
+                    pip_size: latest.pip_size ?? state.digit_score?.canonical_tick?.pip_size,
+                    digit,
+                    _dms_seq: seq || undefined,
+                    canonical: true,
+                    source: 'SERVER_CANONICAL_POLL'
+                };
+                window.lastTick = tick;
+                try { rememberMarketTick(tick); } catch (_) {}
+
+                // Browser UI becomes explicitly SERVER-FED rather than falsely CONNECTING.
+                const liveEl = document.getElementById('metricLiveTick');
+                const digitEl = document.getElementById('metricLastDigit');
+                if (liveEl) liveEl.textContent = formatted || String(quote ?? '---');
+                if (digitEl) digitEl.textContent = `Digit: ${digit}`;
+                const connEl = document.getElementById('connection_status');
+                if (connEl) connEl.textContent = 'Server canonical feed';
+
+                window.totalTicksReceived = Number(window.totalTicksReceived || 0) + 1;
+                window.stats.totalTicks = Number(window.stats?.totalTicks || 0) + 1;
+                window.tickTimestamps = Array.isArray(window.tickTimestamps) ? window.tickTimestamps : [];
+                window.tickTimestamps.push(Date.now());
+                window.tickTimestamps = window.tickTimestamps.filter(ts => ts > Date.now() - 10000);
+                const recv = document.getElementById('ticks_received');
+                const rate = document.getElementById('current_tick_rate');
+                if (recv) recv.textContent = String(window.totalTicksReceived);
+                if (rate) rate.textContent = `${(window.tickTimestamps.length / 10).toFixed(1)}/s`;
+
+                // Research/model pipeline only. No proposal/buy/contract calls here.
+                const modelSymbol = symbol;
+                try { window.nextTickModel?.onTickBeforeEngine?.(modelSymbol, digit); } catch (e) { console.warn('[SERVER-AI-FEED] nextTick before skipped:', e); }
+                try {
+                    if (window.digitIntelligenceEngine?.enabled) {
+                        window.digitIntelligenceEngine.processLiveTick(digit);
+                    }
+                } catch (e) { console.error('[SERVER-AI-FEED] AI tick failed:', e); }
+                try { window.nextTickModel?.onTickAfterEngine?.(modelSymbol, digit, tick); } catch (e) { console.warn('[SERVER-AI-FEED] nextTick after skipped:', e); }
+                try { window.digitDNAEngine?.onNewTick?.(digit, modelSymbol); } catch (e) { console.warn('[SERVER-AI-FEED] DNA forward update skipped:', e); }
+
+                return true;
+            } catch (e) {
+                console.warn('[SERVER-AI-FEED] ingest skipped:', e);
+                return false;
+            }
+        }
+
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             if (!s.enabled || !s.apiUrl) return;
@@ -14084,6 +14226,10 @@ function toggleServerContinuousResearch() {
 
                 if (s.state && s.sessionId) {
                     syncServerMarginGate(false).catch(() => {});
+                    // Feed browser AI from the authoritative server stream whenever
+                    // a new canonical server tick is present. Direct browser WS may
+                    // coexist; model-level canonical dedupe prevents double scoring.
+                    ingestServerCanonicalTick(s.state);
                 }
 
                 renderServerExecutionState();

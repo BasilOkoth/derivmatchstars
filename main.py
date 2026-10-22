@@ -351,6 +351,16 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
+                    # Browser AI fallback feed. This is read-only canonical server
+                    # market data already held by the execution engine; it does not
+                    # alter proposals, buys, settlement or strategy decisions.
+                    "server_tick_feed": {
+                        "latest": dict((getattr(engine, "latest_ticks", {}) or {}).get(int(s.id)) or {}),
+                        "history_digits": list(engine._digit_history(int(s.id))),
+                        "seq": int((getattr(engine, "tick_sequence", {}) or {}).get(int(s.id), 0) or 0),
+                        "epoch": int((getattr(engine, "latest_tick_epoch", {}) or {}).get(int(s.id), 0) or 0),
+                        "received_at": (getattr(engine, "latest_tick_received_at", {}) or {}).get(int(s.id)),
+                    },
                     "ai_signal": engine.ai_signal_status(s.id, symbol=s.symbol),
                     "fusion": (
                         (getattr(engine, "digit_score_snapshots", {}) or {})
