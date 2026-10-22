@@ -1252,7 +1252,8 @@
                     events:0,
                     lagCounts:Array.from({length:cfg.lagDepth},()=>Array(10).fill(1)), // smoothing
                     contexts2:{}, contexts3:{}, contexts4:{},
-                    entropy10:[], entropy20:[],
+                    entropy5:[], entropy10:[], entropy20:[], entropy50:[], entropy100:[],
+                    entropySlopeFast:[], entropySlopeSlow:[], entropyCompression:[],
                     freq20:[], preGap:[], runLength:[]
                 }));
 
@@ -1274,8 +1275,19 @@
                         }
                     }
 
-                    p.entropy10.push(this.entropy(arr.slice(Math.max(0,i-10),i)));
-                    p.entropy20.push(this.entropy(arr.slice(Math.max(0,i-20),i)));
+                    const h5=this.entropy(arr.slice(Math.max(0,i-5),i));
+                    const h10=this.entropy(arr.slice(Math.max(0,i-10),i));
+                    const h20=this.entropy(arr.slice(Math.max(0,i-20),i));
+                    const h50=this.entropy(arr.slice(Math.max(0,i-50),i));
+                    const h100=this.entropy(arr.slice(Math.max(0,i-100),i));
+                    p.entropy5.push(h5);
+                    p.entropy10.push(h10);
+                    p.entropy20.push(h20);
+                    p.entropy50.push(h50);
+                    p.entropy100.push(h100);
+                    p.entropySlopeFast.push(h5-h20);
+                    p.entropySlopeSlow.push(h20-h100);
+                    p.entropyCompression.push(h10-h50);
                     p.freq20.push(this.freqBefore(arr,i,target,20));
                     p.preGap.push(this.previousGap(arr,i,target));
                     p.runLength.push(this.runLengthBefore(arr,i));
@@ -1304,10 +1316,22 @@
                         top2:topContexts(p.contexts2),
                         top3:topContexts(p.contexts3),
                         top4:topContexts(p.contexts4),
+                        meanEntropy5:mean(p.entropy5),
+                        sdEntropy5:sd(p.entropy5),
                         meanEntropy10:mean(p.entropy10),
                         sdEntropy10:sd(p.entropy10),
                         meanEntropy20:mean(p.entropy20),
                         sdEntropy20:sd(p.entropy20),
+                        meanEntropy50:mean(p.entropy50),
+                        sdEntropy50:sd(p.entropy50),
+                        meanEntropy100:mean(p.entropy100),
+                        sdEntropy100:sd(p.entropy100),
+                        meanEntropySlopeFast:mean(p.entropySlopeFast),
+                        sdEntropySlopeFast:sd(p.entropySlopeFast),
+                        meanEntropySlopeSlow:mean(p.entropySlopeSlow),
+                        sdEntropySlopeSlow:sd(p.entropySlopeSlow),
+                        meanEntropyCompression:mean(p.entropyCompression),
+                        sdEntropyCompression:sd(p.entropyCompression),
                         meanFreq20:mean(p.freq20),
                         sdFreq20:sd(p.freq20),
                         meanPreGap:mean(p.preGap),
@@ -1346,8 +1370,14 @@
                     lags:Array.from({length:window.DIGIT_DNA_CONFIG.lagDepth},(_,j)=>
                         n-1-j>=0 ? arr[n-1-j] : null
                     ),
+                    entropy5:this.entropy(arr.slice(-5)),
                     entropy10:this.entropy(arr.slice(-10)),
                     entropy20:this.entropy(arr.slice(-20)),
+                    entropy50:this.entropy(arr.slice(-50)),
+                    entropy100:this.entropy(arr.slice(-100)),
+                    entropySlopeFast:this.entropy(arr.slice(-5))-this.entropy(arr.slice(-20)),
+                    entropySlopeSlow:this.entropy(arr.slice(-20))-this.entropy(arr.slice(-100)),
+                    entropyCompression:this.entropy(arr.slice(-10))-this.entropy(arr.slice(-50)),
                     freq20:this.freqBefore(arr,n,target,20),
                     gap:this.previousGap(arr,n,target),
                     runLength:this.runLengthBefore(arr,n),
@@ -1374,11 +1404,29 @@
                 });
                 const lagScore=lagN ? 1/(1+Math.exp(-(lagLog/lagN))) : 0.5;
 
+                const e5=this.gaussianSimilarity(
+                    current.entropy5,profile.meanEntropy5,profile.sdEntropy5,0.07
+                );
                 const e10=this.gaussianSimilarity(
                     current.entropy10,profile.meanEntropy10,profile.sdEntropy10,0.05
                 );
                 const e20=this.gaussianSimilarity(
                     current.entropy20,profile.meanEntropy20,profile.sdEntropy20,0.04
+                );
+                const e50=this.gaussianSimilarity(
+                    current.entropy50,profile.meanEntropy50,profile.sdEntropy50,0.03
+                );
+                const e100=this.gaussianSimilarity(
+                    current.entropy100,profile.meanEntropy100,profile.sdEntropy100,0.025
+                );
+                const entropySlopeFast=this.gaussianSimilarity(
+                    current.entropySlopeFast,profile.meanEntropySlopeFast,profile.sdEntropySlopeFast,0.05
+                );
+                const entropySlopeSlow=this.gaussianSimilarity(
+                    current.entropySlopeSlow,profile.meanEntropySlopeSlow,profile.sdEntropySlopeSlow,0.04
+                );
+                const entropyCompression=this.gaussianSimilarity(
+                    current.entropyCompression,profile.meanEntropyCompression,profile.sdEntropyCompression,0.04
                 );
                 const f20=this.gaussianSimilarity(
                     current.freq20,profile.meanFreq20,profile.sdFreq20,0.03
@@ -1401,20 +1449,38 @@
                 const c3=ctxScore(current.c3,8);
                 const c4=ctxScore(current.c4,5);
 
+                // Entropy is now a first-class precursor signal. It does not name a
+                // digit on its own; instead we ask whether the CURRENT multi-horizon
+                // entropy state resembles the states that historically preceded THIS
+                // target digit. This avoids turning low entropy into a simplistic rule.
+                const entropyMatch=
+                    0.10*e5+
+                    0.17*e10+
+                    0.20*e20+
+                    0.14*e50+
+                    0.09*e100+
+                    0.12*entropySlopeFast+
+                    0.08*entropySlopeSlow+
+                    0.10*entropyCompression;
+
                 const score=
-                    0.28*lagScore+
-                    0.15*c2+
-                    0.10*c3+
-                    0.07*c4+
-                    0.08*e10+
-                    0.07*e20+
-                    0.08*f20+
-                    0.12*gap+
-                    0.05*run;
+                    0.22*lagScore+
+                    0.13*c2+
+                    0.09*c3+
+                    0.06*c4+
+                    0.22*entropyMatch+
+                    0.07*f20+
+                    0.14*gap+
+                    0.07*run;
 
                 return {
                     score,
-                    parts:{lagScore,c2,c3,c4,e10,e20,f20,gap,run}
+                    parts:{
+                        lagScore,c2,c3,c4,
+                        e5,e10,e20,e50,e100,
+                        entropySlopeFast,entropySlopeSlow,entropyCompression,entropyMatch,
+                        f20,gap,run
+                    }
                 };
             },
 
@@ -1959,7 +2025,7 @@
         };
 
         // ============================================================================
-        // DIGITMATCHSTAR V55 — DIGIT FEATURE ENGINE
+        // DIGITMATCHSTAR V55.2 — ENTROPY-STRENGTHENED DIGIT FEATURE ENGINE
         //
         // Feature engineering discussed for cryptanalysis-style AI:
         //   • multi-window digit frequencies (5/20/50/100/200)
@@ -1967,7 +2033,7 @@
         //   • 10x10 transition probabilities
         //   • 2-, 3- and 4-gram conditional next-digit probabilities
         //   • current gap, gap/average-gap and recent run length
-        //   • entropy at 20/50/100 ticks and entropy trend
+        //   • entropy at 5/10/20/50/100/200 ticks, slope, acceleration and compression
         //   • lag-1 mutual information
         //   • tick interval, price direction and short volatility context
         //
@@ -1986,7 +2052,7 @@
         };
 
         window.digitFeatureEngine = {
-            version: 'DFE-1',
+            version: 'DFE-2-ENTROPY-FUSION',
             lastSnapshot: null,
 
             safeDigits() {
@@ -2125,10 +2191,24 @@
                 const n=arr.length;
                 const cfg=window.DIGIT_FEATURE_CONFIG;
 
+                const e5=this.entropyOf(arr.slice(-5));
+                const e10=this.entropyOf(arr.slice(-10));
                 const e20=this.entropyOf(arr.slice(-20));
                 const e50=this.entropyOf(arr.slice(-50));
                 const e100=this.entropyOf(arr.slice(-100));
+                const e200=this.entropyOf(arr.slice(-200));
                 const entropyTrend=e20-e100;
+                const entropySlopeFast=e5-e20;
+                const entropySlopeSlow=e20-e100;
+                const entropyCompression=e10-e50;
+                const entropyAcceleration=entropySlopeFast-entropySlopeSlow;
+                // 0 = highly disordered, 1 = comparatively structured/compressed.
+                const entropyStructure=Math.max(0,Math.min(1,
+                    0.45*(1-e20)+
+                    0.20*Math.max(0,-entropySlopeFast)+
+                    0.15*Math.max(0,-entropyCompression)+
+                    0.20*(1-e50)
+                ));
                 const mi=this.mutualInformationLag1(arr.slice(-Math.min(500,n)));
                 const runLength=this.runLength(arr);
                 const market=this.marketContext();
@@ -2136,8 +2216,9 @@
                 if(n<cfg.minHistory){
                     const snap={
                         ready:false,historyN:n,symbol,
-                        entropy20:e20,entropy50:e50,entropy100:e100,
-                        entropyTrend,mutualInformation:mi,
+                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                        mutualInformation:mi,
                         runLength,market,rows:[],topDigit:null,signalStrength:0
                     };
                     this.lastSnapshot=snap;
@@ -2179,18 +2260,28 @@
                     const p3=r3*n3.p+(1-r3)*0.10;
                     const p4=r4*n4.p+(1-r4)*0.10;
 
-                    // Feature score is a ranking score, not a probability.
+                    // Entropy does not pick a digit directly. It controls how much
+                    // trust we place in conditional structure versus unconditional
+                    // frequency. When the stream compresses / entropy falls, genuine
+                    // transition and n-gram evidence gets more weight; in high entropy
+                    // states the engine shrinks back toward conservative weighting.
+                    const contextBoost = 1 + 0.85*entropyStructure;
+                    const frequencyShrink = 1 - 0.45*entropyStructure;
                     const raw =
-                        0.18*tr.p +
-                        0.18*p2 +
-                        0.12*p3 +
-                        0.07*p4 +
-                        0.15*f20 +
-                        0.10*f50 +
-                        0.08*f100 +
-                        0.05*f200 +
-                        0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
-                        0.03*Math.max(0,Math.min(0.30,0.10+acceleration));
+                        contextBoost*(
+                            0.18*tr.p +
+                            0.18*p2 +
+                            0.12*p3 +
+                            0.07*p4
+                        ) +
+                        frequencyShrink*(
+                            0.15*f20 +
+                            0.10*f50 +
+                            0.08*f100 +
+                            0.05*f200 +
+                            0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
+                            0.03*Math.max(0,Math.min(0.30,0.10+acceleration))
+                        );
 
                     rows.push({
                         digit:d,score:raw,
@@ -2200,8 +2291,9 @@
                         ngram3P:p3,ngram3Support:n3.support,
                         ngram4P:p4,ngram4Support:n4.support,
                         gap,avgGap,gapRatio,
-                        entropy20:e20,entropy50:e50,entropy100:e100,
-                        entropyTrend,mutualInformation:mi,runLength,
+                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                        mutualInformation:mi,runLength,
                         priceDirection:market.direction,
                         priceVolatility:market.volatility,
                         meanTickInterval:market.meanInterval
@@ -2215,7 +2307,12 @@
 
                 const top=rows[0], second=rows[1];
                 const margin=Math.max(0,(top?.scoreShare||0)-(second?.scoreShare||0));
-                const entropySignal=Math.max(0,1-e20);
+                const entropySignal=Math.max(0,Math.min(1,
+                    0.50*entropyStructure +
+                    0.25*Math.max(0,1-e20) +
+                    0.15*Math.max(0,-entropySlopeFast) +
+                    0.10*Math.max(0,-entropyCompression)
+                ));
                 const miSignal=Math.min(1,mi/0.10);
                 const marginSignal=Math.min(1,margin/0.025);
                 const contextSupport=Math.min(
@@ -2230,8 +2327,9 @@
 
                 const snap={
                     ready:true,historyN:n,symbol,
-                    entropy20:e20,entropy50:e50,entropy100:e100,
-                    entropyTrend,mutualInformation:mi,runLength,market,
+                    entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
+                    entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
+                    mutualInformation:mi,runLength,market,
                     topDigit:top?.digit ?? null,
                     topScore:top?.score ?? null,
                     topShare:top?.scoreShare ?? null,
