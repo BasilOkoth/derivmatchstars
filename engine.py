@@ -554,6 +554,10 @@ class MultiUserEngine:
             and ai_source == "CRYPTO-AUDITOR"
         )
         crypto_primary = bool(pure_crypto and crypto_authority.get("enabled"))
+        crypto_watch = bool(
+            pure_crypto
+            and crypto_authority.get("regime") == "WATCH"
+        )
 
         agreement = bool(
             ai and tick_match and v1_ready
@@ -571,17 +575,19 @@ class MultiUserEngine:
         source = "NO_EXECUTABLE_SIGNAL"
         if crypto_primary:
             final_digit = int(ai_digit)
-            source = "CRYPTO_FIRST"
+            source = "CRYPTO_HOT_PRIMARY"
         elif agreement:
             final_digit = int(v1_digit)
-            source = "AI_V1_AGREEMENT"
+            source = "CRYPTO_WATCH_V1_AGREEMENT" if crypto_watch else "AI_V1_AGREEMENT"
         elif ai_override:
             final_digit = int(ai_digit)
             source = "AI_OVERRIDE"
         elif v1_ready and v1_margin_ok:
             final_digit = int(v1_digit)
-            if pure_crypto and not crypto_authority.get("enabled"):
-                source = "V1_CRYPTO_AUTHORITY_PAUSED"
+            if pure_crypto and crypto_authority.get("regime") == "COLD":
+                source = "V1_CRYPTO_COLD"
+            elif pure_crypto and crypto_authority.get("regime") == "WATCH":
+                source = "V1_CRYPTO_WATCH_NO_AGREEMENT"
             elif ai_raw and not tick_match:
                 source = "V1_AI_CANONICAL_WAIT"
             else:
@@ -594,7 +600,7 @@ class MultiUserEngine:
             source = "WAITING_FUSION_STRENGTH"
 
         result = {
-            "version": "CRYPTO_FIRST_V1_CANONICAL_SEQ",
+            "version": "CRYPTO_REGIME_V2_CANONICAL_SEQ",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
@@ -648,37 +654,102 @@ class MultiUserEngine:
         return state
 
     def _crypto_authority_status(self, sid: int):
+        """Dynamic CRYPTO regime detector from strictly forward T→T+1 outcomes.
+
+        The model headline score is intentionally ignored. Authority is driven by
+        empirical rolling hit rates so CRYPTO can gain control quickly in a hot
+        window and lose it quickly in a cold window.
+        """
         state = self._prediction_performance_state(int(sid))
         total = int(state.get("crypto_total", 0) or 0)
         matches = int(state.get("crypto_matches", 0) or 0)
-        recent = [bool(x) for x in list(state.get("crypto_recent") or [])[-20:]]
-        rate = (float(matches) / float(total)) if total else None
-        recent_rate = (
-            float(sum(1 for x in recent if x)) / float(len(recent))
-            if recent else None
+        recent20 = [bool(x) for x in list(state.get("crypto_recent") or [])[-20:]]
+
+        def window_stats(size):
+            rows = recent20[-int(size):]
+            n = len(rows)
+            m = sum(1 for x in rows if x)
+            return {
+                "n": n,
+                "matches": m,
+                "rate": (float(m) / float(n)) if n else None,
+            }
+
+        w5 = window_stats(5)
+        w10 = window_stats(10)
+        w20 = window_stats(20)
+        overall_rate = (float(matches) / float(total)) if total else None
+
+        # HOT START catches a new favorable window rapidly: at least one hit in
+        # the last 5 and at least one hit in a full last-10 window.
+        hot_start = bool(
+            w5["n"] >= 5 and w5["rate"] is not None and w5["rate"] >= 0.20
+            and w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] >= 0.10
         )
-        baseline = 0.10
-        min_evidence = 20
-        if total < min_evidence:
+
+        # HOT CONFIRMED requires stronger medium-window evidence. With a full
+        # 10/20 window this is effectively >=2/10 and >=3/20.
+        hot_confirmed = bool(
+            w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] >= 0.15
+            and w20["n"] >= 15 and w20["rate"] is not None and w20["rate"] >= 0.12
+        )
+
+        # COLD requires both a dead last-10 and sub-baseline broader window.
+        cold = bool(
+            w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] < 0.08
+            and w20["n"] >= 15 and w20["rate"] is not None and w20["rate"] < 0.10
+        )
+
+        if hot_confirmed:
+            mode = "HOT_CONFIRMED"
+            regime = "HOT"
             enabled = True
-            mode = "BOOTSTRAP_PRIMARY"
+            requires_v1_confirmation = False
+        elif hot_start:
+            mode = "HOT_START"
+            regime = "HOT"
+            enabled = True
+            requires_v1_confirmation = False
+        elif cold:
+            mode = "COLD"
+            regime = "COLD"
+            enabled = False
+            requires_v1_confirmation = False
+        elif total < 10:
+            mode = "WATCH_BOOTSTRAP"
+            regime = "WATCH"
+            enabled = False
+            requires_v1_confirmation = True
         else:
-            enabled = bool(
-                rate is not None and rate >= baseline
-                and recent_rate is not None and recent_rate >= baseline
-            )
-            mode = "EVIDENCE_PRIMARY" if enabled else "PAUSED_BELOW_BASELINE"
+            mode = "WATCH"
+            regime = "WATCH"
+            enabled = False
+            requires_v1_confirmation = True
+
         return {
             "enabled": bool(enabled),
+            "regime": regime,
             "mode": mode,
+            "requires_v1_confirmation": bool(requires_v1_confirmation),
             "sample": total,
             "matches": matches,
-            "rate": rate,
-            "recent_n": len(recent),
-            "recent_matches": sum(1 for x in recent if x),
-            "recent_rate": recent_rate,
-            "baseline": baseline,
-            "min_evidence": min_evidence,
+            "rate": overall_rate,
+            "last5": w5,
+            "last10": w10,
+            "last20": w20,
+            # Compatibility aliases for the current dashboard.
+            "recent_n": w20["n"],
+            "recent_matches": w20["matches"],
+            "recent_rate": w20["rate"],
+            "baseline": 0.10,
+            "thresholds": {
+                "hot_start_last5": 0.20,
+                "hot_start_last10": 0.10,
+                "hot_confirmed_last10": 0.15,
+                "hot_confirmed_last20": 0.12,
+                "cold_last10_below": 0.08,
+                "cold_last20_below": 0.10,
+            },
         }
 
     def prediction_performance_status(self, sid: int):
@@ -828,7 +899,7 @@ class MultiUserEngine:
                     or evidence.get("selector_source")
                     or ""
                 )
-                if source != "CRYPTO_FIRST":
+                if source not in {"CRYPTO_FIRST", "CRYPTO_HOT_PRIMARY"}:
                     continue
                 settled = str(row.status or "").upper() == "SETTLED" and row.profit is not None
                 if not settled:
@@ -851,7 +922,7 @@ class MultiUserEngine:
                 }
             win_depths = [x["trade_no"] for x in selected if x["win"]]
             return {
-                "selector": "CRYPTO_FIRST",
+                "selector": "CRYPTO_HOT_PRIMARY",
                 "settled_trades": total,
                 "wins": wins,
                 "win_rate": (float(wins) / float(total)) if total else None,

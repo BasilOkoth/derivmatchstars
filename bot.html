@@ -12503,9 +12503,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     </div>
                     <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
                         <div class="rounded-lg border border-emerald-500/25 bg-emerald-950/30 px-3 py-2">
-                            <div class="text-[8px] uppercase tracking-wider text-emerald-300 font-black">CRYPTO AUDITOR · PRIMARY</div>
+                            <div class="text-[8px] uppercase tracking-wider text-emerald-300 font-black">CRYPTO AUDITOR · REGIME</div>
                             <div id="perf-crypto" class="text-sm font-black text-white">0 / 0 matched</div>
-                            <div id="crypto-authority-detail" class="text-[9px] text-emerald-200/80">BOOTSTRAP PRIMARY</div>
+                            <div id="crypto-authority-detail" class="text-[9px] text-emerald-200/80">WATCH · collecting forward evidence</div>
                         </div>
                         <div class="rounded-lg border border-cyan-500/25 bg-cyan-950/25 px-3 py-2">
                             <div class="text-[8px] uppercase tracking-wider text-cyan-300 font-black">V1 NEXT-TICK</div>
@@ -12776,22 +12776,30 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                         : 'text-xs font-black text-amber-300');
             }
             if (finalSourceEl) {
-                const cryptoPrimary = finalSource === 'CRYPTO_FIRST';
+                const cryptoPrimary = ['CRYPTO_FIRST','CRYPTO_HOT_PRIMARY'].includes(finalSource);
+                const cryptoWatchAgreement = finalSource === 'CRYPTO_WATCH_V1_AGREEMENT';
                 finalSourceEl.textContent = cryptoPrimary
-                    ? 'Source: CRYPTO-FIRST PRIMARY'
-                    : `Source: ${finalSource}`;
+                    ? 'Source: CRYPTO HOT · PRIMARY'
+                    : (cryptoWatchAgreement
+                        ? 'Source: CRYPTO WATCH + V1 AGREEMENT'
+                        : `Source: ${finalSource}`);
                 finalSourceEl.className = cryptoPrimary
                     ? 'text-xs font-black text-emerald-300'
-                    : 'text-xs font-bold text-slate-300';
+                    : (cryptoWatchAgreement
+                        ? 'text-xs font-black text-amber-300'
+                        : 'text-xs font-bold text-slate-300');
             }
             if (finalHelpEl) {
-                const cryptoPrimary = finalSource === 'CRYPTO_FIRST';
+                const cryptoPrimary = ['CRYPTO_FIRST','CRYPTO_HOT_PRIMARY'].includes(finalSource);
+                const cryptoWatchAgreement = finalSource === 'CRYPTO_WATCH_V1_AGREEMENT';
                 finalHelpEl.textContent = hasOpenContract
                     ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
                     : (preparedFusionDigit !== null
                         ? (cryptoPrimary
-                            ? `Digit ${preparedFusionDigit} is the canonically aligned pure CRYPTO-AUDITOR target. CRYPTO-FIRST currently has execution priority; V1 is fallback.`
-                            : `Digit ${preparedFusionDigit} is the server-selected T+1 fused target waiting for the next purchase opportunity.`)
+                            ? `Digit ${preparedFusionDigit} is the canonically aligned pure CRYPTO-AUDITOR target. CRYPTO is HOT and has execution priority; V1 is fallback.`
+                            : (cryptoWatchAgreement
+                                ? `Digit ${preparedFusionDigit} is shared by CRYPTO-AUDITOR and V1 while CRYPTO is in WATCH mode.`
+                                : `Digit ${preparedFusionDigit} is the server-selected T+1 fused target waiting for the next purchase opportunity.`))
                         : 'No executable target yet; the server should not buy until a target qualifies.');
             }
             if (finalAiDigitEl) {
@@ -12830,10 +12838,20 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (cryptoPerfEl) cryptoPerfEl.textContent = perfText(perf.crypto_matches, perf.crypto_total, perf.crypto_rate);
             if (cryptoAuthorityEl) {
                 const ca = perf.crypto_authority || displayFusion?.crypto_authority || {};
-                const recentRate = Number(ca.recent_rate);
                 const early = st?.crypto_early_performance || {};
                 const earlyShare = Number(early.early_win_share_1_3);
-                cryptoAuthorityEl.textContent = `${ca.mode || 'BOOTSTRAP_PRIMARY'} · recent ${Number.isFinite(recentRate) ? (recentRate*100).toFixed(1)+'%' : '—'} · n=${Number(ca.sample||0)}${Number.isFinite(earlyShare) ? ` · ≤T3 wins ${(earlyShare*100).toFixed(0)}%` : ''}`;
+                const pct = (w) => {
+                    const rate = Number(w?.rate);
+                    return Number.isFinite(rate) ? `${(rate*100).toFixed(0)}%` : '—';
+                };
+                const regime = String(ca.regime || 'WATCH');
+                const icon = regime === 'HOT' ? '🔥' : (regime === 'COLD' ? '🔴' : '🟡');
+                cryptoAuthorityEl.textContent = `${icon} ${ca.mode || 'WATCH'} · L5 ${pct(ca.last5)} · L10 ${pct(ca.last10)} · L20 ${pct(ca.last20)} · n=${Number(ca.sample||0)}${Number.isFinite(earlyShare) ? ` · ≤T3 wins ${(earlyShare*100).toFixed(0)}%` : ''}`;
+                cryptoAuthorityEl.className = regime === 'HOT'
+                    ? 'text-[9px] font-black text-emerald-200'
+                    : (regime === 'COLD'
+                        ? 'text-[9px] font-black text-rose-300'
+                        : 'text-[9px] font-black text-amber-200');
             }
             if (v1PerfEl) v1PerfEl.textContent = perfText(perf.v1_matches, perf.v1_total, perf.v1_rate);
             if (fusionPerfEl) fusionPerfEl.textContent = perfText(perf.fusion_matches, perf.fusion_total, perf.fusion_rate);
