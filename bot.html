@@ -14037,6 +14037,7 @@ function toggleServerContinuousResearch() {
         // =====================================================================
         window.SERVER_AI_FEED = window.SERVER_AI_FEED || {
             warmupLoaded: false,
+            warmupHistoryN: 0,
             lastSeq: 0,
             lastKey: null,
             lastTickAt: 0,
@@ -14051,10 +14052,20 @@ function toggleServerContinuousResearch() {
             if (!clean.length) return false;
 
             const needed = Number(engine.targetWarmupTicks || 200);
-            const seed = clean.slice(-Math.max(needed, Math.min(clean.length, 200)));
+            const seed = clean.slice(-Math.min(needed, 200));
 
             // Do not overwrite a healthy browser feed that has already warmed.
-            if (engine.warmupDone && Number(engine.warmupTicks || 0) >= needed) return true;
+            if (engine.warmupDone && Number(engine.warmupTicks || 0) >= needed) {
+                window.SERVER_AI_FEED.warmupLoaded = true;
+                window.SERVER_AI_FEED.warmupHistoryN = clean.length;
+                return true;
+            }
+
+            // Partial server history may grow one tick at a time. Keep topping
+            // up until the full warm-up target is available; do not declare a
+            // 30/200 or 40/200 seed as permanently loaded.
+            const previousHistoryN = Number(window.SERVER_AI_FEED.warmupHistoryN || 0);
+            if (clean.length <= previousHistoryN && !engine.warmupDone) return false;
 
             engine.reset();
             window.lastDigits = [];
@@ -14077,9 +14088,11 @@ function toggleServerContinuousResearch() {
                 updateEngineStatus(`Warming up... ${engine.warmupTicks}/${needed}`, 'WARMUP', progress);
             }
 
-            window.SERVER_AI_FEED.warmupLoaded = true;
-            console.info(`[SERVER-AI-FEED] Warmed browser AI from ${seed.length} canonical server digits.`);
-            return true;
+            window.SERVER_AI_FEED.warmupHistoryN = clean.length;
+            window.SERVER_AI_FEED.warmupLoaded =
+                engine.warmupDone && Number(engine.warmupTicks || 0) >= needed;
+            console.info(`[SERVER-AI-FEED] Warmed browser AI from ${seed.length}/${needed} canonical server digits.`);
+            return window.SERVER_AI_FEED.warmupLoaded;
         }
 
         function ingestServerCanonicalTick(state) {

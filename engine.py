@@ -1261,8 +1261,9 @@ class MultiUserEngine:
         sid = int(sid)
         history = self._digit_history(sid)
         minimum = int(getattr(self.digit_scorer, "min_history", 10) or 10)
+        target_count = max(minimum, min(200, int(count or 200)))
 
-        if len(history) >= minimum:
+        if len(history) >= target_count:
             return True
 
         generation = int(
@@ -1275,7 +1276,7 @@ class MultiUserEngine:
                 await asyncio.shield(existing)
             except Exception:
                 pass
-            return len(self._digit_history(sid)) >= minimum
+            return len(self._digit_history(sid)) >= target_count
 
         async def do_bootstrap():
             try:
@@ -1409,7 +1410,7 @@ class MultiUserEngine:
     ):
         # Warm canonical server scoring immediately after process restart.
         # This does not place a trade; it only fetches public market history.
-        if len(self._digit_history(int(sid))) < int(self.digit_scorer.min_history):
+        if len(self._digit_history(int(sid))) < 200:
             await self._bootstrap_digit_history(
                 sid=int(sid),
                 symbol=str(symbol),
