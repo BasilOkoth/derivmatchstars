@@ -1831,7 +1831,13 @@
             },
 
             armNextForecast(symbol=null) {
-                const s=this.analyze(symbol);
+                // analyzeAndRecommend() already refreshed DNA for this canonical tick.
+                // Reuse that snapshot instead of rebuilding 1,500-tick profiles twice.
+                const requestedSymbol = String(symbol || this.forward.loadedSymbol || 'UNKNOWN');
+                const cached = this.lastSnapshot;
+                const s = (cached && String(cached.symbol || requestedSymbol) === requestedSymbol)
+                    ? cached
+                    : this.analyze(symbol);
                 if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
 
                 const featureTop=Number(window.digitFeatureEngine?.lastSnapshot?.topDigit);
@@ -2833,7 +2839,7 @@
             // 1) score the PREVIOUS forecast against the newly-arrived tick;
             // 2) ingest this tick into history;
             // 3) generate a fresh forecast strictly for T+1.
-            processLiveTick: function(digit) {
+            processLiveTick: function(digit, providedTickBiasMeta = null) {
                 if (!this.enabled) return;
                 
                 // 🔥 FIXED: digit 0 is valid, so check for NaN instead
@@ -2847,17 +2853,24 @@
                 // using its canonical browser-stream identity (symbol + epoch +
                 // canonical formatted quote). Duplicate deliveries of the same
                 // market tick must never mature or arm a T+1 forecast twice.
-                let currentTickBiasMeta = null;
+                let currentTickBiasMeta = providedTickBiasMeta || null;
                 try {
-                    currentTickBiasMeta = window.currentTickBiasAudit?.observeTick?.(
-                        window.lastTick,
-                        Number(digit)
-                    ) || null;
+                    // Normal live path pre-validates the canonical tick in handleTick()
+                    // so duplicate Deriv deliveries never enter ANY model twice. Keep
+                    // this fallback for direct/test calls to processLiveTick().
+                    if (!currentTickBiasMeta) {
+                        currentTickBiasMeta = window.currentTickBiasAudit?.observeTick?.(
+                            window.lastTick,
+                            Number(digit)
+                        ) || null;
+                    }
                     if (currentTickBiasMeta?.accepted) {
                         window.currentTickBiasAudit?.settle?.(
                             Number(digit),
                             currentTickBiasMeta
                         );
+                    } else if (currentTickBiasMeta) {
+                        return; // never learn/recompute from a duplicate canonical tick
                     }
                 } catch (err) {
                     console.warn('Current-tick bias audit settle skipped:', err);
@@ -3359,6 +3372,7 @@ expectedAdditionalTicks: function(gaps, g) {
 
             // Analyze and recommend digit
             analyzeAndRecommend: function() {
+                const __analysisStartedAt = performance.now();
                 const regimeStatus = this.computeRegimeStatus();
 
                 // V52: regime is now a ranking/context signal, not a blanket AI veto.
@@ -3672,6 +3686,11 @@ survivalTop = survivalTop3[0] || null;
                     best.sourceTickDigit = sourceTickDigit;
                     best.generatedAtMs = Date.now();
                     this.currentRecommendation = best;
+                try {
+                    const ms = performance.now() - __analysisStartedAt;
+                    this.lastAnalysisMs = ms;
+                    if (ms > 350) console.warn(`[AI-PERF] analyzeAndRecommend took ${ms.toFixed(1)} ms`);
+                } catch (_) {}
 
                     // AI FUSION V1: publish the completed browser recommendation
                     // to the server. The server remains the only BUY authority.
@@ -4567,7 +4586,7 @@ window.nextTickModel = {
                 : Number(window.EV_GATE_CONFIG.minEdge);
 
         if (gateApplies) {
-            const auditor = window.randomnessAuditor?.analyze?.(symbol) || window.randomnessAuditor?.lastSnapshot || null;
+            const auditor = window.randomnessAuditor?.lastSnapshot || null;
             const auditorSupports = !!(
                 mode === 'ai' &&
                 auditor?.ready &&
@@ -8171,9 +8190,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
 
             if (sessionState.mode === 'ai') {
-                const aud=window.randomnessAuditor?.analyze?.(
-                    window.currentSymbol || document.getElementById('symbol')?.value || 'R_10'
-                );
+                const aud=window.randomnessAuditor?.lastSnapshot || null;
                 if (aud?.ready && Number.isInteger(Number(aud.topDigit))) {
                     const m=window.nextTickModel.getPrediction(
                         window.currentSymbol || document.getElementById('symbol')?.value || 'R_10',
@@ -9445,39 +9462,33 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 // V53: auditor UI is independent of the collapsible digit statistics panel.
+                // UI refresh is render-only. Heavy analytics run once per unique
+                // canonical market tick in analyzeAndRecommend(), not on this timer.
                 if (window.digitDNAEngine) {
                     try {
-                        const ds=window.digitDNAEngine.analyze?.(
-                            document.getElementById('symbol')?.value || window.currentSymbol || null
-                        );
-                        window.digitDNAEngine.render(ds);
+                        if (window.digitDNAEngine.lastSnapshot)
+                            window.digitDNAEngine.render(window.digitDNAEngine.lastSnapshot);
                     } catch (e) {
-                        console.warn('Digit DNA Engine refresh skipped:', e);
+                        console.warn('Digit DNA Engine render skipped:', e);
                     }
                 }
 
                 if (window.digitFeatureEngine) {
                     try {
-                        const fs=window.digitFeatureEngine.analyze?.(
-                            document.getElementById('symbol')?.value || window.currentSymbol || null
-                        );
-                        window.digitFeatureEngine.render(fs);
+                        if (window.digitFeatureEngine.lastSnapshot)
+                            window.digitFeatureEngine.render(window.digitFeatureEngine.lastSnapshot);
                     } catch (e) {
-                        console.warn('Digit Feature Engine refresh skipped:', e);
+                        console.warn('Digit Feature Engine render skipped:', e);
                     }
                 }
 
                 if (window.randomnessAuditor) {
                     try {
                         window.randomnessAuditor.ensurePanel();
-                        const snap =
-                            window.randomnessAuditor.lastSnapshot ||
-                            window.randomnessAuditor.analyze?.(
-                                document.getElementById('symbol')?.value || window.currentSymbol || null
-                            );
-                        window.randomnessAuditor.render(snap);
+                        if (window.randomnessAuditor.lastSnapshot)
+                            window.randomnessAuditor.render(window.randomnessAuditor.lastSnapshot);
                     } catch (e) {
-                        console.warn('Randomness Auditor UI refresh skipped:', e);
+                        console.warn('Randomness Auditor UI render skipped:', e);
                     }
                 }
             }, 2000);
@@ -9902,11 +9913,29 @@ function rotateHybridDigit(reason = '') {
                 document.getElementById('symbol')?.value ||
                 window.tickFormat.symbol;
 
+            // CANONICAL PIPELINE GATE: one Deriv market tick may update the
+            // statistical/AI stack exactly once. Previously only the bias audit
+            // rejected duplicates, while DNA/features/entropy still recomputed and
+            // learned them. That caused both lag and apparent UI hangs.
+            let canonicalBiasMeta = null;
+            try {
+                canonicalBiasMeta = window.currentTickBiasAudit?.observeTick?.(
+                    tickData,
+                    Number(digit)
+                ) || null;
+            } catch (e) {
+                console.warn('Canonical model gate unavailable:', e);
+            }
+            if (canonicalBiasMeta && !canonicalBiasMeta.accepted) {
+                updateConnectionStatus();
+                return;
+            }
+
             window.nextTickModel.onTickBeforeEngine(modelSymbol, digit);
 
             // Update the AI continuously even before START.
             if (window.digitIntelligenceEngine.enabled) {
-                window.digitIntelligenceEngine.processLiveTick(digit);
+                window.digitIntelligenceEngine.processLiveTick(digit, canonicalBiasMeta);
             }
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
