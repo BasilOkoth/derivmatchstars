@@ -3682,6 +3682,40 @@ survivalTop = survivalTop3[0] || null;
                         const digits = formatted.replace(/\D/g, '');
                         return digits ? Number(digits.slice(-1)) : null;
                     })();
+                    // CRYPTO STATE V3: freeze the market-state evidence that existed
+                    // BEFORE T+1 arrived. These are ranking/structure diagnostics,
+                    // not calibrated probabilities. They are exported with the audit
+                    // so future gates can be learned from genuine wins vs losses.
+                    const targetFeatureRow = featureSnap?.rows?.find?.(r => Number(r.digit) === Number(best.digit)) || null;
+                    const targetSurvival = best.survival || survivalByDigit?.get?.(Number(best.digit)) || null;
+                    best.marketState = {
+                        entropy5: Number.isFinite(Number(featureSnap?.entropy5)) ? Number(featureSnap.entropy5) : null,
+                        entropy10: Number.isFinite(Number(featureSnap?.entropy10)) ? Number(featureSnap.entropy10) : null,
+                        entropy20: Number.isFinite(Number(featureSnap?.entropy20)) ? Number(featureSnap.entropy20) : null,
+                        entropy50: Number.isFinite(Number(featureSnap?.entropy50)) ? Number(featureSnap.entropy50) : null,
+                        entropy100: Number.isFinite(Number(featureSnap?.entropy100)) ? Number(featureSnap.entropy100) : null,
+                        entropyStructure: Number.isFinite(Number(featureSnap?.entropyStructure)) ? Number(featureSnap.entropyStructure) : null,
+                        entropySlopeFast: Number.isFinite(Number(featureSnap?.entropySlopeFast)) ? Number(featureSnap.entropySlopeFast) : null,
+                        entropyCompression: Number.isFinite(Number(featureSnap?.entropyCompression)) ? Number(featureSnap.entropyCompression) : null,
+                        mutualInformation: Number.isFinite(Number(featureSnap?.mutualInformation)) ? Number(featureSnap.mutualInformation) : null,
+                        featureStrength: Number.isFinite(Number(featureSnap?.signalStrength)) ? Number(featureSnap.signalStrength) : null,
+                        auditorStrength: Number.isFinite(Number(auditor?.signalStrength)) ? Number(auditor.signalStrength) : null,
+                        dnaSimilarity: Number.isFinite(Number(dnaSnap?.topSimilarity)) ? Number(dnaSnap.topSimilarity) : null,
+                        pm5: Number.isFinite(Number(targetSurvival?.pm5)) ? Number(targetSurvival.pm5) : null,
+                        pm10: Number.isFinite(Number(targetSurvival?.pm10)) ? Number(targetSurvival.pm10) : null,
+                        s20: Number.isFinite(Number(targetSurvival?.s20)) ? Number(targetSurvival.s20) : null,
+                        etm: Number.isFinite(Number(targetSurvival?.etm)) ? Number(targetSurvival.etm) : null,
+                        gap: Number.isFinite(Number(targetFeatureRow?.gap)) ? Number(targetFeatureRow.gap) : null,
+                        avgGap: Number.isFinite(Number(targetFeatureRow?.avgGap)) ? Number(targetFeatureRow.avgGap) : null,
+                        gapRatio: Number.isFinite(Number(targetFeatureRow?.gapRatio)) ? Number(targetFeatureRow.gapRatio) : null,
+                        transitionP: Number.isFinite(Number(targetFeatureRow?.transitionP)) ? Number(targetFeatureRow.transitionP) : null,
+                        transitionSupport: Number.isFinite(Number(targetFeatureRow?.transitionSupport)) ? Number(targetFeatureRow.transitionSupport) : null,
+                        ngram2P: Number.isFinite(Number(targetFeatureRow?.ngram2P)) ? Number(targetFeatureRow.ngram2P) : null,
+                        ngram2Support: Number.isFinite(Number(targetFeatureRow?.ngram2Support)) ? Number(targetFeatureRow.ngram2Support) : null,
+                        ngram3P: Number.isFinite(Number(targetFeatureRow?.ngram3P)) ? Number(targetFeatureRow.ngram3P) : null,
+                        ngram3Support: Number.isFinite(Number(targetFeatureRow?.ngram3Support)) ? Number(targetFeatureRow.ngram3Support) : null,
+                        runLength: Number.isFinite(Number(featureSnap?.runLength)) ? Number(featureSnap.runLength) : null
+                    };
                     best.predictionHorizon = 'T+1';
                     best.sourceTickDigit = sourceTickDigit;
                     best.generatedAtMs = Date.now();
@@ -11864,7 +11898,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         // counted; the current tick can never score the forecast it generated.
         // ============================================================================
         window.currentTickBiasAudit = window.currentTickBiasAudit || {
-            version: 'CURRENT-TICK-BIAS-AUDIT-V2-CANONICAL',
+            version: 'CURRENT-TICK-BIAS-AUDIT-V3-MARKET-STATE',
             pending: null,
             symbol: null,
             records: [],
@@ -11877,7 +11911,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             storageKey(symbol) {
                 // V2 deliberately starts a clean evidence set. V1 contained
                 // duplicate tick deliveries and must not contaminate this audit.
-                return `matchstar_current_tick_bias_v2_${String(symbol || 'UNKNOWN')}`;
+                return `matchstar_current_tick_bias_v3_${String(symbol || 'UNKNOWN')}`;
             },
 
             canonicalIdentity(tickData, digit = null) {
@@ -12019,7 +12053,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     validForSeq: sourceSeq + 1,
                     sourceTickKey: String(tickMeta?.key || ''),
                     sourceTickEpoch: Number(tickMeta?.epoch || 0),
-                    sourceTickQuote: String(tickMeta?.quote || '')
+                    sourceTickQuote: String(tickMeta?.quote || ''),
+                    marketState: recommendation?.marketState ? JSON.parse(JSON.stringify(recommendation.marketState)) : null
                 };
                 this.render();
                 return true;
@@ -12077,7 +12112,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     hit,
                     score: Number.isFinite(score) ? score : null,
                     scoreBand,
-                    source: p.source
+                    source: p.source,
+                    marketState: p.marketState || null
                 });
                 if (this.records.length > this.maxRecords) {
                     this.records.splice(0, this.records.length - this.maxRecords);
@@ -13605,6 +13641,19 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
       dna: n(dna?.topSimilarity),
       features: n(features?.signalStrength),
       auditor: n(auditor?.signalStrength),
+      entropy_structure: n(best?.marketState?.entropyStructure),
+      entropy20: n(best?.marketState?.entropy20),
+      entropy_slope_fast: n(best?.marketState?.entropySlopeFast),
+      entropy_compression: n(best?.marketState?.entropyCompression),
+      mutual_information: n(best?.marketState?.mutualInformation),
+      gap_ratio: n(best?.marketState?.gapRatio),
+      transition_p: n(best?.marketState?.transitionP),
+      transition_support: n(best?.marketState?.transitionSupport),
+      ngram2_p: n(best?.marketState?.ngram2P),
+      ngram2_support: n(best?.marketState?.ngram2Support),
+      ngram3_p: n(best?.marketState?.ngram3P),
+      ngram3_support: n(best?.marketState?.ngram3Support),
+      run_length: n(best?.marketState?.runLength),
       source_tick_epoch: tickEpoch,
       source_tick_quote: tickQuote,
       source_tick_digit: tickDigit,

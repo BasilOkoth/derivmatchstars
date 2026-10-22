@@ -422,6 +422,19 @@ class MultiUserEngine:
             "dna": self._ai_number(payload.get("dna")),
             "features": self._ai_number(payload.get("features")),
             "auditor": self._ai_number(payload.get("auditor")),
+            "entropy_structure": self._ai_number(payload.get("entropy_structure")),
+            "entropy20": self._ai_number(payload.get("entropy20")),
+            "entropy_slope_fast": self._ai_number(payload.get("entropy_slope_fast")),
+            "entropy_compression": self._ai_number(payload.get("entropy_compression")),
+            "mutual_information": self._ai_number(payload.get("mutual_information")),
+            "gap_ratio": self._ai_number(payload.get("gap_ratio")),
+            "transition_p": self._ai_number(payload.get("transition_p")),
+            "transition_support": self._ai_number(payload.get("transition_support")),
+            "ngram2_p": self._ai_number(payload.get("ngram2_p")),
+            "ngram2_support": self._ai_number(payload.get("ngram2_support")),
+            "ngram3_p": self._ai_number(payload.get("ngram3_p")),
+            "ngram3_support": self._ai_number(payload.get("ngram3_support")),
+            "run_length": self._ai_number(payload.get("run_length")),
             "source_tick_epoch": payload.get("source_tick_epoch"),
             "source_tick_quote": (
                 str(payload.get("source_tick_quote"))
@@ -490,6 +503,88 @@ class MultiUserEngine:
         signal.pop("received_monotonic", None)
         return signal
 
+    def _crypto_market_state_status(self, ai: dict | None):
+        """Conservative live structural support gate for pure CRYPTO-AUDITOR.
+
+        This is deliberately NOT a learned probability. It only summarizes whether
+        several independent live structure families are simultaneously supportive.
+        The V3 audit exports the exact inputs so future thresholds can be fitted from
+        real forward wins/losses instead of guessed.
+        """
+        if not isinstance(ai, dict):
+            return {"ready": False, "supportive": False, "score": None, "support_count": 0, "available": 0}
+
+        def num(name):
+            try:
+                v = ai.get(name)
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        entropy_structure = num("entropy_structure")
+        mi = num("mutual_information")
+        features = num("features")
+        auditor = num("auditor")
+        dna = num("dna")
+        pm5 = num("pm5")
+        pm10 = num("pm10")
+        transition_p = num("transition_p")
+        transition_support = num("transition_support")
+        ngram2_p = num("ngram2_p")
+        ngram2_support = num("ngram2_support")
+        ngram3_p = num("ngram3_p")
+        ngram3_support = num("ngram3_support")
+
+        checks = {
+            "entropy_structure": entropy_structure is not None and entropy_structure >= 0.10,
+            "mutual_information": mi is not None and mi >= 0.008,
+            "feature_strength": features is not None and features >= 0.45,
+            "auditor_strength": auditor is not None and auditor >= 0.50,
+            "dna_similarity": dna is not None and dna >= 0.50,
+            "survival": (pm5 is not None and pm5 >= 0.40) or (pm10 is not None and pm10 >= 0.55),
+            "transition": transition_p is not None and transition_support is not None and transition_support >= 10 and transition_p >= 0.11,
+            "ngram2": ngram2_p is not None and ngram2_support is not None and ngram2_support >= 6 and ngram2_p >= 0.11,
+            "ngram3": ngram3_p is not None and ngram3_support is not None and ngram3_support >= 4 and ngram3_p >= 0.11,
+        }
+        available = sum(1 for name in [
+            entropy_structure, mi, features, auditor, dna, pm5, pm10,
+            transition_p, transition_support, ngram2_p, ngram2_support, ngram3_p, ngram3_support
+        ] if name is not None)
+        support_count = sum(1 for v in checks.values() if v)
+
+        # Normalize the independent families to a 0..1 diagnostic support score.
+        # It is only a gate and is never shown/used as a probability of winning.
+        family_scores = []
+        if entropy_structure is not None: family_scores.append(max(0.0, min(1.0, entropy_structure / 0.30)))
+        if mi is not None: family_scores.append(max(0.0, min(1.0, mi / 0.05)))
+        if features is not None: family_scores.append(max(0.0, min(1.0, features)))
+        if auditor is not None: family_scores.append(max(0.0, min(1.0, auditor)))
+        if dna is not None: family_scores.append(max(0.0, min(1.0, dna)))
+        if pm5 is not None: family_scores.append(max(0.0, min(1.0, pm5)))
+        elif pm10 is not None: family_scores.append(max(0.0, min(1.0, pm10)))
+
+        score = (sum(family_scores) / len(family_scores)) if family_scores else None
+        ready = bool(available >= 6 and len(family_scores) >= 4)
+        supportive = bool(ready and support_count >= 4 and score is not None and score >= 0.45)
+        return {
+            "ready": ready,
+            "supportive": supportive,
+            "score": score,
+            "support_count": support_count,
+            "available": available,
+            "checks": checks,
+            "inputs": {
+                "entropy_structure": entropy_structure, "mutual_information": mi,
+                "features": features, "auditor": auditor, "dna": dna,
+                "pm5": pm5, "pm10": pm10, "transition_p": transition_p,
+                "transition_support": transition_support, "ngram2_p": ngram2_p,
+                "ngram2_support": ngram2_support, "ngram3_p": ngram3_p,
+                "ngram3_support": ngram3_support, "gap_ratio": num("gap_ratio"),
+                "entropy20": num("entropy20"), "entropy_slope_fast": num("entropy_slope_fast"),
+                "entropy_compression": num("entropy_compression"), "run_length": num("run_length")
+            }
+        }
+
     def _fusion_select(self, sid: int, snapshot: dict, *, symbol=None):
         v1_digit = snapshot.get("selected_digit")
         v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
@@ -553,10 +648,22 @@ class MultiUserEngine:
             ai and tick_match and ai_digit is not None
             and ai_source == "CRYPTO-AUDITOR"
         )
-        crypto_primary = bool(pure_crypto and crypto_authority.get("enabled"))
+        crypto_market_state = self._crypto_market_state_status(ai if pure_crypto else None)
+        # V3 requires BOTH a forward HOT regime and supportive live market state.
+        # Market-state evidence alone can never seize execution authority.
+        crypto_primary = bool(
+            pure_crypto
+            and crypto_authority.get("enabled")
+            and crypto_market_state.get("supportive")
+        )
+        crypto_hot_state_blocked = bool(
+            pure_crypto
+            and crypto_authority.get("enabled")
+            and not crypto_market_state.get("supportive")
+        )
         crypto_watch = bool(
             pure_crypto
-            and crypto_authority.get("regime") == "WATCH"
+            and (crypto_authority.get("regime") == "WATCH" or crypto_hot_state_blocked)
         )
 
         agreement = bool(
@@ -575,7 +682,7 @@ class MultiUserEngine:
         source = "NO_EXECUTABLE_SIGNAL"
         if crypto_primary:
             final_digit = int(ai_digit)
-            source = "CRYPTO_HOT_PRIMARY"
+            source = "CRYPTO_HOT_STATE_PRIMARY"
         elif agreement:
             final_digit = int(v1_digit)
             source = "CRYPTO_WATCH_V1_AGREEMENT" if crypto_watch else "AI_V1_AGREEMENT"
@@ -586,6 +693,8 @@ class MultiUserEngine:
             final_digit = int(v1_digit)
             if pure_crypto and crypto_authority.get("regime") == "COLD":
                 source = "V1_CRYPTO_COLD"
+            elif crypto_hot_state_blocked:
+                source = "V1_CRYPTO_HOT_STATE_BLOCKED"
             elif pure_crypto and crypto_authority.get("regime") == "WATCH":
                 source = "V1_CRYPTO_WATCH_NO_AGREEMENT"
             elif ai_raw and not tick_match:
@@ -600,7 +709,7 @@ class MultiUserEngine:
             source = "WAITING_FUSION_STRENGTH"
 
         result = {
-            "version": "CRYPTO_REGIME_V2_CANONICAL_SEQ",
+            "version": "CRYPTO_STATE_REGIME_V3_CANONICAL_SEQ",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
@@ -624,6 +733,8 @@ class MultiUserEngine:
             "pure_crypto_candidate": bool(pure_crypto),
             "crypto_primary": bool(crypto_primary),
             "crypto_authority": crypto_authority,
+            "crypto_market_state": crypto_market_state,
+            "crypto_hot_state_blocked": bool(crypto_hot_state_blocked),
             "ai_support_count": int(support),
             "ai_support_flags": support_flags,
             "ai": ({k: v for k, v in ai.items() if k != "received_monotonic"} if ai else None),

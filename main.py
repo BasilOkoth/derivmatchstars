@@ -104,6 +104,19 @@ class AISignalRequest(BaseModel):
     dna: float | None = None
     features: float | None = None
     auditor: float | None = None
+    entropy_structure: float | None = None
+    entropy20: float | None = None
+    entropy_slope_fast: float | None = None
+    entropy_compression: float | None = None
+    mutual_information: float | None = None
+    gap_ratio: float | None = None
+    transition_p: float | None = None
+    transition_support: float | None = None
+    ngram2_p: float | None = None
+    ngram2_support: float | None = None
+    ngram3_p: float | None = None
+    ngram3_support: float | None = None
+    run_length: float | None = None
     source_tick_epoch: int | None = None
     source_tick_quote: str | None = None
     source_tick_digit: int | None = Field(default=None, ge=0, le=9)
