@@ -378,6 +378,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                         .get("fusion")
                     ),
                     "prediction_performance": engine.prediction_performance_status(s.id),
+                    "crypto_early_performance": engine.crypto_early_performance_status(s.id),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),

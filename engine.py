@@ -495,10 +495,8 @@ class MultiUserEngine:
         v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
         v1_margin_ok = bool(snapshot.get("margin_eligible"))
 
-        # V3 canonical-sequence alignment. Browser/server websocket clocks are
-        # not compared directly. The browser AI source observation is first
-        # mapped onto the server's canonical tick ledger; only the forecast
-        # bound to this snapshot's rank_seq can influence execution.
+        # Canonical-sequence alignment is still mandatory. CRYPTO-FIRST never
+        # executes a browser forecast that cannot be bound to this exact server T.
         ai_raw = self._fresh_ai_signal(int(sid), symbol=symbol)
         canonical = snapshot.get("canonical_tick") or {}
         expected_seq = int(snapshot.get("rank_seq") or 0)
@@ -527,6 +525,7 @@ class MultiUserEngine:
 
         ai_digit = int(ai["digit"]) if ai else None
         ai_score = float(ai["score"]) if ai else None
+        ai_source = str(ai.get("source") or "") if ai else ""
 
         support = 0
         support_flags = {}
@@ -543,32 +542,47 @@ class MultiUserEngine:
                 support_flags[name] = bool(ok)
                 support += int(ok)
 
+        # CRYPTO-FIRST V1
+        # Pure CRYPTO-AUDITOR is identified by source, not by the headline AI
+        # score. The score is a ranking score and is deliberately NOT treated as
+        # probability. Before 20 pure forward tests, CRYPTO gets bootstrap
+        # authority. Thereafter it keeps authority only while both overall and
+        # recent-20 empirical hit rates remain at/above the 10% one-digit baseline.
+        crypto_authority = self._crypto_authority_status(int(sid))
+        pure_crypto = bool(
+            ai and tick_match and ai_digit is not None
+            and ai_source == "CRYPTO-AUDITOR"
+        )
+        crypto_primary = bool(pure_crypto and crypto_authority.get("enabled"))
+
         agreement = bool(
             ai and tick_match and v1_ready
             and int(ai_digit) == int(v1_digit)
-            and ai_score is not None and ai_score >= 0.55
         )
-        green_ai_primary = bool(
-            ai and tick_match and ai_score is not None and ai_score >= 0.85
-        )
+
+        # Legacy AI override remains only as fallback for non-pure-crypto signals.
+        # It no longer outranks a canonically aligned pure CRYPTO-AUDITOR pick.
         ai_override = bool(
-            ai and tick_match and ai_score is not None and ai_score >= 0.62 and support >= 3
+            ai and tick_match and not pure_crypto
+            and ai_score is not None and ai_score >= 0.62 and support >= 3
         )
 
         final_digit = None
         source = "NO_EXECUTABLE_SIGNAL"
-        if agreement:
+        if crypto_primary:
+            final_digit = int(ai_digit)
+            source = "CRYPTO_FIRST"
+        elif agreement:
             final_digit = int(v1_digit)
             source = "AI_V1_AGREEMENT"
-        elif green_ai_primary:
-            final_digit = int(ai_digit)
-            source = "GREEN_AI_PRIMARY"
         elif ai_override:
             final_digit = int(ai_digit)
             source = "AI_OVERRIDE"
         elif v1_ready and v1_margin_ok:
             final_digit = int(v1_digit)
-            if ai_raw and not tick_match:
+            if pure_crypto and not crypto_authority.get("enabled"):
+                source = "V1_CRYPTO_AUTHORITY_PAUSED"
+            elif ai_raw and not tick_match:
                 source = "V1_AI_CANONICAL_WAIT"
             else:
                 source = "V1"
@@ -580,7 +594,7 @@ class MultiUserEngine:
             source = "WAITING_FUSION_STRENGTH"
 
         result = {
-            "version": "AI_V1_FUSION_V3_CANONICAL_SEQ",
+            "version": "CRYPTO_FIRST_V1_CANONICAL_SEQ",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
@@ -598,10 +612,12 @@ class MultiUserEngine:
             "v1_top_margin": snapshot.get("top_margin"),
             "ai_digit": ai_digit,
             "ai_score": ai_score,
+            "ai_source": ai_source or None,
             "ai_bound_source_seq": (int(ai_raw.get("bound_source_seq") or 0) or None) if ai_raw else None,
             "ai_binding_status": ai_raw.get("binding_status") if ai_raw else None,
-            "green_ai": bool(green_ai_primary),
-            "green_ai_threshold": 0.85,
+            "pure_crypto_candidate": bool(pure_crypto),
+            "crypto_primary": bool(crypto_primary),
+            "crypto_authority": crypto_authority,
             "ai_support_count": int(support),
             "ai_support_flags": support_flags,
             "ai": ({k: v for k, v in ai.items() if k != "received_monotonic"} if ai else None),
@@ -617,6 +633,9 @@ class MultiUserEngine:
             state = {
                 "green_ai_total": 0,
                 "green_ai_matches": 0,
+                "crypto_total": 0,
+                "crypto_matches": 0,
+                "crypto_recent": [],
                 "v1_total": 0,
                 "v1_matches": 0,
                 "fusion_total": 0,
@@ -628,6 +647,40 @@ class MultiUserEngine:
             self.prediction_performance_by_sid[sid] = state
         return state
 
+    def _crypto_authority_status(self, sid: int):
+        state = self._prediction_performance_state(int(sid))
+        total = int(state.get("crypto_total", 0) or 0)
+        matches = int(state.get("crypto_matches", 0) or 0)
+        recent = [bool(x) for x in list(state.get("crypto_recent") or [])[-20:]]
+        rate = (float(matches) / float(total)) if total else None
+        recent_rate = (
+            float(sum(1 for x in recent if x)) / float(len(recent))
+            if recent else None
+        )
+        baseline = 0.10
+        min_evidence = 20
+        if total < min_evidence:
+            enabled = True
+            mode = "BOOTSTRAP_PRIMARY"
+        else:
+            enabled = bool(
+                rate is not None and rate >= baseline
+                and recent_rate is not None and recent_rate >= baseline
+            )
+            mode = "EVIDENCE_PRIMARY" if enabled else "PAUSED_BELOW_BASELINE"
+        return {
+            "enabled": bool(enabled),
+            "mode": mode,
+            "sample": total,
+            "matches": matches,
+            "rate": rate,
+            "recent_n": len(recent),
+            "recent_matches": sum(1 for x in recent if x),
+            "recent_rate": recent_rate,
+            "baseline": baseline,
+            "min_evidence": min_evidence,
+        }
+
     def prediction_performance_status(self, sid: int):
         state = dict(self._prediction_performance_state(int(sid)))
 
@@ -638,6 +691,11 @@ class MultiUserEngine:
             state.get("green_ai_matches", 0),
             state.get("green_ai_total", 0),
         )
+        state["crypto_rate"] = rate(
+            state.get("crypto_matches", 0),
+            state.get("crypto_total", 0),
+        )
+        state["crypto_authority"] = self._crypto_authority_status(int(sid))
         state["v1_rate"] = rate(
             state.get("v1_matches", 0),
             state.get("v1_total", 0),
@@ -695,6 +753,24 @@ class MultiUserEngine:
             except (TypeError, ValueError):
                 pass
 
+        # Pure CRYPTO-AUDITOR forward performance. This is independent of the
+        # displayed AI score; every canonically aligned pure-crypto T forecast is
+        # scored once against T+1.
+        crypto_match = None
+        ai_evidence = fusion.get("ai") or {}
+        ai_source = str(fusion.get("ai_source") or ai_evidence.get("source") or "")
+        if tick_aligned and ai_digit is not None and ai_source == "CRYPTO-AUDITOR":
+            try:
+                crypto_digit = int(ai_digit)
+                crypto_match = (crypto_digit == observed_digit)
+                state["crypto_total"] = int(state.get("crypto_total", 0) or 0) + 1
+                state["crypto_matches"] = int(state.get("crypto_matches", 0) or 0) + int(crypto_match)
+                recent = list(state.get("crypto_recent") or [])
+                recent.append(bool(crypto_match))
+                state["crypto_recent"] = recent[-20:]
+            except (TypeError, ValueError):
+                crypto_match = None
+
         # GREEN AI is scored by the independent forward recorder armed by
         # set_ai_signal(). Browser AI arrives asynchronously and must not depend
         # on whether it happened to be present inside this V1 snapshot.
@@ -718,11 +794,78 @@ class MultiUserEngine:
             "green_ai_digit": int(ai_digit) if green_ai else None,
             "green_ai_score": float(ai_score) if green_ai else None,
             "green_ai_match": ai_match,
+            "crypto_source": ai_source or None,
+            "crypto_match": crypto_match,
+            "crypto_authority": self._crypto_authority_status(int(sid)),
             "fusion_digit": final_digit,
             "fusion_match": fusion_match,
             "fusion_source": fusion.get("source"),
         }
         self.prediction_performance_last_seq[int(sid)] = prepared_seq
+
+    def crypto_early_performance_status(self, sid: int):
+        """Persisted CRYPTO_FIRST execution outcomes, with emphasis on early wins."""
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TradeLog)
+                .filter(TradeLog.trading_session_id == int(sid))
+                .order_by(TradeLog.id.asc())
+                .all()
+            )
+            selected = []
+            for row in rows:
+                try:
+                    raw = json.loads(row.raw_json or "{}")
+                    if not isinstance(raw, dict):
+                        continue
+                except Exception:
+                    continue
+                evidence = raw.get("dms_score_evidence") or {}
+                research = raw.get("selection_research") or {}
+                source = str(
+                    research.get("selector_source")
+                    or evidence.get("selector_source")
+                    or ""
+                )
+                if source != "CRYPTO_FIRST":
+                    continue
+                settled = str(row.status or "").upper() == "SETTLED" and row.profit is not None
+                if not settled:
+                    continue
+                win = float(row.profit) > 0
+                selected.append({
+                    "trade_no": int(row.trade_no or 0),
+                    "win": bool(win),
+                })
+
+            total = len(selected)
+            wins = sum(1 for x in selected if x["win"])
+            def band(limit):
+                rows2 = [x for x in selected if 1 <= x["trade_no"] <= limit]
+                w = sum(1 for x in rows2 if x["win"])
+                return {
+                    "trades": len(rows2),
+                    "wins": w,
+                    "win_rate": (float(w) / float(len(rows2))) if rows2 else None,
+                }
+            win_depths = [x["trade_no"] for x in selected if x["win"]]
+            return {
+                "selector": "CRYPTO_FIRST",
+                "settled_trades": total,
+                "wins": wins,
+                "win_rate": (float(wins) / float(total)) if total else None,
+                "trade1": band(1),
+                "trade1_3": band(3),
+                "trade1_5": band(5),
+                "winning_depths": win_depths[-500:],
+                "early_win_share_1_3": (
+                    float(sum(1 for d in win_depths if d <= 3)) / float(len(win_depths))
+                    if win_depths else None
+                ),
+            }
+        finally:
+            db.close()
 
     def _lock(self, sid: int) -> asyncio.Lock:
         lock = self.session_locks.get(sid)
@@ -2887,6 +3030,21 @@ class MultiUserEngine:
                 raw_json=json.dumps({
                     "deriv_buy": result,
                     "dms_score_evidence": score_evidence,
+                    "selection_research": {
+                        "trade_no": int(payload["trade_no"]),
+                        "purchased_digit": int(payload["digit"]),
+                        "selector_source": score_evidence.get("selector_source"),
+                        "v1_candidate": (score_evidence.get("fusion") or {}).get("v1_digit"),
+                        "crypto_candidate": (
+                            (score_evidence.get("fusion") or {}).get("ai_digit")
+                            if (score_evidence.get("fusion") or {}).get("ai_source") == "CRYPTO-AUDITOR"
+                            else None
+                        ),
+                        "ai_source": (score_evidence.get("fusion") or {}).get("ai_source"),
+                        "crypto_authority": (score_evidence.get("fusion") or {}).get("crypto_authority"),
+                        "rank_seq": score_evidence.get("rank_seq"),
+                        "recorded_at": datetime.utcnow().isoformat(),
+                    },
                     "margin_gate": payload.get("margin_gate"),
                     "execution_integrity": {
                         "instance_id": self.instance_id,
@@ -3427,6 +3585,24 @@ class MultiUserEngine:
                         int(sid),
                         poc,
                     )
+                    selection_research = existing_raw.get("selection_research")
+                    if not isinstance(selection_research, dict):
+                        selection_research = {}
+                    actual_digit = existing_raw.get("settlement_exit_digit")
+                    selection_research.update({
+                        "actual_digit": actual_digit,
+                        "result": "WIN" if profit > 0 else "LOSS",
+                        "profit": float(profit),
+                        "settled_trade_no": int(log.trade_no or 0),
+                        "early_band": (
+                            "TRADE_1" if int(log.trade_no or 0) == 1
+                            else "TRADE_2_3" if int(log.trade_no or 0) <= 3
+                            else "TRADE_4_5" if int(log.trade_no or 0) <= 5
+                            else "TRADE_6_PLUS"
+                        ),
+                        "settled_at": datetime.utcnow().isoformat(),
+                    })
+                    existing_raw["selection_research"] = selection_research
                     log.raw_json = json.dumps(existing_raw)
 
                 s.pnl = float(s.pnl or 0) + profit
