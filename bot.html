@@ -9150,9 +9150,25 @@ function rotateHybridDigit(reason = '') {
             log(`🔄 Public market reconnect scheduled in ${(delay / 1000).toFixed(1)}s`, 'NETWORK');
         }
 
-        function connectPublicMarketData(force = false) {
+        window.browserMarketLastTickAt = window.browserMarketLastTickAt || 0;
+        window.browserMarketSocketOpenedAt = window.browserMarketSocketOpenedAt || 0;
+        window.browserMarketEndpointMode = window.browserMarketEndpointMode || 'modern';
+        window.browserMarketWatchdogStarted = window.browserMarketWatchdogStarted || false;
+
+        function getPublicMarketWsUrl(mode = window.browserMarketEndpointMode || 'modern') {
+            if (mode === 'legacy') {
+                const appId = (typeof getDerivAppIdForRest === 'function')
+                    ? getDerivAppIdForRest()
+                    : (localStorage.getItem('deriv_app_id') || localStorage.getItem('deriv_client_id') || '34uXWAMOwfAO5EtltnV4n');
+                return `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`;
+            }
+            return 'wss://api.derivws.com/trading/v1/options/ws/public';
+        }
+
+        function connectPublicMarketData(force = false, endpointMode = null) {
             const symbolEl = document.getElementById('symbol');
             const symbol = symbolEl ? symbolEl.value : 'R_10';
+            if (endpointMode) window.browserMarketEndpointMode = endpointMode;
 
             if (!force && window.marketWs &&
                 (window.marketWs.readyState === WebSocket.OPEN ||
@@ -9170,14 +9186,15 @@ function rotateHybridDigit(reason = '') {
             updateConnectionStatus();
             log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
 
-            window.marketWs = new WebSocket(
-                'wss://api.derivws.com/trading/v1/options/ws/public'
-            );
+            const publicWsUrl = getPublicMarketWsUrl();
+            window.marketWs = new WebSocket(publicWsUrl);
 
             window.marketWs.onopen = () => {
+                window.browserMarketSocketOpenedAt = Date.now();
+                window.browserMarketLastTickAt = 0;
                 window.marketIsConnecting = false;
                 window.marketReconnectAttempts = 0;
-                log('🟢 Public market WebSocket connected', 'SYSTEM');
+                log(`🟢 Public market WebSocket connected · ${window.browserMarketEndpointMode}`, 'SYSTEM');
                 updateConnectionStatus();
 
                 requestActiveSymbolMetadata();
@@ -9367,6 +9384,49 @@ function rotateHybridDigit(reason = '') {
             };
         }
 
+
+        function startPublicMarketWatchdog() {
+            if (window.browserMarketWatchdogStarted) return;
+            window.browserMarketWatchdogStarted = true;
+
+            setInterval(() => {
+                try {
+                    const now = Date.now();
+                    const ws = window.marketWs;
+                    const open = !!(ws && ws.readyState === WebSocket.OPEN);
+                    const connecting = !!(ws && ws.readyState === WebSocket.CONNECTING);
+                    const openedAt = Number(window.browserMarketSocketOpenedAt || 0);
+                    const lastTickAt = Number(window.browserMarketLastTickAt || 0);
+                    const silentFor = lastTickAt ? now - lastTickAt : (openedAt ? now - openedAt : Infinity);
+
+                    if (!open && !connecting) {
+                        console.warn('[MARKET-FEED] Browser public feed absent; reconnecting.');
+                        connectPublicMarketData(true, window.browserMarketEndpointMode || 'modern');
+                        return;
+                    }
+
+                    // A healthy R_10 stream should not remain silent for many seconds.
+                    // If the modern public endpoint opens but no ticks arrive, fail over
+                    // to the legacy public market endpoint; alternate on future stalls.
+                    if (open && silentFor > 9000) {
+                        const nextMode = window.browserMarketEndpointMode === 'modern' ? 'legacy' : 'modern';
+                        console.warn(`[MARKET-FEED] Feed silent ${(silentFor/1000).toFixed(1)}s; failing over ${window.browserMarketEndpointMode} -> ${nextMode}.`);
+                        try {
+                            ws.onclose = null;
+                            ws.close();
+                        } catch (_) {}
+                        window.marketWs = null;
+                        window.browserMarketEndpointMode = nextMode;
+                        window.browserMarketSocketOpenedAt = 0;
+                        window.browserMarketLastTickAt = 0;
+                        connectPublicMarketData(true, nextMode);
+                    }
+                } catch (e) {
+                    console.warn('[MARKET-FEED] watchdog check skipped:', e);
+                }
+            }, 3000);
+        }
+
         function restartPublicMarketForSymbol() {
             window.totalTicksReceived = 0;
             window.tickTimestamps = [];
@@ -9553,7 +9613,10 @@ function rotateHybridDigit(reason = '') {
             updatePnL();
             resetTradeStatus();
 
-            // Connect market data immediately.
+            // Connect market data immediately and keep an independent watchdog.
+            // The watchdog survives optional analytics/UI failures and restores the
+            // browser-side feed if the socket opens but no ticks arrive.
+            startPublicMarketWatchdog();
             setTimeout(() => connectPublicMarketData(), 250);
 
             // Connect the authenticated account channel too, so balance is visible
@@ -9812,6 +9875,7 @@ function rotateHybridDigit(reason = '') {
         function handleTick(tick) {
             // Process market ticks even while trading is stopped.
             if (!tick || tick.quote === undefined || tick.quote === null) return;
+            window.browserMarketLastTickAt = Date.now();
             
             const price = parseFloat(tick.quote);
 
@@ -16472,5 +16536,23 @@ window.isBotRunning = true;
 </script>
 
 
+
+<script>
+(function(){
+  function ensureBrowserFeedBoot(){
+    try {
+      if (typeof startPublicMarketWatchdog === 'function') startPublicMarketWatchdog();
+      if (typeof connectPublicMarketData === 'function') {
+        const ws = window.marketWs;
+        if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+          connectPublicMarketData(true);
+        }
+      }
+    } catch (e) { console.warn('[MARKET-FEED] independent boot skipped:', e); }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(ensureBrowserFeedBoot, 800));
+  else setTimeout(ensureBrowserFeedBoot, 800);
+})();
+</script>
 </body>
 </html>
