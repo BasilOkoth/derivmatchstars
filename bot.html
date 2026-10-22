@@ -8537,15 +8537,26 @@ function rotateHybridDigit(reason = '') {
 
 // CONNECTION STATUS
         function updateConnectionStatus() {
+            const statusNow = Date.now();
             const publicConnected = window.marketWs && window.marketWs.readyState === WebSocket.OPEN;
             const tradingConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
-            const isConnected = !!(publicConnected || tradingConnected);
-            const isConnecting = !!(window.marketIsConnecting || window.isConnecting);
+            const serverFeedLastAt = Number(window.SERVER_AI_FEED?.lastTickAt || 0);
+            const serverFeedConnected = !!(
+                window.SERVER_EXECUTION?.enabled &&
+                serverFeedLastAt > 0 &&
+                (statusNow - serverFeedLastAt) < 6000
+            );
+            const isConnected = !!(publicConnected || tradingConnected || serverFeedConnected);
+            const isConnecting = !serverFeedConnected && !!(window.marketIsConnecting || window.isConnecting);
             
             if (isConnected) {
-                document.getElementById('status-badge').textContent = '🟢 CONNECTED';
+                document.getElementById('status-badge').textContent = serverFeedConnected && !publicConnected
+                    ? '🟢 SERVER FEED'
+                    : '🟢 CONNECTED';
                 document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connected text-white shadow-md';
-                document.getElementById('market_status').textContent = 'Live';
+                document.getElementById('market_status').textContent = serverFeedConnected && !publicConnected
+                    ? 'Live · Server'
+                    : 'Live';
                 document.getElementById('market_status').className = 'ml-2 font-bold text-green-400';
                 if (!window.isBotRunning && !hasOpenContract()) {
                     updateTradeStatus('READY', 'Market analysis active · Trading idle', 'Press START BOT when ready', 'normal');
@@ -14028,6 +14039,7 @@ function toggleServerContinuousResearch() {
             warmupLoaded: false,
             lastSeq: 0,
             lastKey: null,
+            lastTickAt: 0,
             source: 'server-poll'
         };
 
@@ -14099,13 +14111,17 @@ function toggleServerContinuousResearch() {
                 if (!Number.isInteger(digit) || digit < 0 || digit > 9 || !epoch) return false;
 
                 const key = `${symbol}|${epoch}|${formatted}|${digit}`;
-                if ((seq && seq <= Number(window.SERVER_AI_FEED.lastSeq || 0)) || key === window.SERVER_AI_FEED.lastKey) {
-                    return false;
-                }
+                const duplicateForModel = !!(
+                    (seq && seq <= Number(window.SERVER_AI_FEED.lastSeq || 0)) ||
+                    key === window.SERVER_AI_FEED.lastKey
+                );
 
-                window.SERVER_AI_FEED.lastSeq = seq || (Number(window.SERVER_AI_FEED.lastSeq || 0) + 1);
-                window.SERVER_AI_FEED.lastKey = key;
-                window.browserMarketLastTickAt = Date.now();
+                if (!duplicateForModel) {
+                    window.SERVER_AI_FEED.lastSeq = seq || (Number(window.SERVER_AI_FEED.lastSeq || 0) + 1);
+                    window.SERVER_AI_FEED.lastKey = key;
+                }
+                window.SERVER_AI_FEED.lastTickAt = Date.now();
+                window.browserMarketLastTickAt = window.SERVER_AI_FEED.lastTickAt;
 
                 // Canonical tick object expected by bias audit / UI.
                 const tick = {
@@ -14120,26 +14136,49 @@ function toggleServerContinuousResearch() {
                     canonical: true,
                     source: 'SERVER_CANONICAL_POLL'
                 };
-                window.lastTick = tick;
-                try { rememberMarketTick(tick); } catch (_) {}
+                // Always rehydrate visible market state, even when this exact
+                // canonical tick was already learned before START/reset. Duplicate
+                // ticks are UI-only here and never re-enter the model pipeline.
+                window.lastTick = {
+                    ...tick,
+                    formattedPrice: formatted,
+                    lastDigit: digit,
+                    price: Number(quote),
+                    time: Date.now(),
+                    raw: tick
+                };
+                try { rememberMarketTick(window.lastTick); } catch (_) {}
 
-                // Browser UI becomes explicitly SERVER-FED rather than falsely CONNECTING.
                 const liveEl = document.getElementById('metricLiveTick');
                 const digitEl = document.getElementById('metricLastDigit');
                 if (liveEl) liveEl.textContent = formatted || String(quote ?? '---');
                 if (digitEl) digitEl.textContent = `Digit: ${digit}`;
-                const connEl = document.getElementById('connection_status');
-                if (connEl) connEl.textContent = 'Server canonical feed';
 
-                window.totalTicksReceived = Number(window.totalTicksReceived || 0) + 1;
-                window.stats.totalTicks = Number(window.stats?.totalTicks || 0) + 1;
-                window.tickTimestamps = Array.isArray(window.tickTimestamps) ? window.tickTimestamps : [];
-                window.tickTimestamps.push(Date.now());
-                window.tickTimestamps = window.tickTimestamps.filter(ts => ts > Date.now() - 10000);
+                if (!duplicateForModel) {
+                    window.totalTicksReceived = Number(window.totalTicksReceived || 0) + 1;
+                    window.stats.totalTicks = Number(window.stats?.totalTicks || 0) + 1;
+                    window.tickTimestamps = Array.isArray(window.tickTimestamps) ? window.tickTimestamps : [];
+                    window.tickTimestamps.push(Date.now());
+                    window.botTickTimestamps = Array.isArray(window.botTickTimestamps) ? window.botTickTimestamps : [];
+                    window.botTickTimestamps.push(Date.now());
+                }
+
+                window.tickTimestamps = Array.isArray(window.tickTimestamps)
+                    ? window.tickTimestamps.filter(ts => ts > Date.now() - 10000)
+                    : [];
+                window.botTickTimestamps = Array.isArray(window.botTickTimestamps)
+                    ? window.botTickTimestamps.filter(ts => ts > Date.now() - 5000)
+                    : [];
+
                 const recv = document.getElementById('ticks_received');
                 const rate = document.getElementById('current_tick_rate');
+                const metricRate = document.getElementById('metricTickRate');
                 if (recv) recv.textContent = String(window.totalTicksReceived);
                 if (rate) rate.textContent = `${(window.tickTimestamps.length / 10).toFixed(1)}/s`;
+                if (metricRate) metricRate.textContent = `Ticks/sec: ${(window.botTickTimestamps.length / 5).toFixed(1)}`;
+                updateConnectionStatus();
+
+                if (duplicateForModel) return true;
 
                 // Research/model pipeline only. No proposal/buy/contract calls here.
                 const modelSymbol = symbol;
