@@ -586,12 +586,20 @@ class MultiUserEngine:
         }
 
     def _fusion_select(self, sid: int, snapshot: dict, *, symbol=None):
+        """V1 + AI fusion with auditor confirmation.
+
+        Execution hierarchy is intentionally simple:
+          1. V1 is the primary selector whenever its margin gate is eligible.
+          2. Canonically aligned AI may challenge V1 only when the auditor
+             confirms the signal and at least two independent support families agree.
+          3. If V1 is not executable, the same confirmed AI may act as fallback.
+          4. CRYPTO regime / market-state telemetry remains research-only and
+             never grants execution authority.
+        """
         v1_digit = snapshot.get("selected_digit")
         v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
         v1_margin_ok = bool(snapshot.get("margin_eligible"))
 
-        # Canonical-sequence alignment is still mandatory. CRYPTO-FIRST never
-        # executes a browser forecast that cannot be bound to this exact server T.
         ai_raw = self._fresh_ai_signal(int(sid), symbol=symbol)
         canonical = snapshot.get("canonical_tick") or {}
         expected_seq = int(snapshot.get("rank_seq") or 0)
@@ -622,13 +630,24 @@ class MultiUserEngine:
         ai_score = float(ai["score"]) if ai else None
         ai_source = str(ai.get("source") or "") if ai else ""
 
-        support = 0
+        # Auditor is confirmation only. It never chooses a digit by itself.
+        auditor_strength = None
+        if ai and ai.get("auditor") is not None:
+            try:
+                auditor_strength = float(ai.get("auditor"))
+            except (TypeError, ValueError):
+                auditor_strength = None
+        auditor_confirmed = bool(
+            auditor_strength is not None and auditor_strength >= 0.55
+        )
+
+        # Independent support families excluding the auditor itself.
         support_flags = {}
+        support = 0
         if ai:
             checks = {
                 "dna": (ai.get("dna"), 0.55),
                 "features": (ai.get("features"), 0.60),
-                "auditor": (ai.get("auditor"), 0.55),
                 "pm5": (ai.get("pm5"), 0.40),
                 "pm10": (ai.get("pm10"), 0.60),
             }
@@ -636,80 +655,55 @@ class MultiUserEngine:
                 ok = value is not None and float(value) >= float(threshold)
                 support_flags[name] = bool(ok)
                 support += int(ok)
-
-        # CRYPTO-FIRST V1
-        # Pure CRYPTO-AUDITOR is identified by source, not by the headline AI
-        # score. The score is a ranking score and is deliberately NOT treated as
-        # probability. Before 20 pure forward tests, CRYPTO gets bootstrap
-        # authority. Thereafter it keeps authority only while both overall and
-        # recent-20 empirical hit rates remain at/above the 10% one-digit baseline.
-        crypto_authority = self._crypto_authority_status(int(sid))
-        pure_crypto = bool(
-            ai and tick_match and ai_digit is not None
-            and ai_source == "CRYPTO-AUDITOR"
-        )
-        crypto_market_state = self._crypto_market_state_status(ai if pure_crypto else None)
-        # V3 requires BOTH a forward HOT regime and supportive live market state.
-        # Market-state evidence alone can never seize execution authority.
-        crypto_primary = bool(
-            pure_crypto
-            and crypto_authority.get("enabled")
-            and crypto_market_state.get("supportive")
-        )
-        crypto_hot_state_blocked = bool(
-            pure_crypto
-            and crypto_authority.get("enabled")
-            and not crypto_market_state.get("supportive")
-        )
-        crypto_watch = bool(
-            pure_crypto
-            and (crypto_authority.get("regime") == "WATCH" or crypto_hot_state_blocked)
-        )
+        support_flags["auditor"] = bool(auditor_confirmed)
 
         agreement = bool(
             ai and tick_match and v1_ready
             and int(ai_digit) == int(v1_digit)
         )
 
-        # Legacy AI override remains only as fallback for non-pure-crypto signals.
-        # It no longer outranks a canonically aligned pure CRYPTO-AUDITOR pick.
-        ai_override = bool(
-            ai and tick_match and not pure_crypto
-            and ai_score is not None and ai_score >= 0.62 and support >= 3
+        # The AI score remains a ranking score, not a probability. The low
+        # floor simply blocks malformed/very weak signals; execution authority
+        # comes from canonical alignment + auditor + independent support.
+        ai_challenge_ready = bool(
+            ai and tick_match and ai_digit is not None
+            and ai_score is not None and ai_score >= 0.55
+            and auditor_confirmed
+            and support >= 2
         )
 
         final_digit = None
         source = "NO_EXECUTABLE_SIGNAL"
-        if crypto_primary:
-            final_digit = int(ai_digit)
-            source = "CRYPTO_HOT_STATE_PRIMARY"
-        elif agreement:
+
+        if agreement and v1_margin_ok:
             final_digit = int(v1_digit)
-            source = "CRYPTO_WATCH_V1_AGREEMENT" if crypto_watch else "AI_V1_AGREEMENT"
-        elif ai_override:
-            final_digit = int(ai_digit)
-            source = "AI_OVERRIDE"
+            source = "AI_V1_AGREEMENT"
         elif v1_ready and v1_margin_ok:
-            final_digit = int(v1_digit)
-            if pure_crypto and crypto_authority.get("regime") == "COLD":
-                source = "V1_CRYPTO_COLD"
-            elif crypto_hot_state_blocked:
-                source = "V1_CRYPTO_HOT_STATE_BLOCKED"
-            elif pure_crypto and crypto_authority.get("regime") == "WATCH":
-                source = "V1_CRYPTO_WATCH_NO_AGREEMENT"
-            elif ai_raw and not tick_match:
-                source = "V1_AI_CANONICAL_WAIT"
+            if ai_challenge_ready and int(ai_digit) != int(v1_digit):
+                final_digit = int(ai_digit)
+                source = "AI_AUDITOR_CONFIRMED_OVERRIDE"
             else:
-                source = "V1"
+                final_digit = int(v1_digit)
+                if ai_raw and not tick_match:
+                    source = "V1_AI_CANONICAL_WAIT"
+                elif ai and not auditor_confirmed:
+                    source = "V1_AUDITOR_NOT_CONFIRMED"
+                elif ai and support < 2:
+                    source = "V1_AI_SUPPORT_WEAK"
+                else:
+                    source = "V1"
+        elif ai_challenge_ready:
+            final_digit = int(ai_digit)
+            source = "AI_AUDITOR_CONFIRMED_FALLBACK"
         elif ai_raw and not tick_match:
             source = "WAITING_AI_CANONICAL_BIND"
         elif ai_raw is None:
             source = "V1_AI_STALE"
         else:
-            source = "WAITING_FUSION_STRENGTH"
+            source = "WAITING_V1_OR_CONFIRMED_AI"
 
         result = {
-            "version": "CRYPTO_STATE_REGIME_V3_CANONICAL_SEQ",
+            "version": "V1_AI_AUDITOR_FUSION_V1_CANONICAL_SEQ",
             "executable": final_digit is not None,
             "final_digit": final_digit,
             "source": source,
@@ -730,13 +724,14 @@ class MultiUserEngine:
             "ai_source": ai_source or None,
             "ai_bound_source_seq": (int(ai_raw.get("bound_source_seq") or 0) or None) if ai_raw else None,
             "ai_binding_status": ai_raw.get("binding_status") if ai_raw else None,
-            "pure_crypto_candidate": bool(pure_crypto),
-            "crypto_primary": bool(crypto_primary),
-            "crypto_authority": crypto_authority,
-            "crypto_market_state": crypto_market_state,
-            "crypto_hot_state_blocked": bool(crypto_hot_state_blocked),
+            "auditor_strength": auditor_strength,
+            "auditor_confirmed": bool(auditor_confirmed),
+            "auditor_threshold": 0.55,
             "ai_support_count": int(support),
             "ai_support_flags": support_flags,
+            # Research-only diagnostics retained from later experiments.
+            "research_crypto_authority": self._crypto_authority_status(int(sid)),
+            "research_crypto_market_state": self._crypto_market_state_status(ai if ai else None),
             "ai": ({k: v for k, v in ai.items() if k != "received_monotonic"} if ai else None),
             "rejected_ai": ({k: v for k, v in ai_raw.items() if k != "received_monotonic"} if ai_raw and not tick_match else None),
         }
