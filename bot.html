@@ -9316,6 +9316,12 @@ function rotateHybridDigit(reason = '') {
                         return;
                     }
 
+                    // In SERVER mode warm-up comes from the same authoritative
+                    // backend history used by V1, avoiding two different histories.
+                    if (window.SERVER_EXECUTION?.enabled) {
+                        return;
+                    }
+
                     try {
                         if (window.digitIntelligenceEngine?.processWarmupTicks) {
                             window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
@@ -9355,6 +9361,13 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 if (data.msg_type === 'tick' && data.tick) {
+                    // SERVER mode has one authoritative market clock: the backend
+                    // canonical ledger. Do not let the direct browser websocket
+                    // feed a second, competing AI/UI tick stream.
+                    if (window.SERVER_EXECUTION?.enabled) {
+                        return;
+                    }
+
                     const selectedSymbol = document.getElementById('symbol')?.value;
                     const tickSymbol =
                         data.tick?.symbol ||
@@ -14101,6 +14114,36 @@ function toggleServerContinuousResearch() {
                 const feed = state.server_tick_feed || null;
                 const latest = feed?.latest || state.digit_score?.canonical_tick || null;
                 const history = Array.isArray(feed?.history_digits) ? feed.history_digits : [];
+                const recentTicks = Array.isArray(feed?.recent_ticks) ? feed.recent_ticks : [];
+
+                // A single /sessions poll can span multiple Deriv ticks. Process
+                // every unseen canonical server sequence in order so the browser
+                // AI never jumps from T to T+2/T+3 and leaves forecasts WAITING.
+                if (recentTicks.length) {
+                    const lastSeq = Number(window.SERVER_AI_FEED.lastSeq || 0);
+                    const unseen = recentTicks
+                        .filter(t => Number(t?.seq || t?._dms_seq || 0) > lastSeq)
+                        .sort((a,b) => Number(a?.seq || a?._dms_seq || 0) - Number(b?.seq || b?._dms_seq || 0));
+
+                    if (unseen.length) {
+                        let processed = false;
+                        for (const canonical of unseen) {
+                            const canonicalSeq = Number(canonical?.seq || canonical?._dms_seq || 0);
+                            const childState = {
+                                ...state,
+                                server_tick_feed: {
+                                    ...feed,
+                                    recent_ticks: [],
+                                    latest: canonical,
+                                    seq: canonicalSeq,
+                                    epoch: Number(canonical?.epoch || 0)
+                                }
+                            };
+                            processed = ingestServerCanonicalTick(childState) || processed;
+                        }
+                        return processed;
+                    }
+                }
 
                 // Use server history when the direct browser feed has not warmed.
                 if (!window.SERVER_AI_FEED.warmupLoaded && history.length) {

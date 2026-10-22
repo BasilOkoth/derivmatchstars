@@ -357,6 +357,16 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "server_tick_feed": {
                         "latest": dict((getattr(engine, "latest_ticks", {}) or {}).get(int(s.id)) or {}),
                         "history_digits": list(engine._digit_history(int(s.id))),
+                        # Ordered canonical ledger prevents the browser AI from
+                        # skipping T+1 observations when more than one server
+                        # tick arrives between /sessions polls.
+                        "recent_ticks": [
+                            dict(t)
+                            for t in list(
+                                (getattr(engine, "canonical_tick_history_by_sid", {}) or {})
+                                .get(int(s.id), [])
+                            )
+                        ],
                         "seq": int((getattr(engine, "tick_sequence", {}) or {}).get(int(s.id), 0) or 0),
                         "epoch": int((getattr(engine, "latest_tick_epoch", {}) or {}).get(int(s.id), 0) or 0),
                         "received_at": (getattr(engine, "latest_tick_received_at", {}) or {}).get(int(s.id)),
