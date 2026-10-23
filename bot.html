@@ -12681,7 +12681,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                             <div id="recycle-decision-digit" class="mt-0.5 text-base font-black text-white leading-none">—</div>
                         </div>
                         <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Next V1</div>
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Live V1 (changes)</div>
                             <div id="recycle-attempt" class="mt-0.5 text-base font-black text-white leading-none">—</div>
                         </div>
                         <div class="px-2 py-1 text-center">
@@ -12700,7 +12700,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    FINAL MATCH TARGET is authoritative. A purchased target is the actual Deriv barrier; otherwise the card shows the prepared AI+V1 fused target for the next BUY.
+                    Purchased barrier is authoritative. Locked recovery uses that barrier; live V1 may change and is only a candidate at a new block boundary.
                 </div>
             `;
             host.appendChild(el);
@@ -12782,10 +12782,17 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 fusion?.final_digit !== undefined &&
                 Number.isInteger(Number(fusion.final_digit))
             ) ? Number(fusion.final_digit) : null;
-            const finalTarget = hasOpenContract ? purchasedTarget : preparedFusionDigit;
+            // The last purchased barrier is the block anchor for Trades 2/3 and 5/6.
+            // Only a VERIFIED purchased barrier is shown as locked; changing live V1
+            // scores are never represented as the next executable lock.
+            const inLockedBlock = currentTrade > 0 && currentTrade % 3 !== 0;
+            const lockedBlockTarget = inLockedBlock && purchasedTarget !== null
+                ? purchasedTarget : null;
+            const finalTarget = hasOpenContract ? purchasedTarget
+                : (lockedBlockTarget !== null ? lockedBlockTarget : preparedFusionDigit);
             const finalSource = hasOpenContract
                 ? String(execution?.selector_source || purchasedFusion?.source || 'PURCHASED')
-                : String(fusion?.source || 'WAITING');
+                : (lockedBlockTarget !== null ? 'THREE_TRADE_LOCK_FROM_LAST_PURCHASE' : String(fusion?.source || 'WAITING'));
 
             const finalTargetEl = document.getElementById('final-match-target');
             const finalStatusEl = document.getElementById('final-target-status');
@@ -12819,7 +12826,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (finalStatusEl) {
                 finalStatusEl.textContent = hasOpenContract
                     ? 'PURCHASED · MATCH THIS DIGIT'
-                    : (preparedFusionDigit !== null ? 'PREPARED FOR NEXT BUY' : 'WAITING · NO BUY TARGET');
+                    : (lockedBlockTarget !== null ? 'LOCKED RECOVERY TARGET · WAIT SETTLEMENT'
+                        : (preparedFusionDigit !== null ? 'LIVE CANDIDATE · NOT PURCHASED' : 'WAITING · NO BUY TARGET'));
                 finalStatusEl.className = hasOpenContract
                     ? 'text-xs font-black text-emerald-300'
                     : (preparedFusionDigit !== null
@@ -12844,11 +12852,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 const aiFallback = finalSource === 'AI_AUDITOR_CONFIRMED_FALLBACK';
                 finalHelpEl.textContent = hasOpenContract
                     ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
-                    : (preparedFusionDigit !== null
+                    : (lockedBlockTarget !== null
+                        ? `Digit ${lockedBlockTarget} was purchased on this three-trade block; the server must verify settled losses before reusing it.`
+                        : (preparedFusionDigit !== null
                         ? ((aiOverride || aiFallback)
                             ? `Digit ${preparedFusionDigit} is the canonically aligned AI challenger confirmed by the auditor. V1 remains the default primary selector.`
                             : `Digit ${preparedFusionDigit} is the V1-led server target. AI and auditor are supporting evidence only.`)
-                        : 'No executable target yet; the server should not buy until V1 or a canonically aligned auditor-confirmed AI target qualifies.');
+                        : 'No executable target yet; the server should not buy until V1 or a canonically aligned auditor-confirmed AI target qualifies.'));
             }
             if (finalAiDigitEl) {
                 finalAiDigitEl.textContent = aiDigit !== null ? String(aiDigit) : '—';
