@@ -1,0 +1,79 @@
+{
+  "data": "User R_10 current tick bias export",
+  "note": "Approximate V1 core-score proxy; not exact deployed V1, and no contract settlements. Small sample, only complete non-overlapping 10-tick windows.",
+  "warmup": 25,
+  "horizon": 10,
+  "windows": [
+    {
+      "start_seq": 27,
+      "initial_digit": 4,
+      "dynamic_first_hit": 3,
+      "locked_first_hit": 3,
+      "adaptive_first_hit": 3,
+      "adaptive_switches": 1
+    },
+    {
+      "start_seq": 37,
+      "initial_digit": 8,
+      "dynamic_first_hit": 1,
+      "locked_first_hit": 1,
+      "adaptive_first_hit": 1,
+      "adaptive_switches": 3
+    },
+    {
+      "start_seq": 47,
+      "initial_digit": 0,
+      "dynamic_first_hit": 7,
+      "locked_first_hit": 2,
+      "adaptive_first_hit": 7,
+      "adaptive_switches": 3
+    },
+    {
+      "start_seq": 57,
+      "initial_digit": 4,
+      "dynamic_first_hit": 1,
+      "locked_first_hit": 1,
+      "adaptive_first_hit": 1,
+      "adaptive_switches": 5
+    },
+    {
+      "start_seq": 67,
+      "initial_digit": 9,
+      "dynamic_first_hit": 5,
+      "locked_first_hit": 9,
+      "adaptive_first_hit": 5,
+      "adaptive_switches": 3
+    },
+    {
+      "start_seq": 77,
+      "initial_digit": 1,
+      "dynamic_first_hit": 8,
+      "locked_first_hit": 10,
+      "adaptive_first_hit": 8,
+      "adaptive_switches": 4
+    }
+  ],
+  "summary": {
+    "dynamic": {
+      "hit10": 6,
+      "n": 6,
+      "avg_first_hit_given_hit": 4.17,
+      "null_mean": 3.903,
+      "null_p_greater_equal": 0.076
+    },
+    "locked": {
+      "hit10": 6,
+      "n": 6,
+      "avg_first_hit_given_hit": 4.33,
+      "null_mean": 3.911,
+      "null_p_greater_equal": 0.077
+    },
+    "adaptive": {
+      "hit10": 6,
+      "n": 6,
+      "avg_first_hit_given_hit": 4.17,
+      "null_mean": 3.905,
+      "null_p_greater_equal": 0.076
+    }
+  }
+}

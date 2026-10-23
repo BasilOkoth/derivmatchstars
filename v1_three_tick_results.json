@@ -1,0 +1,41 @@
+{
+  "method": "V1-inspired proxy, R_10 retrospective, 6 non-overlapping windows, 25-tick warmup, no contract outcomes",
+  "windows": [
+    {
+      "start_seq": 27,
+      "dynamic": 3,
+      "three_tick": 3,
+      "locked10": 3
+    },
+    {
+      "start_seq": 37,
+      "dynamic": 1,
+      "three_tick": 1,
+      "locked10": 1
+    },
+    {
+      "start_seq": 47,
+      "dynamic": 7,
+      "three_tick": 2,
+      "locked10": 2
+    },
+    {
+      "start_seq": 57,
+      "dynamic": 1,
+      "three_tick": 1,
+      "locked10": 1
+    },
+    {
+      "start_seq": 67,
+      "dynamic": 5,
+      "three_tick": null,
+      "locked10": 9
+    },
+    {
+      "start_seq": 77,
+      "dynamic": 8,
+      "three_tick": null,
+      "locked10": 10
+    }
+  ]
+}
