@@ -1157,50 +1157,49 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    # DMS_THREE_TRADE_STRICT_LOCK_V14
-    def _three_trade_locked_target(self, s):
-        """Return purchased barrier from the current cycle; NEVER from old cycles.
+    # DMS_THREE_TRADE_TRANSACTIONAL_LOCK_V15
+    def _three_trade_locked_target(self, s, *, db=None):
+        """Read the actual block-anchor PURCHASE from the SAME database transaction.
 
-        current_trade is the last purchased trade number, so n=1,2 need
-        the first block's trade 1; n=4,5 need trade 4, and so on.
-        A missing, discontinuous, or unaudited purchase record fails closed.
+        The previous V14 implementation opened another database session even inside
+        SELECT ... FOR UPDATE, permitting inconsistent snapshots and lock contention.
+        No in-memory V1/candidate digit can supersede an anchor purchase.
         """
         n = int(s.current_trade or 0)
         if n <= 0 or n % 3 == 0:
             return None
         anchor_trade_no = ((n - 1) // 3) * 3 + 1
-        lookup_db = SessionLocal()
+        own_db = db is None
+        session = db if db is not None else SessionLocal()
         try:
-            # Take the most recent N purchases, requiring an intact 1..N cycle.
-            # Filtering on anchor trade_no alone could reuse a prior cycle.
-            recent = (
-                lookup_db.query(TradeLog)
-                .filter(TradeLog.trading_session_id == int(s.id))
-                .order_by(TradeLog.id.desc())
-                .limit(n)
-                .all()
-            )
+            recent = (session.query(TradeLog)
+                      .filter(TradeLog.trading_session_id == int(s.id))
+                      .order_by(TradeLog.id.desc()).limit(n).all())
             recent.reverse()
-            actual_numbers = [int(r.trade_no or 0) for r in recent]
-            if len(recent) != n or actual_numbers != list(range(1, n + 1)):
+            numbers = [int(row.trade_no or 0) for row in recent]
+            if len(recent) != n or numbers != list(range(1, n + 1)):
                 raise RuntimeError(
-                    f"THREE_TRADE_LOCK_INVALID_CYCLE: session={s.id} "
-                    f"current_trade={n} observed={actual_numbers}"
+                    f"THREE_TRADE_INVALID_CYCLE sid={s.id} current={n} trades={numbers}"
                 )
             anchor = recent[anchor_trade_no - 1]
-            if anchor.digit is None or not anchor.contract_id:
+            if not anchor.contract_id or anchor.digit is None:
                 raise RuntimeError(
-                    f"THREE_TRADE_LOCK_MISSING_ANCHOR: session={s.id} "
-                    f"current_trade={n} anchor_trade={anchor_trade_no}"
+                    f"THREE_TRADE_MISSING_ANCHOR sid={s.id} trade={anchor_trade_no}"
                 )
-            value = int(anchor.digit)
-            if not 0 <= value <= 9:
-                raise RuntimeError(
-                    f"THREE_TRADE_LOCK_BAD_ANCHOR_DIGIT: session={s.id} digit={value}"
-                )
-            return value
+            target = int(anchor.digit)
+            if target not in range(10):
+                raise RuntimeError(f"THREE_TRADE_BAD_ANCHOR_DIGIT sid={s.id}")
+            # Verify EVERY purchased trade in the current block agrees.
+            for previous in recent[anchor_trade_no - 1:]:
+                if not previous.contract_id or int(previous.digit) != target:
+                    raise RuntimeError(
+                        f"THREE_TRADE_BLOCK_MISMATCH sid={s.id} "
+                        f"trade={previous.trade_no} anchor={target} purchased={previous.digit}"
+                    )
+            return target
         finally:
-            lookup_db.close()
+            if own_db:
+                session.close()
 
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False, prepared_snapshot=None):
         snapshot = (
@@ -1760,7 +1759,7 @@ class MultiUserEngine:
                 # AI FUSION V1 may rescue a weak V1 margin when AI evidence is strong.
                 current_snapshot = prepared_for_this_tick
 
-                desired_next = self._three_trade_locked_target(s)
+                desired_next = self._three_trade_locked_target(s, db=db)
                 if desired_next is None:
                     desired_next, current_snapshot = self._choose_scored_digit(
                         sid, lock_target=True, prepared_snapshot=prepared_for_this_tick,
@@ -2353,7 +2352,7 @@ class MultiUserEngine:
                     expected_stake = round(float(latest.stake) * float(s.multiplier), 2)
                     if float(s.current_stake or 0) < expected_stake - 0.005:
                         s.current_stake = expected_stake
-                    fresh_digit = self._three_trade_locked_target(s)
+                    fresh_digit = self._three_trade_locked_target(s, db=db)
                     snapshot = {}
                     if fresh_digit is None:
                         fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
@@ -2421,7 +2420,7 @@ class MultiUserEngine:
 
                 # First trade uses the freshest V1 rank #1 and buys
                 # directly from parameters. No proposal request/cache is needed.
-                scored_digit = self._three_trade_locked_target(s)
+                scored_digit = self._three_trade_locked_target(s, db=db)
                 snapshot = {}
                 if scored_digit is None:
                     scored_digit, snapshot = self._choose_scored_digit(
@@ -2521,20 +2520,20 @@ class MultiUserEngine:
 
         # V13: authorize the actual purchased block-start TradeLog digit,
         # independent of mutable candidate_digit and changing V1 rankings.
-        expected_locked = self._three_trade_locked_target(row)
+        expected_locked = self._three_trade_locked_target(row, db=db)
         if expected_locked is not None:
             # Hard override: a valid live V1/fusion candidate must NEVER
             # authorize a different digit inside a 3-trade purchased block.
             if int(digit) != int(expected_locked):
                 db.rollback()
                 logger.error(
-                    "DMS_LOCK_V14 REJECT sid=%s trade=%s proposed=%s locked=%s",
+                    "DMS_LOCK_V15 REJECT sid=%s trade=%s proposed=%s locked=%s",
                     sid, trade_no, digit, expected_locked,
                 )
                 return None
             gate_ok = True
             gate_top = int(expected_locked)
-            fusion = {"source": "THREE_TRADE_STRICT_LOCK_V14"}
+            fusion = {"source": "THREE_TRADE_TRANSACTIONAL_LOCK_V15"}
 
         if not gate_ok:
             row.pending_trade_json = None
@@ -2549,6 +2548,13 @@ class MultiUserEngine:
             row.updated_at = datetime.utcnow()
             db.commit()
             return None
+
+        payload["three_trade_lock"] = {
+            "block_start_trade": ((trade_no - 1) // 3) * 3 + 1,
+            "block_position": ((trade_no - 1) % 3) + 1,
+            "purchased_target": int(digit),
+            "locked_from_trade_log": expected_locked is not None,
+        }
 
         # Freeze the exact gate evidence used to authorize this BUY.
         payload["margin_gate"] = {
@@ -2600,7 +2606,7 @@ class MultiUserEngine:
             ):
                 db.rollback()
                 return None
-            expected_locked = self._three_trade_locked_target(row)
+            expected_locked = self._three_trade_locked_target(row, db=db)
             if expected_locked is not None and int(digit) != int(expected_locked):
                 db.rollback()
                 return None
@@ -2725,6 +2731,11 @@ class MultiUserEngine:
                     trade_no=int(payload["trade_no"]),
                     currency=str(payload.get("currency") or "USD"),
                 )
+
+        # Guard the exact outbound parameters. A claim created for another
+        # barrier may not be silently reused by an async buy continuation.
+        if int(payload["digit"]) != int(claim["digit"]):
+            raise RuntimeError("BUY_CLAIM_LOST: digit changed after claim")
 
         try:
             if execution_mode == "DIRECT_PARAMETERS":
