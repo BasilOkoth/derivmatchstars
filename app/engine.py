@@ -1157,45 +1157,46 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    # DMS_THREE_TRADE_PERSISTED_PURCHASE_V13
+    # DMS_THREE_TRADE_STRICT_LOCK_V14
     def _three_trade_locked_target(self, s):
-        """Return the ACTUALLY PURCHASED barrier at the start of this block.
+        """Return purchased barrier from the current cycle; NEVER from old cycles.
 
-        Called when current_trade is the most recent purchased trade number.
-        Trade 1 -> next Trade 2, and Trade 2 -> next Trade 3 MUST reuse
-        the barrier bought on Trade 1. Trade 3 -> Trade 4 returns None to
-        request a new V1/fusion candidate. The same rule applies at 4/5/6.
-
-        Never trust candidate_digit here: it represents a mutable NEXT target
-        and was the reason previous builds could select a different barrier.
-        Fail closed if the block anchor has not been durably logged.
+        current_trade is the last purchased trade number, so n=1,2 need
+        the first block's trade 1; n=4,5 need trade 4, and so on.
+        A missing, discontinuous, or unaudited purchase record fails closed.
         """
         n = int(s.current_trade or 0)
         if n <= 0 or n % 3 == 0:
-            return None  # first trade or boundary after three purchased trades
-
+            return None
         anchor_trade_no = ((n - 1) // 3) * 3 + 1
         lookup_db = SessionLocal()
         try:
-            anchor = (
+            # Take the most recent N purchases, requiring an intact 1..N cycle.
+            # Filtering on anchor trade_no alone could reuse a prior cycle.
+            recent = (
                 lookup_db.query(TradeLog)
-                .filter(
-                    TradeLog.trading_session_id == int(s.id),
-                    TradeLog.trade_no == anchor_trade_no,
-                )
+                .filter(TradeLog.trading_session_id == int(s.id))
                 .order_by(TradeLog.id.desc())
-                .first()
+                .limit(n)
+                .all()
             )
-            if anchor is None or anchor.digit is None or not anchor.contract_id:
+            recent.reverse()
+            actual_numbers = [int(r.trade_no or 0) for r in recent]
+            if len(recent) != n or actual_numbers != list(range(1, n + 1)):
+                raise RuntimeError(
+                    f"THREE_TRADE_LOCK_INVALID_CYCLE: session={s.id} "
+                    f"current_trade={n} observed={actual_numbers}"
+                )
+            anchor = recent[anchor_trade_no - 1]
+            if anchor.digit is None or not anchor.contract_id:
                 raise RuntimeError(
                     f"THREE_TRADE_LOCK_MISSING_ANCHOR: session={s.id} "
                     f"current_trade={n} anchor_trade={anchor_trade_no}"
                 )
             value = int(anchor.digit)
-            if not (0 <= value <= 9):
+            if not 0 <= value <= 9:
                 raise RuntimeError(
-                    f"THREE_TRADE_LOCK_BAD_ANCHOR_DIGIT: session={s.id} "
-                    f"digit={value}"
+                    f"THREE_TRADE_LOCK_BAD_ANCHOR_DIGIT: session={s.id} digit={value}"
                 )
             return value
         finally:
@@ -2521,10 +2522,19 @@ class MultiUserEngine:
         # V13: authorize the actual purchased block-start TradeLog digit,
         # independent of mutable candidate_digit and changing V1 rankings.
         expected_locked = self._three_trade_locked_target(row)
-        if expected_locked is not None and int(digit) == int(expected_locked):
+        if expected_locked is not None:
+            # Hard override: a valid live V1/fusion candidate must NEVER
+            # authorize a different digit inside a 3-trade purchased block.
+            if int(digit) != int(expected_locked):
+                db.rollback()
+                logger.error(
+                    "DMS_LOCK_V14 REJECT sid=%s trade=%s proposed=%s locked=%s",
+                    sid, trade_no, digit, expected_locked,
+                )
+                return None
             gate_ok = True
             gate_top = int(expected_locked)
-            fusion = {"source": "THREE_TRADE_PERSISTED_LOCK"}
+            fusion = {"source": "THREE_TRADE_STRICT_LOCK_V14"}
 
         if not gate_ok:
             row.pending_trade_json = None
