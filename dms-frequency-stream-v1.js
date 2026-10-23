@@ -18,7 +18,7 @@
     if(S.html?.isConnected)return;
     const host=document.createElement('section');host.id='dms-frequency-study';
     host.style='font:13px system-ui;width:100%;margin:14px 0 0;padding:12px;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#f9fafb;box-sizing:border-box;overflow-wrap:anywhere;';
-    host.innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>Market stream & frequency research</b><span id="dms-fs-status">CONNECTING</span></div><p style="margin:8px 0;color:#cbd5e1">Market data streams independently of START BOT. Read-only; no purchases.</p><div id="dms-fs-values">No ticks yet</div><div id="dms-fs-metrics" style="margin-top:8px;color:#cbd5e1"></div><button type="button" id="dms-fs-export" style="padding:8px 12px;margin-top:10px;background:#2563eb;border-radius:8px;color:white">Export shadow CSV</button>';
+    host.innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>Market stream & frequency research</b><span id="dms-fs-status">CONNECTING</span></div><p style="margin:8px 0;color:#cbd5e1">Independent research feed · read-only · no purchases. Status reports connection/API errors.</p><div id="dms-fs-values">No ticks yet</div><div id="dms-fs-metrics" style="margin-top:8px;color:#cbd5e1"></div><button type="button" id="dms-fs-export" style="padding:8px 12px;margin-top:10px;background:#2563eb;border-radius:8px;color:white">Export shadow CSV</button>';
     const market=document.getElementById('market_status');
     const container=market?.closest('.bg-gray-900.border') || document.querySelector('.lg\\:col-span-1');
     if(container) container.appendChild(host); else document.body.prepend(host);host.querySelector('#dms-fs-export').addEventListener('click',exportCsv);S.html=host;
@@ -89,26 +89,80 @@
     else { S.liveTicks++; S.lastLiveAt=Date.now(); updateShadow(t); }
     S.last=t;
   }
+  // Public data only. The account-specific trading WebSocket is never touched.
+  // Current Deriv public endpoint first; documented legacy endpoint as fallback.
+  const ENDPOINTS=[
+    'wss://api.derivws.com/trading/v1/options/ws/public',
+    `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`
+  ];
+  let retryTimer=null, startupTimer=null, endpointIndex=0;
   function connect(){
-    const gen=++S.generation;S.symbol=symbol();S.connected=false;S.ready=false;S.status='connecting';
-    if(S.socket){try{S.socket.close();}catch(_){}}
-    S.prices=[];S.seen.clear();S.last=null;S.seq=0;S.pending=null;S.block=null;S.liveTicks=0;S.lastLiveAt=0;
-    const ws=new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);S.socket=ws;
+    const gen=++S.generation;
+    const chosen=symbol();
+    const changed=chosen!==S.symbol;
+    S.symbol=chosen;
+    S.connected=false;S.ready=false;
+    S.status=`connecting ${endpointIndex===0?'public':'legacy'}`;
+    clearTimeout(retryTimer);clearTimeout(startupTimer);
+    if(S.socket){try{S.socket.close(1000,'research reconnect')}catch(_){}}
+    if(changed){S.prices=[];S.seen.clear();S.last=null;S.seq=0;S.pending=null;S.block=null;S.liveTicks=0;S.lastLiveAt=0;}
+    const ws=new WebSocket(ENDPOINTS[endpointIndex]);S.socket=ws;
+    let gotLive=false, gotHistory=false, gotOpen=false, failure='';
+    const send=(payload)=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(payload));};
+    function retry(reason){
+      if(gen!==S.generation)return;
+      clearTimeout(startupTimer);
+      failure=reason||failure||'connection failed';
+      S.connected=false; S.status=failure; S.reconnects++;render();
+      // Swap endpoints on failures; use progressively longer retry to avoid storms.
+      endpointIndex=(endpointIndex+1)%ENDPOINTS.length;
+      try{if(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)ws.close()}catch(_){}
+      clearTimeout(retryTimer);
+      retryTimer=setTimeout(()=>{if(gen===S.generation)connect()},Math.min(30000,3000+S.reconnects*1500));
+    }
     ws.addEventListener('open',()=>{
-      if(gen!==S.generation)return;S.status='warming';render();
-      ws.send(JSON.stringify({ticks_history:S.symbol,count:MAX,end:'latest',style:'ticks',req_id:101}));
+      if(gen!==S.generation)return;
+      gotOpen=true;S.status=`subscribing ${endpointIndex===0?'public':'legacy'}`;render();
+      // Live subscription must not depend on successful history response.
+      send({ticks:S.symbol,subscribe:1,req_id:102});
+      send({ticks_history:S.symbol,count:MAX,end:'latest',style:'ticks',req_id:101});
+      startupTimer=setTimeout(()=>{if(gen===S.generation&&!gotLive)retry('NO LIVE TICKS (15s)')},15000);
     });
     ws.addEventListener('message',ev=>{
-      if(gen!==S.generation)return;let m;try{m=JSON.parse(ev.data)}catch(_){return}
-      if(m.error){S.status=`API ERROR: ${m.error.code||m.error.message}`;render();try{ws.close()}catch(_){}return;}
-      if(m.msg_type==='history'&&m.req_id===101){
-        const h=m.history||{},prices=h.prices||[],times=h.times||[],pips=h.pip_sizes||[];
-        for(let i=0;i<prices.length;i++)receiveTick({epoch:times[i],quote:prices[i],pip_size:pips[i]},true);
-        S.ready=true;S.status='streaming';ws.send(JSON.stringify({ticks:S.symbol,subscribe:1,req_id:102}));render();
-      } else if(m.msg_type==='tick'&&m.tick){receiveTick(m.tick,false);S.status='streaming';S.connected=true;}
+      if(gen!==S.generation)return;
+      let m;try{m=JSON.parse(ev.data)}catch(_){return}
+      if(m.error){
+        const detail=String(m.error.code||m.error.message||'unknown');
+        const origin=m.req_id===101?'history':m.req_id===102?'subscription':'request';
+        // A history failure does not prevent a working live feed.
+        if(m.req_id===101){S.status=`history unavailable: ${detail} · waiting for live`;render();return;}
+        retry(`API ${origin} ERROR: ${detail}`);return;
+      }
+      if(m.msg_type==='history'&&m.history&&!gotHistory){
+        gotHistory=true;
+        const h=m.history, prices=h.prices||[],times=h.times||[];
+        // Tick history schema specifies global pip_size (not per-tick pip_sizes).
+        const pip=Number.isInteger(Number(m.pip_size))?Number(m.pip_size):null;
+        for(let i=0;i<prices.length;i++){
+          if(times[i]!=null)receiveTick({epoch:times[i],quote:prices[i],pip_size:pip},true);
+        }
+        render();
+      } else if(m.msg_type==='tick'&&m.tick){
+        gotLive=true;clearTimeout(startupTimer);S.ready=true;
+        receiveTick(m.tick,false);S.status='STREAMING';S.connected=true;render();
+      }
     });
-    ws.addEventListener('close',()=>{if(gen!==S.generation)return;S.status='reconnecting';S.connected=false;S.reconnects++;render();setTimeout(()=>{if(gen===S.generation)connect()},BACKOFF)});
-    ws.addEventListener('error',()=>{S.status='connection error';render()});render();
+    ws.addEventListener('close',e=>{
+      if(gen!==S.generation)return;
+      if(retryTimer)return; // retry was already arranged by an API error/timeout
+      retry(`CLOSED ${e.code}${e.reason?': '+String(e.reason).slice(0,70):''}${!gotOpen?' (before open)':''}`);
+    });
+    ws.addEventListener('error',()=>{
+      if(gen!==S.generation)return;
+      S.status=`WEBSOCKET ERROR (${endpointIndex===0?'public':'legacy'})`;render();
+      // 'close' normally follows and reports close code.
+    });
+    render();
   }
   function exportCsv(){
     const fields=['sourceSeq','validForSeq','sourceTickKey','target','method','sampleSize','v1Target','actualDigit','hit','observedTickKey'];
@@ -116,7 +170,7 @@
     const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=`dms-frequency-shadow-${S.symbol}-${Date.now()}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  window.DMSFrequencyStudy={state:S,connect,exportCsv,disconnect(){++S.generation;S.socket?.close();S.status='stopped';render()}};
+  window.DMSFrequencyStudy={state:S,connect,exportCsv,disconnect(){++S.generation;clearTimeout(retryTimer);clearTimeout(startupTimer);S.socket?.close();S.status='stopped';render()}};
   function boot(){
     ensurePanel();
     connect();
@@ -126,7 +180,7 @@
       const age=Date.now()-(S.lastLiveAt||0);
       // Refresh stale research stream only; never act on trade execution socket.
       if(S.socket.readyState===WebSocket.OPEN && S.ready && age>20000){
-        S.status='stale: reconnecting'; render(); connect();
+        S.status='stale: reconnecting'; render(); endpointIndex=(endpointIndex+1)%ENDPOINTS.length; connect();
       }else render();
     },5000);
   }
