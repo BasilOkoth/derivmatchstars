@@ -9637,28 +9637,27 @@ function rotateHybridDigit(reason = '') {
                 // V53: auditor UI is independent of the collapsible digit statistics panel.
                 // UI refresh is render-only. Heavy analytics run once per unique
                 // canonical market tick in analyzeAndRecommend(), not on this timer.
-                if (window.digitDNAEngine) {
+                if (window.digitDNAEngine && !document.hidden) {
                     try {
-                        if (window.digitDNAEngine.lastSnapshot)
+                        if (window.digitDNAEngine.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
                             window.digitDNAEngine.render(window.digitDNAEngine.lastSnapshot);
                     } catch (e) {
                         console.warn('Digit DNA Engine render skipped:', e);
                     }
                 }
 
-                if (window.digitFeatureEngine) {
+                if (window.digitFeatureEngine && !document.hidden) {
                     try {
-                        if (window.digitFeatureEngine.lastSnapshot)
+                        if (window.digitFeatureEngine.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
                             window.digitFeatureEngine.render(window.digitFeatureEngine.lastSnapshot);
                     } catch (e) {
                         console.warn('Digit Feature Engine render skipped:', e);
                     }
                 }
 
-                if (window.randomnessAuditor) {
+                if (window.randomnessAuditor && !document.hidden) {
                     try {
-                        window.randomnessAuditor.ensurePanel();
-                        if (window.randomnessAuditor.lastSnapshot)
+                        if (window.randomnessAuditor.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
                             window.randomnessAuditor.render(window.randomnessAuditor.lastSnapshot);
                     } catch (e) {
                         console.warn('Randomness Auditor UI render skipped:', e);
@@ -14348,10 +14347,13 @@ function toggleServerContinuousResearch() {
             }
         }
 
+        // Single-flight polling: never launch overlapping /sessions requests.
+        let dmsServerPollInFlight = false;
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
-            if (!s.enabled || !s.apiUrl) return;
-
+            if (!s.enabled || !s.apiUrl || dmsServerPollInFlight) return;
+            if (document.hidden && !(s.state?.running || s.state?.open_contract_id)) return;
+            dmsServerPollInFlight = true;
             try {
                 const rows = await serverExecRequest('/sessions');
 
@@ -14428,6 +14430,8 @@ function toggleServerContinuousResearch() {
                     badge.textContent = 'SERVER OFFLINE';
                     badge.className = 'edge-pill text-rose-300';
                 }
+            } finally {
+                dmsServerPollInFlight = false;
             }
         }
 
@@ -14438,7 +14442,7 @@ function toggleServerContinuousResearch() {
             if (s.pollTimer) clearInterval(s.pollTimer);
 s.pollTimer = setInterval(
                 pollServerExecutionState,
-                750
+                1500
             );
 pollServerExecutionState();
 }
