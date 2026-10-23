@@ -1,0 +1,120 @@
+/* DigitMatchStar Frequency + V1 Shadow Study v1
+   Public Deriv market-data connection, independent of account or trade controls.
+   No trading endpoints or authorization tokens are used.
+*/
+(() => {
+  'use strict';
+  if (window.DMSFrequencyStudy) return;
+  const appId = String(window.DMS_RESEARCH_APP_ID || '1089');
+  const MAX = 1000, BACKOFF = 12000;
+  const S = {symbol:'R_10', socket:null, subscription:null, prices:[], seen:new Set(),
+    last:null, seq:0, pending:null, block:null, rows:[], forecasts:[], rejected:0,
+    connected:false, ready:false, generation:0, timer:null, html:null, status:'connecting',
+    snapshotMatched:0, snapshotUnavailable:0, gapCount:0};
+  const digit = v => Number.isInteger(+v) && +v>=0 && +v<=9 ? +v : null;
+  const symbol = () => String(document.querySelector('#symbol')?.value || 'R_10');
+  function key(t){return `${S.symbol}|${t.epoch}|${t.quote}|${t.digit}`;}
+  function ensurePanel(){
+    if(S.html?.isConnected)return;
+    const host=document.createElement('section');host.id='dms-frequency-study';
+    host.style='font:14px system-ui;max-width:700px;padding:14px;margin:16px auto;border:1px solid #64748b;border-radius:12px;background:#111827;color:#f9fafb;';
+    host.innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>Market stream & frequency research</b><span id="dms-fs-status">CONNECTING</span></div><p style="margin:8px 0;color:#cbd5e1">Market data streams independently of START BOT. Read-only; no purchases.</p><div id="dms-fs-values">No ticks yet</div><div id="dms-fs-metrics" style="margin-top:8px;color:#cbd5e1"></div><button type="button" id="dms-fs-export" style="padding:8px 12px;margin-top:10px;background:#2563eb;border-radius:8px;color:white">Export shadow CSV</button>';
+    const anchor=document.getElementById('recycle-runtime-panel')||document.querySelector('main')||document.body;
+    anchor.appendChild(host);host.querySelector('#dms-fs-export').addEventListener('click',exportCsv);S.html=host;
+  }
+  function render(){
+    ensurePanel();
+    const stats=Array.from({length:10},(_,d)=>S.prices.filter(x=>x.digit===d).length);
+    const n=S.prices.length;
+    S.html.querySelector('#dms-fs-status').textContent=`${S.status.toUpperCase()} · ${S.symbol}`;
+    S.html.querySelector('#dms-fs-values').textContent=stats.map((c,d)=>`${d}: ${n?(100*c/n).toFixed(1):'—'}%`).join('  |  ');
+    S.html.querySelector('#dms-fs-metrics').textContent=`Ticks in window: ${n}/1000 · live sequence: ${S.seq} · duplicate drops: ${S.rejected} · blocks tested: ${S.forecasts.length} · aligned V1 snapshots: ${S.snapshotMatched} · unavailable V1: ${S.snapshotUnavailable} · observed gaps: ${S.gapCount}`;
+  }
+  function parseTick(obj){
+    if(!obj||obj.epoch==null||obj.quote==null)return null;
+    // Preserve trailing zeros when pip_size is known; a numeric quote alone is ambiguous.
+    const p=obj.pip_size!==undefined&&obj.pip_size!==null&&Number.isInteger(+obj.pip_size)&&+obj.pip_size>=0&&+obj.pip_size<=12?+obj.pip_size:(S.symbol==='R_10'?3:null);
+    const str=p!==null?Number(obj.quote).toFixed(p):String(obj.quote);
+    const last=str.match(/\.(\d+)$/);if(!last)return null;
+    return {epoch:Number(obj.epoch),quote:str,digit:Number(last[1].slice(-1)),pip_size:p};
+  }
+  function captureV1(t){
+    const ds=window.SERVER_EXECUTION?.state?.digit_score;
+    const ct=ds?.canonical_tick;
+    // Never treat a ranking from another WebSocket/tick as a synchronized forecast.
+    const rank=ds?.ranking?.[0], epoch=Number(ds?.rank_epoch||0);
+    if(!ct||epoch!==t.epoch||String(ct.formatted_quote ?? ct.quote ?? '')!==t.quote || !rank) {
+      S.snapshotUnavailable++;return null;
+    }
+    const d=digit(rank.digit);if(d===null){S.snapshotUnavailable++;return null;}
+    S.snapshotMatched++;return d;
+  }
+  function updateShadow(t){
+    S.seq++;
+    // Evaluate pending forecasts strictly against next received canonical tick.
+    if(S.pending){
+      const p=S.pending;
+      if(S.seq===p.validForSeq) S.rows.push({...p,actualDigit:t.digit,hit:p.target===t.digit,observedTickKey:key(t)});
+      S.pending=null;
+    }
+    if(S.block){
+      S.block.elapsed++;
+      const hit=S.block.target===t.digit;
+      S.forecasts.push({sourceSeq:S.block.sourceSeq,sourceTickKey:S.block.sourceTickKey,
+        target:S.block.target,elapsed:S.block.elapsed,observedSeq:S.seq,actualDigit:t.digit,hit});
+      if(hit||S.block.elapsed===3)S.block=null;
+    }
+    const v1=captureV1(t);
+    S.prices.push(t);if(S.prices.length>MAX)S.prices.shift();
+    // Frequency selection is historical: t enters window BEFORE a forecast for t+1.
+    if(S.prices.length>=100){
+      const counts=Array(10).fill(0);for(const v of S.prices)counts[v.digit]++;
+      const leader=counts.reduce((best,c,d)=>c>counts[best]?d:best,0);
+      const currentKey=key(t);
+      S.pending={sourceSeq:S.seq,validForSeq:S.seq+1,sourceTickKey:currentKey,target:leader,method:'FREQ1000',sampleSize:S.prices.length,v1Target:v1};
+      if(!S.block)S.block={sourceSeq:S.seq,sourceTickKey:currentKey,target:v1===null?leader:v1,
+         selection:v1===null?'FREQUENCY_FALLBACK_NO_ALIGNED_V1':'V1_ALIGNED',elapsed:0};
+    }
+    render();
+  }
+  function receiveTick(raw,history=false){
+    const t=parseTick(raw);if(!t)return;
+    const k=key(t);if(S.seen.has(k)){S.rejected++;return;}
+    if(!history && S.last && t.epoch < S.last.epoch)return;
+    if(!history && S.last && t.epoch-S.last.epoch>3)S.gapCount++;
+    S.seen.add(k);if(S.seen.size>3000){S.seen=new Set(Array.from(S.seen).slice(-1500));}
+    if(history){S.prices.push(t);if(S.prices.length>MAX)S.prices.shift();}
+    else updateShadow(t);
+    S.last=t;
+  }
+  function connect(){
+    const gen=++S.generation;S.symbol=symbol();S.connected=false;S.ready=false;S.status='connecting';
+    if(S.socket){try{S.socket.close();}catch(_){}}
+    S.prices=[];S.seen.clear();S.last=null;S.seq=0;S.pending=null;S.block=null;
+    const ws=new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);S.socket=ws;
+    ws.addEventListener('open',()=>{
+      if(gen!==S.generation)return;S.status='warming';render();
+      ws.send(JSON.stringify({ticks_history:S.symbol,count:MAX,end:'latest',style:'ticks',req_id:101}));
+    });
+    ws.addEventListener('message',ev=>{
+      if(gen!==S.generation)return;let m;try{m=JSON.parse(ev.data)}catch(_){return}
+      if(m.error){S.status=`api error: ${m.error.code||m.error.message}`;render();return;}
+      if(m.msg_type==='history'&&m.req_id===101){
+        const h=m.history||{},prices=h.prices||[],times=h.times||[],pips=h.pip_sizes||[];
+        for(let i=0;i<prices.length;i++)receiveTick({epoch:times[i],quote:prices[i],pip_size:pips[i]},true);
+        S.ready=true;S.status='streaming';ws.send(JSON.stringify({ticks:S.symbol,subscribe:1,req_id:102}));render();
+      } else if(m.msg_type==='tick'&&m.tick){receiveTick(m.tick,false);S.status='streaming';S.connected=true;}
+    });
+    ws.addEventListener('close',()=>{if(gen!==S.generation)return;S.status='reconnecting';render();setTimeout(()=>{if(gen===S.generation)connect()},BACKOFF)});
+    ws.addEventListener('error',()=>{S.status='connection error';render()});render();
+  }
+  function exportCsv(){
+    const fields=['sourceSeq','validForSeq','sourceTickKey','target','method','sampleSize','v1Target','actualDigit','hit','observedTickKey'];
+    const lines=[fields.join(','),...S.rows.map(r=>fields.map(k=>JSON.stringify(r[k]??'')).join(','))];
+    const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`dms-frequency-shadow-${S.symbol}-${Date.now()}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+  window.DMSFrequencyStudy={state:S,connect,exportCsv,disconnect(){++S.generation;S.socket?.close();S.status='stopped';render()}};
+  function boot(){ensurePanel();connect();document.getElementById('symbol')?.addEventListener('change',connect)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+})();
