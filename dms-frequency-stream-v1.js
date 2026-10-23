@@ -32,71 +32,31 @@
     const style = document.createElement('style');
     style.id = 'dms-fs-style';
     style.textContent = `
-      #dms-frequency-study{font-family:Inter,system-ui,sans-serif;width:100%;margin:14px 0 0;padding:14px;border:1px solid rgba(71,85,105,.9);border-radius:16px;background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.98));color:#f8fafc;box-sizing:border-box;box-shadow:0 14px 32px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.04)}
-      #dms-frequency-study .dms-fs-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px}
-      #dms-frequency-study .dms-fs-title{font-size:15px;font-weight:900;letter-spacing:.01em;color:#e2e8f0}
-      #dms-frequency-study .dms-fs-sub{margin:4px 0 0;color:#94a3b8;font-size:12px;line-height:1.35}
-      #dms-frequency-study .dms-fs-status{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;font-size:11px;font-weight:900;letter-spacing:.03em;border:1px solid rgba(148,163,184,.18);text-transform:uppercase;white-space:nowrap}
-      #dms-frequency-study .dms-fs-status::before{content:'';width:8px;height:8px;border-radius:999px;background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.18)}
-      #dms-frequency-study .status-streaming{background:rgba(5,150,105,.12);color:#6ee7b7;border-color:rgba(16,185,129,.28)}
-      #dms-frequency-study .status-streaming::before{background:#10b981;box-shadow:0 0 0 4px rgba(16,185,129,.18)}
-      #dms-frequency-study .status-connecting,#dms-frequency-study .status-reconnecting,#dms-frequency-study .status-stale{background:rgba(245,158,11,.10);color:#fbbf24;border-color:rgba(245,158,11,.25)}
-      #dms-frequency-study .status-connecting::before,#dms-frequency-study .status-reconnecting::before,#dms-frequency-study .status-stale::before{background:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.16)}
-      #dms-frequency-study .status-error,#dms-frequency-study .status-closed,#dms-frequency-study .status-api{background:rgba(239,68,68,.10);color:#fca5a5;border-color:rgba(239,68,68,.24)}
-      #dms-frequency-study .status-error::before,#dms-frequency-study .status-closed::before,#dms-frequency-study .status-api::before{background:#ef4444;box-shadow:0 0 0 4px rgba(239,68,68,.16)}
-      #dms-frequency-study .status-idle{background:rgba(56,189,248,.10);color:#93c5fd;border-color:rgba(56,189,248,.22)}
-      #dms-frequency-study .status-idle::before{background:#60a5fa;box-shadow:0 0 0 4px rgba(96,165,250,.15)}
-      #dms-frequency-study .dms-fs-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px}
-      @media (max-width:900px){#dms-frequency-study .dms-fs-grid{grid-template-columns:repeat(5,minmax(0,1fr));}}
-      @media (max-width:640px){#dms-frequency-study .dms-fs-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
-      #dms-frequency-study .dms-fs-card{position:relative;overflow:hidden;padding:10px;border-radius:14px;border:1px solid rgba(71,85,105,.55);background:linear-gradient(180deg,rgba(30,41,59,.75),rgba(15,23,42,.85));transition:transform .12s ease,border-color .15s ease,box-shadow .15s ease}
-      #dms-frequency-study .dms-fs-card:hover{transform:translateY(-1px);box-shadow:0 8px 18px rgba(0,0,0,.22)}
-      #dms-frequency-study .dms-fs-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
-      #dms-frequency-study .dms-fs-digit{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:999px;font-size:13px;font-weight:900;background:rgba(15,23,42,.9);border:1px solid rgba(148,163,184,.2);color:#f8fafc}
-      #dms-frequency-study .dms-fs-pct{font-size:18px;font-weight:900;letter-spacing:-.02em}
-      #dms-frequency-study .dms-fs-count{font-size:11px;color:#cbd5e1}
-      #dms-frequency-study .dms-fs-track{height:8px;border-radius:999px;background:rgba(51,65,85,.9);overflow:hidden;border:1px solid rgba(148,163,184,.08)}
-      #dms-frequency-study .dms-fs-fill{height:100%;border-radius:999px;min-width:2px}
-      #dms-frequency-study .dms-fs-rank{margin-top:6px;font-size:10px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:#94a3b8}
-      #dms-frequency-study .tier-top{border-color:rgba(16,185,129,.38);background:linear-gradient(180deg,rgba(6,78,59,.33),rgba(15,23,42,.92))}
-      #dms-frequency-study .tier-top .dms-fs-pct{color:#6ee7b7}
-      #dms-frequency-study .tier-top .dms-fs-fill{background:linear-gradient(90deg,#10b981,#34d399)}
-      #dms-frequency-study .tier-high{border-color:rgba(34,197,94,.26)}
-      #dms-frequency-study .tier-high .dms-fs-pct{color:#a7f3d0}
-      #dms-frequency-study .tier-high .dms-fs-fill{background:linear-gradient(90deg,#22c55e,#86efac)}
-      #dms-frequency-study .tier-mid{border-color:rgba(59,130,246,.24)}
-      #dms-frequency-study .tier-mid .dms-fs-pct{color:#bfdbfe}
-      #dms-frequency-study .tier-mid .dms-fs-fill{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
-      #dms-frequency-study .tier-low{border-color:rgba(245,158,11,.22)}
-      #dms-frequency-study .tier-low .dms-fs-pct{color:#fde68a}
-      #dms-frequency-study .tier-low .dms-fs-fill{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
-      #dms-frequency-study .tier-weak{border-color:rgba(239,68,68,.22)}
-      #dms-frequency-study .tier-weak .dms-fs-pct{color:#fca5a5}
-      #dms-frequency-study .tier-weak .dms-fs-fill{background:linear-gradient(90deg,#ef4444,#fb7185)}
-      #dms-frequency-study .dms-fs-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
-      @media (max-width:640px){#dms-frequency-study .dms-fs-metrics{grid-template-columns:repeat(2,minmax(0,1fr));}}
-      #dms-frequency-study .dms-fs-metric{padding:10px 11px;border-radius:12px;background:rgba(15,23,42,.88);border:1px solid rgba(71,85,105,.6)}
-      #dms-frequency-study .dms-fs-metric-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8}
-      #dms-frequency-study .dms-fs-metric-value{margin-top:3px;font-size:16px;font-weight:900;color:#f8fafc}
-      #dms-frequency-study .dms-fs-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
-      #dms-frequency-study .dms-fs-note{font-size:11px;color:#94a3b8;line-height:1.35;flex:1 1 320px}
-      #dms-frequency-study .dms-fs-export{padding:9px 12px;border:0;border-radius:10px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;font-weight:900;font-size:12px;box-shadow:0 8px 16px rgba(37,99,235,.18);cursor:pointer}
-      #dms-frequency-study .dms-fs-export:hover{filter:brightness(1.05)}
-      #dms-frequency-study .dms-fs-error{margin-top:8px;font-size:11px;color:#fca5a5;min-height:15px}
+      #dms-frequency-study{font-family:Inter,system-ui,sans-serif;margin:10px 0 0;padding:9px 10px;border:1px solid #334155;border-radius:12px;background:#0f172a;color:#e2e8f0;box-sizing:border-box;width:100%}
+      #dms-frequency-study .fs-head{display:flex;align-items:center;justify-content:space-between;gap:6px}
+      #dms-frequency-study .fs-title{font-size:12px;font-weight:850;letter-spacing:.01em}
+      #dms-frequency-study .fs-actions{display:flex;align-items:center;gap:7px}
+      #dms-frequency-study .fs-status{font-size:10px;font-weight:750;color:#34d399;white-space:nowrap}
+      #dms-frequency-study .fs-status.fs-warning{color:#fbbf24}
+      #dms-frequency-study .fs-toggle{width:25px;height:23px;border:1px solid #475569;border-radius:7px;background:#1e293b;color:#e2e8f0;font-size:16px;font-weight:bold;cursor:pointer}
+      #dms-frequency-study .fs-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:9px}
+      #dms-frequency-study .fs-tile{display:flex;align-items:center;justify-content:center;gap:5px;min-height:31px;border:1px solid #334155;border-radius:8px;background:#1e293b;padding:3px 4px;white-space:nowrap}
+      #dms-frequency-study .fs-digit{font-size:12px;font-weight:900;color:#e2e8f0}
+      #dms-frequency-study .fs-percent{font-size:12px;font-weight:900;color:#cbd5e1}
+      #dms-frequency-study .fs-tile.first{background:rgba(5,150,105,.15);border-color:#059669}
+      #dms-frequency-study .fs-tile.first .fs-percent{color:#4ade80}
+      #dms-frequency-study .fs-tile.high{border-color:rgba(34,197,94,.4)}
+      #dms-frequency-study .fs-tile.high .fs-percent{color:#86efac}
+      #dms-frequency-study .fs-tile.medium .fs-percent{color:#93c5fd}
+      #dms-frequency-study .fs-tile.low .fs-percent{color:#fcd34d}
+      #dms-frequency-study .fs-tile.bottom .fs-percent{color:#fca5a5}
+      #dms-frequency-study .fs-foot{display:flex;align-items:center;justify-content:space-between;gap:7px;margin-top:7px}
+      #dms-frequency-study .fs-window{font-size:10px;color:#94a3b8}
+      #dms-frequency-study .fs-export{border:1px solid #475569;background:#1e293b;color:#cbd5e1;border-radius:7px;padding:4px 7px;font-size:10px;cursor:pointer}
+      #dms-frequency-study .fs-body[hidden]{display:none!important}
+      @media(max-width:375px){#dms-frequency-study .fs-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#dms-frequency-study .fs-title{font-size:11px}}
     `;
     document.head.appendChild(style);
-  }
-
-  function statusClass(text) {
-    const s = String(text || '').toLowerCase();
-    if (s.includes('streaming')) return 'status-streaming';
-    if (s.includes('reconnecting')) return 'status-reconnecting';
-    if (s.includes('connecting') || s.includes('subscribing') || s.includes('waiting')) return 'status-connecting';
-    if (s.includes('stale')) return 'status-stale';
-    if (s.includes('websocket error')) return 'status-error';
-    if (s.includes('api')) return 'status-api';
-    if (s.includes('closed')) return 'status-closed';
-    return 'status-idle';
   }
 
   function ensurePanel() {
@@ -105,35 +65,39 @@
     const host = document.createElement('section');
     host.id = 'dms-frequency-study';
     host.innerHTML = `
-      <div class="dms-fs-head">
-        <div>
-          <div class="dms-fs-title">Market stream & frequency research</div>
-          <p class="dms-fs-sub">Independent research feed · read-only · no purchases. Historical frequencies are descriptive, not a promise about the next tick.</p>
+      <div class="fs-head">
+        <strong class="fs-title">Digit frequency · ${S.symbol}</strong>
+        <div class="fs-actions">
+          <span id="dms-fs-status" class="fs-status">CONNECTING</span>
+          <button id="dms-fs-toggle" class="fs-toggle" type="button" aria-controls="dms-fs-body" aria-expanded="true" title="Minimize frequency panel">−</button>
         </div>
-        <span id="dms-fs-status" class="dms-fs-status status-connecting">CONNECTING · R_10</span>
       </div>
-      <div id="dms-fs-grid" class="dms-fs-grid"></div>
-      <div id="dms-fs-metrics" class="dms-fs-metrics"></div>
-      <div id="dms-fs-error" class="dms-fs-error"></div>
-      <div class="dms-fs-foot">
-        <div id="dms-fs-note" class="dms-fs-note">Waiting for historical ticks and live streaming data.</div>
-        <button type="button" id="dms-fs-export" class="dms-fs-export">Export shadow CSV</button>
+      <div id="dms-fs-body" class="fs-body">
+        <div id="dms-fs-grid" class="fs-grid"></div>
+        <div class="fs-foot">
+          <span id="dms-fs-window" class="fs-window">0/1000 ticks · read-only</span>
+          <button id="dms-fs-export" class="fs-export" type="button">Export CSV</button>
+        </div>
       </div>`;
     const market = document.getElementById('market_status');
     const container = market?.closest('.bg-gray-900.border') || document.querySelector('.lg\\:col-span-1');
     if (container) container.appendChild(host); else document.body.prepend(host);
     host.querySelector('#dms-fs-export').addEventListener('click', exportCsv);
+    const toggle = host.querySelector('#dms-fs-toggle');
+    const body = host.querySelector('#dms-fs-body');
+    const apply = hidden => {
+      body.hidden = hidden;
+      toggle.textContent = hidden ? '+' : '−';
+      toggle.setAttribute('aria-expanded', String(!hidden));
+      toggle.title = hidden ? 'Expand frequency panel' : 'Minimize frequency panel';
+      try { localStorage.setItem('dms_fs_minimized', hidden ? '1' : '0'); } catch (_) {}
+    };
+    toggle.addEventListener('click', () => apply(!body.hidden));
+    let minimized = false;
+    try { minimized = localStorage.getItem('dms_fs_minimized') === '1'; } catch (_) {}
+    apply(minimized);
     S.html = host;
     render();
-  }
-
-  function classify(value, maxValue) {
-    if (!Number.isFinite(value)) return 'tier-mid';
-    if (value === maxValue) return 'tier-top';
-    if (value >= 11.0) return 'tier-high';
-    if (value >= 9.5) return 'tier-mid';
-    if (value >= 8.8) return 'tier-low';
-    return 'tier-weak';
   }
 
   function render() {
@@ -142,54 +106,16 @@
     for (const item of S.prices) counts[item.digit]++;
     const n = S.prices.length;
     if (S.connected && S.lastLiveAt && Date.now() - S.lastLiveAt > 10000) S.status = 'stale: no new ticks';
-    const values = counts.map(c => n ? (100 * c / n) : NaN);
-    const maxValue = values.reduce((m, v) => Number.isFinite(v) && v > m ? v : m, -Infinity);
-    const ranked = values.map((v, d) => ({ d, v })).sort((a, b) => (b.v - a.v) || (a.d - b.d));
-    const rankMap = new Map(ranked.map((row, idx) => [row.d, idx + 1]));
-
-    const statusEl = S.html.querySelector('#dms-fs-status');
-    statusEl.className = `dms-fs-status ${statusClass(S.status)}`;
-    statusEl.textContent = `${S.status.toUpperCase()} · ${S.symbol}`;
-
-    const grid = S.html.querySelector('#dms-fs-grid');
-    grid.innerHTML = values.map((v, d) => {
-      const tier = classify(v, maxValue);
-      const count = counts[d];
-      const width = Number.isFinite(v) ? Math.max(4, Math.min(100, v * 6.5)) : 4;
-      const leader = rankMap.get(d) === 1 ? 'Highest frequency now' : `Rank #${rankMap.get(d)}`;
-      return `
-        <div class="dms-fs-card ${tier}">
-          <div class="dms-fs-card-top">
-            <span class="dms-fs-digit">${d}</span>
-            <span class="dms-fs-pct">${pct(v)}</span>
-          </div>
-          <div class="dms-fs-count">${count}/${n || 1000} ticks</div>
-          <div class="dms-fs-track"><div class="dms-fs-fill" style="width:${width}%"></div></div>
-          <div class="dms-fs-rank">${leader}</div>
-        </div>`;
+    const sorted = counts.map((count, digit) => ({digit, percentage: n ? 100 * count / n : NaN})).sort((a,b) => (b.percentage - a.percentage) || (a.digit - b.digit));
+    const el = S.html.querySelector('#dms-fs-status');
+    const isLive = String(S.status).toLowerCase() === 'streaming';
+    el.textContent = isLive ? '● LIVE' : '● ' + String(S.status).toUpperCase().slice(0,21);
+    el.classList.toggle('fs-warning', !isLive);
+    S.html.querySelector('#dms-fs-grid').innerHTML = sorted.map((item,i) => {
+      const tier = i===0?'first':i<=2?'high':i<=6?'medium':i<=8?'low':'bottom';
+      return `<div class="fs-tile ${tier}" title="Digit ${item.digit} · rank ${i+1} by historical frequency"><span class="fs-digit">${item.digit}</span><span class="fs-percent">${Number.isFinite(item.percentage)?item.percentage.toFixed(1):'—'}%</span></div>`;
     }).join('');
-
-    const metrics = [
-      ['Ticks in window', `${n}/${MAX}`],
-      ['New live ticks', String(S.liveTicks)],
-      ['Duplicate drops', String(S.rejected)],
-      ['Blocks tested', String(S.forecasts.length)],
-      ['Aligned V1', String(S.snapshotMatched)],
-      ['Unavailable V1', String(S.snapshotUnavailable)],
-      ['Observed gaps', String(S.gapCount)],
-      ['Reconnects', String(S.reconnects)]
-    ];
-    S.html.querySelector('#dms-fs-metrics').innerHTML = metrics.map(([label, value]) => `
-      <div class="dms-fs-metric">
-        <div class="dms-fs-metric-label">${label}</div>
-        <div class="dms-fs-metric-value">${value}</div>
-      </div>`).join('');
-
-    const top = ranked.slice(0, 3).map((r, idx) => `${idx + 1}) digit ${r.d} ${pct(r.v)}`).join(' · ');
-    S.html.querySelector('#dms-fs-note').textContent = n
-      ? `Leaders in the current ${n}-tick window: ${top}. Use this as a shadow research signal only.`
-      : 'Waiting for historical ticks and live streaming data.';
-    S.html.querySelector('#dms-fs-error').textContent = S.lastError || '';
+    S.html.querySelector('#dms-fs-window').textContent = `${n}/1000 ticks · read-only`;
   }
 
   function parseTick(obj) {
