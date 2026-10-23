@@ -16836,10 +16836,6 @@ window.isBotRunning = true;
 
         log('📊 Precision Matcher loaded', 'SYSTEM');
     </script>
-<script src="/screen-recorder-safe-v5-2.js"></script>
-<!-- Digit Differs Lab removed in V51 CORE CLEAN -->
-<!-- Multi-Digit Match Basket Lab removed in V51 CORE CLEAN -->
-<!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <script>
 (function () {
     function installBalanceRefreshButton() {
@@ -16908,5 +16904,52 @@ window.isBotRunning = true;
 </script>
 <!-- Read-only market frequency and 3-tick research; does not start trading -->
 <script defer src="dms-frequency-stream-v1.js"></script>
+
+<!-- Original screen recorder: unchanged; compact floating/minimizable UI only. -->
+<script src="/screen-recorder-safe-v5-2.js"></script>
+<style id="dms-mini-recorder-css">
+  #dms70-rec-panel { width: 178px !important; max-width: calc(100vw - 16px) !important;
+    padding: 7px 9px !important; border-radius: 11px !important;
+    box-shadow: 0 10px 26px rgba(0,0,0,.35) !important; box-sizing: border-box !important; }
+  #dms70-rec-drag { min-height: 26px; touch-action: none; user-select: none; }
+  #dms70-rec-drag > span:nth-child(2) { font-size: 9px !important; letter-spacing: 0 !important; }
+  #dms70-rec-drag > span:first-child { font-size: 13px; }
+  #dms70-rec-badge { font-size: 8px !important; }
+  #dms70-rec-status { font-size: 9px !important; line-height: 1.25 !important; margin: 4px 0 !important; }
+  #dms70-rec-panel button { font-size: 9px !important; padding: 6px 5px !important; }
+  #dms70-rec-toggle { border: 1px solid rgba(148,163,184,.25) !important;
+    background: rgba(30,41,59,.9) !important; color: #cbd5e1 !important;
+    border-radius: 6px !important; font-size: 13px !important; line-height: 1 !important;
+    padding: 3px 5px !important; cursor: pointer; }
+  #dms70-rec-panel.dms-rec-minimized { width: 145px !important; padding: 5px 7px !important; }
+  #dms70-rec-panel.dms-rec-minimized > :not(#dms70-rec-drag) { display: none !important; }
+  #dms70-rec-panel.dms-rec-minimized #dms70-rec-drag > span:nth-child(2) { font-size: 9px !important; }
+</style>
+<script>
+(function miniRecorderUI(){
+  'use strict';
+  function init(){
+    const panel=document.getElementById('dms70-rec-panel');
+    const drag=document.getElementById('dms70-rec-drag');
+    if(!panel||!drag||document.getElementById('dms70-rec-toggle'))return;
+    const toggle=document.createElement('button');
+    toggle.id='dms70-rec-toggle';toggle.type='button';
+    toggle.title='Minimize / expand recorder';toggle.setAttribute('aria-label','Minimize or expand screen recorder');
+    drag.appendChild(toggle);
+    // Keep recording even while the panel is minimized.
+    let minimized=false;
+    try{minimized=localStorage.getItem('dms_recorder_minimized')==='1';}catch(_){}
+    function apply(){
+      panel.classList.toggle('dms-rec-minimized',minimized);
+      toggle.textContent=minimized?'+':'−';toggle.setAttribute('aria-expanded',String(!minimized));
+      try{localStorage.setItem('dms_recorder_minimized',minimized?'1':'0');}catch(_){}
+    }
+    toggle.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();minimized=!minimized;apply();});
+    // Recorder retains its original drag handler and browser permission flow.
+    apply();
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();
+</script>
 </body>
 </html>
