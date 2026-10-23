@@ -1157,14 +1157,49 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    # DMS_THREE_TRADE_TARGET_LOCK_V10
+    # DMS_THREE_TRADE_PERSISTED_PURCHASE_V13
     def _three_trade_locked_target(self, s):
-        """Persisted digit for next BUY within a three-purchase block."""
+        """Return the ACTUALLY PURCHASED barrier at the start of this block.
+
+        Called when current_trade is the most recent purchased trade number.
+        Trade 1 -> next Trade 2, and Trade 2 -> next Trade 3 MUST reuse
+        the barrier bought on Trade 1. Trade 3 -> Trade 4 returns None to
+        request a new V1/fusion candidate. The same rule applies at 4/5/6.
+
+        Never trust candidate_digit here: it represents a mutable NEXT target
+        and was the reason previous builds could select a different barrier.
+        Fail closed if the block anchor has not been durably logged.
+        """
         n = int(s.current_trade or 0)
-        if n > 0 and n % 3 != 0 and s.candidate_digit is not None:
-            d = int(s.candidate_digit)
-            if 0 <= d <= 9: return d
-        return None
+        if n <= 0 or n % 3 == 0:
+            return None  # first trade or boundary after three purchased trades
+
+        anchor_trade_no = ((n - 1) // 3) * 3 + 1
+        lookup_db = SessionLocal()
+        try:
+            anchor = (
+                lookup_db.query(TradeLog)
+                .filter(
+                    TradeLog.trading_session_id == int(s.id),
+                    TradeLog.trade_no == anchor_trade_no,
+                )
+                .order_by(TradeLog.id.desc())
+                .first()
+            )
+            if anchor is None or anchor.digit is None or not anchor.contract_id:
+                raise RuntimeError(
+                    f"THREE_TRADE_LOCK_MISSING_ANCHOR: session={s.id} "
+                    f"current_trade={n} anchor_trade={anchor_trade_no}"
+                )
+            value = int(anchor.digit)
+            if not (0 <= value <= 9):
+                raise RuntimeError(
+                    f"THREE_TRADE_LOCK_BAD_ANCHOR_DIGIT: session={s.id} "
+                    f"digit={value}"
+                )
+            return value
+        finally:
+            lookup_db.close()
 
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False, prepared_snapshot=None):
         snapshot = (
@@ -2465,7 +2500,8 @@ class MultiUserEngine:
         expected_trade_no = int(row.current_trade or 0) + 1
 
         # AI FUSION V1 — final authoritative pre-BUY barrier.
-        # Only a target frozen by _choose_scored_digit may be purchased.
+        # New blocks use frozen eligible V1/fusion. Continuing a 3-trade
+        # block uses the actual previously purchased barrier from TradeLog.
         locked = self.locked_target_snapshots.get(int(sid)) or {}
         gate_snapshot = locked.get("snapshot") or {}
         fusion = (
@@ -2482,8 +2518,8 @@ class MultiUserEngine:
             and int(locked.get("digit", -1)) == int(digit)
         )
 
-        # DMS_RACE_GUARD_V11: within a 3-trade block, authorize the
-        # persisted purchased barrier rather than a newly rescored V1 top.
+        # V13: authorize the actual purchased block-start TradeLog digit,
+        # independent of mutable candidate_digit and changing V1 rankings.
         expected_locked = self._three_trade_locked_target(row)
         if expected_locked is not None and int(digit) == int(expected_locked):
             gate_ok = True
