@@ -36,7 +36,7 @@
       #dms-frequency-study .fs-head{display:flex;align-items:center;justify-content:space-between;gap:6px}
       #dms-frequency-study .fs-title{font-size:12px;font-weight:850;letter-spacing:.01em}
       #dms-frequency-study .fs-actions{display:flex;align-items:center;gap:7px}
-      #dms-frequency-study .fs-status{font-size:10px;font-weight:750;color:#34d399;white-space:nowrap}
+      #dms-frequency-study .fs-status{font-size:10px;font-weight:750;color:#34d399;white-space:nowrap;max-width:100px}
       #dms-frequency-study .fs-status.fs-warning{color:#fbbf24}
       #dms-frequency-study .fs-toggle{width:25px;height:23px;border:1px solid #475569;border-radius:7px;background:#1e293b;color:#e2e8f0;font-size:16px;font-weight:bold;cursor:pointer}
       #dms-frequency-study .fs-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:9px}
@@ -108,14 +108,17 @@
     if (S.connected && S.lastLiveAt && Date.now() - S.lastLiveAt > 10000) S.status = 'stale: no new ticks';
     const sorted = counts.map((count, digit) => ({digit, percentage: n ? 100 * count / n : NaN})).sort((a,b) => (b.percentage - a.percentage) || (a.digit - b.digit));
     const el = S.html.querySelector('#dms-fs-status');
-    const isLive = String(S.status).toLowerCase() === 'streaming';
-    el.textContent = isLive ? '● LIVE' : '● ' + String(S.status).toUpperCase().slice(0,21);
+    const stateText = String(S.status).toLowerCase();
+    const isLive = stateText === 'streaming' && S.socket?.readyState === WebSocket.OPEN;
+    const stateLabel = isLive ? '● LIVE' : stateText.includes('connecting') || stateText.includes('subscribing') ? '● CONNECTING' : stateText.includes('stale') ? '● STALE' : stateText.includes('stopped') ? '● STOPPED' : '● OFFLINE';
+    el.textContent = stateLabel;
+    el.title = S.lastError || S.status;
     el.classList.toggle('fs-warning', !isLive);
     S.html.querySelector('#dms-fs-grid').innerHTML = sorted.map((item,i) => {
       const tier = i===0?'first':i<=2?'high':i<=6?'medium':i<=8?'low':'bottom';
       return `<div class="fs-tile ${tier}" title="Digit ${item.digit} · rank ${i+1} by historical frequency"><span class="fs-digit">${item.digit}</span><span class="fs-percent">${Number.isFinite(item.percentage)?item.percentage.toFixed(1):'—'}%</span></div>`;
     }).join('');
-    S.html.querySelector('#dms-fs-window').textContent = `${n}/1000 ticks · read-only`;
+    S.html.querySelector('#dms-fs-window').textContent = `${n}/1000 ticks · ${S.liveTicks} live · ${S.reconnects} reconnects`;
   }
 
   function parseTick(obj) {
@@ -180,6 +183,7 @@
   }
 
   let retryTimer = null, startupTimer = null;
+  let retryPending = false;
 
   function connect() {
     const gen = ++S.generation;
@@ -187,7 +191,7 @@
     const changed = chosen !== S.symbol;
     S.symbol = chosen;
     S.connected = false; S.ready = false; S.gotHistory = false; S.gotLive = false; S.lastError = '';
-    clearTimeout(retryTimer); clearTimeout(startupTimer);
+    clearTimeout(retryTimer); clearTimeout(startupTimer); retryTimer = null; retryPending = false;
     if (S.socket) { try { S.socket.close(1000, 'research reconnect'); } catch (_) {} }
     if (changed) { S.prices = []; S.seen.clear(); S.last = null; S.seq = 0; S.pending = null; S.block = null; S.liveTicks = 0; S.lastLiveAt = 0; S.rows = []; S.forecasts = []; }
     S.status = `connecting ${S.endpointIndex === 0 ? 'public' : 'legacy'}`;
@@ -198,7 +202,8 @@
     const send = payload => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload)); };
 
     function retry(reason) {
-      if (gen !== S.generation) return;
+      if (gen !== S.generation || retryPending) return;
+      retryPending = true;
       clearTimeout(startupTimer);
       S.connected = false;
       S.status = reason || 'connection failed';
@@ -208,7 +213,7 @@
       S.endpointIndex = (S.endpointIndex + 1) % ENDPOINTS.length;
       try { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(); } catch (_) {}
       clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => { if (gen === S.generation) connect(); }, Math.min(30000, 3000 + S.reconnects * 1500));
+      retryTimer = setTimeout(() => { retryTimer = null; retryPending = false; if (gen === S.generation) connect(); }, Math.min(30000, 3000 + S.reconnects * 1500));
     }
 
     ws.addEventListener('open', () => {
@@ -248,7 +253,7 @@
 
     ws.addEventListener('close', e => {
       if (gen !== S.generation) return;
-      if (retryTimer) return;
+      if (retryPending) return;
       retry(`CLOSED ${e.code}${e.reason ? ': ' + String(e.reason).slice(0, 70) : ''}${!gotOpen ? ' (before open)' : ''}`);
     });
 
@@ -274,7 +279,7 @@
 
   window.DMSFrequencyStudy = {
     state: S, connect, exportCsv,
-    disconnect() { ++S.generation; clearTimeout(retryTimer); clearTimeout(startupTimer); S.socket?.close(); S.status = 'stopped'; render(); }
+    disconnect() { ++S.generation; clearTimeout(retryTimer); clearTimeout(startupTimer); retryPending=false; S.socket?.close(); S.status = 'stopped'; render(); }
   };
 
   function boot() {
