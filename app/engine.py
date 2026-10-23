@@ -1157,6 +1157,15 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
+    # DMS_THREE_TRADE_TARGET_LOCK_V10
+    def _three_trade_locked_target(self, s):
+        """Persisted digit for next BUY within a three-purchase block."""
+        n = int(s.current_trade or 0)
+        if n > 0 and n % 3 != 0 and s.candidate_digit is not None:
+            d = int(s.candidate_digit)
+            if 0 <= d <= 9: return d
+        return None
+
     def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False, prepared_snapshot=None):
         snapshot = (
             self._score_all_digits(sid, exclude_digit=exclude_digit)
@@ -1663,6 +1672,14 @@ class MultiUserEngine:
                 ):
                     return
 
+                # DMS_RACE_GUARD_V11: no fast/local-tick recovery purchases.
+                # This callback is provisional. Deriv settlement is authoritative.
+                s.phase = "WAITING_OFFICIAL_SETTLEMENT"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return
+
                 if is_win:
                     # MATCH: target == exact strategy tick last digit.
                     #
@@ -1707,11 +1724,11 @@ class MultiUserEngine:
                 # AI FUSION V1 may rescue a weak V1 margin when AI evidence is strong.
                 current_snapshot = prepared_for_this_tick
 
-                desired_next, current_snapshot = self._choose_scored_digit(
-                    sid,
-                    lock_target=True,
-                    prepared_snapshot=prepared_for_this_tick,
-                )
+                desired_next = self._three_trade_locked_target(s)
+                if desired_next is None:
+                    desired_next, current_snapshot = self._choose_scored_digit(
+                        sid, lock_target=True, prepared_snapshot=prepared_for_this_tick,
+                    )
                 if desired_next is None:
                     s.current_stake = expected_stake
                     s.phase = "RECOVERY_WAITING_MARGIN"
@@ -2300,7 +2317,10 @@ class MultiUserEngine:
                     expected_stake = round(float(latest.stake) * float(s.multiplier), 2)
                     if float(s.current_stake or 0) < expected_stake - 0.005:
                         s.current_stake = expected_stake
-                    fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
+                    fresh_digit = self._three_trade_locked_target(s)
+                    snapshot = {}
+                    if fresh_digit is None:
+                        fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
                     if fresh_digit is None:
                         s.phase = (
                             "RECOVERY_WAITING_MARGIN"
@@ -2365,10 +2385,12 @@ class MultiUserEngine:
 
                 # First trade uses the freshest V1 rank #1 and buys
                 # directly from parameters. No proposal request/cache is needed.
-                scored_digit, snapshot = self._choose_scored_digit(
-                    s.id,
-                    lock_target=True,
-                )
+                scored_digit = self._three_trade_locked_target(s)
+                snapshot = {}
+                if scored_digit is None:
+                    scored_digit, snapshot = self._choose_scored_digit(
+                        s.id, lock_target=True,
+                    )
                 if scored_digit is None:
                     s.phase = (
                         "WAITING_V1_MARGIN"
@@ -2460,6 +2482,14 @@ class MultiUserEngine:
             and int(locked.get("digit", -1)) == int(digit)
         )
 
+        # DMS_RACE_GUARD_V11: within a 3-trade block, authorize the
+        # persisted purchased barrier rather than a newly rescored V1 top.
+        expected_locked = self._three_trade_locked_target(row)
+        if expected_locked is not None and int(digit) == int(expected_locked):
+            gate_ok = True
+            gate_top = int(expected_locked)
+            fusion = {"source": "THREE_TRADE_PERSISTED_LOCK"}
+
         if not gate_ok:
             row.pending_trade_json = None
             row.running = True
@@ -2501,7 +2531,33 @@ class MultiUserEngine:
             db.rollback()
             return None
 
+        # DMS_RACE_GUARD_V11: shared DEMO/REAL authoritative BUY boundary.
+        # Never send a fresh purchase while the previous contract is open or
+        # before its official settled LOSS is committed to the DB.
         pending = self._pending_json(row.pending_trade_json)
+        if row.open_contract_id or pending.get("kind") == "BUY_CLAIM":
+            db.rollback()
+            return None
+        if int(row.current_trade or 0) > 0:
+            previous = (
+                db.query(TradeLog)
+                .filter(TradeLog.trading_session_id == int(sid))
+                .order_by(TradeLog.id.desc())
+                .first()
+            )
+            if (
+                previous is None
+                or int(previous.trade_no or 0) != int(row.current_trade or 0)
+                or str(previous.status or "").upper() != "SETTLED"
+                or previous.profit is None
+                or float(previous.profit) >= 0
+            ):
+                db.rollback()
+                return None
+            expected_locked = self._three_trade_locked_target(row)
+            if expected_locked is not None and int(digit) != int(expected_locked):
+                db.rollback()
+                return None
 
         # Another process already owns this exact BUY.
         if (
@@ -3455,6 +3511,32 @@ class MultiUserEngine:
                     == str(contract_id)
                 ):
                     s.open_contract_id = None
+
+                # DMS_RACE_GUARD_V11: settled WIN closes the cycle; official
+                # settled LOSS is consumed only by the normal worker step.
+                if profit > 0 and s.phase not in (
+                    "RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"
+                ):
+                    s.running = False
+                    s.paused = False
+                    s.phase = "OFFICIAL_WON"
+                # Stop on any disagreement between provisional result and
+                # official payout. Never continue an inconsistent cycle.
+                previous_fast = self.fast_contracts.get(sid)
+                if (
+                    previous_fast
+                    and str(previous_fast.get("contract_id")) == str(contract_id)
+                    and previous_fast.get("fast_result")
+                    and previous_fast.get("fast_result") != ("WIN" if profit > 0 else "LOSS")
+                ):
+                    s.running = False
+                    s.phase = "RECONCILE_MISMATCH"
+                    s.last_error = f"Local/official outcome disagreement on {contract_id}"
+                # No active fast-owner may strand the worker once settlement
+                # has been durably recorded. Retire only this contract owner.
+                active_owner = self.fast_contracts.get(sid)
+                if active_owner and str(active_owner.get("contract_id")) == str(contract_id):
+                    self.fast_contracts.pop(sid, None)
 
                 # Official settlement does NOT advance the strategy.
                 # It only verifies the already-made fast decision.
