@@ -10,25 +10,27 @@
   const S = {symbol:'R_10', socket:null, subscription:null, prices:[], seen:new Set(),
     last:null, seq:0, pending:null, block:null, rows:[], forecasts:[], rejected:0,
     connected:false, ready:false, generation:0, timer:null, html:null, status:'connecting',
-    snapshotMatched:0, snapshotUnavailable:0, gapCount:0};
+    snapshotMatched:0, snapshotUnavailable:0, gapCount:0, liveTicks:0, lastLiveAt:0, reconnects:0};
   const digit = v => Number.isInteger(+v) && +v>=0 && +v<=9 ? +v : null;
   const symbol = () => String(document.querySelector('#symbol')?.value || 'R_10');
   function key(t){return `${S.symbol}|${t.epoch}|${t.quote}|${t.digit}`;}
   function ensurePanel(){
     if(S.html?.isConnected)return;
     const host=document.createElement('section');host.id='dms-frequency-study';
-    host.style='font:14px system-ui;max-width:700px;padding:14px;margin:16px auto;border:1px solid #64748b;border-radius:12px;background:#111827;color:#f9fafb;';
+    host.style='font:13px system-ui;width:100%;margin:14px 0 0;padding:12px;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#f9fafb;box-sizing:border-box;overflow-wrap:anywhere;';
     host.innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>Market stream & frequency research</b><span id="dms-fs-status">CONNECTING</span></div><p style="margin:8px 0;color:#cbd5e1">Market data streams independently of START BOT. Read-only; no purchases.</p><div id="dms-fs-values">No ticks yet</div><div id="dms-fs-metrics" style="margin-top:8px;color:#cbd5e1"></div><button type="button" id="dms-fs-export" style="padding:8px 12px;margin-top:10px;background:#2563eb;border-radius:8px;color:white">Export shadow CSV</button>';
-    const anchor=document.getElementById('recycle-runtime-panel')||document.querySelector('main')||document.body;
-    anchor.appendChild(host);host.querySelector('#dms-fs-export').addEventListener('click',exportCsv);S.html=host;
+    const market=document.getElementById('market_status');
+    const container=market?.closest('.bg-gray-900.border') || document.querySelector('.lg\\:col-span-1');
+    if(container) container.appendChild(host); else document.body.prepend(host);host.querySelector('#dms-fs-export').addEventListener('click',exportCsv);S.html=host;
   }
   function render(){
     ensurePanel();
     const stats=Array.from({length:10},(_,d)=>S.prices.filter(x=>x.digit===d).length);
     const n=S.prices.length;
+    if(S.connected&&S.lastLiveAt&&Date.now()-S.lastLiveAt>10000)S.status='stale: no new ticks';
     S.html.querySelector('#dms-fs-status').textContent=`${S.status.toUpperCase()} · ${S.symbol}`;
     S.html.querySelector('#dms-fs-values').textContent=stats.map((c,d)=>`${d}: ${n?(100*c/n).toFixed(1):'—'}%`).join('  |  ');
-    S.html.querySelector('#dms-fs-metrics').textContent=`Ticks in window: ${n}/1000 · live sequence: ${S.seq} · duplicate drops: ${S.rejected} · blocks tested: ${S.forecasts.length} · aligned V1 snapshots: ${S.snapshotMatched} · unavailable V1: ${S.snapshotUnavailable} · observed gaps: ${S.gapCount}`;
+    S.html.querySelector('#dms-fs-metrics').textContent=`Ticks in window: ${n}/1000 · new live ticks: ${S.liveTicks} · duplicate drops: ${S.rejected} · blocks tested: ${S.forecasts.length} · aligned V1 snapshots: ${S.snapshotMatched} · unavailable V1: ${S.snapshotUnavailable} · observed gaps: ${S.gapCount} · reconnects: ${S.reconnects}`;
   }
   function parseTick(obj){
     if(!obj||obj.epoch==null||obj.quote==null)return null;
@@ -84,13 +86,13 @@
     if(!history && S.last && t.epoch-S.last.epoch>3)S.gapCount++;
     S.seen.add(k);if(S.seen.size>3000){S.seen=new Set(Array.from(S.seen).slice(-1500));}
     if(history){S.prices.push(t);if(S.prices.length>MAX)S.prices.shift();}
-    else updateShadow(t);
+    else { S.liveTicks++; S.lastLiveAt=Date.now(); updateShadow(t); }
     S.last=t;
   }
   function connect(){
     const gen=++S.generation;S.symbol=symbol();S.connected=false;S.ready=false;S.status='connecting';
     if(S.socket){try{S.socket.close();}catch(_){}}
-    S.prices=[];S.seen.clear();S.last=null;S.seq=0;S.pending=null;S.block=null;
+    S.prices=[];S.seen.clear();S.last=null;S.seq=0;S.pending=null;S.block=null;S.liveTicks=0;S.lastLiveAt=0;
     const ws=new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);S.socket=ws;
     ws.addEventListener('open',()=>{
       if(gen!==S.generation)return;S.status='warming';render();
@@ -98,14 +100,14 @@
     });
     ws.addEventListener('message',ev=>{
       if(gen!==S.generation)return;let m;try{m=JSON.parse(ev.data)}catch(_){return}
-      if(m.error){S.status=`api error: ${m.error.code||m.error.message}`;render();return;}
+      if(m.error){S.status=`API ERROR: ${m.error.code||m.error.message}`;render();try{ws.close()}catch(_){}return;}
       if(m.msg_type==='history'&&m.req_id===101){
         const h=m.history||{},prices=h.prices||[],times=h.times||[],pips=h.pip_sizes||[];
         for(let i=0;i<prices.length;i++)receiveTick({epoch:times[i],quote:prices[i],pip_size:pips[i]},true);
         S.ready=true;S.status='streaming';ws.send(JSON.stringify({ticks:S.symbol,subscribe:1,req_id:102}));render();
       } else if(m.msg_type==='tick'&&m.tick){receiveTick(m.tick,false);S.status='streaming';S.connected=true;}
     });
-    ws.addEventListener('close',()=>{if(gen!==S.generation)return;S.status='reconnecting';render();setTimeout(()=>{if(gen===S.generation)connect()},BACKOFF)});
+    ws.addEventListener('close',()=>{if(gen!==S.generation)return;S.status='reconnecting';S.connected=false;S.reconnects++;render();setTimeout(()=>{if(gen===S.generation)connect()},BACKOFF)});
     ws.addEventListener('error',()=>{S.status='connection error';render()});render();
   }
   function exportCsv(){
@@ -115,6 +117,18 @@
     const a=document.createElement('a');a.href=url;a.download=`dms-frequency-shadow-${S.symbol}-${Date.now()}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   window.DMSFrequencyStudy={state:S,connect,exportCsv,disconnect(){++S.generation;S.socket?.close();S.status='stopped';render()}};
-  function boot(){ensurePanel();connect();document.getElementById('symbol')?.addEventListener('change',connect)}
+  function boot(){
+    ensurePanel();
+    connect();
+    document.getElementById('symbol')?.addEventListener('change',connect);
+    setInterval(()=>{
+      if(!S.socket||S.socket.readyState===WebSocket.CLOSED) return;
+      const age=Date.now()-(S.lastLiveAt||0);
+      // Refresh stale research stream only; never act on trade execution socket.
+      if(S.socket.readyState===WebSocket.OPEN && S.ready && age>20000){
+        S.status='stale: reconnecting'; render(); connect();
+      }else render();
+    },5000);
+  }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
