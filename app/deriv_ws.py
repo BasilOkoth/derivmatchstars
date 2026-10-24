@@ -7,19 +7,15 @@ from typing import Awaitable, Callable, Optional
 
 import websockets
 
-
-ws_log = logging.getLogger("digitmatchstar.websocket")
-
+ws_log = logging.getLogger('digitmatchstar.websocket')
 MessageCallback = Callable[[dict], Awaitable[None]]
 
 
 class DerivWS:
-    """
-    Event-driven Deriv WebSocket client for the selected Deriv account.
+    """Account-bound Deriv transport; callback delivery is ordered per subscription.
 
-    The WebSocket URL is created for the session's account_id. Both DEMO and
-    REAL purchases use that account-bound connection; account_mode is required
-    at each buy call so callers cannot silently omit the intended mode.
+    Trading requests are never automatically repeated after an uncertain response.
+    The reader never awaits strategy callbacks, avoiding request/response deadlocks.
     """
 
     def __init__(self, url: str):
@@ -33,61 +29,54 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
+        self._subscription_queues = {}
+        self._subscription_workers = {}
+        self._subscription_callbacks_generation = {}
         self.connection_generation = 0
         self.last_message_at = 0.0
-
-        # Proposal flow control.
-        # Every proposal request on this account/socket is serialized here.
+        self.last_tick_at = {}
+        self.stream_stats = defaultdict(lambda: {'enqueued': 0, 'processed': 0, 'errors': 0,
+                                                  'overflow': 0, 'max_backlog': 0})
         self._proposal_lock = asyncio.Lock()
         self._last_proposal_at = 0.0
-
-        # 350 ms was too aggressive once prefetch + fallback were both active.
-        # 900 ms still allows a proposal to be prepared inside an R_10 2-second
-        # tick window, while greatly reducing Deriv proposal bursts.
         self._proposal_min_interval = 0.90
-
-        # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
-
-        # Direct-buy pacing. The bot normally sees ~1-2 ticks/sec; 480 ms keeps
-        # BUY bursts bounded without materially slowing R_10.
         self._buy_lock = asyncio.Lock()
         self._last_buy_at = 0.0
         self._buy_min_interval = 0.48
 
-    def is_open(self) -> bool:
-        if not self.ws:
+    def is_open(self):
+        if not self.ws or (self.reader_task and self.reader_task.done()):
             return False
-        if self.reader_task is not None and self.reader_task.done():
-            return False
-        closed = getattr(self.ws, "closed", None)
+        closed = getattr(self.ws, 'closed', None)
         if isinstance(closed, bool):
             return not closed
-        state = getattr(self.ws, "state", None)
-        if state is not None:
-            return str(state).upper().endswith("OPEN")
-        return True
+        state = getattr(self.ws, 'state', None)
+        return str(state).upper().endswith('OPEN') if state is not None else True
 
     async def connect(self):
         if self.is_open():
             return
-
         async with self._connect_lock:
             if self.is_open():
                 return
-
-            self.ws = await websockets.connect(
-                self.url,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=5,
-                open_timeout=15,
-                max_queue=None,
-            )
+            self.ws = await websockets.connect(self.url, ping_interval=20, ping_timeout=20,
+                                               close_timeout=5, open_timeout=15, max_queue=None)
             self.connection_generation += 1
             self.last_message_at = time.monotonic()
             self.reader_task = asyncio.create_task(self._reader())
+
+    def _stop_dispatchers(self):
+        for task in list(self._callback_tasks):
+            task.cancel()
+        self._callback_tasks.clear()
+        for task in list(self._subscription_workers.values()):
+            task.cancel()
+        self._subscription_workers.clear()
+        self._subscription_queues.clear()
+        self._subscription_callbacks_generation.clear()
+        self.last_tick_at.clear()
 
     async def close(self):
         if self.reader_task and not self.reader_task.done():
@@ -97,122 +86,125 @@ class DerivWS:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                pass
-
+                ws_log.exception('Reader close failed')
         if self.ws:
             try:
                 await self.ws.close()
             except Exception:
-                pass
-
+                ws_log.exception('WebSocket close failed')
         self.ws = None
-
         for future in list(self.pending.values()):
             if not future.done():
                 future.cancel()
-
         self.pending.clear()
         self.pending_subscription_callbacks.clear()
         self.subscriptions.clear()
+        self._stop_dispatchers()
 
-        for task in list(self._callback_tasks):
-            if not task.done():
-                task.cancel()
-        self._callback_tasks.clear()
-
-    async def _run_subscription_callback(self, callback, data: dict):
+    async def _run_subscription_callback(self, callback, data):
         try:
             await callback(data)
         except asyncio.CancelledError:
             raise
         except Exception:
-            # One subscriber must never kill the shared WebSocket reader.
-            pass
+            ws_log.exception('Deriv subscription callback failed msg_type=%s', data.get('msg_type'))
 
-    def _schedule_subscription_callback(self, callback, data: dict):
-        task = asyncio.create_task(
-            self._run_subscription_callback(callback, data)
-        )
+    def _schedule_subscription_callback(self, callback, data):
+        task = asyncio.create_task(self._run_subscription_callback(callback, data))
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)
 
-    def _dispatch_subscription(self, data: dict):
-        sub = data.get("subscription") or {}
-        sub_id = sub.get("id")
-        if not sub_id:
-            return
+    async def _consume_subscription(self, sub_id, generation):
+        queue = self._subscription_queues[sub_id]
+        while generation == self.connection_generation:
+            data = await queue.get()
+            try:
+                for callback in tuple(self.subscriptions.get(sub_id, ())):
+                    try:
+                        await callback(data)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        self.stream_stats[sub_id]['errors'] += 1
+                        ws_log.exception('DMS_STREAM_CALLBACK_ERROR sub=%s generation=%s type=%s',
+                                         sub_id, generation, data.get('msg_type'))
+                self.stream_stats[sub_id]['processed'] += 1
+            finally:
+                queue.task_done()
 
-        # CRITICAL: never await strategy/settlement callbacks in _reader().
-        # Those callbacks can immediately request the next proposal/buy, whose
-        # response must be consumed by this same reader task.
-        for callback in list(self.subscriptions.get(str(sub_id), ())):
-            self._schedule_subscription_callback(callback, data)
+    def _dispatch_subscription(self, data):
+        sub_id = str((data.get('subscription') or {}).get('id') or '')
+        if not sub_id or not self.subscriptions.get(sub_id):
+            return
+        if self._subscription_callbacks_generation.get(sub_id) != self.connection_generation:
+            return
+        queue = self._subscription_queues.get(sub_id)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=2048)
+            self._subscription_queues[sub_id] = queue
+        if data.get('msg_type') == 'tick':
+            self.last_tick_at[sub_id] = time.monotonic()
+        stats = self.stream_stats[sub_id]
+        if queue.full():
+            # Never silently discard a market tick: report stream loss and
+            # force a visible reconnect/error instead of corrupting tick order.
+            stats['overflow'] += 1
+            ws_log.error('DMS_STREAM_OVERFLOW sub=%s queued=%s', sub_id, queue.qsize())
+            raise RuntimeError(f'DMS_STREAM_OVERFLOW sub={sub_id}: tick backlog exceeded')
+        queue.put_nowait(data)
+        stats['enqueued'] += 1
+        stats['max_backlog'] = max(stats['max_backlog'], queue.qsize())
+        task = self._subscription_workers.get(sub_id)
+        if task is None or task.done():
+            self._subscription_workers[sub_id] = asyncio.create_task(
+                self._consume_subscription(sub_id, self.connection_generation))
 
     async def _reader(self):
         try:
             async for msg in self.ws:
                 self.last_message_at = time.monotonic()
                 data = json.loads(msg)
-                req_id = data.get("req_id")
-
+                req_id = data.get('req_id')
                 if req_id in self.pending:
                     future = self.pending.pop(req_id)
                     if not future.done():
                         future.set_result(data)
-
                 if req_id in self.pending_subscription_callbacks:
-                    # Deriv can answer a very short-lived contract request before
-                    # assigning/returning a subscription id. Do not throw the
-                    # callback away unless an id was actually returned.
                     callback = self.pending_subscription_callbacks[req_id]
-                    sub = data.get("subscription") or {}
-                    sub_id = sub.get("id")
+                    sub_id = (data.get('subscription') or {}).get('id')
                     if sub_id:
                         self.pending_subscription_callbacks.pop(req_id, None)
                         self.subscriptions[str(sub_id)].add(callback)
-
-                if data.get("subscription"):
+                        self._subscription_callbacks_generation[str(sub_id)] = self.connection_generation
+                if data.get('subscription'):
                     self._dispatch_subscription(data)
-
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            ws_log.exception("Deriv WebSocket reader failed")
+            ws_log.exception('DMS_STREAM_READER_ERROR generation=%s', self.connection_generation)
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(exc)
-            self.pending.clear()
-            self.pending_subscription_callbacks.clear()
         finally:
-            error = ConnectionError("Deriv WebSocket reader stopped; reconnect required")
             for future in list(self.pending.values()):
                 if not future.done():
-                    future.set_exception(error)
+                    future.set_exception(ConnectionError('Deriv WebSocket reader stopped'))
             self.pending.clear()
             self.pending_subscription_callbacks.clear()
             self.subscriptions.clear()
-            ws_log.warning("Deriv WebSocket reader stopped")
+            self._stop_dispatchers()
+            ws_log.warning('DMS_STREAM_READER_STOPPED generation=%s', self.connection_generation)
 
-    async def request(
-        self,
-        payload: dict,
-        timeout: float = 15,
-        subscription_callback: Optional[MessageCallback] = None,
-    ):
+    async def request(self, payload, timeout=15, subscription_callback=None):
         await self.connect()
-
         self.req_id += 1
         req_id = self.req_id
         request_payload = dict(payload)
-        request_payload["req_id"] = req_id
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
+        request_payload['req_id'] = req_id
+        future = asyncio.get_running_loop().create_future()
         self.pending[req_id] = future
-
         if subscription_callback is not None:
             self.pending_subscription_callbacks[req_id] = subscription_callback
-
         try:
             async with self._send_lock:
                 await self.ws.send(json.dumps(request_payload))
@@ -220,260 +212,119 @@ class DerivWS:
         except asyncio.TimeoutError as exc:
             self.pending.pop(req_id, None)
             self.pending_subscription_callbacks.pop(req_id, None)
-            raise RuntimeError(
-                f"Deriv WebSocket request timed out after {timeout:.0f}s"
-            ) from exc
+            raise RuntimeError(f'Deriv WebSocket request timed out after {timeout:.0f}s') from exc
         except Exception:
             self.pending.pop(req_id, None)
             self.pending_subscription_callbacks.pop(req_id, None)
             raise
-
-        if "error" in data:
+        if 'error' in data:
             self.pending_subscription_callbacks.pop(req_id, None)
-            err = data["error"] or {}
-            code = err.get("code")
-            message = err.get("message") or str(err)
-            if code:
-                raise RuntimeError(f"{code}: {message}")
-            raise RuntimeError(message)
-
+            err = data['error'] or {}
+            raise RuntimeError(f"{err.get('code')}: {err.get('message')}" if err.get('code')
+                               else err.get('message') or str(err))
         return data
 
     async def _reset_after_timeout(self):
-        # Only used by idempotent/read-only requests such as proposal.
-        # BUY is intentionally never auto-retried.
-        try:
-            await self.close()
-        except Exception:
-            self.ws = None
+        await self.close()
         await self.connect()
 
-    async def proposal_digitmatch(
-        self,
-        symbol: str,
-        digit: int,
-        amount: float,
-        duration: int = 1,
-        currency: str = "USD",
-    ):
-        payload = {
-            "proposal": 1,
-            "amount": round(float(amount), 2),
-            "basis": "stake",
-            "contract_type": "DIGITMATCH",
-            "currency": str(currency or "USD").upper(),
-            "duration": int(duration),
-            "duration_unit": "t",
-            "barrier": str(int(digit)),
-            "underlying_symbol": str(symbol),
-        }
-
-        # ONE proposal lane per account/socket.
+    async def proposal_digitmatch(self, symbol, digit, amount, duration=1, currency='USD'):
+        payload = {'proposal': 1, 'amount': round(float(amount), 2), 'basis': 'stake',
+                   'contract_type': 'DIGITMATCH', 'currency': str(currency or 'USD').upper(),
+                   'duration': int(duration), 'duration_unit': 't', 'barrier': str(int(digit)),
+                   'underlying_symbol': str(symbol)}
         async with self._proposal_lock:
             timeout_retry_used = False
-
             while True:
                 now = time.monotonic()
-
-                spacing_wait = self._proposal_min_interval - (
-                    now - self._last_proposal_at
-                )
-                cooldown_wait = self._proposal_cooldown_until - now
-                delay = max(0.0, spacing_wait, cooldown_wait)
-
-                if delay > 0:
+                delay = max(0, self._proposal_min_interval - (now - self._last_proposal_at),
+                            self._proposal_cooldown_until - now)
+                if delay:
                     await asyncio.sleep(delay)
-
                 try:
                     self._last_proposal_at = time.monotonic()
                     data = await self.request(payload)
-
                     self._rate_limit_streak = 0
-                    self._proposal_cooldown_until = 0.0
+                    self._proposal_cooldown_until = 0
                     return data
-
                 except RuntimeError as exc:
-                    text = str(exc).lower()
-
-                    if "timed out" in text and not timeout_retry_used:
+                    txt = str(exc).lower()
+                    if 'timed out' in txt and not timeout_retry_used:
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
-
-                    if "ratelimit" in text or "rate limit" in text:
-                        self._rate_limit_streak = min(
-                            self._rate_limit_streak + 1,
-                            6,
-                        )
-
-                        backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)
-                        backoff = backoff_table[
-                            self._rate_limit_streak - 1
-                        ]
-
-                        self._proposal_cooldown_until = (
-                            time.monotonic() + backoff
-                        )
-
+                    if 'ratelimit' in txt or 'rate limit' in txt:
+                        self._rate_limit_streak = min(self._rate_limit_streak + 1, 6)
+                        backoff = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)[self._rate_limit_streak - 1]
+                        self._proposal_cooldown_until = time.monotonic() + backoff
                         await asyncio.sleep(backoff)
                         continue
-
                     raise
 
-    async def buy_digitmatch_direct(
-        self,
-        *,
-        symbol: str,
-        digit: int,
-        amount: float,
-        currency: str = "USD",
-        duration: int = 1,
-        account_mode: str,
-    ):
-        """
-        Buy DIGITMATCH directly from contract parameters.
-
-        This removes the proposal request from the tick-critical path. Deriv
-        executes on the account bound to this WebSocket connection. A small
-        pacing guard prevents BUY bursts from colliding with Deriv's shared
-        trading-request budget.
-        """
-        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
-            raise RuntimeError(
-                "An explicit DEMO or REAL account mode is required for BUY"
-            )
-
-        params = {
-            "amount": round(float(amount), 2),
-            "basis": "stake",
-            "contract_type": "DIGITMATCH",
-            "currency": str(currency or "USD").upper(),
-            "duration": int(duration),
-            "duration_unit": "t",
-            "barrier": str(int(digit)),
-            "underlying_symbol": str(symbol),
-        }
-
+    async def buy_digitmatch_direct(self, *, symbol, digit, amount, currency='USD', duration=1, account_mode):
+        if str(account_mode or '').upper() not in {'DEMO', 'REAL'}:
+            raise RuntimeError('An explicit DEMO or REAL account mode is required for BUY')
+        params = {'amount': round(float(amount), 2), 'basis': 'stake',
+                  'contract_type': 'DIGITMATCH', 'currency': str(currency or 'USD').upper(),
+                  'duration': int(duration), 'duration_unit': 't', 'barrier': str(int(digit)),
+                  'underlying_symbol': str(symbol)}
         async with self._buy_lock:
-            now = time.monotonic()
-            wait = self._buy_min_interval - (now - self._last_buy_at)
+            wait = self._buy_min_interval - (time.monotonic() - self._last_buy_at)
             if wait > 0:
                 await asyncio.sleep(wait)
-
             self._last_buy_at = time.monotonic()
+            return await self.request({'buy': '1', 'price': round(float(amount), 2), 'parameters': params})
 
-            # price is the maximum acceptable purchase price. With basis=stake,
-            # the requested stake is the natural cap.
-            return await self.request(
-                {
-                    "buy": "1",
-                    "price": round(float(amount), 2),
-                    "parameters": params,
-                }
-            )
-
-    async def buy(
-        self,
-        proposal_id: str,
-        price: float,
-        *,
-        account_mode: str,
-    ):
-        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
-            raise RuntimeError(
-                "An explicit DEMO or REAL account mode is required for BUY"
-            )
-
-        return await self.request(
-            {
-                "buy": proposal_id,
-                "price": float(price),
-            }
-        )
+    async def buy(self, proposal_id, price, *, account_mode):
+        if str(account_mode or '').upper() not in {'DEMO', 'REAL'}:
+            raise RuntimeError('An explicit DEMO or REAL account mode is required for BUY')
+        return await self.request({'buy': proposal_id, 'price': float(price)})
 
     @staticmethod
     def _contract_id_value(contract_id):
-        """
-        Deriv's current proposal_open_contract schema requires contract_id to
-        be an integer. Keep DB/session storage free to use strings, but convert
-        at the WebSocket boundary.
-        """
         try:
             return int(contract_id)
         except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"Invalid Deriv contract_id {contract_id!r}; expected integer"
-            ) from exc
+            raise RuntimeError(f'Invalid Deriv contract_id {contract_id!r}; expected integer') from exc
 
     async def contract_status(self, contract_id):
-        return await self.request(
-            {
-                "proposal_open_contract": 1,
-                "contract_id": self._contract_id_value(contract_id),
-            }
-        )
+        return await self.request({'proposal_open_contract': 1,
+                                   'contract_id': self._contract_id_value(contract_id)})
 
-    async def subscribe_contract(
-        self,
-        contract_id,
-        callback: MessageCallback,
-    ) -> Optional[str]:
-        data = await self.request(
-            {
-                "proposal_open_contract": 1,
-                "contract_id": self._contract_id_value(contract_id),
-                "subscribe": 1,
-            },
-            subscription_callback=callback,
-        )
-
-        sub_id = (data.get("subscription") or {}).get("id")
+    async def subscribe_contract(self, contract_id, callback):
+        data = await self.request({'proposal_open_contract': 1,
+                                   'contract_id': self._contract_id_value(contract_id),
+                                   'subscribe': 1}, subscription_callback=callback)
+        sub_id = (data.get('subscription') or {}).get('id')
         if sub_id:
             return str(sub_id)
-
-        # A 1-tick contract can settle so quickly that Deriv returns the
-        # proposal_open_contract payload without a subscription id. That is
-        # still a valid contract response, not a fatal WebSocket error.
-        req_id = data.get("req_id")
+        req_id = data.get('req_id')
         if req_id is not None:
             self.pending_subscription_callbacks.pop(req_id, None)
-
-        # Do not await this callback here. engine.step() can already own the
-        # per-session lock, while the settlement callback also needs it.
-        asyncio.create_task(callback(data))
-
-        # None tells the engine to use the contract-status polling fallback.
+        self._schedule_subscription_callback(callback, data)
         return None
 
-    async def ticks_history(self, symbol: str, count: int = 100):
-        """Fetch recent market ticks for score warm-up after process restart."""
+    async def ticks_history(self, symbol, count=100):
         count = max(10, min(int(count or 100), 1000))
-        return await self.request(
-            {
-                "ticks_history": str(symbol),
-                "count": count,
-                "end": "latest",
-                "style": "ticks",
-            }
-        )
+        return await self.request({'ticks_history': str(symbol), 'count': count,
+                                   'end': 'latest', 'style': 'ticks'})
 
-    async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:
-        data = await self.request(
-            {
-                "ticks": str(symbol),
-                "subscribe": 1,
-            },
-            subscription_callback=callback,
-        )
-
-        sub_id = (data.get("subscription") or {}).get("id")
+    async def subscribe_ticks(self, symbol, callback):
+        data = await self.request({'ticks': str(symbol), 'subscribe': 1},
+                                  subscription_callback=callback)
+        sub_id = (data.get('subscription') or {}).get('id')
         if not sub_id:
-            raise RuntimeError(
-                f"Deriv returned no tick subscription id for {symbol}"
-            )
+            raise RuntimeError(f'Deriv returned no tick subscription id for {symbol}')
         return str(sub_id)
 
-    async def forget(self, subscription_id: str):
-        result = await self.request({"forget": str(subscription_id)})
-        self.subscriptions.pop(str(subscription_id), None)
+    async def forget(self, subscription_id):
+        result = await self.request({'forget': str(subscription_id)})
+        sub_id = str(subscription_id)
+        self.subscriptions.pop(sub_id, None)
+        task = self._subscription_workers.pop(sub_id, None)
+        if task:
+            task.cancel()
+        self._subscription_queues.pop(sub_id, None)
+        self._subscription_callbacks_generation.pop(sub_id, None)
+        self.last_tick_at.pop(sub_id, None)
         return result
