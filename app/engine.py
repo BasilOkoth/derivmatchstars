@@ -3418,6 +3418,59 @@ class MultiUserEngine:
         digits = [ch for ch in rendered if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
+    def _settlement_digit_integrity(self, sid: int, poc: dict, *, purchased_digit, profit):
+        """Cross-check one purchased DIGITMATCH barrier against Deriv expiry.
+
+        The browser's latest market tick is never proof of this contract's
+        expiry. String exit_spot is preferred because it retains trailing
+        zeros. Numeric spots are checked only when tick precision is known.
+        Missing/ambiguous evidence is UNKNOWN, not a fabricated mismatch.
+        """
+        raw = poc.get("exit_spot")
+        comparable = isinstance(raw, str) or (
+            isinstance(raw, (int, float))
+            and self.tick_precision.get(int(sid)) is not None
+        )
+        official_digit = self._official_exit_digit(sid, poc) if comparable else None
+        paid_digit = int(purchased_digit) if purchased_digit is not None else None
+        matched = (
+            official_digit == paid_digit
+            if official_digit is not None and paid_digit in range(10)
+            else None
+        )
+        official_win = float(profit) > 0 if profit is not None else None
+        conflict = (
+            matched != official_win
+            if matched is not None and official_win is not None
+            else False
+        )
+        return {
+            "purchased_digit": paid_digit,
+            "official_exit_digit": official_digit,
+            "exit_spot_raw": raw,
+            "exit_spot_time": poc.get("exit_spot_time"),
+            "profit": float(profit) if profit is not None else None,
+            "expected_win_by_exit_digit": matched,
+            "reported_win_by_profit": official_win,
+            "status": "MISMATCH" if conflict else "MATCH" if matched is not None else "UNKNOWN",
+            "mismatch": bool(conflict),
+        }
+
+    def _halt_on_settlement_mismatch(self, s, contract_id, integrity):
+        if not integrity.get("mismatch"):
+            return False
+        s.running = False
+        s.paused = False
+        s.phase = "DERIV_EXPIRY_MISMATCH"
+        s.last_error = (
+            f"DERIV_EXPIRY_MISMATCH contract={contract_id} "
+            f"purchased={integrity['purchased_digit']} "
+            f"exit={integrity['official_exit_digit']} "
+            f"profit={integrity['profit']}"
+        )
+        logger.error("DMS_SETTLEMENT_INTEGRITY %s", s.last_error)
+        return True
+
     async def _handle_contract_update(
         self,
         *,
@@ -3530,6 +3583,16 @@ class MultiUserEngine:
                         else:
                             s.phase = "RECONCILE_MISMATCH"
                             s.last_error = f"Local/official disagreement for contract {contract_id}"
+                    # A duplicate sold message may be the first with a usable
+                    # exit_spot; check it too, without accounting profit twice.
+                    repeated_integrity = self._settlement_digit_integrity(
+                        int(sid), poc, purchased_digit=log.digit,
+                        profit=log.profit,
+                    )
+                    if repeated_integrity["mismatch"]:
+                        self._halt_on_settlement_mismatch(
+                            s, contract_id, repeated_integrity
+                        )
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -3561,7 +3624,24 @@ class MultiUserEngine:
                         int(sid),
                         poc,
                     )
+                    integrity = self._settlement_digit_integrity(
+                        int(sid), poc, purchased_digit=log.digit,
+                        profit=profit,
+                    )
+                    existing_raw["dms_settlement_integrity_v29"] = integrity
                     log.raw_json = json.dumps(existing_raw)
+                    self._halt_on_settlement_mismatch(s, contract_id, integrity)
+                else:
+                    # A sold contract with no matching purchase record must not
+                    # silently adjust this session's money and recover.
+                    s.running = False
+                    s.paused = False
+                    s.phase = "SETTLEMENT_MISSING_TRADE_LOG"
+                    s.last_error = f"No purchased TradeLog for settlement {contract_id}"
+                    logger.error("DMS_SETTLEMENT_INTEGRITY %s", s.last_error)
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
 
                 s.pnl = float(s.pnl or 0) + profit
 
@@ -3594,7 +3674,8 @@ class MultiUserEngine:
                 # DMS_RACE_GUARD_V11: settled WIN closes the cycle; official
                 # settled LOSS is consumed only by the normal worker step.
                 if profit > 0 and s.phase not in (
-                    "RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"
+                    "RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH",
+                    "DERIV_EXPIRY_MISMATCH",
                 ):
                     s.running = False
                     s.paused = False
@@ -3603,7 +3684,8 @@ class MultiUserEngine:
                 # official payout. Never continue an inconsistent cycle.
                 previous_fast = self.fast_contracts.get(sid)
                 if (
-                    previous_fast
+                    s.phase != "DERIV_EXPIRY_MISMATCH"
+                    and previous_fast
                     and str(previous_fast.get("contract_id")) == str(contract_id)
                     and previous_fast.get("fast_result")
                     and previous_fast.get("fast_result") != ("WIN" if profit > 0 else "LOSS")
