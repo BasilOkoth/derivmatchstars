@@ -1478,15 +1478,21 @@ class MultiUserEngine:
             )
 
         existing = self.tick_subscriptions.get(sid)
-
+        now = time.monotonic()
+        generation = int(getattr(client, "connection_generation", 0) or 0)
+        latest_at = float(self.latest_tick_received_at.get(sid, 0.0) or 0.0)
+        # A brand-new subscription gets 30 seconds to receive its first tick.
+        # Afterwards, a stale subscription is replaced, rather than silently
+        # reporting a connected-but-dead market stream.
+        started_at = float((existing or {}).get("started_at") or 0.0)
+        since_activity = now - (latest_at if latest_at >= started_at and latest_at else started_at)
         healthy = bool(
             existing
             and existing.get("symbol") == str(symbol)
             and existing.get("client") is client
+            and int(existing.get("connection_generation") or 0) == generation
             and client.is_open()
-            and (
-                time.monotonic() - self.latest_tick_received_at.get(sid, time.monotonic())
-            ) < 15.0
+            and since_activity < 30.0
         )
         if healthy:
             return
@@ -1494,13 +1500,37 @@ class MultiUserEngine:
         if existing:
             old_id = existing.get("subscription_id")
             old_client = existing.get("client")
-            if old_id and old_client and old_client.is_open():
-                asyncio.create_task(
-                    self._forget_quietly(old_client, old_id)
-                )
+            logger.warning(
+                "DMS_STREAM_RESUBSCRIBE sid=%s symbol=%s age_s=%.1f "
+                "previous_generation=%s current_generation=%s",
+                sid, symbol, since_activity,
+                existing.get("connection_generation"), generation,
+            )
+            # Remove the old subscription before awaiting unsubscribe. Any
+            # queued callback from that old subscription is ignored by token.
             self.tick_subscriptions.pop(sid, None)
+            if old_id and old_client and old_client.is_open():
+                asyncio.create_task(self._forget_quietly(old_client, old_id))
+
+        stream_token = uuid.uuid4().hex
+        # Subscribe requests can return their initial tick before returning
+        # a subscription id. Register the token BEFORE requesting subscription.
+        self.tick_subscriptions[sid] = {
+            "subscription_id": None,
+            "symbol": str(symbol),
+            "client": client,
+            "connection_generation": generation,
+            "token": stream_token,
+            "started_at": time.monotonic(),
+        }
 
         async def on_tick(data: dict):
+            owner = self.tick_subscriptions.get(sid) or {}
+            if (owner.get("token") != stream_token
+                    or owner.get("client") is not client
+                    or int(getattr(client, "connection_generation", 0) or 0) != generation):
+                logger.debug("DMS_STREAM_STALE_TICK sid=%s generation=%s", sid, generation)
+                return
             await self._handle_strategy_tick(
                 sid=sid,
                 user_id=user_id,
@@ -1509,13 +1539,21 @@ class MultiUserEngine:
                 data=data,
             )
 
-        sub_id = await client.subscribe_ticks(str(symbol), on_tick)
+        try:
+            sub_id = await client.subscribe_ticks(str(symbol), on_tick)
+        except Exception:
+            owner = self.tick_subscriptions.get(sid) or {}
+            if owner.get("token") == stream_token:
+                self.tick_subscriptions.pop(sid, None)
+            logger.exception("DMS_STREAM_SUBSCRIBE_FAILED sid=%s symbol=%s", sid, symbol)
+            raise
 
-        self.tick_subscriptions[sid] = {
-            "subscription_id": sub_id,
-            "symbol": str(symbol),
-            "client": client,
-        }
+        owner = self.tick_subscriptions.get(sid) or {}
+        if owner.get("token") != stream_token:
+            asyncio.create_task(self._forget_quietly(client, sub_id))
+            return
+        owner["subscription_id"] = sub_id
+        logger.info("DMS_STREAM_SUBSCRIBED sid=%s sub=%s generation=%s", sid, sub_id, generation)
 
     async def _handle_strategy_tick(
         self,
