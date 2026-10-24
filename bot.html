@@ -803,19 +803,13 @@
 <p class="text-lg font-bold text-white" id="metricCurrentStake">$0.00</p>
 </div>
 <!-- TRADE STATUS SECTION -->
-<div class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3" id="trade-result-container">
-<div class="flex justify-between items-center mb-2">
-<p class="text-[10px] font-semibold text-yellow-500 uppercase">TRADE STATUS</p>
-<p class="text-xs font-bold text-gray-400" id="metricTradeResult">READY</p>
+<div class="bg-gray-900 rounded-lg px-3 py-2 shadow-inner border border-gray-700/70 col-span-3" id="trade-result-container">
+<div class="flex justify-between items-center gap-2 mb-1">
+<p class="text-[10px] font-medium text-gray-400">Trade</p>
+<p class="text-xs font-medium text-gray-200" id="metricTradeResult">Ready</p>
 </div>
-<div class="mb-2">
-<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
-<p class="text-sm font-bold text-gray-300" id="metricPreviousResult">Waiting for connection...</p>
-</div>
-<div>
-<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
-<p class="text-sm font-bold text-yellow-400" id="metricNextAction">Start bot to begin</p>
-</div>
+<p class="text-xs font-normal text-gray-300 leading-snug" id="metricPreviousResult">Waiting for connection...</p>
+<p class="text-[11px] font-normal text-gray-400 leading-snug mt-1" id="metricNextAction">Start bot to begin</p>
 
 <div class="trade-actions">
 <button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
@@ -11568,6 +11562,21 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         }
 
 
+        // Compact display-only labels. Keep internal backend phase values unchanged.
+        function dmsCompactTradePhase(phase) {
+            const raw = String(phase || '').toUpperCase();
+            if (raw === 'TICK_MATCH_PENDING_DERIV') return 'Match · checking';
+            if (raw === 'TICK_MISS_PENDING_DERIV') return 'Miss · checking';
+            if (raw.startsWith('WAITING_OFFICIAL_SETTLEMENT')) return 'Settling';
+            if (raw === 'FAST_DECISION_APPLYING') return 'Checking trade';
+            if (raw === 'AWAITING_NEXT_TICK') return 'Watching tick';
+            if (raw === 'RECOVERY_READY' || raw === 'FAST_RECOVERING') return 'Next trade';
+            if (raw === 'WON' || raw === 'OFFICIAL_WON') return 'Won';
+            if (raw === 'BUYING' || raw === 'DIRECT_BUY_READY') return 'Buying';
+            if (raw === 'MAX_TRADES_REACHED') return 'Limit reached';
+            return raw ? raw.toLowerCase().replaceAll('_', ' ').replace(/^./, c => c.toUpperCase()) : 'Ready';
+        }
+
         function renderServerTradeNarrative(st) {
             if (!window.SERVER_EXECUTION?.enabled || !st) return;
 
@@ -11873,7 +11882,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 default:
                     if (st.running) {
                         result = 'TRADING ⚡';
-                        status = `Server worker active · phase ${phase}`;
+                        status = dmsCompactTradePhase(phase);
                         const scoreRows = Array.isArray(st?.digit_score?.ranking)
                             ? st.digit_score.ranking
                             : [];
@@ -11898,10 +11907,22 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     }
             }
 
+            // Explicit pending-tick states take precedence over generic worker copy.
+            if (phase === 'TICK_MATCH_PENDING_DERIV' || phase === 'TICK_MISS_PENDING_DERIV') {
+                result = phase === 'TICK_MATCH_PENDING_DERIV' ? 'Match' : 'Miss';
+                status = 'Checking Deriv result';
+                action = `Trade ${tradeNo}/${maxTrades || '—'} · $${stake.toFixed(2)}`;
+                resultClass = phase === 'TICK_MATCH_PENDING_DERIV'
+                    ? 'text-xs font-medium text-emerald-300'
+                    : 'text-xs font-medium text-amber-300';
+            }
             resultEl.textContent = result;
             resultEl.className = resultClass;
             statusEl.textContent = status;
+            statusEl.className = 'text-xs font-normal text-gray-300 leading-snug';
+            statusEl.title = String(st.phase || '');
             actionEl.textContent = action;
+            actionEl.className = 'text-[11px] font-normal text-gray-400 leading-snug mt-1';
         }
 
 
@@ -13430,7 +13451,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 phaseEl.textContent = recoveryActive
                     ? `TOP4_REAL_RECOVERY_R${Number(rr.next_round || 1)}`
-                    : (st.phase || '—');
+                    : dmsCompactTradePhase(st.phase);
+                phaseEl.title = String(st.phase || '');
             }
 
             const errorCard = serverExecEl('serverExecErrorCard');
