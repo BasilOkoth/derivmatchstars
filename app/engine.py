@@ -1160,13 +1160,14 @@ class MultiUserEngine:
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    # DMS_THREE_TRADE_TRANSACTIONAL_LOCK_V15
+    # DMS_THREE_TRADE_CYCLE_ANCHOR_V30
     def _three_trade_locked_target(self, s, *, db=None):
-        """Read the actual block-anchor PURCHASE from the SAME database transaction.
+        """Resolve the block against the newest trade-1 anchor, never arbitrary last N rows.
 
-        The previous V14 implementation opened another database session even inside
-        SELECT ... FOR UPDATE, permitting inconsistent snapshots and lock contention.
-        No in-memory V1/candidate digit can supersede an anchor purchase.
+        A TradingSession can be reused across multiple cycles; TradeLog has no
+        explicit cycle_id. The latest purchased trade_no=1 is the only existing
+        unambiguous cycle boundary. Fail closed if log history disagrees with
+        TradingSession.current_trade; do not guess a digit or skip log rows.
         """
         n = int(s.current_trade or 0)
         if n <= 0 or n % 3 == 0:
@@ -1175,26 +1176,34 @@ class MultiUserEngine:
         own_db = db is None
         session = db if db is not None else SessionLocal()
         try:
-            recent = (session.query(TradeLog)
-                      .filter(TradeLog.trading_session_id == int(s.id))
-                      .order_by(TradeLog.id.desc()).limit(n).all())
-            recent.reverse()
-            numbers = [int(row.trade_no or 0) for row in recent]
-            if len(recent) != n or numbers != list(range(1, n + 1)):
+            base = session.query(TradeLog).filter(
+                TradeLog.trading_session_id == int(s.id),
+                TradeLog.account_id == s.account_id,
+                TradeLog.account_mode == s.account_mode,
+                TradeLog.symbol == s.symbol,
+            )
+            cycle_start = (base.filter(TradeLog.trade_no == 1)
+                           .order_by(TradeLog.id.desc()).first())
+            if cycle_start is None:
                 raise RuntimeError(
-                    f"THREE_TRADE_INVALID_CYCLE sid={s.id} current={n} trades={numbers}"
+                    f"THREE_TRADE_CYCLE_RECONCILE_REQUIRED sid={s.id} "
+                    f"current={n}: no purchased trade-1 anchor; do not auto-BUY"
                 )
-            anchor = recent[anchor_trade_no - 1]
-            if not anchor.contract_id or anchor.digit is None:
+            cycle_rows = (base.filter(TradeLog.id >= cycle_start.id)
+                          .order_by(TradeLog.id.asc()).all())
+            numbers = [int(row.trade_no or 0) for row in cycle_rows]
+            if numbers != list(range(1, n + 1)):
                 raise RuntimeError(
-                    f"THREE_TRADE_MISSING_ANCHOR sid={s.id} trade={anchor_trade_no}"
+                    f"THREE_TRADE_CYCLE_RECONCILE_REQUIRED sid={s.id} "
+                    f"current={n} anchor_id={cycle_start.id} trades={numbers}; "
+                    "stop and reconcile contract IDs before starting a fresh cycle"
                 )
-            target = int(anchor.digit)
+            purchased = cycle_rows[anchor_trade_no - 1:]
+            target = int(purchased[0].digit) if purchased[0].digit is not None else -1
             if target not in range(10):
-                raise RuntimeError(f"THREE_TRADE_BAD_ANCHOR_DIGIT sid={s.id}")
-            # Verify EVERY purchased trade in the current block agrees.
-            for previous in recent[anchor_trade_no - 1:]:
-                if not previous.contract_id or int(previous.digit) != target:
+                raise RuntimeError(f"THREE_TRADE_MISSING_ANCHOR sid={s.id} trade={anchor_trade_no}")
+            for previous in purchased:
+                if not previous.contract_id or previous.digit is None or int(previous.digit) != target:
                     raise RuntimeError(
                         f"THREE_TRADE_BLOCK_MISMATCH sid={s.id} "
                         f"trade={previous.trade_no} anchor={target} purchased={previous.digit}"
@@ -1924,12 +1933,12 @@ class MultiUserEngine:
                 s.open_contract_id = None
                 s.pending_trade_json = None
                 s.pending_real_confirmation = False
-                s.current_trade = 0
-                s.current_stake = float(s.base_stake or 1.0)
-                s.pnl = 0.0
-                s.running = True
-                s.paused = False
-                s.phase = "STALE_DEMO_CONTRACT_CLEARED"
+                # Do not reset current_trade or accumulated P/L here. Old log
+                # rows remain in the database and a silent restart can mix cycles.
+                # Require an explicit fresh-cycle action after reconciliation.
+                s.running = False
+                s.paused = True
+                s.phase = "STALE_DEMO_RECONCILE_REQUIRED"
                 s.last_error = (
                     "Recovered stale DEMO contract "
                     f"{contract_id}: {reason}"
