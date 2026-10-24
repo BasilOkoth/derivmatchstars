@@ -803,6 +803,11 @@ class MultiUserEngine:
                 db.close()
 
             for sid in ids:
+                # V27: A fresh tick's execution task owns priority. The
+                # maintenance poller must not compete for this session lock.
+                tick_task = self.buy_tick_dispatch_tasks.get(int(sid))
+                if tick_task is not None and not tick_task.done():
+                    continue
                 task = self.session_tasks.get(sid)
                 if not task or task.done():
                     self.session_tasks[sid] = asyncio.create_task(
@@ -1597,6 +1602,33 @@ class MultiUserEngine:
         digit = self._tick_last_digit(
             tick, fallback_decimals=self.tick_precision.get(int(sid))
         )
+
+        # V27: record and dispatch the authentic tick BEFORE doing optional
+        # V1 ranking / shadow diagnostics. All financial authorization stays
+        # in step() and _claim_account_buy(); this is only an execution wakeup.
+        active = self.fast_contracts.get(sid)
+        tick_dispatched = False
+        if (not active and tick and not is_replay
+                and not skip_bootstrap_duplicate and tick_seq and digit is not None):
+            self.buy_tick_signals[int(sid)] = {
+                "seq": int(tick_seq),
+                "symbol": str(symbol),
+                "received_at": time.monotonic(),
+                "digit": int(digit),
+            }
+            in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
+            if in_flight is None or in_flight.done():
+                self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
+                    self._safe_step(int(sid))
+                )
+                tick_dispatched = True
+
+        # Yield one event-loop turn so the already-scheduled execution worker
+        # may begin DB/BUY processing ahead of expensive ranking. This yields
+        # only on the no-active-contract path, never in the contract decision.
+        if tick_dispatched:
+            await asyncio.sleep(0)
+
         if digit is not None:
             history = self._digit_history(sid)
 
@@ -1622,25 +1654,10 @@ class MultiUserEngine:
                         live_snapshot.get("selected_digit"),
                     )
 
-        # V26 PURCHASE-FIRST PIPELINE: collect each market tick, but only
-        # dispatch a new BUY when there is no unresolved paid contract owner.
-        # Every tick remains observable; an unmatched/unpurchased tick is NOT
-        # converted into a loss or a synthetic contract.
-        active = self.fast_contracts.get(sid)
+        # If BUY became active while the callback yielded, the contract is
+        # still evaluated only against an eligible subsequent tick. In-flight
+        # tick callbacks cannot be reclassified as a contract expiry.
         if not active:
-            if tick and not is_replay and not skip_bootstrap_duplicate and tick_seq:
-                arrived = time.monotonic()
-                self.buy_tick_signals[int(sid)] = {
-                    "seq": int(tick_seq),
-                    "symbol": str(symbol),
-                    "received_at": arrived,
-                    "digit": int(digit) if digit is not None else None,
-                }
-                in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
-                if in_flight is None or in_flight.done():
-                    self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
-                        self._safe_step(int(sid))
-                    )
             return
 
         if str(active.get("symbol")) != str(symbol):
