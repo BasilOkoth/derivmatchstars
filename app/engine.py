@@ -55,6 +55,8 @@ class MultiUserEngine:
         self.buy_tick_gates = {}  # sid -> {trade_no, armed_seq, symbol, client_generation}
         self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
         self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
+        self.settlement_resume_tasks = {}  # sid -> one immediate settlement continuation
+        self.tick_coverage = {}  # sid -> observed ticks, trigger attempts, acknowledged BUYs, idle gaps
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
         # identical to Deriv/browser formatting.
@@ -806,7 +808,9 @@ class MultiUserEngine:
                 # V27: A fresh tick's execution task owns priority. The
                 # maintenance poller must not compete for this session lock.
                 tick_task = self.buy_tick_dispatch_tasks.get(int(sid))
-                if tick_task is not None and not tick_task.done():
+                settlement_task = self.settlement_resume_tasks.get(int(sid))
+                if ((tick_task is not None and not tick_task.done())
+                        or (settlement_task is not None and not settlement_task.done())):
                     continue
                 task = self.session_tasks.get(sid)
                 if not task or task.done():
@@ -1612,6 +1616,20 @@ class MultiUserEngine:
             tick, fallback_decimals=self.tick_precision.get(int(sid))
         )
 
+        # V32 tick-coverage metrics are observational only: never infer paid
+        # results or bypass the Deriv settlement and database claim.
+        if tick and not is_replay and not skip_bootstrap_duplicate and tick_seq:
+            coverage = self.tick_coverage.setdefault(int(sid), {
+                "ticks": 0, "dispatches": 0, "buy_acks": 0,
+                "ticks_with_active_contract": 0, "ticks_without_active_contract": 0,
+                "settlement_wakeups": 0, "last_buy_ack_seq": None,
+            })
+            coverage["ticks"] += 1
+            coverage["ticks_with_active_contract" if self.fast_contracts.get(sid)
+                     else "ticks_without_active_contract"] += 1
+            if coverage["ticks"] % 50 == 0:
+                logger.info("DMS_TICK_COVERAGE sid=%s %s", sid, coverage)
+
         # V27: record and dispatch the authentic tick BEFORE doing optional
         # V1 ranking / shadow diagnostics. All financial authorization stays
         # in step() and _claim_account_buy(); this is only an execution wakeup.
@@ -1631,6 +1649,7 @@ class MultiUserEngine:
                     self._safe_step(int(sid))
                 )
                 tick_dispatched = True
+                self.tick_coverage[int(sid)]["dispatches"] += 1
 
         # Yield one event-loop turn so the already-scheduled execution worker
         # may begin DB/BUY processing ahead of expensive ranking. This yields
@@ -2898,6 +2917,13 @@ class MultiUserEngine:
             )
 
         contract_id = str(buy["contract_id"])
+        coverage = self.tick_coverage.setdefault(int(s.id), {
+            "ticks": 0, "dispatches": 0, "buy_acks": 0,
+            "ticks_with_active_contract": 0, "ticks_without_active_contract": 0,
+            "settlement_wakeups": 0, "last_buy_ack_seq": None,
+        })
+        coverage["buy_acks"] += 1
+        coverage["last_buy_ack_seq"] = int(self.tick_sequence.get(int(s.id), 0))
 
         # A confirmed BUY proves the throttle window has cleared.
         self.buy_rate_limit_until.pop(int(s.id), None)
@@ -3799,7 +3825,35 @@ class MultiUserEngine:
         # BUY path still requires the database claim, preventing duplicates.
         # An official WIN will already have stopped the cycle, so this is
         # harmless for wins and terminal reconciliation states.
-        asyncio.create_task(self._safe_step(int(sid)))
+        self._schedule_settlement_resume(int(sid))
+
+    def _schedule_settlement_resume(self, sid: int):
+        """One immediate wakeup per session; DB claim is still final authority.
+
+        A settlement callback may be repeated by Deriv, and the 100ms
+        maintenance scanner can also find the session. Deduplicate the
+        event-driven wakeup instead of creating a burst of competing steps.
+        """
+        sid = int(sid)
+        existing = self.settlement_resume_tasks.get(sid)
+        if existing is not None and not existing.done():
+            return
+
+        async def resume():
+            try:
+                await self._safe_step(sid)
+            finally:
+                if self.settlement_resume_tasks.get(sid) is asyncio.current_task():
+                    self.settlement_resume_tasks.pop(sid, None)
+
+        coverage = self.tick_coverage.get(sid)
+        if coverage is not None:
+            coverage["settlement_wakeups"] += 1
+        self.settlement_resume_tasks[sid] = asyncio.create_task(resume())
+
+    def tick_coverage_status(self, sid: int):
+        """In-process performance counters; reset on restart, no P/L impact."""
+        return dict(self.tick_coverage.get(int(sid)) or {})
 
     def last_settlement_status(self, sid: int):
         """Return the latest authoritative Deriv settlement for this session."""
