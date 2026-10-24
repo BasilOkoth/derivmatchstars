@@ -1033,6 +1033,14 @@ class MultiUserEngine:
 
     def _score_all_digits(self, sid: int, exclude_digit=None):
         previous_snapshot = self.digit_score_snapshots.get(int(sid))
+        # V34: API refreshes can request scoring repeatedly for the same
+        # canonical tick. Reuse that snapshot unless caller requests exclusion.
+        # Do not cache when there is no server tick identity (bootstrap).
+        latest_seq = int((self.latest_ticks.get(int(sid)) or {}).get("_dms_seq") or 0)
+        if (exclude_digit is None and latest_seq > 0
+                and isinstance(previous_snapshot, dict)
+                and int(previous_snapshot.get("rank_seq") or 0) == latest_seq):
+            return previous_snapshot
         snapshot = self.digit_scorer.rank(
             list(self._digit_history(sid))[-100:],
             exclude_digit=exclude_digit,
@@ -1144,17 +1152,25 @@ class MultiUserEngine:
             else "WARMING"
         )
 
-        # 200-tick challenger is shadow research only: NEVER alters purchased digit.
-        history_200 = list(self._digit_history(sid))
-        shadow_200 = self.shadow_200_scorer.rank(history_200)
-        self.shadow_200_snapshots[sid] = {
-            "version": "DIGIT_SCORE_200_SHADOW",
-            "history_count": len(history_200),
-            "selected_digit": shadow_200.get("selected_digit"),
-            "top_margin": shadow_200.get("top_margin"),
-            "rank_seq": snapshot.get("rank_seq"),
-        }
-        snapshot["shadow_200"] = dict(self.shadow_200_snapshots[sid])
+        # V34 LITE: shadow 200 is research only. Calculate at most once every
+        # 10 authentic server ticks; reuse the previous research snapshot in
+        # between. This NEVER changes the executable V1/fusion selection.
+        shadow_previous = self.shadow_200_snapshots.get(int(sid))
+        seq_for_shadow = int(snapshot.get("rank_seq") or 0)
+        if shadow_previous is None or (seq_for_shadow > 0 and seq_for_shadow % 10 == 0
+                                      and int(shadow_previous.get("rank_seq") or 0) != seq_for_shadow):
+            history_200 = list(self._digit_history(sid))
+            shadow_200 = self.shadow_200_scorer.rank(history_200)
+            shadow_previous = {
+                "version": "DIGIT_SCORE_200_SHADOW",
+                "history_count": len(history_200),
+                "selected_digit": shadow_200.get("selected_digit"),
+                "top_margin": shadow_200.get("top_margin"),
+                "rank_seq": snapshot.get("rank_seq"),
+                "refresh_interval_ticks": 10,
+            }
+            self.shadow_200_snapshots[int(sid)] = shadow_previous
+        snapshot["shadow_200"] = dict(shadow_previous)
 
         latest_symbol = None
         if isinstance(snapshot.get("canonical_tick"), dict):
