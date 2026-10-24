@@ -2590,10 +2590,9 @@ class MultiUserEngine:
             client=client,
         )
 
-        # Do not replace BUY_CLAIMED_* before the network call; the claim must
-        # remain visible to every competing server process.
-        s.updated_at = datetime.utcnow()
-        db.commit()
+        # BUY_CLAIM is already durably committed by _claim_account_buy.
+        # Avoid an unnecessary second PostgreSQL COMMIT in the critical
+        # path immediately before sending the Deriv BUY request.
 
         buy_sent_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
@@ -2632,6 +2631,9 @@ class MultiUserEngine:
         if int(payload["digit"]) != int(claim["digit"]):
             raise RuntimeError("BUY_CLAIM_LOST: digit changed after claim")
 
+        # Measure the actual authenticated Deriv BUY round trip, excluding
+        # ranking and dashboard rendering. Telemetry is observational only.
+        buy_network_started = time.perf_counter()
         try:
             if execution_mode == "DIRECT_PARAMETERS":
                 result = await client.buy_digitmatch_direct(
@@ -2759,6 +2761,7 @@ class MultiUserEngine:
                     f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
                 ) from exc
 
+        buy_network_ms = round((time.perf_counter() - buy_network_started) * 1000, 1)
         buy = result.get("buy") or {}
 
         if not buy.get("contract_id"):
@@ -2795,6 +2798,12 @@ class MultiUserEngine:
         inflight_tick_count = max(
             0,
             int(buy_ack_seq) - int(buy_sent_after_seq),
+        )
+        logger.info(
+            "DMS_BUY_TIMING sid=%s mode=%s trade=%s digit=%s "
+            "buy_network_ms=%.1f inflight_ticks=%s sent_seq=%s ack_seq=%s",
+            s.id, account_mode, payload.get("trade_no"), payload.get("digit"),
+            buy_network_ms, inflight_tick_count, buy_sent_after_seq, buy_ack_seq,
         )
 
         # Deriv's own purchase timestamp lets us distinguish some harmless
