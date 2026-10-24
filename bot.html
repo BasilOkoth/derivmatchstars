@@ -524,6 +524,54 @@
     #dms70-rec-panel {max-width:160px !important;}
   }
 </style>
+
+<!-- DMS V28 DISPLAY STABILITY: presentation only, never touches purchase logic -->
+<style id="dms-v28-stable-ui">
+/* Fixed metric geometry prevents moving adjacent cards as text changes. */
+#metricLiveTick, #metricLastDigit, #metricTickRate,
+#metricAccountBalance, #metricTradeCount, #metricTotalProfit,
+#metricCurrentStake {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: none !important;
+}
+#metricLiveTick { min-height: 1.75rem; }
+#metricLastDigit, #metricAccountBalance, #metricTradeCount,
+#metricTotalProfit, #metricCurrentStake { min-height: 1.5rem; }
+#metricTickRate { min-height: 1.05rem; }
+#trade-result-container {
+  min-height: 8.6rem;
+  overflow: hidden;
+  contain: layout;
+}
+#metricTradeResult {
+  display: inline-block;
+  min-width: 4.5rem;
+  max-width: 70%;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500 !important;
+}
+#metricPreviousResult, #metricNextAction {
+  display: block;
+  min-height: 1.15rem;
+  line-height: 1.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400 !important;
+}
+#metricTotalProfit.pnl-update-animation { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  #trade-result-container, #trade-result-container * { animation: none !important; transition: none !important; }
+}
+</style>
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 <div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
@@ -11608,10 +11656,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 status = `Target ${parts[0] || '—'} → ${parts[1] || '—'} · next stake $${stake.toFixed(2)}`;
                 action = 'Latest V1 rank #1 is pre-armed for the next trade';
                 resultClass = 'text-xs font-bold text-cyan-300';
-                resultEl.textContent = result;
+                if (resultEl.textContent !== result) resultEl.textContent = result;
                 resultEl.className = resultClass;
-                statusEl.textContent = status;
-                actionEl.textContent = action;
+                if (statusEl.textContent !== status) statusEl.textContent = status;
+                if (actionEl.textContent !== action) actionEl.textContent = action;
                 return;
             }
 
@@ -11621,10 +11669,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 status = `Digit ${d} remains V1 rank #1 · next stake $${stake.toFixed(2)}`;
                 action = 'Same top-ranked digit is pre-armed for the next trade';
                 resultClass = 'text-xs font-bold text-cyan-300';
-                resultEl.textContent = result;
+                if (resultEl.textContent !== result) resultEl.textContent = result;
                 resultEl.className = resultClass;
-                statusEl.textContent = status;
-                actionEl.textContent = action;
+                if (statusEl.textContent !== status) statusEl.textContent = status;
+                if (actionEl.textContent !== action) actionEl.textContent = action;
                 return;
             }
 
@@ -11916,12 +11964,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? 'text-xs font-medium text-emerald-300'
                     : 'text-xs font-medium text-amber-300';
             }
-            resultEl.textContent = result;
+            if (resultEl.textContent !== result) resultEl.textContent = result;
             resultEl.className = resultClass;
-            statusEl.textContent = status;
+            if (statusEl.textContent !== status) statusEl.textContent = status;
             statusEl.className = 'text-xs font-normal text-gray-300 leading-snug';
             statusEl.title = String(st.phase || '');
-            actionEl.textContent = action;
+            if (actionEl.textContent !== action) actionEl.textContent = action;
             actionEl.className = 'text-[11px] font-normal text-gray-400 leading-snug mt-1';
         }
 
