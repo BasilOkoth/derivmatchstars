@@ -51,10 +51,6 @@ class MultiUserEngine:
         # Exact callback sequence for next-tick execution. Deriv tick epochs are
         # whole seconds, so multiple consecutive ticks can share one epoch.
         self.tick_sequence = {}  # sid -> monotonically increasing tick number
-        # V24: tick-paced BUY authorization; armed per logical trade.
-        self.buy_tick_gates = {}  # sid -> {trade_no, armed_seq, symbol, client_generation}
-        self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
-        self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
         # identical to Deriv/browser formatting.
@@ -803,11 +799,6 @@ class MultiUserEngine:
                 db.close()
 
             for sid in ids:
-                # V27: A fresh tick's execution task owns priority. The
-                # maintenance poller must not compete for this session lock.
-                tick_task = self.buy_tick_dispatch_tasks.get(int(sid))
-                if tick_task is not None and not tick_task.done():
-                    continue
                 task = self.session_tasks.get(sid)
                 if not task or task.done():
                     self.session_tasks[sid] = asyncio.create_task(
@@ -1602,42 +1593,6 @@ class MultiUserEngine:
         digit = self._tick_last_digit(
             tick, fallback_decimals=self.tick_precision.get(int(sid))
         )
-
-        # V27: record and dispatch the authentic tick BEFORE doing optional
-        # V1 ranking / shadow diagnostics. All financial authorization stays
-        # in step() and _claim_account_buy(); this is only an execution wakeup.
-        #
-        # NOTE (delay fix): buy_tick_signals is refreshed on EVERY authentic
-        # tick, regardless of whether a fast contract is currently active.
-        # Without this, the settlement callback that fires on tick T+1 (which
-        # is the tick that closes the previous 1-tick contract) would see a
-        # stale signal from tick T and defer the next BUY to T+2. The step
-        # *dispatch* is still gated on "no active contract", so we never
-        # interrupt an in-flight contract.
-        active = self.fast_contracts.get(sid)
-        tick_dispatched = False
-        if (tick and not is_replay
-                and not skip_bootstrap_duplicate and tick_seq and digit is not None):
-            self.buy_tick_signals[int(sid)] = {
-                "seq": int(tick_seq),
-                "symbol": str(symbol),
-                "received_at": time.monotonic(),
-                "digit": int(digit),
-            }
-            if not active:
-                in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
-                if in_flight is None or in_flight.done():
-                    self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
-                        self._safe_step(int(sid))
-                    )
-                    tick_dispatched = True
-
-        # Yield one event-loop turn so the already-scheduled execution worker
-        # may begin DB/BUY processing ahead of expensive ranking. This yields
-        # only on the no-active-contract path, never in the contract decision.
-        if tick_dispatched:
-            await asyncio.sleep(0)
-
         if digit is not None:
             history = self._digit_history(sid)
 
@@ -1663,9 +1618,8 @@ class MultiUserEngine:
                         live_snapshot.get("selected_digit"),
                     )
 
-        # If BUY became active while the callback yielded, the contract is
-        # still evaluated only against an eligible subsequent tick. In-flight
-        # tick callbacks cannot be reclassified as a contract expiry.
+        active = self.fast_contracts.get(sid)
+
         if not active:
             return
 
@@ -1704,15 +1658,6 @@ class MultiUserEngine:
         active["decision_seq"] = incoming_seq
         active["observed_digit"] = digit
         active["decision_seen_monotonic"] = time.monotonic()
-        ack_clock = float(active.get("buy_ack_monotonic") or 0.0)
-        buy_to_tick_ms = (round((active["decision_seen_monotonic"] - ack_clock) * 1000, 1)
-                          if ack_clock else None)
-        active["buy_to_tick_ms"] = buy_to_tick_ms
-        logger.info(
-            "DMS_TICK_PIPELINE sid=%s trade=%s contract=%s buy_to_tick_ms=%s decision_seq=%s",
-            sid, active.get("trade_no"), active.get("contract_id"),
-            buy_to_tick_ms, incoming_seq,
-        )
         # Diagnostic only: tick-to-decision overhead within this callback.
         # No financial result is inferred from this latency or the public tick.
 
@@ -1730,7 +1675,6 @@ class MultiUserEngine:
             execution_state["decision_seq"] = int(incoming_seq or 0) or None
             execution_state["decision_epoch"] = int(epoch or 0) or None
             execution_state["decision_digit"] = int(digit)
-            execution_state["buy_to_tick_ms"] = buy_to_tick_ms
             execution_state["local_result"] = "WIN" if is_win else "LOSS"
             execution_state["decided"] = True
             execution_state["decision_source"] = "SERVER_MARKET_TICK"
@@ -2100,10 +2044,7 @@ class MultiUserEngine:
             try:
                 s = db.get(TradingSession, sid)
 
-                if not s or not s.running:
-                    self.buy_tick_gates.pop(int(sid), None)
-                    return
-                if s.paused:
+                if not s or not s.running or s.paused:
                     return
 
                 # Explicit Deriv RateLimit means no contract was purchased.
@@ -2390,58 +2331,10 @@ class MultiUserEngine:
                     int(scored_digit),
                 )
 
-                # V24 TICK-SYNCHRONIZED BUY GATE
-                # START and recovery only ARM the next trade. BUY occurs on a
-                # genuinely NEW server tick, never on the stale displayed quote.
-                # Each accepted tick is consumed once. The Deriv BUY acknowledgement
-                # may arrive later; the trigger tick is NOT the contract expiry tick.
-                next_no = int(s.current_trade or 0) + 1
-                current_seq = int(self.tick_sequence.get(int(s.id), 0) or 0)
-                generation = int(getattr(client, "connection_generation", 0) or 0)
-                gate = self.buy_tick_gates.get(int(s.id))
-                if (not isinstance(gate, dict)
-                        or int(gate.get("trade_no") or 0) != next_no
-                        or str(gate.get("symbol")) != str(s.symbol)
-                        or int(gate.get("client_generation") or 0) != generation):
-                    # If this call was dispatched by the just-received fresh
-                    # tick, consume THAT tick instead of arming after it and
-                    # waiting needlessly for yet another market observation.
-                    # A stale signal, replay, or wrong symbol cannot authorize BUY.
-                    signal = self.buy_tick_signals.get(int(s.id)) or {}
-                    fresh_callback = bool(
-                        int(signal.get("seq") or 0) == current_seq
-                        and str(signal.get("symbol")) == str(s.symbol)
-                        and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 3.0
-                    )
-                    # (delay fix) Assign the local `gate` too so the guard and
-                    # consumption lines below operate on the LIVE gate dict.
-                    gate = self.buy_tick_gates[int(s.id)] = {
-                        "trade_no": next_no,
-                        "armed_seq": current_seq - 1 if fresh_callback else current_seq,
-                        "symbol": str(s.symbol),
-                        "client_generation": generation,
-                    }
-                    if not fresh_callback:
-                        if s.phase != "WAITING_BUY_TICK":
-                            s.phase = "WAITING_BUY_TICK"
-                            s.last_error = None
-                            s.updated_at = datetime.utcnow()
-                            db.commit()
-                        return
-                if current_seq <= int(gate.get("armed_seq") or 0):
-                    return
-                # Consume this tick BEFORE submitting any asynchronous BUY.
-                # Rejections or an uncertain purchase cannot be retried using
-                # the same tick. Existing DB BUY_CLAIM remains authoritative.
-                gate["armed_seq"] = current_seq
                 s.phase = "DIRECT_BUY_READY"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
-                logger.info(
-                    "DMS_TICK_BUY_TRIGGER sid=%s trade=%s seq=%s digit=%s",
-                    s.id, next_no, current_seq, s.candidate_digit,
-                )
 
                 payload = self._direct_buy_payload(
                     symbol=s.symbol,
@@ -2739,18 +2632,6 @@ class MultiUserEngine:
         if int(payload["digit"]) != int(claim["digit"]):
             raise RuntimeError("BUY_CLAIM_LOST: digit changed after claim")
 
-        # Observation only: preserve V21 claim/commit/order and BUY behavior.
-        dms_buy_request_start = time.perf_counter()
-        tick_signal = self.buy_tick_signals.get(int(s.id)) or {}
-        tick_age = time.monotonic() - float(tick_signal.get("received_at") or 0)
-        tick_to_buy_ms = (round(tick_age * 1000, 1)
-                          if 0 <= tick_age <= 30 and
-                          str(tick_signal.get("symbol")) == str(s.symbol)
-                          else None)
-        logger.info(
-            "DMS_TICK_PIPELINE sid=%s trade=%s tick_to_buy_ms=%s trigger_seq=%s",
-            s.id, payload.get("trade_no"), tick_to_buy_ms, tick_signal.get("seq"),
-        )
         try:
             if execution_mode == "DIRECT_PARAMETERS":
                 result = await client.buy_digitmatch_direct(
@@ -2878,7 +2759,6 @@ class MultiUserEngine:
                     f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
                 ) from exc
 
-        dms_buy_network_ms = round((time.perf_counter() - dms_buy_request_start) * 1000, 1)
         buy = result.get("buy") or {}
 
         if not buy.get("contract_id"):
@@ -2915,12 +2795,6 @@ class MultiUserEngine:
         inflight_tick_count = max(
             0,
             int(buy_ack_seq) - int(buy_sent_after_seq),
-        )
-
-        logger.info(
-            "DMS_BUY_TIMING sid=%s trade=%s digit=%s buy_network_ms=%.1f inflight_ticks=%s sent_seq=%s ack_seq=%s",
-            s.id, payload.get("trade_no"), payload.get("digit"),
-            dms_buy_network_ms, inflight_tick_count, buy_sent_after_seq, buy_ack_seq,
         )
 
         # Deriv's own purchase timestamp lets us distinguish some harmless
@@ -3078,7 +2952,6 @@ class MultiUserEngine:
                 if official_only_inflight
                 else "FAST_NEXT_TICK"
             ),
-            "buy_to_tick_ms": None,
             "decision_seq": None,
             "decision_epoch": None,
             "decision_digit": None,
@@ -3100,7 +2973,6 @@ class MultiUserEngine:
                 "trade_no": int(payload["trade_no"]),
                 "armed_after_epoch": decision_after_epoch,
                 "armed_after_seq": int(buy_ack_seq),
-                "buy_ack_monotonic": time.monotonic(),
                 "buy_sent_after_seq": int(buy_sent_after_seq),
                 "buy_ack_seq": int(buy_ack_seq),
                 "score_evidence": score_evidence,
@@ -3418,59 +3290,6 @@ class MultiUserEngine:
         digits = [ch for ch in rendered if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
-    def _settlement_digit_integrity(self, sid: int, poc: dict, *, purchased_digit, profit):
-        """Cross-check one purchased DIGITMATCH barrier against Deriv expiry.
-
-        The browser's latest market tick is never proof of this contract's
-        expiry. String exit_spot is preferred because it retains trailing
-        zeros. Numeric spots are checked only when tick precision is known.
-        Missing/ambiguous evidence is UNKNOWN, not a fabricated mismatch.
-        """
-        raw = poc.get("exit_spot")
-        comparable = isinstance(raw, str) or (
-            isinstance(raw, (int, float))
-            and self.tick_precision.get(int(sid)) is not None
-        )
-        official_digit = self._official_exit_digit(sid, poc) if comparable else None
-        paid_digit = int(purchased_digit) if purchased_digit is not None else None
-        matched = (
-            official_digit == paid_digit
-            if official_digit is not None and paid_digit in range(10)
-            else None
-        )
-        official_win = float(profit) > 0 if profit is not None else None
-        conflict = (
-            matched != official_win
-            if matched is not None and official_win is not None
-            else False
-        )
-        return {
-            "purchased_digit": paid_digit,
-            "official_exit_digit": official_digit,
-            "exit_spot_raw": raw,
-            "exit_spot_time": poc.get("exit_spot_time"),
-            "profit": float(profit) if profit is not None else None,
-            "expected_win_by_exit_digit": matched,
-            "reported_win_by_profit": official_win,
-            "status": "MISMATCH" if conflict else "MATCH" if matched is not None else "UNKNOWN",
-            "mismatch": bool(conflict),
-        }
-
-    def _halt_on_settlement_mismatch(self, s, contract_id, integrity):
-        if not integrity.get("mismatch"):
-            return False
-        s.running = False
-        s.paused = False
-        s.phase = "DERIV_EXPIRY_MISMATCH"
-        s.last_error = (
-            f"DERIV_EXPIRY_MISMATCH contract={contract_id} "
-            f"purchased={integrity['purchased_digit']} "
-            f"exit={integrity['official_exit_digit']} "
-            f"profit={integrity['profit']}"
-        )
-        logger.error("DMS_SETTLEMENT_INTEGRITY %s", s.last_error)
-        return True
-
     async def _handle_contract_update(
         self,
         *,
@@ -3583,16 +3402,6 @@ class MultiUserEngine:
                         else:
                             s.phase = "RECONCILE_MISMATCH"
                             s.last_error = f"Local/official disagreement for contract {contract_id}"
-                    # A duplicate sold message may be the first with a usable
-                    # exit_spot; check it too, without accounting profit twice.
-                    repeated_integrity = self._settlement_digit_integrity(
-                        int(sid), poc, purchased_digit=log.digit,
-                        profit=log.profit,
-                    )
-                    if repeated_integrity["mismatch"]:
-                        self._halt_on_settlement_mismatch(
-                            s, contract_id, repeated_integrity
-                        )
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -3624,24 +3433,7 @@ class MultiUserEngine:
                         int(sid),
                         poc,
                     )
-                    integrity = self._settlement_digit_integrity(
-                        int(sid), poc, purchased_digit=log.digit,
-                        profit=profit,
-                    )
-                    existing_raw["dms_settlement_integrity_v29"] = integrity
                     log.raw_json = json.dumps(existing_raw)
-                    self._halt_on_settlement_mismatch(s, contract_id, integrity)
-                else:
-                    # A sold contract with no matching purchase record must not
-                    # silently adjust this session's money and recover.
-                    s.running = False
-                    s.paused = False
-                    s.phase = "SETTLEMENT_MISSING_TRADE_LOG"
-                    s.last_error = f"No purchased TradeLog for settlement {contract_id}"
-                    logger.error("DMS_SETTLEMENT_INTEGRITY %s", s.last_error)
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
 
                 s.pnl = float(s.pnl or 0) + profit
 
@@ -3674,8 +3466,7 @@ class MultiUserEngine:
                 # DMS_RACE_GUARD_V11: settled WIN closes the cycle; official
                 # settled LOSS is consumed only by the normal worker step.
                 if profit > 0 and s.phase not in (
-                    "RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH",
-                    "DERIV_EXPIRY_MISMATCH",
+                    "RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"
                 ):
                     s.running = False
                     s.paused = False
@@ -3684,8 +3475,7 @@ class MultiUserEngine:
                 # official payout. Never continue an inconsistent cycle.
                 previous_fast = self.fast_contracts.get(sid)
                 if (
-                    s.phase != "DERIV_EXPIRY_MISMATCH"
-                    and previous_fast
+                    previous_fast
                     and str(previous_fast.get("contract_id")) == str(contract_id)
                     and previous_fast.get("fast_result")
                     and previous_fast.get("fast_result") != ("WIN" if profit > 0 else "LOSS")
