@@ -56,6 +56,7 @@ class MultiUserEngine:
         self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
         self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
         self.settlement_resume_tasks = {}  # sid -> one immediate settlement continuation
+        self.settlement_recovery_timing = {}  # (sid,next trade) -> confirmed settlement monotonic
         self.settlement_buy_authorizations = {}  # sid -> one confirmed LOSS event, tied to contract/trade
         self.tick_coverage = {}  # sid -> observed ticks, trigger attempts, acknowledged BUYs, idle gaps
         # Last known decimal precision for each session's selected symbol.
@@ -2481,6 +2482,9 @@ class MultiUserEngine:
                     and 0 <= time.monotonic() - float(recovery_auth.get("at") or 0) < 20.0
                 )
                 if confirmed_loss_fastpath:
+                    self.settlement_recovery_timing[(int(s.id), next_no)] = float(
+                        recovery_auth.get("at") or time.monotonic()
+                    )
                     logger.info(
                         "DMS_SETTLEMENT_FASTPATH sid=%s settled_contract=%s next_trade=%s",
                         s.id, latest.contract_id, next_no,
@@ -2793,10 +2797,10 @@ class MultiUserEngine:
             client=client,
         )
 
-        # Do not replace BUY_CLAIMED_* before the network call; the claim must
-        # remain visible to every competing server process.
-        s.updated_at = datetime.utcnow()
-        db.commit()
+        # V37: The atomic BUY_CLAIM transaction has ALREADY committed the
+        # cross-process ownership and timestamp. Do not perform another write
+        # before sending BUY: it adds database round-trip delay without making
+        # the claim any safer. The pending claim remains persisted unchanged.
 
         buy_sent_after_epoch = int(
             self.latest_tick_epoch.get(s.id) or 0
@@ -2835,7 +2839,19 @@ class MultiUserEngine:
         if int(payload["digit"]) != int(claim["digit"]):
             raise RuntimeError("BUY_CLAIM_LOST: digit changed after claim")
 
-        # Observation only: preserve V21 claim/commit/order and BUY behavior.
+        # V37: measure confirmed settlement -> outbound BUY separately from
+        # Deriv's acknowledgement latency. Diagnostics do not authorize trades.
+        # The fast-path authorization is consumed by step() before we reach here;
+        # pass the timestamp through a separate one-shot timing dictionary.
+        recovery_clock = self.settlement_recovery_timing.pop(
+            (int(s.id), int(payload.get("trade_no") or 0)), None
+        )
+        if recovery_clock is not None:
+            logger.info(
+                "DMS_RECOVERY_LATENCY sid=%s trade=%s settlement_to_buy_ms=%.1f",
+                s.id, payload.get("trade_no"),
+                (time.monotonic() - recovery_clock) * 1000.0,
+            )
         dms_buy_request_start = time.perf_counter()
         tick_signal = self.buy_tick_signals.get(int(s.id)) or {}
         tick_age = time.monotonic() - float(tick_signal.get("received_at") or 0)
