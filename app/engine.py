@@ -1606,9 +1606,17 @@ class MultiUserEngine:
         # V27: record and dispatch the authentic tick BEFORE doing optional
         # V1 ranking / shadow diagnostics. All financial authorization stays
         # in step() and _claim_account_buy(); this is only an execution wakeup.
+        #
+        # NOTE (delay fix): buy_tick_signals is refreshed on EVERY authentic
+        # tick, regardless of whether a fast contract is currently active.
+        # Without this, the settlement callback that fires on tick T+1 (which
+        # is the tick that closes the previous 1-tick contract) would see a
+        # stale signal from tick T and defer the next BUY to T+2. The step
+        # *dispatch* is still gated on "no active contract", so we never
+        # interrupt an in-flight contract.
         active = self.fast_contracts.get(sid)
         tick_dispatched = False
-        if (not active and tick and not is_replay
+        if (tick and not is_replay
                 and not skip_bootstrap_duplicate and tick_seq and digit is not None):
             self.buy_tick_signals[int(sid)] = {
                 "seq": int(tick_seq),
@@ -1616,12 +1624,13 @@ class MultiUserEngine:
                 "received_at": time.monotonic(),
                 "digit": int(digit),
             }
-            in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
-            if in_flight is None or in_flight.done():
-                self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
-                    self._safe_step(int(sid))
-                )
-                tick_dispatched = True
+            if not active:
+                in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
+                if in_flight is None or in_flight.done():
+                    self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
+                        self._safe_step(int(sid))
+                    )
+                    tick_dispatched = True
 
         # Yield one event-loop turn so the already-scheduled execution worker
         # may begin DB/BUY processing ahead of expensive ranking. This yields
@@ -2402,9 +2411,11 @@ class MultiUserEngine:
                     fresh_callback = bool(
                         int(signal.get("seq") or 0) == current_seq
                         and str(signal.get("symbol")) == str(s.symbol)
-                        and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 1.0
+                        and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 3.0
                     )
-                    self.buy_tick_gates[int(s.id)] = {
+                    # (delay fix) Assign the local `gate` too so the guard and
+                    # consumption lines below operate on the LIVE gate dict.
+                    gate = self.buy_tick_gates[int(s.id)] = {
                         "trade_no": next_no,
                         "armed_seq": current_seq - 1 if fresh_callback else current_seq,
                         "symbol": str(s.symbol),
