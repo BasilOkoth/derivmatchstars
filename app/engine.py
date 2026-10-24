@@ -1622,27 +1622,25 @@ class MultiUserEngine:
                         live_snapshot.get("selected_digit"),
                     )
 
-        # V25: dispatch a BUY-capable execution task FROM the tick callback.
-        # Do not await the BUY within the market-data callback: that would block
-        # the stream during WebSocket/Deriv acknowledgement. The task executes
-        # step() immediately, with its session lock + atomic BUY_CLAIM protecting
-        # against duplicate purchases. Dispatch even if the periodic worker is
-        # already running; otherwise its running state can swallow this tick.
-        if tick and not is_replay and not skip_bootstrap_duplicate and tick_seq:
-            self.buy_tick_signals[int(sid)] = {
-                "seq": int(tick_seq),
-                "symbol": str(symbol),
-                "received_at": time.monotonic(),
-            }
-            in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
-            if in_flight is None or in_flight.done():
-                self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
-                    self._safe_step(int(sid))
-                )
-
+        # V26 PURCHASE-FIRST PIPELINE: collect each market tick, but only
+        # dispatch a new BUY when there is no unresolved paid contract owner.
+        # Every tick remains observable; an unmatched/unpurchased tick is NOT
+        # converted into a loss or a synthetic contract.
         active = self.fast_contracts.get(sid)
-
         if not active:
+            if tick and not is_replay and not skip_bootstrap_duplicate and tick_seq:
+                arrived = time.monotonic()
+                self.buy_tick_signals[int(sid)] = {
+                    "seq": int(tick_seq),
+                    "symbol": str(symbol),
+                    "received_at": arrived,
+                    "digit": int(digit) if digit is not None else None,
+                }
+                in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
+                if in_flight is None or in_flight.done():
+                    self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
+                        self._safe_step(int(sid))
+                    )
             return
 
         if str(active.get("symbol")) != str(symbol):
@@ -1680,6 +1678,15 @@ class MultiUserEngine:
         active["decision_seq"] = incoming_seq
         active["observed_digit"] = digit
         active["decision_seen_monotonic"] = time.monotonic()
+        ack_clock = float(active.get("buy_ack_monotonic") or 0.0)
+        buy_to_tick_ms = (round((active["decision_seen_monotonic"] - ack_clock) * 1000, 1)
+                          if ack_clock else None)
+        active["buy_to_tick_ms"] = buy_to_tick_ms
+        logger.info(
+            "DMS_TICK_PIPELINE sid=%s trade=%s contract=%s buy_to_tick_ms=%s decision_seq=%s",
+            sid, active.get("trade_no"), active.get("contract_id"),
+            buy_to_tick_ms, incoming_seq,
+        )
         # Diagnostic only: tick-to-decision overhead within this callback.
         # No financial result is inferred from this latency or the public tick.
 
@@ -1697,6 +1704,7 @@ class MultiUserEngine:
             execution_state["decision_seq"] = int(incoming_seq or 0) or None
             execution_state["decision_epoch"] = int(epoch or 0) or None
             execution_state["decision_digit"] = int(digit)
+            execution_state["buy_to_tick_ms"] = buy_to_tick_ms
             execution_state["local_result"] = "WIN" if is_win else "LOSS"
             execution_state["decided"] = True
             execution_state["decision_source"] = "SERVER_MARKET_TICK"
@@ -2705,6 +2713,16 @@ class MultiUserEngine:
 
         # Observation only: preserve V21 claim/commit/order and BUY behavior.
         dms_buy_request_start = time.perf_counter()
+        tick_signal = self.buy_tick_signals.get(int(s.id)) or {}
+        tick_age = time.monotonic() - float(tick_signal.get("received_at") or 0)
+        tick_to_buy_ms = (round(tick_age * 1000, 1)
+                          if 0 <= tick_age <= 30 and
+                          str(tick_signal.get("symbol")) == str(s.symbol)
+                          else None)
+        logger.info(
+            "DMS_TICK_PIPELINE sid=%s trade=%s tick_to_buy_ms=%s trigger_seq=%s",
+            s.id, payload.get("trade_no"), tick_to_buy_ms, tick_signal.get("seq"),
+        )
         try:
             if execution_mode == "DIRECT_PARAMETERS":
                 result = await client.buy_digitmatch_direct(
@@ -3032,6 +3050,7 @@ class MultiUserEngine:
                 if official_only_inflight
                 else "FAST_NEXT_TICK"
             ),
+            "buy_to_tick_ms": None,
             "decision_seq": None,
             "decision_epoch": None,
             "decision_digit": None,
@@ -3053,6 +3072,7 @@ class MultiUserEngine:
                 "trade_no": int(payload["trade_no"]),
                 "armed_after_epoch": decision_after_epoch,
                 "armed_after_seq": int(buy_ack_seq),
+                "buy_ack_monotonic": time.monotonic(),
                 "buy_sent_after_seq": int(buy_sent_after_seq),
                 "buy_ack_seq": int(buy_ack_seq),
                 "score_evidence": score_evidence,
