@@ -11625,7 +11625,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             if (raw === 'FAST_DECISION_APPLYING') return 'Checking trade';
             if (raw === 'AWAITING_NEXT_TICK') return 'Watching tick';
             if (raw === 'RECOVERY_READY' || raw === 'FAST_RECOVERING') return 'Next trade';
-            if (raw === 'WON' || raw === 'OFFICIAL_WON') return 'Won';
+            if (raw === 'WON' || raw === 'OFFICIAL_WON' || raw === 'FAST_WON') return 'WIN';
             if (raw === 'BUYING' || raw === 'DIRECT_BUY_READY') return 'Buying';
             if (raw === 'MAX_TRADES_REACHED') return 'Limit reached';
             return raw ? raw.toLowerCase().replaceAll('_', ' ').replace(/^./, c => c.toUpperCase()) : 'Ready';
@@ -11813,7 +11813,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     break;
 
                 case 'WON':
-                    result = 'WIN ✅';
+                case 'OFFICIAL_WON':
+                    result = 'WIN';
                     status = `Cycle won on trade ${tradeNo} · Cycle P/L ${formatServerMoney(pnl)}`;
                     action = continuous
                         ? 'Auto Continue After Win ON · selecting and freezing the next AI candidate…'
@@ -11822,7 +11823,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     break;
 
                 case 'FAST_WON':
-                    result = 'WIN ✅';
+                    result = 'WIN';
                     status = `Cycle won on trade ${tradeNo} · P/L ${formatServerMoney(pnl)}`;
                     action = continuous
                         ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
@@ -13454,8 +13455,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 if (
                     !outcomePlayed &&
-                    (phase === 'WON' || phase === 'FAST_WON') &&
-                    !['WON','FAST_WON'].includes(prev.phase)
+                    (phase === 'WON' || phase === 'FAST_WON' || phase === 'OFFICIAL_WON') &&
+                    !['WON','FAST_WON','OFFICIAL_WON'].includes(prev.phase)
                 ) {
                     playAudioFeedback('WIN');
                 } else if (
@@ -13529,7 +13530,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 el.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
 
-                const won = String(st.phase || '').toUpperCase() === 'WON';
+                const won = ['WON', 'OFFICIAL_WON', 'FAST_WON'].includes(String(st.phase || '').toUpperCase());
                 if (won || pnl > 0) {
                     el.style.color = '#4ade80';
                     el.style.fontWeight = '900';
@@ -13612,7 +13613,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     // Research display requirement:
                     // red while the cycle has not yet produced a positive win,
                     // bold green once the cycle is net-positive / WON.
-                    const won = String(st.phase || '').toUpperCase() === 'WON';
+                    const won = ['WON', 'OFFICIAL_WON', 'FAST_WON'].includes(String(st.phase || '').toUpperCase());
                     const positive = serverPnl > 0;
 
                     if (won || positive) {
