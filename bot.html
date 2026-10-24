@@ -13376,58 +13376,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             return false;
         }
 
-        // V31: Contract-specific evidence, never infer a paid WIN from live quote.
-        function renderDmsContractAudit(st) {
-            const elId = 'dms-contract-audit-v31';
-            let panel = document.getElementById(elId);
-            if (!panel) {
-                panel = document.createElement('section');
-                panel.id = elId;
-                panel.setAttribute('aria-live', 'polite');
-                panel.style.cssText = 'box-sizing:border-box;width:100%;max-width:100%;margin:10px 0;padding:12px;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;font:600 13px/1.5 system-ui,sans-serif;min-height:128px;overflow-wrap:anywhere;';
-                const metric = document.getElementById('metricTradeCount');
-                const anchor = document.getElementById('serverExecTrade') || metric;
-                const host = anchor && (anchor.closest('.card') || anchor.closest('section') || anchor.parentElement);
-                if (!host || !host.parentElement) return;
-                host.parentElement.insertBefore(panel, host.nextSibling);
-            }
-            const evidence = st?.digit_score?.execution_contract || null;
-            const settlement = st?.last_settlement || null;
-            const openId = st?.open_contract_id ? String(st.open_contract_id) : '';
-            const evidenceId = evidence?.contract_id ? String(evidence.contract_id) : '';
-            const settleId = settlement?.contract_id ? String(settlement.contract_id) : '';
-            const latestTrade = Number(st?.current_trade || 0);
-            // Settlement evidence is historical unless it belongs to the displayed contract.
-            const current = evidenceId && (evidenceId === openId || (!openId && Number(evidence.trade_no || 0) === latestTrade));
-            const matchedSettlement = settleId && (settleId === evidenceId || (!evidenceId && !openId && Number(settlement?.trade_no || 0) === latestTrade));
-            const record = current ? evidence : null;
-            const paid = matchedSettlement ? settlement : null;
-            const target = record?.target_digit ?? paid?.digit ?? null;
-            const exit = paid?.exit_digit ?? record?.official_decision_digit ?? null;
-            const result = paid?.result ?? record?.official_result ?? null;
-            const contractId = paid?.contract_id ?? record?.contract_id ?? openId ?? null;
-            const displayed = (x) => x === undefined || x === null || x === '' ? '—' : String(x);
-            const d = x => { const n=Number(x); return x !== null && x !== undefined && x !== '' && Number.isInteger(n) && n >= 0 && n <= 9 ? n : null; };
-            const t=d(target), x=d(exit), official=String(result || '').toUpperCase();
-            const integrity = paid && t !== null && x !== null && (official === 'WIN' || official === 'LOSS')
-                ? ((t === x) === (official === 'WIN') ? 'CONSISTENT' : 'CONTRACT RESULT MISMATCH')
-                : 'NOT VERIFIED';
-            const phase = paid ? 'OFFICIAL SETTLEMENT' : (record ? 'PURCHASED · AWAITING SETTLEMENT' : 'NO CONTRACT EVIDENCE');
-            const signature = [contractId, target, exit, official, integrity, phase, paid?.exit_spot, record?.local_result, record?.decision_digit].join('|');
-            if (panel.dataset.signature === signature) return;
-            panel.dataset.signature = signature;
-            const esc = v => displayed(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-            const warning = integrity === 'CONTRACT RESULT MISMATCH';
-            panel.style.borderColor = warning ? '#ef4444' : '#475569';
-            panel.innerHTML = '<div style="font-size:14px;font-weight:800;margin-bottom:7px">CONTRACT AUDIT <span style="font-size:11px;opacity:.8">· '+esc(phase)+'</span></div>'+
-                '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 12px">'+
-                '<div>Contract ID: <strong>'+esc(contractId)+'</strong></div><div>Purchased digit: <strong>'+esc(target)+'</strong></div>'+
-                '<div>Deriv expiry digit: <strong>'+esc(exit)+'</strong></div><div>Official result: <strong>'+esc(result)+'</strong></div>'+
-                '<div>Expiry spot: <strong>'+esc(paid?.exit_spot ?? record?.official_exit_spot)+'</strong></div><div>Local tick: <strong>'+esc(record?.decision_digit)+'</strong> <span style="opacity:.75">(diagnostic only)</span></div></div>'+
-                '<div style="margin-top:8px;font-weight:800;color:'+(warning ? '#fca5a5' : '#94a3b8')+'">'+esc(integrity)+'</div>'+
-                '<div style="font-size:11px;font-weight:400;opacity:.8">Live market digit is separate from the purchased contract expiry. A local HIT is not an official WIN.</div>';
-        }
-
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
@@ -13674,7 +13622,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     }
                 }
             }
-            try { renderDmsContractAudit(st); } catch (err) { console.warn("DMS contract audit", err); }
             renderServerTradeNarrative(st);
             if (
                 st?.last_settlement?.settled_at &&
