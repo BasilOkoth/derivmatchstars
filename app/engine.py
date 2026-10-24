@@ -58,6 +58,7 @@ class MultiUserEngine:
         self.settlement_resume_tasks = {}  # sid -> one immediate settlement continuation
         self.settlement_recovery_timing = {}  # (sid,next trade) -> confirmed settlement monotonic
         self.settlement_buy_authorizations = {}  # sid -> one confirmed LOSS event, tied to contract/trade
+        self.provisional_recovery = {}  # sid -> local-only prepared next-trade hint; never authorizes a BUY
         self.tick_coverage = {}  # sid -> observed ticks, trigger attempts, acknowledged BUYs, idle gaps
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
@@ -1797,6 +1798,29 @@ class MultiUserEngine:
 
         active["fast_result"] = "WIN" if is_win else "LOSS"
 
+        # V38 TWO-LANE: CPU-only speculative preparation on the public tick.
+        # The local result is NOT authoritative: it never updates paid P/L,
+        # advances current_trade, or sends an order. The eventual official
+        # loss must still pass the normal settlement and database BUY claim.
+        self.provisional_recovery.pop(int(sid), None)
+        if not is_win:
+            next_no = int(active.get("trade_no") or 0) + 1
+            locked_digit = int(target_digit) if ((next_no - 1) % 3) != 0 else None
+            # A new 3-trade block uses the latest prepared V1/AI ranking at
+            # settlement, not an unverified target frozen on the losing tick.
+            self.provisional_recovery[int(sid)] = {
+                "contract_id": contract_id,
+                "source_trade_no": int(active.get("trade_no") or 0),
+                "next_trade_no": next_no,
+                "locked_digit": locked_digit,
+                "local_tick_seq": int(incoming_seq or 0),
+                "prepared_at": time.monotonic(),
+            }
+            logger.info(
+                "DMS_LOCAL_PREPARED sid=%s contract=%s next_trade=%s locked_digit=%s",
+                sid, contract_id, next_no, locked_digit,
+            )
+
         execution_state = self.execution_contract_state.get(int(sid))
         if (
             isinstance(execution_state, dict)
@@ -2360,6 +2384,7 @@ class MultiUserEngine:
                     # A public-feed tick may differ from the settled expiry tick.
                     # The Deriv contract profit is authoritative for progression.
                     if official_result == "WIN":
+                        self.provisional_recovery.pop(int(sid), None)
                         s.running = False
                         s.phase = "WON"
                         self.fast_contracts.pop(sid, None)
@@ -2374,7 +2399,28 @@ class MultiUserEngine:
                     expected_stake = round(float(latest.stake) * float(s.multiplier), 2)
                     if float(s.current_stake or 0) < expected_stake - 0.005:
                         s.current_stake = expected_stake
+                    # Reuse only a provisional hint tied to the SAME settled
+                    # contract. Never trust it over the persistent DB lock.
+                    prep = self.provisional_recovery.pop(int(sid), None)
+                    prep_valid = bool(
+                        isinstance(prep, dict)
+                        and str(prep.get("contract_id")) == str(latest.contract_id)
+                        and int(prep.get("source_trade_no") or 0) == int(latest.trade_no)
+                        and int(prep.get("next_trade_no") or 0) == int(s.current_trade or 0) + 1
+                    )
                     fresh_digit = self._three_trade_locked_target(s, db=db)
+                    if prep_valid and prep.get("locked_digit") is not None:
+                        if fresh_digit is None or int(fresh_digit) != int(prep["locked_digit"]):
+                            logger.warning(
+                                "DMS_LOCAL_PREP_MISMATCH sid=%s contract=%s provisional=%s authoritative=%s",
+                                sid, latest.contract_id, prep["locked_digit"], fresh_digit,
+                            )
+                        else:
+                            logger.info(
+                                "DMS_LOCAL_PREP_CONSUMED sid=%s contract=%s next_trade=%s prep_to_settle_ms=%.1f",
+                                sid, latest.contract_id, prep["next_trade_no"],
+                                (time.monotonic() - float(prep["prepared_at"])) * 1000,
+                            )
                     snapshot = {}
                     if fresh_digit is None:
                         fresh_digit, snapshot = self._choose_scored_digit(sid, lock_target=True)
