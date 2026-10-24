@@ -1797,6 +1797,14 @@ class MultiUserEngine:
         is_win = digit == target_digit
 
         active["fast_result"] = "WIN" if is_win else "LOSS"
+        # The local quote is provisional until Deriv's contract exit tick is
+        # independently identified. Preserve the canonical text/epoch now so
+        # settlement reconciliation does not accidentally compare a later tick.
+        local_quote = self._canonical_tick_text(
+            tick, fallback_decimals=self.tick_precision.get(int(sid))
+        )
+        active["decision_quote"] = local_quote
+        active["decision_epoch"] = int(epoch or 0)
 
         # V38 TWO-LANE: CPU-only speculative preparation on the public tick.
         # The local result is NOT authoritative: it never updates paid P/L,
@@ -1829,6 +1837,9 @@ class MultiUserEngine:
             execution_state["decision_seq"] = int(incoming_seq or 0) or None
             execution_state["decision_epoch"] = int(epoch or 0) or None
             execution_state["decision_digit"] = int(digit)
+            execution_state["decision_quote"] = local_quote
+            execution_state["local_prediction_status"] = "PROVISIONAL"
+            execution_state["contract_tick_alignment"] = "UNVERIFIED"
             execution_state["buy_to_tick_ms"] = buy_to_tick_ms
             execution_state["local_result"] = "WIN" if is_win else "LOSS"
             execution_state["decided"] = True
@@ -3247,6 +3258,9 @@ class MultiUserEngine:
             "decision_seq": None,
             "decision_epoch": None,
             "decision_digit": None,
+            "decision_quote": None,
+            "local_prediction_status": "PENDING_TICK",
+            "contract_tick_alignment": "UNVERIFIED",
             "local_result": None,
             "official_result": None,
             "decided": False,
@@ -3583,6 +3597,36 @@ class MultiUserEngine:
         digits = [ch for ch in rendered if ch.isdigit()]
         return int(digits[-1]) if digits else None
 
+    def _reconcile_contract_tick_alignment(self, sid: int, execution_state: dict, poc: dict):
+        """Compare public-feed candidate with the *actual* contract exit evidence.
+
+        A matching quote and second-level timestamp is supporting evidence, not
+        proof of a unique tick: two ticks can share both. Only Deriv's sold
+        contract payload establishes the paid outcome.
+        """
+        candidate = execution_state.get("decision_quote")
+        candidate_epoch = execution_state.get("decision_epoch")
+        exit_spot = poc.get("exit_spot")
+        exit_epoch = poc.get("exit_spot_time")
+        if candidate is None or exit_spot is None:
+            return "NO_COMPARABLE_EXIT_TICK"
+        try:
+            decimals = self.tick_precision.get(int(sid))
+            if decimals is None:
+                same_quote = str(candidate) == str(exit_spot)
+            else:
+                same_quote = (f"{float(candidate):.{int(decimals)}f}"
+                              == f"{float(exit_spot):.{int(decimals)}f}")
+        except (ValueError, TypeError, OverflowError):
+            same_quote = str(candidate) == str(exit_spot)
+        if not same_quote:
+            return "DIFFERENT_EXIT_QUOTE"
+        if not candidate_epoch or not exit_epoch:
+            return "QUOTE_MATCH_TIME_UNKNOWN"
+        if int(candidate_epoch) != int(exit_epoch):
+            return "QUOTE_MATCH_TIME_DIFFERENT"
+        return "QUOTE_AND_SECOND_MATCH_NOT_UNIQUE"
+
     async def _handle_contract_update(
         self,
         *,
@@ -3668,6 +3712,10 @@ class MultiUserEngine:
                         execution_state["official_exit_spot"] = poc.get("exit_spot")
                         execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                         execution_state["official_decision_digit"] = official_digit
+                        execution_state["contract_tick_alignment"] = (
+                            self._reconcile_contract_tick_alignment(int(sid), execution_state, poc)
+                        )
+                        execution_state["local_prediction_status"] = "RECONCILED"
 
                         if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
                             execution_state["decided"] = True
@@ -3814,6 +3862,10 @@ class MultiUserEngine:
                     execution_state["official_exit_spot"] = poc.get("exit_spot")
                     execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                     execution_state["official_decision_digit"] = official_digit
+                    execution_state["contract_tick_alignment"] = (
+                        self._reconcile_contract_tick_alignment(int(sid), execution_state, poc)
+                    )
+                    execution_state["local_prediction_status"] = "RECONCILED"
 
                     if execution_state.get("decision_mode") == "OFFICIAL_ONLY_INFLIGHT_TICK":
                         execution_state["decided"] = True
