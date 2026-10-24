@@ -53,6 +53,8 @@ class MultiUserEngine:
         self.tick_sequence = {}  # sid -> monotonically increasing tick number
         # V24: tick-paced BUY authorization; armed per logical trade.
         self.buy_tick_gates = {}  # sid -> {trade_no, armed_seq, symbol, client_generation}
+        self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
+        self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
         # identical to Deriv/browser formatting.
@@ -1620,15 +1622,23 @@ class MultiUserEngine:
                         live_snapshot.get("selected_digit"),
                     )
 
-        # Wake the execution worker promptly when the next BUY is armed.
-        # Do not place purchases or perform database I/O in this tick callback.
-        gate = self.buy_tick_gates.get(int(sid))
-        if (gate and not is_replay and not skip_bootstrap_duplicate
-                and int(tick_seq or 0) > int(gate.get("armed_seq") or 0)
-                and str(gate.get("symbol")) == str(symbol)):
-            worker = self.session_tasks.get(int(sid))
-            if worker is None or worker.done():
-                self.session_tasks[int(sid)] = asyncio.create_task(self._safe_step(int(sid)))
+        # V25: dispatch a BUY-capable execution task FROM the tick callback.
+        # Do not await the BUY within the market-data callback: that would block
+        # the stream during WebSocket/Deriv acknowledgement. The task executes
+        # step() immediately, with its session lock + atomic BUY_CLAIM protecting
+        # against duplicate purchases. Dispatch even if the periodic worker is
+        # already running; otherwise its running state can swallow this tick.
+        if tick and not is_replay and not skip_bootstrap_duplicate and tick_seq:
+            self.buy_tick_signals[int(sid)] = {
+                "seq": int(tick_seq),
+                "symbol": str(symbol),
+                "received_at": time.monotonic(),
+            }
+            in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
+            if in_flight is None or in_flight.done():
+                self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
+                    self._safe_step(int(sid))
+                )
 
         active = self.fast_contracts.get(sid)
 
@@ -2359,18 +2369,29 @@ class MultiUserEngine:
                         or int(gate.get("trade_no") or 0) != next_no
                         or str(gate.get("symbol")) != str(s.symbol)
                         or int(gate.get("client_generation") or 0) != generation):
+                    # If this call was dispatched by the just-received fresh
+                    # tick, consume THAT tick instead of arming after it and
+                    # waiting needlessly for yet another market observation.
+                    # A stale signal, replay, or wrong symbol cannot authorize BUY.
+                    signal = self.buy_tick_signals.get(int(s.id)) or {}
+                    fresh_callback = bool(
+                        int(signal.get("seq") or 0) == current_seq
+                        and str(signal.get("symbol")) == str(s.symbol)
+                        and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 1.0
+                    )
                     self.buy_tick_gates[int(s.id)] = {
                         "trade_no": next_no,
-                        "armed_seq": current_seq,
+                        "armed_seq": current_seq - 1 if fresh_callback else current_seq,
                         "symbol": str(s.symbol),
                         "client_generation": generation,
                     }
-                    if s.phase != "WAITING_BUY_TICK":
-                        s.phase = "WAITING_BUY_TICK"
-                        s.last_error = None
-                        s.updated_at = datetime.utcnow()
-                        db.commit()
-                    return
+                    if not fresh_callback:
+                        if s.phase != "WAITING_BUY_TICK":
+                            s.phase = "WAITING_BUY_TICK"
+                            s.last_error = None
+                            s.updated_at = datetime.utcnow()
+                            db.commit()
+                        return
                 if current_seq <= int(gate.get("armed_seq") or 0):
                     return
                 # Consume this tick BEFORE submitting any asynchronous BUY.
