@@ -26,16 +26,10 @@ class MultiUserEngine:
     Strategy invariant:
       1. Rank and submit BUY for Trade N.
       2. Arm Trade N only after Deriv acknowledges the BUY.
-      3. The first genuinely new server tick after that BUY acknowledgment
-         drives the immediate strategy decision:
-            target digit == tick last digit -> WIN -> stop immediately
-            target digit != tick last digit -> LOSS -> advance immediately
-      3. After each tick, the freshest V1 rank #1 is selected.
-      4. On a fast loss, BUY Trade N+1 directly from contract parameters.
-      5. Deriv proposal_open_contract settlement runs in the background only
-         for authoritative P/L/accounting/reconciliation.
-      6. If the fast tick result disagrees with Deriv's eventual settlement,
-         stop with RECONCILE_MISMATCH rather than silently continuing.
+      3. Market ticks update predictions and provisional diagnostics.
+      4. Deriv official contract settlement determines WIN or LOSS.
+      5. Verified losses alone authorize the next purchase.
+      6. Three-trade blocks use the database purchase-log digit.
 
     DEMO and REAL sessions use the same strategy, purchase claims, tick
     decisions, recovery progression and settlement reconciliation. The session
@@ -811,7 +805,7 @@ class MultiUserEngine:
                         self._safe_step(sid)
                     )
 
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.10)
 
     async def _safe_step(self, sid: int):
         try:
@@ -1707,123 +1701,13 @@ class MultiUserEngine:
                 ):
                     return
 
-                # DMS_RACE_GUARD_V11: no fast/local-tick recovery purchases.
-                # This callback is provisional. Deriv settlement is authoritative.
+                # V17: market tick is diagnostic; official Deriv settlement
+                # alone controls next purchase and recovery.
                 s.phase = "WAITING_OFFICIAL_SETTLEMENT"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
                 return
-
-                if is_win:
-                    # MATCH: target == exact strategy tick last digit.
-                    #
-                    # A displayed local match is PROVISIONAL. The tick visible
-                    # to this websocket may not be the purchased contract's
-                    # Deriv expiry tick. Wait for authoritative settlement.
-                    s.paused = False
-                    s.pending_real_confirmation = False
-                    s.phase = "LOCAL_MATCH_AWAITING_OFFICIAL"
-                    self.locked_target_snapshots.pop(sid, None)
-                    s.last_error = None
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                # NO MATCH: immediate local strategy LOSS.
-                #
-                # This is the point where the next recovery advances. Official
-                # Deriv settlement of Trade N is NOT awaited.
-                if int(s.current_trade) >= int(s.max_trades):
-                    s.running = False
-                    s.pending_real_confirmation = False
-                    s.phase = "MAX_TRADES_REACHED"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                # LIVE V1 RECOVERY:
-                # the purchased contract remains fixed. After its loss, use the
-                # freshest current V1 rank #1 for the next account-bound BUY.
-                expected_trade_no = int(s.current_trade) + 1
-                expected_stake = round(
-                    float(s.current_stake) * float(s.multiplier),
-                    2,
-                )
-
-                # Consume the rank prepared BEFORE this trigger tick arrived.
-                # The newer rank is solely for the next trading opportunity.
-                payload = None
-
-                # Freeze the previously published rank for THIS recovery.
-                # AI FUSION V1 may rescue a weak V1 margin when AI evidence is strong.
-                current_snapshot = prepared_for_this_tick
-
-                desired_next = self._three_trade_locked_target(s, db=db)
-                if desired_next is None:
-                    desired_next, current_snapshot = self._choose_scored_digit(
-                        sid, lock_target=True, prepared_snapshot=prepared_for_this_tick,
-                    )
-                if desired_next is None:
-                    s.current_stake = expected_stake
-                    s.phase = "RECOVERY_WAITING_MARGIN"
-                    s.last_error = None
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
-
-                self._set_live_next_target(
-                    sid,
-                    desired_next,
-                )
-
-                if desired_next is not None:
-                    next_digit = int(desired_next)
-                    old_digit = int(s.candidate_digit)
-                    s.candidate_digit = next_digit
-                    s.phase = (
-                        f"LIVE_RANK_SWITCH_{old_digit}_TO_{next_digit}"
-                        if next_digit != old_digit
-                        else f"LIVE_RANK_KEEP_{next_digit}"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-
-                s.current_stake = expected_stake
-                s.phase = "FAST_RECOVERING"
-                s.updated_at = datetime.utcnow()
-                db.commit()
-
-                client = await self._client(user_id, account_id)
-                currency = await self._currency_for(db, s)
-
-                # Direct-parameter BUY: the selected V1 rank #1 can be used
-                # immediately without waiting for a proposal ID.
-                payload = self._direct_buy_payload(
-                    symbol=s.symbol,
-                    digit=int(s.candidate_digit),
-                    stake=float(s.current_stake),
-                    trade_no=expected_trade_no,
-                    currency=currency,
-                )
-
-                s.phase = "DIRECT_BUY_READY"
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-
-                # LOSS -> immediate next BUY.
-                #
-                # No proposal_open_contract.is_sold wait occurs here.
-                client = await self._client(user_id, account_id)
-
-                await self._execute_account_buy(
-                    db,
-                    s,
-                    client,
-                    payload,
-                    prearmed=True,
-                )
 
             finally:
                 db.close()
@@ -2228,41 +2112,13 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                # ----------------------------------------------------------
-                # SHARED ACCOUNT PIPELINE IS TICK-OWNED, NOT SETTLEMENT-OWNED
-                # ----------------------------------------------------------
-                # While this process still owns the active paid contract,
-                # the first eligible NEXT market tick drives WIN/LOSS and
-                # immediate recovery. Deriv settlement remains background-only.
-                if (
-                    fast_owner
-                    and contract_id
-                    and str(fast_owner.get("contract_id") or "") == contract_id
-                ):
-                    if not latest or str(latest.status).upper() != "SETTLED":
-                        self._schedule_contract_probe(
-                            sid=sid,
-                            user_id=s.user_id,
-                            account_id=s.account_id,
-                            contract_id=contract_id,
-                            client=client,
-                        )
-                        self._schedule_contract_subscription(
-                            sid=sid,
-                            user_id=s.user_id,
-                            account_id=s.account_id,
-                            contract_id=contract_id,
-                            client=client,
-                        )
-
-                    s.phase = (
-                        "FAST_DECISION_APPLYING"
-                        if fast_owner.get("decided")
-                        else "AWAITING_NEXT_TICK"
-                    )
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
-                    return
+                # V17: authoritative settlement owns the entire execution lifecycle.
+                # Fast ticks provide diagnostics only; they NEVER advance recovery.
+                # The unsettled-contract branch below remains the single waiting gate.
+                if fast_owner and contract_id and str(fast_owner.get("contract_id") or "") == contract_id:
+                    if latest and str(latest.status or "").upper() == "SETTLED":
+                        self.fast_contracts.pop(sid, None)
+                        fast_owner = None
 
                 # No live in-memory owner means restart/recovery state.
                 # We cannot safely recreate a missed "first tick after BUY"
@@ -2312,15 +2168,20 @@ class MultiUserEngine:
                     error_count = int(
                         self.contract_probe_errors.get(probe_key, 0)
                     )
+                    # Do not rewrite an unchanged phase to PostgreSQL on
+                    # every worker pass. The next purchase remains blocked by
+                    # the unresolved contract and the persisted BUY claim.
                     if probe_count or error_count:
-                        s.phase = (
+                        wait_phase = (
                             "WAITING_OFFICIAL_SETTLEMENT"
                             f"_P{probe_count}_E{error_count}"
                         )
                     else:
-                        s.phase = "WAITING_OFFICIAL_SETTLEMENT"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
+                        wait_phase = "WAITING_OFFICIAL_SETTLEMENT"
+                    if s.phase != wait_phase:
+                        s.phase = wait_phase
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
                     return
 
                 if latest and str(latest.status).upper() == "SETTLED":
@@ -2331,12 +2192,8 @@ class MultiUserEngine:
                         db.commit()
                         return
                     official_result = "WIN" if float(latest.profit) > 0 else "LOSS"
-                    if fast_owner and fast_owner.get("fast_result") and fast_owner["fast_result"] != official_result:
-                        s.running = False
-                        s.phase = "RECONCILE_MISMATCH"
-                        s.last_error = "Fast result disagrees with official Deriv settlement"
-                        db.commit()
-                        return
+                    # A public-feed tick may differ from the settled expiry tick.
+                    # The Deriv contract profit is authoritative for progression.
                     if official_result == "WIN":
                         s.running = False
                         s.phase = "WON"
@@ -2499,6 +2356,13 @@ class MultiUserEngine:
         stake = round(float(payload.get("stake") or 0), 2)
         expected_trade_no = int(row.current_trade or 0) + 1
 
+        # V17: never mutate another worker's in-flight purchase claim.
+        pending_before_gate = self._pending_json(row.pending_trade_json)
+        if (trade_no != expected_trade_no or row.open_contract_id
+                or pending_before_gate.get("kind") == "BUY_CLAIM"):
+            db.rollback()
+            return None
+
         # AI FUSION V1 — final authoritative pre-BUY barrier.
         # New blocks use frozen eligible V1/fusion. Continuing a 3-trade
         # block uses the actual previously purchased barrier from TradeLog.
@@ -2536,7 +2400,7 @@ class MultiUserEngine:
             fusion = {"source": "THREE_TRADE_TRANSACTIONAL_LOCK_V15"}
 
         if not gate_ok:
-            row.pending_trade_json = None
+            # Do not clear a purchase claim when selection evidence changes.
             row.running = True
             row.paused = False
             row.phase = (
@@ -3450,7 +3314,6 @@ class MultiUserEngine:
                         active_fast
                         and str(active_fast.get("contract_id") or "")
                         == str(contract_id)
-                        and bool(active_fast.get("decided"))
                     ):
                         self.fast_contracts.pop(sid, None)
 
@@ -3635,20 +3498,9 @@ class MultiUserEngine:
                         if official_digit is not None:
                             execution_state["decision_digit"] = int(official_digit)
                     else:
-                        local_digit = execution_state.get("decision_digit")
-                        if (
-                            local_digit is not None
-                            and official_digit is not None
-                            and int(local_digit) != int(official_digit)
-                        ):
-                            s.running = False
-                            s.paused = False
-                            s.phase = "RECONCILE_TICK_MISMATCH"
-                            s.last_error = (
-                                "Server decision digit "
-                                f"{int(local_digit)} disagreed with Deriv exit digit "
-                                f"{int(official_digit)} for contract {contract_id}"
-                            )
+                        # A public-feed next tick need not equal the exact Deriv
+                        # exit tick. Preserve mismatch as a diagnostic only.
+                        pass
 
                     self.execution_contract_state[int(sid)] = execution_state
                     snapshot = self.digit_score_snapshots.get(int(sid))
@@ -3691,39 +3543,12 @@ class MultiUserEngine:
                         "cycle_trade_count": cycle_summary.get("cycle_trades"),
                     }
 
-                    if (
-                        fast.get("fast_result")
-                        and fast["fast_result"]
-                        != official
-                    ):
-                        s.running = False
-                        s.paused = False
-                        s.phase = "RECONCILE_MISMATCH"
-                        s.last_error = (
-                            "Fast tick result "
-                            f"{fast['fast_result']} disagreed with "
-                            f"Deriv settlement {official} for "
-                            f"contract {contract_id}"
-                        )
+                    # Local market-tick decisions are observational only.
+                    # Record disagreement in execution diagnostics instead of
+                    # overriding Deriv's verified settlement.
 
-                # Never promote a provisional local match to a verified win.
-                if (
-                    fast
-                    and fast.get("fast_result") == "WIN"
-                    and str(fast.get("contract_id")) == str(contract_id)
-                ):
-                    if official == "WIN" and s.phase not in ("RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"):
-                        s.running = False
-                        s.paused = False
-                        s.phase = "OFFICIAL_WON"
-                    else:
-                        s.running = False
-                        s.paused = False
-                        s.phase = "RECONCILE_MISMATCH"
-                        s.last_error = (
-                            f"Local digit appeared to match, but Deriv official result "
-                            f"is {official} for contract {contract_id}"
-                        )
+                # Only the recorded Deriv settlement determines cycle outcome.
+                # Public tick observations do not override this result.
 
                 # If FAST_WON has already occurred, an older losing contract
                 # may settle after the winning contract. Refresh the pending WIN
@@ -3763,17 +3588,14 @@ class MultiUserEngine:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                # Official settlement is now recorded. Do NOT remove a
-                # matching active fast owner until its local next-tick decision
-                # has actually been made. Settlement and tick callbacks are
-                # asynchronous; settlement can otherwise win the scheduling
-                # race and suppress a genuine digit match.
+                # V17: Deriv settlement is authoritative even if the local tick
+                # callback has not run. Clear the exact settled owner so the
+                # next worker iteration can progress from persisted TradeLog.
                 active_fast = self.fast_contracts.get(sid)
                 if (
                     active_fast
                     and str(active_fast.get("contract_id") or "")
                     == str(contract_id)
-                    and bool(active_fast.get("decided"))
                 ):
                     self.fast_contracts.pop(sid, None)
 
@@ -3813,6 +3635,14 @@ class MultiUserEngine:
             and not poll.done()
         ):
             poll.cancel()
+
+        # Event-driven resume: a confirmed settlement can make the following
+        # worker step eligible immediately, without waiting for the next
+        # session-discovery pass. step() takes the per-session lock and the
+        # BUY path still requires the database claim, preventing duplicates.
+        # An official WIN will already have stopped the cycle, so this is
+        # harmless for wins and terminal reconciliation states.
+        asyncio.create_task(self._safe_step(int(sid)))
 
     def last_settlement_status(self, sid: int):
         """Return the latest authoritative Deriv settlement for this session."""
