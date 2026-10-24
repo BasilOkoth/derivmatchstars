@@ -51,6 +51,8 @@ class MultiUserEngine:
         # Exact callback sequence for next-tick execution. Deriv tick epochs are
         # whole seconds, so multiple consecutive ticks can share one epoch.
         self.tick_sequence = {}  # sid -> monotonically increasing tick number
+        # V24: tick-paced BUY authorization; armed per logical trade.
+        self.buy_tick_gates = {}  # sid -> {trade_no, armed_seq, symbol, client_generation}
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
         # identical to Deriv/browser formatting.
@@ -1618,6 +1620,16 @@ class MultiUserEngine:
                         live_snapshot.get("selected_digit"),
                     )
 
+        # Wake the execution worker promptly when the next BUY is armed.
+        # Do not place purchases or perform database I/O in this tick callback.
+        gate = self.buy_tick_gates.get(int(sid))
+        if (gate and not is_replay and not skip_bootstrap_duplicate
+                and int(tick_seq or 0) > int(gate.get("armed_seq") or 0)
+                and str(gate.get("symbol")) == str(symbol)):
+            worker = self.session_tasks.get(int(sid))
+            if worker is None or worker.done():
+                self.session_tasks[int(sid)] = asyncio.create_task(self._safe_step(int(sid)))
+
         active = self.fast_contracts.get(sid)
 
         if not active:
@@ -2044,7 +2056,10 @@ class MultiUserEngine:
             try:
                 s = db.get(TradingSession, sid)
 
-                if not s or not s.running or s.paused:
+                if not s or not s.running:
+                    self.buy_tick_gates.pop(int(sid), None)
+                    return
+                if s.paused:
                     return
 
                 # Explicit Deriv RateLimit means no contract was purchased.
@@ -2331,10 +2346,45 @@ class MultiUserEngine:
                     int(scored_digit),
                 )
 
+                # V24 TICK-SYNCHRONIZED BUY GATE
+                # START and recovery only ARM the next trade. BUY occurs on a
+                # genuinely NEW server tick, never on the stale displayed quote.
+                # Each accepted tick is consumed once. The Deriv BUY acknowledgement
+                # may arrive later; the trigger tick is NOT the contract expiry tick.
+                next_no = int(s.current_trade or 0) + 1
+                current_seq = int(self.tick_sequence.get(int(s.id), 0) or 0)
+                generation = int(getattr(client, "connection_generation", 0) or 0)
+                gate = self.buy_tick_gates.get(int(s.id))
+                if (not isinstance(gate, dict)
+                        or int(gate.get("trade_no") or 0) != next_no
+                        or str(gate.get("symbol")) != str(s.symbol)
+                        or int(gate.get("client_generation") or 0) != generation):
+                    self.buy_tick_gates[int(s.id)] = {
+                        "trade_no": next_no,
+                        "armed_seq": current_seq,
+                        "symbol": str(s.symbol),
+                        "client_generation": generation,
+                    }
+                    if s.phase != "WAITING_BUY_TICK":
+                        s.phase = "WAITING_BUY_TICK"
+                        s.last_error = None
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                    return
+                if current_seq <= int(gate.get("armed_seq") or 0):
+                    return
+                # Consume this tick BEFORE submitting any asynchronous BUY.
+                # Rejections or an uncertain purchase cannot be retried using
+                # the same tick. Existing DB BUY_CLAIM remains authoritative.
+                gate["armed_seq"] = current_seq
                 s.phase = "DIRECT_BUY_READY"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
+                logger.info(
+                    "DMS_TICK_BUY_TRIGGER sid=%s trade=%s seq=%s digit=%s",
+                    s.id, next_no, current_seq, s.candidate_digit,
+                )
 
                 payload = self._direct_buy_payload(
                     symbol=s.symbol,
