@@ -1657,6 +1657,9 @@ class MultiUserEngine:
         active["decision_epoch"] = epoch
         active["decision_seq"] = incoming_seq
         active["observed_digit"] = digit
+        active["decision_seen_monotonic"] = time.monotonic()
+        # Diagnostic only: tick-to-decision overhead within this callback.
+        # No financial result is inferred from this latency or the public tick.
 
         target_digit = int(active["target_digit"])
         contract_id = str(active["contract_id"])
@@ -1683,32 +1686,49 @@ class MultiUserEngine:
                     json.dumps(execution_state)
                 )
 
-        async with self._lock(sid):
+        # The market-data callback must never wait for a database transaction.
+        # The first eligible tick has already been compared above and the
+        # per-contract decision is frozen in memory. Persist the compact UI
+        # phase asynchronously; this task is NOT permitted to place trades.
+        # Only Deriv's settled result authorizes the next recovery BUY.
+        asyncio.create_task(
+            self._persist_fast_tick_outcome(int(sid), contract_id, bool(is_win))
+        )
+        return
+
+    async def _persist_fast_tick_outcome(self, sid: int, contract_id: str, matched: bool):
+        """Best-effort UI status only; cannot advance a stake or authorize a BUY.
+
+        This work is deliberately off the real-time tick callback. A late status
+        update must never overwrite an already settled/terminal cycle.
+        """
+        async with self._lock(int(sid)):
             db = SessionLocal()
-
             try:
-                s = db.get(TradingSession, sid)
-                if not s:
+                s = db.get(TradingSession, int(sid))
+                if not s or not s.running or s.paused:
                     return
-
-                current_fast = self.fast_contracts.get(sid)
-
-                # A callback from an older contract is not allowed to drive a
-                # newer contract.
-                if (
-                    not current_fast
-                    or str(current_fast.get("contract_id")) != contract_id
-                ):
+                if str(s.open_contract_id or "") != str(contract_id):
                     return
-
-                # V17: market tick is diagnostic; official Deriv settlement
-                # alone controls next purchase and recovery.
-                s.phase = "WAITING_OFFICIAL_SETTLEMENT"
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-                return
-
+                latest = (
+                    db.query(TradeLog)
+                    .filter(
+                        TradeLog.trading_session_id == int(sid),
+                        TradeLog.contract_id == str(contract_id),
+                    )
+                    .order_by(TradeLog.id.desc())
+                    .first()
+                )
+                if not latest or str(latest.status or "").upper() == "SETTLED":
+                    return
+                phase = "TICK_MATCH_PENDING_DERIV" if matched else "TICK_MISS_PENDING_DERIV"
+                if s.phase != phase:
+                    s.phase = phase
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+            except Exception:
+                logger.exception("DMS tick status persistence failed sid=%s contract=%s", sid, contract_id)
             finally:
                 db.close()
 
@@ -2036,9 +2056,10 @@ class MultiUserEngine:
                 )
                 now_mono = time.monotonic()
                 if rate_until > now_mono:
-                    s.phase = "BUY_RATE_LIMIT_BACKOFF"
-                    s.updated_at = datetime.utcnow()
-                    db.commit()
+                    if s.phase != "BUY_RATE_LIMIT_BACKOFF":
+                        s.phase = "BUY_RATE_LIMIT_BACKOFF"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
                     return
                 elif rate_until:
                     self.buy_rate_limit_until.pop(int(sid), None)
@@ -2178,6 +2199,16 @@ class MultiUserEngine:
                         )
                     else:
                         wait_phase = "WAITING_OFFICIAL_SETTLEMENT"
+                    # Do not erase the just-observed tick outcome while waiting
+                    # for the contract's independent Deriv settlement event.
+                    if (
+                        str(s.phase or "") in (
+                            "TICK_MATCH_PENDING_DERIV",
+                            "TICK_MISS_PENDING_DERIV",
+                        )
+                        and not (probe_count or error_count)
+                    ):
+                        return
                     if s.phase != wait_phase:
                         s.phase = wait_phase
                         s.updated_at = datetime.utcnow()
