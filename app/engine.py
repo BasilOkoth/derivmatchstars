@@ -56,6 +56,7 @@ class MultiUserEngine:
         self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
         self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
         self.settlement_resume_tasks = {}  # sid -> one immediate settlement continuation
+        self.settlement_buy_authorizations = {}  # sid -> one confirmed LOSS event, tied to contract/trade
         self.tick_coverage = {}  # sid -> observed ticks, trigger attempts, acknowledged BUYs, idle gaps
         # Last known decimal precision for each session's selected symbol.
         # Used when a live tick omits pip_size so trailing-zero digits remain
@@ -2463,56 +2464,80 @@ class MultiUserEngine:
                     int(scored_digit),
                 )
 
+                # V36 CONFIRMED-LOSS FAST PATH.  A contract-settlement callback
+                # may authorize exactly its immediate recovery trade.  No fresh
+                # market tick is required merely to wake the BUY after Deriv has
+                # confirmed the previous LOSS.  The DB BUY_CLAIM and completed
+                # TradeLog remain the final duplicate/settlement guards.
+                recovery_auth = self.settlement_buy_authorizations.get(int(s.id)) or {}
+                next_no = int(s.current_trade or 0) + 1
+                confirmed_loss_fastpath = bool(
+                    latest is not None
+                    and str(latest.status or "").upper() == "SETTLED"
+                    and latest.profit is not None
+                    and float(latest.profit) < 0
+                    and int(recovery_auth.get("trade_no") or 0) == next_no
+                    and str(recovery_auth.get("contract_id") or "") == str(latest.contract_id or "")
+                    and 0 <= time.monotonic() - float(recovery_auth.get("at") or 0) < 20.0
+                )
+                if confirmed_loss_fastpath:
+                    logger.info(
+                        "DMS_SETTLEMENT_FASTPATH sid=%s settled_contract=%s next_trade=%s",
+                        s.id, latest.contract_id, next_no,
+                    )
+                    self.settlement_buy_authorizations.pop(int(s.id), None)
+
                 # V24 TICK-SYNCHRONIZED BUY GATE
                 # START and recovery only ARM the next trade. BUY occurs on a
                 # genuinely NEW server tick, never on the stale displayed quote.
                 # Each accepted tick is consumed once. The Deriv BUY acknowledgement
                 # may arrive later; the trigger tick is NOT the contract expiry tick.
-                next_no = int(s.current_trade or 0) + 1
-                current_seq = int(self.tick_sequence.get(int(s.id), 0) or 0)
-                generation = int(getattr(client, "connection_generation", 0) or 0)
-                gate = self.buy_tick_gates.get(int(s.id))
-                if (not isinstance(gate, dict)
-                        or int(gate.get("trade_no") or 0) != next_no
-                        or str(gate.get("symbol")) != str(s.symbol)
-                        or int(gate.get("client_generation") or 0) != generation):
-                    # If this call was dispatched by the just-received fresh
-                    # tick, consume THAT tick instead of arming after it and
-                    # waiting needlessly for yet another market observation.
-                    # A stale signal, replay, or wrong symbol cannot authorize BUY.
-                    signal = self.buy_tick_signals.get(int(s.id)) or {}
-                    fresh_callback = bool(
-                        int(signal.get("seq") or 0) == current_seq
-                        and str(signal.get("symbol")) == str(s.symbol)
-                        and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 1.0
-                    )
-                    self.buy_tick_gates[int(s.id)] = {
-                        "trade_no": next_no,
-                        "armed_seq": current_seq - 1 if fresh_callback else current_seq,
-                        "symbol": str(s.symbol),
-                        "client_generation": generation,
-                    }
-                    if not fresh_callback:
-                        if s.phase != "WAITING_BUY_TICK":
-                            s.phase = "WAITING_BUY_TICK"
-                            s.last_error = None
-                            s.updated_at = datetime.utcnow()
-                            db.commit()
+                if not confirmed_loss_fastpath:
+                    next_no = int(s.current_trade or 0) + 1
+                    current_seq = int(self.tick_sequence.get(int(s.id), 0) or 0)
+                    generation = int(getattr(client, "connection_generation", 0) or 0)
+                    gate = self.buy_tick_gates.get(int(s.id))
+                    if (not isinstance(gate, dict)
+                            or int(gate.get("trade_no") or 0) != next_no
+                            or str(gate.get("symbol")) != str(s.symbol)
+                            or int(gate.get("client_generation") or 0) != generation):
+                        # If this call was dispatched by the just-received fresh
+                        # tick, consume THAT tick instead of arming after it and
+                        # waiting needlessly for yet another market observation.
+                        # A stale signal, replay, or wrong symbol cannot authorize BUY.
+                        signal = self.buy_tick_signals.get(int(s.id)) or {}
+                        fresh_callback = bool(
+                            int(signal.get("seq") or 0) == current_seq
+                            and str(signal.get("symbol")) == str(s.symbol)
+                            and 0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 1.0
+                        )
+                        self.buy_tick_gates[int(s.id)] = {
+                            "trade_no": next_no,
+                            "armed_seq": current_seq - 1 if fresh_callback else current_seq,
+                            "symbol": str(s.symbol),
+                            "client_generation": generation,
+                        }
+                        if not fresh_callback:
+                            if s.phase != "WAITING_BUY_TICK":
+                                s.phase = "WAITING_BUY_TICK"
+                                s.last_error = None
+                                s.updated_at = datetime.utcnow()
+                                db.commit()
+                            return
+                    if current_seq <= int(gate.get("armed_seq") or 0):
                         return
-                if current_seq <= int(gate.get("armed_seq") or 0):
-                    return
-                # Consume this tick BEFORE submitting any asynchronous BUY.
-                # Rejections or an uncertain purchase cannot be retried using
-                # the same tick. Existing DB BUY_CLAIM remains authoritative.
-                gate["armed_seq"] = current_seq
-                s.phase = "DIRECT_BUY_READY"
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-                logger.info(
-                    "DMS_TICK_BUY_TRIGGER sid=%s trade=%s seq=%s digit=%s",
-                    s.id, next_no, current_seq, s.candidate_digit,
-                )
+                    # Consume this tick BEFORE submitting any asynchronous BUY.
+                    # Rejections or an uncertain purchase cannot be retried using
+                    # the same tick. Existing DB BUY_CLAIM remains authoritative.
+                    gate["armed_seq"] = current_seq
+                    s.phase = "DIRECT_BUY_READY"
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    logger.info(
+                        "DMS_TICK_BUY_TRIGGER sid=%s trade=%s seq=%s digit=%s",
+                        s.id, next_no, current_seq, s.candidate_digit,
+                    )
 
                 payload = self._direct_buy_payload(
                     symbol=s.symbol,
@@ -3824,6 +3849,15 @@ class MultiUserEngine:
 
                 s.updated_at = datetime.utcnow()
                 db.commit()
+
+                # Only the exact newly-settled LOSS can authorize a fast
+                # recovery.  Repeated settlement notifications return above.
+                if log is not None and profit < 0 and s.running and not s.paused:
+                    self.settlement_buy_authorizations[int(sid)] = {
+                        "trade_no": int(log.trade_no) + 1,
+                        "contract_id": str(contract_id),
+                        "at": time.monotonic(),
+                    }
 
                 # V17: Deriv settlement is authoritative even if the local tick
                 # callback has not run. Clear the exact settled owner so the
