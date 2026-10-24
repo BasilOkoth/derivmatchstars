@@ -1714,6 +1714,27 @@ class MultiUserEngine:
         if tick_dispatched:
             await asyncio.sleep(0)
 
+        # V41: compare EVERY fresh canonical market tick with the purchased
+        # contract's locked digit, even after the one-tick provisional decision.
+        # This is a live display observation ONLY: it does not settle a contract,
+        # change P/L or authorize recovery BUYs.
+        if digit is not None and tick and not is_replay and not skip_bootstrap_duplicate:
+            execution_state = self.execution_contract_state.get(int(sid))
+            if isinstance(execution_state, dict) and str(execution_state.get("symbol") or symbol) == str(symbol):
+                target = execution_state.get("target_digit")
+                if target is not None:
+                    live_match = int(digit) == int(target)
+                    execution_state["live_tick_digit"] = int(digit)
+                    execution_state["live_tick_seq"] = int(tick_seq or 0)
+                    execution_state["live_tick_epoch"] = int(epoch or 0)
+                    execution_state["live_tick_match"] = bool(live_match)
+                    execution_state["live_match_status"] = "LIVE MATCH" if live_match else "LIVE MISS"
+                    # Do NOT overwrite local_result/decision_digit; these belong
+                    # to the first eligible post-purchase contract observation.
+                    snapshot = self.digit_score_snapshots.get(int(sid))
+                    if isinstance(snapshot, dict):
+                        snapshot["execution_contract"] = dict(execution_state)
+
         if digit is not None:
             history = self._digit_history(sid)
 

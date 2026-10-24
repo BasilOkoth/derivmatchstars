@@ -833,6 +833,7 @@
 <p class="text-xl font-extrabold text-white" id="metricLiveTick">---</p>
 <p class="text-lg font-bold text-green-300" id="metricLastDigit">Digit: ?</p>
 <p class="text-xs font-bold text-blue-400" id="metricTickRate">Ticks/sec: --</p>
+<p class="text-sm font-extrabold text-gray-400" id="metricLockedLiveMatch" aria-live="polite">Locked digit: —</p>
 </div>
 <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50">
 <p class="text-[10px] font-semibold text-green-500 uppercase">Balance</p>
@@ -12809,6 +12810,21 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             // Number(null) === 0, which previously rendered a missing target
             // as both "null" and "0" in this panel.
             const execution = score?.execution_contract || null;
+            // V41: live matching is distinct from the contract's actual result.
+            const matchElement = document.getElementById('metricLockedLiveMatch');
+            if (matchElement) {
+                const hasTarget = execution && execution.target_digit !== null && execution.target_digit !== undefined;
+                const hasLive = execution && execution.live_tick_digit !== null && execution.live_tick_digit !== undefined;
+                const isCurrent = hasLive && !execution.settlement_verified && (st?.running !== false);
+                if (isCurrent && hasTarget) {
+                    const matched = execution.live_tick_match === true;
+                    matchElement.textContent = `Locked ${execution.target_digit} · Tick ${execution.live_tick_digit} · ${matched ? 'LIVE MATCH' : 'LIVE MISS'}`;
+                    matchElement.className = matched ? 'text-sm font-extrabold text-green-400' : 'text-sm font-bold text-amber-300';
+                } else {
+                    matchElement.textContent = 'Locked digit: —';
+                    matchElement.className = 'text-sm font-bold text-gray-400';
+                }
+            }
             const rawPurchasedTarget = execution?.target_digit;
             const purchasedTarget = (
                 rawPurchasedTarget !== null &&
