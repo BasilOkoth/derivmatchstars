@@ -1,3 +1,4 @@
+# DigitMatchStar V46: truthful pre-tick preparation, timing diagnostics, official settlement ownership
 import asyncio
 import json
 import uuid
@@ -1889,6 +1890,15 @@ class MultiUserEngine:
         is_win = digit == target_digit
 
         active["fast_result"] = "WIN" if is_win else "LOSS"
+        if is_win:
+            # Execution already owns this active contract until official
+            # settlement. Mark a provisional halt for diagnostics, without
+            # treating a public-stream tick as a settled financial WIN.
+            active["provisional_win_halt"] = True
+            self._emit_execution_event(
+                sid, "LOCAL_MATCH_WAITING_OFFICIAL", trade_no=active.get("trade_no"),
+                tick_seq=incoming_seq, digit=digit, contract_id=active.get("contract_id"),
+            )
         # The local quote is provisional until Deriv's contract exit tick is
         # independently identified. Preserve the canonical text/epoch now so
         # settlement reconciliation does not accidentally compare a later tick.
@@ -2650,7 +2660,8 @@ class MultiUserEngine:
                 # to reserve a Deriv contract; final authorization remains
                 # the DB BUY_CLAIM and official settlement.
                 next_trade_no = int(s.current_trade or 0) + 1
-                self.execution_ready_by_sid[int(s.id)] = {
+                previous_ready = self.execution_ready_by_sid.get(int(s.id)) or {}
+                candidate_ready = {
                     "trade_no": next_trade_no,
                     "symbol": str(s.symbol),
                     "digit": int(s.candidate_digit),
@@ -2659,6 +2670,16 @@ class MultiUserEngine:
                     "client_generation": int(getattr(client, "connection_generation", 0) or 0),
                     "prepared_at": time.monotonic(),
                 }
+                self.execution_ready_by_sid[int(s.id)] = candidate_ready
+                # A prediction is genuinely selected BEFORE the trigger tick.
+                # This event means "prepared", not that an order was bought.
+                if any(previous_ready.get(key) != candidate_ready[key] for key in
+                       ("trade_no", "symbol", "digit", "stake", "currency", "client_generation")):
+                    self._emit_execution_event(
+                        s.id, "DIGIT_PREPARED", trade_no=next_trade_no,
+                        tick_seq=self.tick_sequence.get(int(s.id)),
+                        digit=int(s.candidate_digit),
+                    )
 
                 # V24 TICK-SYNCHRONIZED BUY GATE
                 # START and recovery only ARM the next trade. BUY occurs on a
@@ -2741,10 +2762,12 @@ class MultiUserEngine:
                     )
                 self.execution_ready_by_sid.pop(int(s.id), None)
 
-                # The purchased digit is finalised BEFORE the BUY task runs.
-                # This record is separate from the observed incoming tick digit.
+                # This is the last validation of the pre-selected digit at
+                # execution time, NOT a new selection after the trigger tick.
+                # Do not label it DIGIT_SELECTED: that falsely implied scoring
+                # happened after tick reception and hid stale-ready fallback.
                 self._emit_execution_event(
-                    s.id, "DIGIT_SELECTED",
+                    s.id, "DIGIT_LOCK_VALIDATED" if ready_valid else "DIGIT_LOCK_REBUILT",
                     trade_no=payload.get("trade_no"),
                     tick_seq=self.tick_sequence.get(int(s.id)),
                     digit=payload.get("digit"),
@@ -3222,6 +3245,12 @@ class MultiUserEngine:
             )
 
         contract_id = str(buy["contract_id"])
+        logger.info(
+            "DMS_EXECUTION_TIMING sid=%s trade=%s contract=%s "
+            "tick_to_buy_ms=%s buy_request_to_ack_ms=%s",
+            s.id, payload.get("trade_no"), contract_id,
+            tick_to_buy_ms, dms_buy_network_ms,
+        )
         self._emit_execution_event(
             s.id, "BUY_CONFIRMED", trade_no=payload.get("trade_no"),
             tick_seq=self.tick_sequence.get(int(s.id)),
