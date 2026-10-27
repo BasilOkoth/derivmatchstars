@@ -54,6 +54,8 @@ class MultiUserEngine:
         # V24: tick-paced BUY authorization; armed per logical trade.
         self.buy_tick_gates = {}  # sid -> {trade_no, armed_seq, symbol, client_generation}
         self.buy_tick_signals = {}  # sid -> last authentic tick seq/arrival time
+        self.execution_event_order = {}  # sid -> recent immutable chronological events
+        self.execution_event_counter = {}  # sid -> display sequence counter
         self.buy_tick_dispatch_tasks = {}  # sid -> event-driven executor; DB claim remains authoritative
         self.settlement_resume_tasks = {}  # sid -> one immediate settlement continuation
         self.settlement_recovery_timing = {}  # (sid,next trade) -> confirmed settlement monotonic
@@ -1581,6 +1583,31 @@ class MultiUserEngine:
         owner["subscription_id"] = sub_id
         logger.info("DMS_STREAM_SUBSCRIBED sid=%s sub=%s generation=%s", sid, sub_id, generation)
 
+    def _emit_execution_event(self, sid, stage, *, trade_no=None, tick_seq=None,
+                              digit=None, contract_id=None):
+        """Synchronous, non-blocking ordered execution display evidence.
+
+        This is telemetry, NEVER a buy authorization or a settlement signal.
+        Do not await network/database operations while registering an event.
+        """
+        sid = int(sid)
+        serial = self.execution_event_counter.get(sid, 0) + 1
+        self.execution_event_counter[sid] = serial
+        event = {
+            "order": serial,
+            "stage": str(stage),
+            "trade_no": int(trade_no) if trade_no is not None else None,
+            "tick_seq": int(tick_seq) if tick_seq is not None else None,
+            "digit": int(digit) if digit is not None else None,
+            "contract_id": str(contract_id) if contract_id is not None else None,
+            "at_monotonic": round(time.monotonic(), 6),
+        }
+        events = self.execution_event_order.setdefault(sid, [])
+        events.append(event)
+        if len(events) > 120:
+            del events[:-120]
+        return event
+
     def _dispatch_latest_tick(self, sid: int):
         """Wake the worker for the latest *fresh* tick, coalescing busy arrivals.
 
@@ -1744,6 +1771,9 @@ class MultiUserEngine:
                 "received_at": time.monotonic(),
                 "digit": int(digit),
             }
+            self._emit_execution_event(
+                sid_key, "TICK_RECEIVED", tick_seq=tick_seq, digit=digit,
+            )
             in_flight = self.buy_tick_dispatch_tasks.get(sid_key)
             if in_flight is None or in_flight.done():
                 self._dispatch_latest_tick(sid_key)
@@ -2711,6 +2741,14 @@ class MultiUserEngine:
                     )
                 self.execution_ready_by_sid.pop(int(s.id), None)
 
+                # The purchased digit is finalised BEFORE the BUY task runs.
+                # This record is separate from the observed incoming tick digit.
+                self._emit_execution_event(
+                    s.id, "DIGIT_SELECTED",
+                    trade_no=payload.get("trade_no"),
+                    tick_seq=self.tick_sequence.get(int(s.id)),
+                    digit=payload.get("digit"),
+                )
                 await self._execute_account_buy(
                     db,
                     s,
@@ -3031,6 +3069,10 @@ class MultiUserEngine:
             "DMS_TICK_PIPELINE sid=%s trade=%s tick_to_buy_ms=%s trigger_seq=%s",
             s.id, payload.get("trade_no"), tick_to_buy_ms, tick_signal.get("seq"),
         )
+        self._emit_execution_event(
+            s.id, "BUY_SUBMITTED", trade_no=payload.get("trade_no"),
+            tick_seq=buy_sent_after_seq, digit=payload.get("digit"),
+        )
         try:
             if execution_mode == "DIRECT_PARAMETERS":
                 result = await client.buy_digitmatch_direct(
@@ -3180,6 +3222,11 @@ class MultiUserEngine:
             )
 
         contract_id = str(buy["contract_id"])
+        self._emit_execution_event(
+            s.id, "BUY_CONFIRMED", trade_no=payload.get("trade_no"),
+            tick_seq=self.tick_sequence.get(int(s.id)),
+            digit=payload.get("digit"), contract_id=contract_id,
+        )
         coverage = self.tick_coverage.setdefault(int(s.id), {
             "ticks": 0, "dispatches": 0, "buy_acks": 0,
             "ticks_with_active_contract": 0, "ticks_without_active_contract": 0,
@@ -3887,6 +3934,13 @@ class MultiUserEngine:
                     )
                     log.raw_json = json.dumps(existing_raw)
 
+                self._emit_execution_event(
+                    sid, "OFFICIAL_WIN" if profit > 0 else "OFFICIAL_LOSS",
+                    trade_no=log.trade_no if log else None,
+                    tick_seq=self.tick_sequence.get(int(sid)),
+                    digit=log.digit if log else None,
+                    contract_id=contract_id,
+                )
                 s.pnl = float(s.pnl or 0) + profit
 
                 account = (
@@ -4166,7 +4220,9 @@ class MultiUserEngine:
 
     def tick_coverage_status(self, sid: int):
         """In-process performance counters; reset on restart, no P/L impact."""
-        return dict(self.tick_coverage.get(int(sid)) or {})
+        result = dict(self.tick_coverage.get(int(sid)) or {})
+        result["execution_events"] = [dict(x) for x in self.execution_event_order.get(int(sid), [])]
+        return result
 
     def last_settlement_status(self, sid: int):
         """Return the latest authoritative Deriv settlement for this session."""
