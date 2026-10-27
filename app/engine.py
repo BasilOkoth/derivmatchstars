@@ -1574,6 +1574,40 @@ class MultiUserEngine:
         owner["subscription_id"] = sub_id
         logger.info("DMS_STREAM_SUBSCRIBED sid=%s sub=%s generation=%s", sid, sub_id, generation)
 
+    def _dispatch_latest_tick(self, sid: int):
+        """Wake the worker for the latest *fresh* tick, coalescing busy arrivals.
+
+        This only triggers step(); _claim_account_buy and contract-settlement
+        ownership remain authoritative. Never place speculative paid orders.
+        """
+        sid = int(sid)
+        current = self.buy_tick_dispatch_tasks.get(sid)
+        if current is not None and not current.done():
+            return
+        signal = self.buy_tick_signals.get(sid) or {}
+        dispatched_seq = int(signal.get("seq") or 0)
+        if not dispatched_seq or self.fast_contracts.get(sid):
+            return
+        if not (0 <= time.monotonic() - float(signal.get("received_at") or 0) <= 1.0):
+            return
+        task = asyncio.create_task(self._safe_step(sid))
+        self.buy_tick_dispatch_tasks[sid] = task
+        coverage = self.tick_coverage.get(sid)
+        if coverage is not None:
+            coverage["dispatches"] += 1
+
+        def on_complete(completed):
+            if self.buy_tick_dispatch_tasks.get(sid) is not completed:
+                return
+            next_signal = self.buy_tick_signals.get(sid) or {}
+            if int(next_signal.get("seq") or 0) <= dispatched_seq:
+                return
+            if self.fast_contracts.get(sid):
+                return
+            self._dispatch_latest_tick(sid)
+
+        task.add_done_callback(on_complete)
+
     async def _handle_strategy_tick(
         self,
         *,
@@ -1694,19 +1728,19 @@ class MultiUserEngine:
         tick_dispatched = False
         if (not active and tick and not is_replay
                 and not skip_bootstrap_duplicate and tick_seq and digit is not None):
-            self.buy_tick_signals[int(sid)] = {
+            # Retain the latest genuine tick even while _safe_step is busy.
+            # Previously that tick was silently discarded as a BUY wakeup.
+            sid_key = int(sid)
+            self.buy_tick_signals[sid_key] = {
                 "seq": int(tick_seq),
                 "symbol": str(symbol),
                 "received_at": time.monotonic(),
                 "digit": int(digit),
             }
-            in_flight = self.buy_tick_dispatch_tasks.get(int(sid))
+            in_flight = self.buy_tick_dispatch_tasks.get(sid_key)
             if in_flight is None or in_flight.done():
-                self.buy_tick_dispatch_tasks[int(sid)] = asyncio.create_task(
-                    self._safe_step(int(sid))
-                )
+                self._dispatch_latest_tick(sid_key)
                 tick_dispatched = True
-                self.tick_coverage[int(sid)]["dispatches"] += 1
 
         # Yield one event-loop turn so the already-scheduled execution worker
         # may begin DB/BUY processing ahead of expensive ranking. This yields
@@ -2569,6 +2603,24 @@ class MultiUserEngine:
                     )
                     self.settlement_buy_authorizations.pop(int(s.id), None)
 
+                if not hasattr(self, "execution_ready_by_sid"):
+                    self.execution_ready_by_sid = {}
+                # V42 EXECUTION-READY: assemble the next order intent BEFORE
+                # the trigger tick. The tick handler only wakes the already
+                # prepared BUY path. This is NOT a pre-purchase or an attempt
+                # to reserve a Deriv contract; final authorization remains
+                # the DB BUY_CLAIM and official settlement.
+                next_trade_no = int(s.current_trade or 0) + 1
+                self.execution_ready_by_sid[int(s.id)] = {
+                    "trade_no": next_trade_no,
+                    "symbol": str(s.symbol),
+                    "digit": int(s.candidate_digit),
+                    "stake": float(s.current_stake),
+                    "currency": str(currency),
+                    "client_generation": int(getattr(client, "connection_generation", 0) or 0),
+                    "prepared_at": time.monotonic(),
+                }
+
                 # V24 TICK-SYNCHRONIZED BUY GATE
                 # START and recovery only ARM the next trade. BUY occurs on a
                 # genuinely NEW server tick, never on the stale displayed quote.
@@ -2621,13 +2673,31 @@ class MultiUserEngine:
                         s.id, next_no, current_seq, s.candidate_digit,
                     )
 
-                payload = self._direct_buy_payload(
-                    symbol=s.symbol,
-                    digit=int(s.candidate_digit),
-                    stake=float(s.current_stake),
-                    trade_no=int(s.current_trade) + 1,
-                    currency=currency,
+                ready = self.execution_ready_by_sid.get(int(s.id)) or {}
+                ready_valid = bool(
+                    int(ready.get("trade_no") or 0) == int(s.current_trade or 0) + 1
+                    and str(ready.get("symbol")) == str(s.symbol)
+                    and int(ready.get("digit", -1)) == int(s.candidate_digit)
+                    and abs(float(ready.get("stake") or 0) - float(s.current_stake)) < 0.005
+                    and str(ready.get("currency")) == str(currency)
+                    and int(ready.get("client_generation") or 0) == int(
+                        getattr(client, "connection_generation", 0) or 0
+                    )
                 )
+                if ready_valid:
+                    payload = self._direct_buy_payload(
+                        symbol=ready["symbol"], digit=ready["digit"],
+                        stake=ready["stake"], trade_no=ready["trade_no"],
+                        currency=ready["currency"],
+                    )
+                else:
+                    # Changed state invalidates the prearmed intent.
+                    payload = self._direct_buy_payload(
+                        symbol=s.symbol, digit=int(s.candidate_digit),
+                        stake=float(s.current_stake),
+                        trade_no=int(s.current_trade) + 1, currency=currency,
+                    )
+                self.execution_ready_by_sid.pop(int(s.id), None)
 
                 await self._execute_account_buy(
                     db,
