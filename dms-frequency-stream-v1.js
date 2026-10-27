@@ -92,7 +92,7 @@
       toggle.title = hidden ? 'Expand frequency panel' : 'Minimize frequency panel';
       try { localStorage.setItem('dms_fs_minimized', hidden ? '1' : '0'); } catch (_) {}
     };
-    toggle.addEventListener('click', () => { apply(!body.hidden); render(); });
+    toggle.addEventListener('click', () => apply(!body.hidden));
     let minimized = false;
     try { minimized = localStorage.getItem('dms_fs_minimized') === '1'; } catch (_) {}
     apply(minimized);
@@ -100,12 +100,7 @@
     render();
   }
 
-  let nextPaint = null;
   function render() {
-    if (nextPaint !== null) return;
-    nextPaint = setTimeout(() => { nextPaint = null; renderNow(); }, 750);
-  }
-  function renderNow() {
     ensurePanel();
     const counts = Array(10).fill(0);
     for (const item of S.prices) counts[item.digit]++;
@@ -119,7 +114,7 @@
     el.textContent = stateLabel;
     el.title = S.lastError || S.status;
     el.classList.toggle('fs-warning', !isLive);
-    if (!S.html.querySelector('#dms-fs-body').hidden) S.html.querySelector('#dms-fs-grid').innerHTML = sorted.map((item,i) => {
+    S.html.querySelector('#dms-fs-grid').innerHTML = sorted.map((item,i) => {
       const tier = i===0?'first':i<=2?'high':i<=6?'medium':i<=8?'low':'bottom';
       return `<div class="fs-tile ${tier}" title="Digit ${item.digit} · rank ${i+1} by historical frequency"><span class="fs-digit">${item.digit}</span><span class="fs-percent">${Number.isFinite(item.percentage)?item.percentage.toFixed(1):'—'}%</span></div>`;
     }).join('');
@@ -151,10 +146,7 @@
     S.seq++;
     if (S.pending) {
       const p = S.pending;
-      if (S.seq === p.validForSeq) {
-        S.rows.push({ ...p, actualDigit: t.digit, hit: p.target === t.digit, observedTickKey: key(t) });
-        if (S.rows.length > 10000) S.rows.splice(0, S.rows.length - 10000);
-      }
+      if (S.seq === p.validForSeq) S.rows.push({ ...p, actualDigit: t.digit, hit: p.target === t.digit, observedTickKey: key(t) });
       S.pending = null;
     }
     if (S.block) {
@@ -165,7 +157,6 @@
         target: S.block.target, elapsed: S.block.elapsed, observedSeq: S.seq,
         actualDigit: t.digit, hit
       });
-      if (S.forecasts.length > 10000) S.forecasts.splice(0, S.forecasts.length - 10000);
       if (hit || S.block.elapsed === 3) S.block = null;
     }
     const v1 = captureV1(t);

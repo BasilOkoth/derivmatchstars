@@ -1,6 +1,1 @@
-Replace the repository root render.yaml with this file.
-
-Root cause fixed:
-- Current repo startCommand: uvicorn app.rank_main_v9:app ...
-- But app/rank_main_v9.py does not exist.
-- Correct entry point: uvicorn app.main:app ...
+Compact V6: fixes a retry timer that could keep the WebSocket offline after its first reconnection; status is shown as LIVE / CONNECTING / STALE / OFFLINE rather than a truncated technical error. Hover over status for detailed error. Frequency stats remain visible when disconnected but are historical/stale. Trading code unchanged. Upload both files to repository root.
