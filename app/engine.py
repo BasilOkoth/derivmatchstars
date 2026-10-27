@@ -2664,10 +2664,13 @@ class MultiUserEngine:
                     # Rejections or an uncertain purchase cannot be retried using
                     # the same tick. Existing DB BUY_CLAIM remains authoritative.
                     gate["armed_seq"] = current_seq
+                    # V43: no redundant write/COMMIT in the tick hot path.
+                    # _claim_account_buy() performs the authoritative atomic
+                    # persistence before the network order is submitted.
+                    # This avoids a DB round trip after the tick arrives.
                     s.phase = "DIRECT_BUY_READY"
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
-                    db.commit()
                     logger.info(
                         "DMS_TICK_BUY_TRIGGER sid=%s trade=%s seq=%s digit=%s",
                         s.id, next_no, current_seq, s.candidate_digit,
@@ -2937,13 +2940,21 @@ class MultiUserEngine:
         # Refresh after the claim commit so all following state is canonical.
         s = db.get(TradingSession, s.id)
 
-        await self._ensure_tick_subscription(
-            sid=s.id,
-            user_id=s.user_id,
-            account_id=s.account_id,
-            symbol=s.symbol,
-            client=client,
-        )
+        # V43: step() already ensured the canonical tick subscription.
+        # Repeating _ensure_tick_subscription() between BUY_CLAIM and BUY
+        # can initiate a history bootstrap/reconnect at the worst time.
+        # Preserve reconnect safety: fail closed if the stream changed.
+        stream = self.tick_subscriptions.get(s.id) or {}
+        if not (
+            stream.get("client") is client
+            and str(stream.get("symbol")) == str(s.symbol)
+            and int(stream.get("connection_generation") or 0)
+                == int(getattr(client, "connection_generation", 0) or 0)
+            and client.is_open()
+        ):
+            # A claimed trade must be reconciled by existing recovery logic;
+            # never send on an unexpected connection or create a second BUY.
+            raise RuntimeError("BUY_STREAM_CHANGED_AFTER_CLAIM: reconcile before retry")
 
         # V37: The atomic BUY_CLAIM transaction has ALREADY committed the
         # cross-process ownership and timestamp. Do not perform another write
