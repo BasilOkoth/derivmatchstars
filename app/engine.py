@@ -867,7 +867,14 @@ class MultiUserEngine:
                     s.phase = "RATE_LIMIT_BACKOFF"
                     s.updated_at = datetime.utcnow()
                     db.commit()
-                    await asyncio.sleep(2.0)
+                    # Non-blocking cooldown: do not hold the step worker in a
+                    # two-second sleep. The normal step() path enforces the
+                    # authoritative rate-limit deadline before another BUY.
+                    sid_int = int(sid)
+                    self.buy_rate_limit_until[sid_int] = max(
+                        float(self.buy_rate_limit_until.get(sid_int, 0.0) or 0.0),
+                        time.monotonic() + 2.0,
+                    )
                     return
 
                 s.running = False
@@ -2292,8 +2299,10 @@ class MultiUserEngine:
                     # Clear ordinary stale errors once the worker is healthy.
                     # Keep reconciliation mismatches visible.
                     if "mismatch" not in str(s.last_error).lower():
+                        # Clear in the session already loaded; its next
+                        # necessary persistence operation will flush this.
+                        # No standalone write transaction before tick BUY.
                         s.last_error = None
-                        db.commit()
 
                 client = await self._client(
                     s.user_id,
