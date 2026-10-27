@@ -92,37 +92,6 @@ class MarginGateRequest(BaseModel):
     minimum_margin: float = Field(ge=0.0, le=50.0)
 
 
-class AISignalRequest(BaseModel):
-    digit: int = Field(ge=0, le=9)
-    score: float = Field(ge=0.0, le=1.0)
-    source: str = "AI"
-    symbol: str
-    pm5: float | None = None
-    pm10: float | None = None
-    s20: float | None = None
-    etm: float | None = None
-    dna: float | None = None
-    features: float | None = None
-    auditor: float | None = None
-    entropy_structure: float | None = None
-    entropy20: float | None = None
-    entropy_slope_fast: float | None = None
-    entropy_compression: float | None = None
-    mutual_information: float | None = None
-    gap_ratio: float | None = None
-    transition_p: float | None = None
-    transition_support: float | None = None
-    ngram2_p: float | None = None
-    ngram2_support: float | None = None
-    ngram3_p: float | None = None
-    ngram3_support: float | None = None
-    run_length: float | None = None
-    source_tick_epoch: int | None = None
-    source_tick_quote: str | None = None
-    source_tick_digit: int | None = Field(default=None, ge=0, le=9)
-    client_ts_ms: int | None = None
-
-
 @app.on_event("startup")
 async def startup():
     await engine.start()
@@ -179,17 +148,13 @@ def digit_score_for_session(session_id: int):
         digit = int(top["digit"]) if top else None
     except (ValueError, TypeError, KeyError):
         score, digit = None, None
-
-    # Status must expose the SAME V1 #1 used by execution. The retired
-    # absolute-score gate (score >= 9) could hide a valid rank from the
-    # dashboard even though execution is governed by the V1 margin gate.
-    ready = bool(snapshot.get("ready") and digit is not None)
-    margin_eligible = bool(snapshot.get("margin_eligible"))
-
+    threshold = float(snapshot.get("target_min_score", 9.0))
+    eligible = bool(snapshot.get("ready") and score is not None and
+                    score >= threshold and digit is not None)
     snapshot["raw_selected_digit"] = digit
     snapshot["raw_top_score"] = score
-    snapshot["target_eligible"] = bool(ready and margin_eligible)
-    snapshot["selected_digit"] = digit if ready else None
+    snapshot["target_eligible"] = eligible
+    snapshot["selected_digit"] = digit if eligible else None
     snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
                               "RANK_MISSING_EPOCH")
     return snapshot
@@ -351,47 +316,12 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "max_trades": s.max_trades,
                     "current_stake": s.current_stake,
                     "candidate_digit": s.candidate_digit,
-                    "live_next_target": (
-                        ((getattr(engine, "digit_score_snapshots", {}) or {})
-                         .get(int(s.id), {}).get("fusion") or {})
-                        .get("final_digit")
-                        if ((getattr(engine, "digit_score_snapshots", {}) or {})
-                            .get(int(s.id), {}).get("fusion") or {}).get("executable")
-                        else digit_score_for_session(s.id).get("selected_digit")
-                    ),
+                    "live_next_target": digit_score_for_session(s.id).get("selected_digit"),
                     "open_contract_id": s.open_contract_id,
                     "pnl": s.pnl,
                     "pending_real_confirmation": s.pending_real_confirmation,
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
-                    # Browser AI fallback feed. This is read-only canonical server
-                    # market data already held by the execution engine; it does not
-                    # alter proposals, buys, settlement or strategy decisions.
-                    "server_tick_feed": {
-                        "latest": dict((getattr(engine, "latest_ticks", {}) or {}).get(int(s.id)) or {}),
-                        "history_digits": list(engine._digit_history(int(s.id))),
-                        # Ordered canonical ledger prevents the browser AI from
-                        # skipping T+1 observations when more than one server
-                        # tick arrives between /sessions polls.
-                        "recent_ticks": [
-                            dict(t)
-                            for t in list(
-                                (getattr(engine, "canonical_tick_history_by_sid", {}) or {})
-                                .get(int(s.id), [])
-                            )
-                        ],
-                        "seq": int((getattr(engine, "tick_sequence", {}) or {}).get(int(s.id), 0) or 0),
-                        "epoch": int((getattr(engine, "latest_tick_epoch", {}) or {}).get(int(s.id), 0) or 0),
-                        "received_at": (getattr(engine, "latest_tick_received_at", {}) or {}).get(int(s.id)),
-                    },
-                    "ai_signal": engine.ai_signal_status(s.id, symbol=s.symbol),
-                    "fusion": (
-                        (getattr(engine, "digit_score_snapshots", {}) or {})
-                        .get(int(s.id), {})
-                        .get("fusion")
-                    ),
-                    "prediction_performance": engine.prediction_performance_status(s.id),
-                    "crypto_early_performance": engine.crypto_early_performance_status(s.id),
                     "recycle_after": int(
                         getattr(
                             getattr(engine, "digit_scorer", None),
@@ -409,83 +339,6 @@ def sessions(user_id: str = Depends(current_user_id)):
         db.close()
 
 
-
-
-
-@app.get("/sessions/{sid}/cycle-depth")
-def cycle_depth(
-    sid: int,
-    user_id: str = Depends(current_user_id),
-):
-    """Return cycle-resolution depth from authoritative settled TradeLog wins."""
-    db = SessionLocal()
-    try:
-        session = owns_session(db, user_id, sid)
-        rows = (
-            db.query(TradeLog)
-            .filter(
-                TradeLog.user_id == user_id,
-                TradeLog.trading_session_id == int(sid),
-                TradeLog.symbol == str(session.symbol),
-            )
-            .order_by(TradeLog.id.asc())
-            .all()
-        )
-
-        # One terminal row per Deriv contract. Historical duplicates must not
-        # inflate the depth distribution.
-        by_contract = {}
-        no_contract = []
-        for row in rows:
-            cid = str(row.contract_id or "").strip()
-            if cid:
-                by_contract[cid] = row
-            else:
-                no_contract.append(row)
-        clean_rows = list(by_contract.values()) + no_contract
-
-        depths = []
-        for row in clean_rows:
-            try:
-                profit = float(row.profit) if row.profit is not None else None
-                trade_no = int(row.trade_no)
-            except (TypeError, ValueError):
-                continue
-            if (
-                str(row.status or "").upper() == "SETTLED"
-                and profit is not None
-                and profit > 0
-                and trade_no > 0
-            ):
-                depths.append(trade_no)
-
-        depths.sort()
-
-        def nearest_rank(q: float):
-            if not depths:
-                return None
-            import math as _math
-            rank = max(1, int(_math.ceil(float(q) * len(depths))))
-            return int(depths[rank - 1])
-
-        reached20_count = sum(1 for d in depths if int(d) >= 20)
-        sample = len(depths)
-        return {
-            "ok": True,
-            "session_id": int(sid),
-            "symbol": str(session.symbol),
-            "source": "SETTLED_TRADELOG_WINS",
-            "sample": sample,
-            "median": nearest_rank(0.50),
-            "p90": nearest_rank(0.90),
-            "p95": nearest_rank(0.95),
-            "reached20_count": reached20_count,
-            "reached20_pct": ((float(reached20_count) / float(sample)) * 100.0 if sample else None),
-            "worst": int(depths[-1]) if depths else None,
-            "depths": depths[-5000:],
-        }
-    finally:
-        db.close()
 
 @app.get("/sessions/{sid}/trigger-fusion/export")
 def export_trigger_fusion(
@@ -926,37 +779,6 @@ def candidate(
         db.close()
 
 
-@app.post("/sessions/{sid}/ai-signal")
-def set_ai_signal(
-    sid: int,
-    body: AISignalRequest,
-    user_id: str = Depends(current_user_id),
-):
-    db = SessionLocal()
-    try:
-        s = owns_session(db, user_id, sid)
-
-        if str(body.symbol or "") != str(s.symbol or ""):
-            raise HTTPException(
-                status_code=400,
-                detail=f"AI signal symbol {body.symbol!r} does not match session symbol {s.symbol!r}",
-            )
-
-        stored = engine.set_ai_signal(
-            int(s.id),
-            symbol=str(s.symbol),
-            payload=body.model_dump(),
-        )
-
-        return {
-            "ok": True,
-            "session_id": int(s.id),
-            "ai_signal": stored,
-        }
-    finally:
-        db.close()
-
-
 @app.post("/sessions/{sid}/margin-gate")
 def set_margin_gate(
     sid: int,
@@ -1124,3 +946,5 @@ def stop(
 
     finally:
         db.close()
+
+

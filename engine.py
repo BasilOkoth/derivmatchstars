@@ -5,7 +5,6 @@ import time
 import logging
 from datetime import datetime
 from collections import deque
-import math
 
 from .db import SessionLocal
 from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
@@ -92,23 +91,6 @@ class MultiUserEngine:
         # contract itself remains immutable at Deriv.
         self.live_next_target = {}  # sid -> digit
 
-        # AI FUSION V1: latest browser Digit Intelligence recommendation.
-        # The browser can suggest, but only this server may authorize a BUY.
-        self.ai_signal_by_sid = {}  # sid -> validated AI evidence
-
-        # Forward-only prediction scoreboard. Each prepared V1/AI signal is
-        # evaluated exactly once against the next canonical SERVER tick.
-        self.prediction_performance_by_sid = {}  # sid -> aggregate counters
-        self.prediction_performance_last_seq = {}  # sid -> last evaluated prepared rank_seq
-
-        # GREEN AI forward recorder. Browser AI arrives asynchronously from a
-        # separate Deriv websocket, so it cannot rely on already-built V1 snapshots.
-        # Keep a short canonical server tick ledger and bind every green AI call
-        # to its source tick, then score it exactly once against source_seq + 1.
-        self.canonical_tick_history_by_sid = {}  # sid -> deque of canonical server ticks
-        self.green_ai_pending_by_sid = {}        # sid -> latest unscored green AI forecast
-        self.green_ai_scored_sources_by_sid = {}  # sid -> deque of scored source keys
-
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
 
@@ -117,17 +99,12 @@ class MultiUserEngine:
         # user-configured minimum. Shared by DEMO and REAL target selection.
         self.minimum_v1_margin_default = 3.0
         self.minimum_v1_margin_by_sid = {}
-        self.digit_history = {}          # sid -> deque(maxlen=200)
+        self.digit_history = {}          # sid -> deque(maxlen=100)
         self.digit_score_snapshots = {}  # sid -> latest ranking
-        self.shadow_200_snapshots = {}  # sid -> research-only 200-tick challenger
-        self.shadow_200_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=200)
         # Process memory is lost on Render restart. Rebuild DigitScore from
         # Deriv's recent ticks_history before the next cycle starts.
         self.history_bootstrap_tasks = {}   # sid -> asyncio.Task
         self.history_bootstrap_generation = {}  # sid -> client connection generation
-        # Exact final observation already included by ticks_history. Deriv may
-        # replay this same observation as the first live subscription callback.
-        self.history_bootstrap_last_tick = {}  # sid -> bootstrap boundary evidence
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
         # Identifies this server process in persisted execution evidence.
@@ -170,8 +147,8 @@ class MultiUserEngine:
 
             eligible = bool(
                 snapshot.get("ready")
-                and snapshot.get("selected_digit") is not None
-                and (value <= 0 or (margin_value is not None and margin_value >= value))
+                and margin_value is not None
+                and margin_value >= value
             )
             snapshot["minimum_v1_margin"] = value
             snapshot["margin_eligible"] = eligible
@@ -182,867 +159,6 @@ class MultiUserEngine:
             )
 
         return value
-
-    @staticmethod
-    def _ai_number(value):
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-        if math.isnan(number) or math.isinf(number):
-            return None
-        return number
-
-    def _canonical_tick_ledger(self, sid: int):
-        sid = int(sid)
-        ledger = self.canonical_tick_history_by_sid.get(sid)
-        if ledger is None:
-            ledger = deque(maxlen=12)
-            self.canonical_tick_history_by_sid[sid] = ledger
-        return ledger
-
-    @staticmethod
-    def _green_ai_source_key(signal: dict):
-        if not isinstance(signal, dict):
-            return None
-        return (
-            int(signal.get("source_tick_epoch") or 0),
-            str(signal.get("source_tick_quote") or ""),
-            int(signal.get("source_tick_digit"))
-            if signal.get("source_tick_digit") is not None else None,
-        )
-
-    @staticmethod
-    def _tick_identity_key(tick: dict):
-        if not isinstance(tick, dict):
-            return None
-        return (
-            int(tick.get("epoch") or 0),
-            str(tick.get("formatted_quote") or ""),
-            int(tick.get("digit")) if tick.get("digit") is not None else None,
-        )
-
-    def _green_ai_scored_sources(self, sid: int):
-        sid = int(sid)
-        rows = self.green_ai_scored_sources_by_sid.get(sid)
-        if rows is None:
-            rows = deque(maxlen=1000)
-            self.green_ai_scored_sources_by_sid[sid] = rows
-        return rows
-
-    def _record_green_ai_result(self, sid: int, forecast: dict, observed_tick: dict):
-        """Count one green AI T+1 forecast exactly once."""
-        sid = int(sid)
-        source_key = self._green_ai_source_key(forecast)
-        if source_key is None:
-            return False
-        scored = self._green_ai_scored_sources(sid)
-        if source_key in scored:
-            return False
-
-        try:
-            predicted = int(forecast.get("digit"))
-            observed = int(observed_tick.get("digit"))
-            source_seq = int(forecast.get("source_seq") or 0)
-            observed_seq = int(observed_tick.get("seq") or 0)
-        except (TypeError, ValueError):
-            return False
-
-        # Strict forward-only rule: only the immediately following canonical tick.
-        if source_seq <= 0 or observed_seq != source_seq + 1:
-            return False
-
-        matched = predicted == observed
-        state = self._prediction_performance_state(sid)
-        state["green_ai_total"] += 1
-        state["green_ai_matches"] += int(matched)
-        state["last_green_ai_outcome"] = {
-            "source_seq": source_seq,
-            "source_epoch": forecast.get("source_tick_epoch"),
-            "source_quote": forecast.get("source_tick_quote"),
-            "predicted_digit": predicted,
-            "score": float(forecast.get("score") or 0.0),
-            "observed_seq": observed_seq,
-            "observed_epoch": observed_tick.get("epoch"),
-            "observed_digit": observed,
-            "matched": bool(matched),
-        }
-        scored.append(source_key)
-        self.green_ai_pending_by_sid.pop(sid, None)
-        return True
-
-    def _arm_or_score_green_ai(self, sid: int, signal: dict):
-        """Bind a green browser AI call to canonical server tick T.
-
-        If T+1 is already in the short ledger (browser POST arrived late), score it
-        immediately. Otherwise keep the forecast armed until the next server tick.
-        """
-        sid = int(sid)
-        if not isinstance(signal, dict) or float(signal.get("score") or 0.0) < 0.85:
-            return False
-        source_key = self._green_ai_source_key(signal)
-        if not source_key or source_key[0] <= 0 or not source_key[1] or source_key[2] is None:
-            return False
-        if source_key in self._green_ai_scored_sources(sid):
-            return True
-
-        ledger = list(self._canonical_tick_ledger(sid))
-        source_tick = next((t for t in ledger if self._tick_identity_key(t) == source_key), None)
-        pending = dict(signal)
-        pending["armed"] = False
-        pending["source_seq"] = None
-
-        if source_tick is not None:
-            source_seq = int(source_tick.get("seq") or 0)
-            pending["source_seq"] = source_seq or None
-            pending["armed"] = bool(source_seq)
-            if source_seq:
-                next_tick = next((t for t in ledger if int(t.get("seq") or 0) == source_seq + 1), None)
-                if next_tick is not None:
-                    return self._record_green_ai_result(sid, pending, next_tick)
-
-        self.green_ai_pending_by_sid[sid] = pending
-        return bool(pending.get("armed"))
-
-    def _advance_green_ai_forward_recorder(self, sid: int, current_tick: dict):
-        """Advance/score the pending green AI forecast on canonical server ticks."""
-        sid = int(sid)
-        if not isinstance(current_tick, dict):
-            return
-        pending = self.green_ai_pending_by_sid.get(sid)
-        if not isinstance(pending, dict):
-            return
-
-        current_seq = int(current_tick.get("seq") or 0)
-        if current_seq <= 0:
-            return
-
-        source_key = self._green_ai_source_key(pending)
-        current_key = self._tick_identity_key(current_tick)
-
-        # Signal may arrive before the server sees its source tick. Bind it here.
-        if not pending.get("source_seq"):
-            if source_key == current_key:
-                pending["source_seq"] = current_seq
-                pending["armed"] = True
-                self.green_ai_pending_by_sid[sid] = pending
-            return
-
-        source_seq = int(pending.get("source_seq") or 0)
-        if current_seq == source_seq + 1:
-            self._record_green_ai_result(sid, pending, current_tick)
-        elif current_seq > source_seq + 1:
-            # We missed T+1; never substitute a later tick. Keep diagnostics honest.
-            state = self._prediction_performance_state(sid)
-            state["last_green_ai_drop"] = {
-                "reason": "MISSED_EXACT_NEXT_TICK",
-                "source_seq": source_seq,
-                "current_seq": current_seq,
-            }
-            self.green_ai_pending_by_sid.pop(sid, None)
-
-    def _bind_ai_signal_to_canonical_server_tick(self, sid: int, signal: dict):
-        """Map a browser AI T+1 forecast onto the server's canonical sequence.
-
-        Browser and server subscribe through different websocket connections, so
-        comparing their *latest* epochs directly is incorrect.  We instead find
-        the browser source observation in the short canonical server ledger and
-        bind the forecast to that server sequence number.  Only a forecast bound
-        to the SAME sequence as the prepared V1 snapshot may influence a BUY.
-        """
-        sid = int(sid)
-        if not isinstance(signal, dict):
-            return signal
-
-        source_key = self._green_ai_source_key(signal)
-        ledger = list(self._canonical_tick_ledger(sid))
-        match = None
-        if source_key and source_key[0] > 0 and source_key[1] and source_key[2] is not None:
-            match = next((t for t in ledger if self._tick_identity_key(t) == source_key), None)
-
-        latest_seq = int(ledger[-1].get("seq") or 0) if ledger else 0
-        if match is None:
-            signal["bound_source_seq"] = None
-            signal["binding_status"] = "WAITING_SERVER_SOURCE_TICK"
-            signal["server_latest_seq_at_bind"] = latest_seq or None
-            return signal
-
-        source_seq = int(match.get("seq") or 0)
-        signal["bound_source_seq"] = source_seq or None
-        signal["bound_server_tick"] = dict(match)
-        signal["server_latest_seq_at_bind"] = latest_seq or None
-
-        if source_seq and latest_seq == source_seq:
-            signal["binding_status"] = "CANONICAL_BOUND"
-        elif source_seq and latest_seq > source_seq:
-            signal["binding_status"] = "LATE_FOR_EXECUTION"
-        else:
-            signal["binding_status"] = "WAITING_SERVER_SOURCE_TICK"
-        return signal
-
-    def _bind_waiting_ai_on_server_tick(self, sid: int, canonical_tick: dict):
-        """Promote a waiting browser AI signal when its exact source tick reaches server."""
-        sid = int(sid)
-        signal = self.ai_signal_by_sid.get(sid)
-        if not isinstance(signal, dict) or not isinstance(canonical_tick, dict):
-            return False
-        if str(signal.get("binding_status") or "") != "WAITING_SERVER_SOURCE_TICK":
-            return False
-        if self._green_ai_source_key(signal) != self._tick_identity_key(canonical_tick):
-            return False
-
-        seq = int(canonical_tick.get("seq") or 0)
-        if seq <= 0:
-            return False
-        signal["bound_source_seq"] = seq
-        signal["bound_server_tick"] = dict(canonical_tick)
-        signal["server_latest_seq_at_bind"] = seq
-        signal["binding_status"] = "CANONICAL_BOUND"
-        self.ai_signal_by_sid[sid] = signal
-        return True
-
-    def set_ai_signal(self, sid: int, *, symbol: str, payload: dict):
-        sid = int(sid)
-        digit = int(payload.get("digit"))
-        score = self._ai_number(payload.get("score"))
-        if digit < 0 or digit > 9:
-            raise ValueError("AI digit must be 0..9")
-        if score is None or score < 0 or score > 1:
-            raise ValueError("AI score must be between 0 and 1")
-
-        clean = {
-            "digit": digit,
-            "score": score,
-            "source": str(payload.get("source") or "AI")[:120],
-            "symbol": str(symbol),
-            "pm5": self._ai_number(payload.get("pm5")),
-            "pm10": self._ai_number(payload.get("pm10")),
-            "s20": self._ai_number(payload.get("s20")),
-            "etm": self._ai_number(payload.get("etm")),
-            "dna": self._ai_number(payload.get("dna")),
-            "features": self._ai_number(payload.get("features")),
-            "auditor": self._ai_number(payload.get("auditor")),
-            "entropy_structure": self._ai_number(payload.get("entropy_structure")),
-            "entropy20": self._ai_number(payload.get("entropy20")),
-            "entropy_slope_fast": self._ai_number(payload.get("entropy_slope_fast")),
-            "entropy_compression": self._ai_number(payload.get("entropy_compression")),
-            "mutual_information": self._ai_number(payload.get("mutual_information")),
-            "gap_ratio": self._ai_number(payload.get("gap_ratio")),
-            "transition_p": self._ai_number(payload.get("transition_p")),
-            "transition_support": self._ai_number(payload.get("transition_support")),
-            "ngram2_p": self._ai_number(payload.get("ngram2_p")),
-            "ngram2_support": self._ai_number(payload.get("ngram2_support")),
-            "ngram3_p": self._ai_number(payload.get("ngram3_p")),
-            "ngram3_support": self._ai_number(payload.get("ngram3_support")),
-            "run_length": self._ai_number(payload.get("run_length")),
-            "source_tick_epoch": payload.get("source_tick_epoch"),
-            "source_tick_quote": (
-                str(payload.get("source_tick_quote"))
-                if payload.get("source_tick_quote") is not None
-                else None
-            ),
-            "source_tick_digit": (
-                int(payload.get("source_tick_digit"))
-                if payload.get("source_tick_digit") is not None
-                else None
-            ),
-            "client_ts_ms": payload.get("client_ts_ms"),
-            "received_monotonic": time.monotonic(),
-            "received_at": datetime.utcnow().isoformat(),
-        }
-        clean = self._bind_ai_signal_to_canonical_server_tick(sid, clean)
-        self.ai_signal_by_sid[sid] = clean
-
-        # If this forecast maps to the CURRENT prepared server sequence, refresh
-        # that snapshot's fusion immediately.  This avoids waiting for another
-        # market tick just to make the newly-arrived AI signal visible/executable.
-        current_snapshot = self.digit_score_snapshots.get(sid)
-        if (
-            isinstance(current_snapshot, dict)
-            and int(clean.get("bound_source_seq") or 0) > 0
-            and int(current_snapshot.get("rank_seq") or 0) == int(clean.get("bound_source_seq") or 0)
-            and str(clean.get("binding_status") or "") == "CANONICAL_BOUND"
-        ):
-            canonical = current_snapshot.get("canonical_tick") or {}
-            self._fusion_select(sid, current_snapshot, symbol=canonical.get("symbol"))
-
-        # Green AI is a forward T+1 forecast. Arm it independently of the V1
-        # snapshot so asynchronous browser/server timing cannot make hits vanish.
-        if float(score) >= 0.85:
-            self._arm_or_score_green_ai(sid, clean)
-
-        return {k: v for k, v in clean.items() if k != "received_monotonic"}
-
-    def _fresh_ai_signal(self, sid: int, *, symbol=None, max_age_seconds=3.0):
-        signal = self.ai_signal_by_sid.get(int(sid))
-        if not isinstance(signal, dict):
-            return None
-        if symbol is not None and str(signal.get("symbol")) != str(symbol):
-            return None
-        received = float(signal.get("received_monotonic") or 0.0)
-        age = time.monotonic() - received if received else 999999.0
-        if age < 0 or age > float(max_age_seconds):
-            return None
-        out = dict(signal)
-        out["age_seconds"] = float(age)
-        return out
-
-    def ai_signal_status(self, sid: int, *, symbol=None):
-        signal = self._fresh_ai_signal(int(sid), symbol=symbol)
-        if not signal:
-            raw = self.ai_signal_by_sid.get(int(sid))
-            if not isinstance(raw, dict):
-                return {"ready": False, "status": "MISSING"}
-            out = dict(raw)
-            out["ready"] = False
-            out["status"] = "STALE_OR_SYMBOL_MISMATCH"
-            out.pop("received_monotonic", None)
-            return out
-        signal["ready"] = True
-        signal["status"] = "FRESH"
-        signal.pop("received_monotonic", None)
-        return signal
-
-    def _crypto_market_state_status(self, ai: dict | None):
-        """Conservative live structural support gate for pure CRYPTO-AUDITOR.
-
-        This is deliberately NOT a learned probability. It only summarizes whether
-        several independent live structure families are simultaneously supportive.
-        The V3 audit exports the exact inputs so future thresholds can be fitted from
-        real forward wins/losses instead of guessed.
-        """
-        if not isinstance(ai, dict):
-            return {"ready": False, "supportive": False, "score": None, "support_count": 0, "available": 0}
-
-        def num(name):
-            try:
-                v = ai.get(name)
-                return float(v) if v is not None else None
-            except (TypeError, ValueError):
-                return None
-
-        entropy_structure = num("entropy_structure")
-        mi = num("mutual_information")
-        features = num("features")
-        auditor = num("auditor")
-        dna = num("dna")
-        pm5 = num("pm5")
-        pm10 = num("pm10")
-        transition_p = num("transition_p")
-        transition_support = num("transition_support")
-        ngram2_p = num("ngram2_p")
-        ngram2_support = num("ngram2_support")
-        ngram3_p = num("ngram3_p")
-        ngram3_support = num("ngram3_support")
-
-        checks = {
-            "entropy_structure": entropy_structure is not None and entropy_structure >= 0.10,
-            "mutual_information": mi is not None and mi >= 0.008,
-            "feature_strength": features is not None and features >= 0.45,
-            "auditor_strength": auditor is not None and auditor >= 0.50,
-            "dna_similarity": dna is not None and dna >= 0.50,
-            "survival": (pm5 is not None and pm5 >= 0.40) or (pm10 is not None and pm10 >= 0.55),
-            "transition": transition_p is not None and transition_support is not None and transition_support >= 10 and transition_p >= 0.11,
-            "ngram2": ngram2_p is not None and ngram2_support is not None and ngram2_support >= 6 and ngram2_p >= 0.11,
-            "ngram3": ngram3_p is not None and ngram3_support is not None and ngram3_support >= 4 and ngram3_p >= 0.11,
-        }
-        available = sum(1 for name in [
-            entropy_structure, mi, features, auditor, dna, pm5, pm10,
-            transition_p, transition_support, ngram2_p, ngram2_support, ngram3_p, ngram3_support
-        ] if name is not None)
-        support_count = sum(1 for v in checks.values() if v)
-
-        # Normalize the independent families to a 0..1 diagnostic support score.
-        # It is only a gate and is never shown/used as a probability of winning.
-        family_scores = []
-        if entropy_structure is not None: family_scores.append(max(0.0, min(1.0, entropy_structure / 0.30)))
-        if mi is not None: family_scores.append(max(0.0, min(1.0, mi / 0.05)))
-        if features is not None: family_scores.append(max(0.0, min(1.0, features)))
-        if auditor is not None: family_scores.append(max(0.0, min(1.0, auditor)))
-        if dna is not None: family_scores.append(max(0.0, min(1.0, dna)))
-        if pm5 is not None: family_scores.append(max(0.0, min(1.0, pm5)))
-        elif pm10 is not None: family_scores.append(max(0.0, min(1.0, pm10)))
-
-        score = (sum(family_scores) / len(family_scores)) if family_scores else None
-        ready = bool(available >= 6 and len(family_scores) >= 4)
-        supportive = bool(ready and support_count >= 4 and score is not None and score >= 0.45)
-        return {
-            "ready": ready,
-            "supportive": supportive,
-            "score": score,
-            "support_count": support_count,
-            "available": available,
-            "checks": checks,
-            "inputs": {
-                "entropy_structure": entropy_structure, "mutual_information": mi,
-                "features": features, "auditor": auditor, "dna": dna,
-                "pm5": pm5, "pm10": pm10, "transition_p": transition_p,
-                "transition_support": transition_support, "ngram2_p": ngram2_p,
-                "ngram2_support": ngram2_support, "ngram3_p": ngram3_p,
-                "ngram3_support": ngram3_support, "gap_ratio": num("gap_ratio"),
-                "entropy20": num("entropy20"), "entropy_slope_fast": num("entropy_slope_fast"),
-                "entropy_compression": num("entropy_compression"), "run_length": num("run_length")
-            }
-        }
-
-    def _fusion_select(self, sid: int, snapshot: dict, *, symbol=None):
-        """V1 + AI fusion with auditor confirmation.
-
-        Execution hierarchy is intentionally simple:
-          1. V1 is the primary selector whenever its margin gate is eligible.
-          2. Canonically aligned AI may challenge V1 only when the auditor
-             confirms the signal and at least two independent support families agree.
-          3. If V1 is not executable, the same confirmed AI may act as fallback.
-          4. CRYPTO regime / market-state telemetry remains research-only and
-             never grants execution authority.
-        """
-        v1_digit = snapshot.get("selected_digit")
-        v1_ready = bool(snapshot.get("ready") and v1_digit is not None)
-        v1_margin_ok = bool(snapshot.get("margin_eligible"))
-
-        ai_raw = self._fresh_ai_signal(int(sid), symbol=symbol)
-        canonical = snapshot.get("canonical_tick") or {}
-        expected_seq = int(snapshot.get("rank_seq") or 0)
-        expected_epoch = canonical.get("epoch")
-        expected_quote = canonical.get("formatted_quote")
-        expected_digit = canonical.get("digit")
-
-        tick_match = False
-        tick_mismatch_reason = None
-        ai = None
-
-        if ai_raw:
-            bound_seq = int(ai_raw.get("bound_source_seq") or 0)
-            binding_status = str(ai_raw.get("binding_status") or "UNBOUND")
-            if binding_status == "CANONICAL_BOUND" and bound_seq and expected_seq and bound_seq == expected_seq:
-                tick_match = True
-                ai = ai_raw
-            elif binding_status == "WAITING_SERVER_SOURCE_TICK":
-                tick_mismatch_reason = "WAITING_SERVER_SOURCE_TICK"
-            elif binding_status == "LATE_FOR_EXECUTION":
-                tick_mismatch_reason = "AI_LATE_FOR_EXECUTION"
-            elif bound_seq and expected_seq and bound_seq != expected_seq:
-                tick_mismatch_reason = "SERVER_SEQ_MISMATCH"
-            else:
-                tick_mismatch_reason = "AI_NOT_CANONICAL_BOUND"
-
-        ai_digit = int(ai["digit"]) if ai else None
-        ai_score = float(ai["score"]) if ai else None
-        ai_source = str(ai.get("source") or "") if ai else ""
-
-        # Auditor is confirmation only. It never chooses a digit by itself.
-        auditor_strength = None
-        if ai and ai.get("auditor") is not None:
-            try:
-                auditor_strength = float(ai.get("auditor"))
-            except (TypeError, ValueError):
-                auditor_strength = None
-        auditor_confirmed = bool(
-            auditor_strength is not None and auditor_strength >= 0.55
-        )
-
-        # Independent support families excluding the auditor itself.
-        support_flags = {}
-        support = 0
-        if ai:
-            checks = {
-                "dna": (ai.get("dna"), 0.55),
-                "features": (ai.get("features"), 0.60),
-                "pm5": (ai.get("pm5"), 0.40),
-                "pm10": (ai.get("pm10"), 0.60),
-            }
-            for name, (value, threshold) in checks.items():
-                ok = value is not None and float(value) >= float(threshold)
-                support_flags[name] = bool(ok)
-                support += int(ok)
-        support_flags["auditor"] = bool(auditor_confirmed)
-
-        agreement = bool(
-            ai and tick_match and v1_ready
-            and int(ai_digit) == int(v1_digit)
-        )
-
-        # The AI score remains a ranking score, not a probability. The low
-        # floor simply blocks malformed/very weak signals; execution authority
-        # comes from canonical alignment + auditor + independent support.
-        ai_challenge_ready = bool(
-            ai and tick_match and ai_digit is not None
-            and ai_score is not None and ai_score >= 0.55
-            and auditor_confirmed
-            and support >= 2
-        )
-
-        final_digit = None
-        source = "NO_EXECUTABLE_SIGNAL"
-
-        if agreement and v1_margin_ok:
-            final_digit = int(v1_digit)
-            source = "AI_V1_AGREEMENT"
-        elif v1_ready and v1_margin_ok:
-            if ai_challenge_ready and int(ai_digit) != int(v1_digit):
-                final_digit = int(ai_digit)
-                source = "AI_AUDITOR_CONFIRMED_OVERRIDE"
-            else:
-                final_digit = int(v1_digit)
-                if ai_raw and not tick_match:
-                    source = "V1_AI_CANONICAL_WAIT"
-                elif ai and not auditor_confirmed:
-                    source = "V1_AUDITOR_NOT_CONFIRMED"
-                elif ai and support < 2:
-                    source = "V1_AI_SUPPORT_WEAK"
-                else:
-                    source = "V1"
-        elif ai_challenge_ready:
-            final_digit = int(ai_digit)
-            source = "AI_AUDITOR_CONFIRMED_FALLBACK"
-        elif ai_raw and not tick_match:
-            source = "WAITING_AI_CANONICAL_BIND"
-        elif ai_raw is None:
-            source = "V1_AI_STALE"
-        else:
-            source = "WAITING_V1_OR_CONFIRMED_AI"
-
-        result = {
-            "version": "V1_AI_AUDITOR_FUSION_V1_CANONICAL_SEQ",
-            "executable": final_digit is not None,
-            "final_digit": final_digit,
-            "source": source,
-            "tick_aligned": bool(tick_match),
-            "alignment_mode": "SERVER_CANONICAL_SEQUENCE",
-            "tick_mismatch_reason": tick_mismatch_reason,
-            "expected_tick": {
-                "epoch": expected_epoch,
-                "formatted_quote": expected_quote,
-                "digit": expected_digit,
-                "rank_seq": snapshot.get("rank_seq"),
-            },
-            "v1_digit": int(v1_digit) if v1_digit is not None else None,
-            "v1_margin_eligible": v1_margin_ok,
-            "v1_top_margin": snapshot.get("top_margin"),
-            "ai_digit": ai_digit,
-            "ai_score": ai_score,
-            "ai_source": ai_source or None,
-            "ai_bound_source_seq": (int(ai_raw.get("bound_source_seq") or 0) or None) if ai_raw else None,
-            "ai_binding_status": ai_raw.get("binding_status") if ai_raw else None,
-            "auditor_strength": auditor_strength,
-            "auditor_confirmed": bool(auditor_confirmed),
-            "auditor_threshold": 0.55,
-            "ai_support_count": int(support),
-            "ai_support_flags": support_flags,
-            # Research-only diagnostics retained from later experiments.
-            "research_crypto_authority": self._crypto_authority_status(int(sid)),
-            "research_crypto_market_state": self._crypto_market_state_status(ai if ai else None),
-            "ai": ({k: v for k, v in ai.items() if k != "received_monotonic"} if ai else None),
-            "rejected_ai": ({k: v for k, v in ai_raw.items() if k != "received_monotonic"} if ai_raw and not tick_match else None),
-        }
-        snapshot["fusion"] = result
-        return result
-
-    def _prediction_performance_state(self, sid: int):
-        sid = int(sid)
-        state = self.prediction_performance_by_sid.get(sid)
-        if not isinstance(state, dict):
-            state = {
-                "green_ai_total": 0,
-                "green_ai_matches": 0,
-                "crypto_total": 0,
-                "crypto_matches": 0,
-                "crypto_recent": [],
-                "v1_total": 0,
-                "v1_matches": 0,
-                "fusion_total": 0,
-                "fusion_matches": 0,
-                "last_outcome": None,
-                "last_green_ai_outcome": None,
-                "last_green_ai_drop": None,
-            }
-            self.prediction_performance_by_sid[sid] = state
-        return state
-
-    def _crypto_authority_status(self, sid: int):
-        """Dynamic CRYPTO regime detector from strictly forward T→T+1 outcomes.
-
-        The model headline score is intentionally ignored. Authority is driven by
-        empirical rolling hit rates so CRYPTO can gain control quickly in a hot
-        window and lose it quickly in a cold window.
-        """
-        state = self._prediction_performance_state(int(sid))
-        total = int(state.get("crypto_total", 0) or 0)
-        matches = int(state.get("crypto_matches", 0) or 0)
-        recent20 = [bool(x) for x in list(state.get("crypto_recent") or [])[-20:]]
-
-        def window_stats(size):
-            rows = recent20[-int(size):]
-            n = len(rows)
-            m = sum(1 for x in rows if x)
-            return {
-                "n": n,
-                "matches": m,
-                "rate": (float(m) / float(n)) if n else None,
-            }
-
-        w5 = window_stats(5)
-        w10 = window_stats(10)
-        w20 = window_stats(20)
-        overall_rate = (float(matches) / float(total)) if total else None
-
-        # HOT START catches a new favorable window rapidly: at least one hit in
-        # the last 5 and at least one hit in a full last-10 window.
-        hot_start = bool(
-            w5["n"] >= 5 and w5["rate"] is not None and w5["rate"] >= 0.20
-            and w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] >= 0.10
-        )
-
-        # HOT CONFIRMED requires stronger medium-window evidence. With a full
-        # 10/20 window this is effectively >=2/10 and >=3/20.
-        hot_confirmed = bool(
-            w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] >= 0.15
-            and w20["n"] >= 15 and w20["rate"] is not None and w20["rate"] >= 0.12
-        )
-
-        # COLD requires both a dead last-10 and sub-baseline broader window.
-        cold = bool(
-            w10["n"] >= 10 and w10["rate"] is not None and w10["rate"] < 0.08
-            and w20["n"] >= 15 and w20["rate"] is not None and w20["rate"] < 0.10
-        )
-
-        if hot_confirmed:
-            mode = "HOT_CONFIRMED"
-            regime = "HOT"
-            enabled = True
-            requires_v1_confirmation = False
-        elif hot_start:
-            mode = "HOT_START"
-            regime = "HOT"
-            enabled = True
-            requires_v1_confirmation = False
-        elif cold:
-            mode = "COLD"
-            regime = "COLD"
-            enabled = False
-            requires_v1_confirmation = False
-        elif total < 10:
-            mode = "WATCH_BOOTSTRAP"
-            regime = "WATCH"
-            enabled = False
-            requires_v1_confirmation = True
-        else:
-            mode = "WATCH"
-            regime = "WATCH"
-            enabled = False
-            requires_v1_confirmation = True
-
-        return {
-            "enabled": bool(enabled),
-            "regime": regime,
-            "mode": mode,
-            "requires_v1_confirmation": bool(requires_v1_confirmation),
-            "sample": total,
-            "matches": matches,
-            "rate": overall_rate,
-            "last5": w5,
-            "last10": w10,
-            "last20": w20,
-            # Compatibility aliases for the current dashboard.
-            "recent_n": w20["n"],
-            "recent_matches": w20["matches"],
-            "recent_rate": w20["rate"],
-            "baseline": 0.10,
-            "thresholds": {
-                "hot_start_last5": 0.20,
-                "hot_start_last10": 0.10,
-                "hot_confirmed_last10": 0.15,
-                "hot_confirmed_last20": 0.12,
-                "cold_last10_below": 0.08,
-                "cold_last20_below": 0.10,
-            },
-        }
-
-    def prediction_performance_status(self, sid: int):
-        state = dict(self._prediction_performance_state(int(sid)))
-
-        def rate(matches, total):
-            return (float(matches) / float(total)) if total else None
-
-        state["green_ai_rate"] = rate(
-            state.get("green_ai_matches", 0),
-            state.get("green_ai_total", 0),
-        )
-        state["crypto_rate"] = rate(
-            state.get("crypto_matches", 0),
-            state.get("crypto_total", 0),
-        )
-        state["crypto_authority"] = self._crypto_authority_status(int(sid))
-        state["v1_rate"] = rate(
-            state.get("v1_matches", 0),
-            state.get("v1_total", 0),
-        )
-        state["fusion_rate"] = rate(
-            state.get("fusion_matches", 0),
-            state.get("fusion_total", 0),
-        )
-        state["green_ai_threshold"] = 0.85
-        pending = self.green_ai_pending_by_sid.get(int(sid))
-        state["green_ai_pending"] = (
-            {k: v for k, v in pending.items() if k != "received_monotonic"}
-            if isinstance(pending, dict) else None
-        )
-        return state
-
-    def _score_previous_prediction(self, sid: int, previous_snapshot: dict, *, observed_digit, current_seq):
-        """Score one prepared snapshot against the next canonical server tick.
-
-        This is forward-only: snapshot rank_seq N is evaluated when sequence N+1
-        arrives. Duplicate rescoring/API refreshes cannot increase the counters.
-        """
-        if not isinstance(previous_snapshot, dict):
-            return
-        try:
-            prepared_seq = int(previous_snapshot.get("rank_seq") or 0)
-            current_seq = int(current_seq or 0)
-            observed_digit = int(observed_digit)
-        except (TypeError, ValueError):
-            return
-        if prepared_seq <= 0 or current_seq <= prepared_seq:
-            return
-        if int(self.prediction_performance_last_seq.get(int(sid), 0) or 0) >= prepared_seq:
-            return
-
-        state = self._prediction_performance_state(int(sid))
-        fusion = previous_snapshot.get("fusion") or {}
-
-        v1_digit = fusion.get("v1_digit", previous_snapshot.get("selected_digit"))
-        ai_digit = fusion.get("ai_digit")
-        ai_score = fusion.get("ai_score")
-        final_digit = fusion.get("final_digit")
-        tick_aligned = bool(fusion.get("tick_aligned"))
-
-        v1_match = None
-        ai_match = None
-        fusion_match = None
-
-        if v1_digit is not None:
-            try:
-                v1_digit = int(v1_digit)
-                state["v1_total"] += 1
-                v1_match = (v1_digit == observed_digit)
-                state["v1_matches"] += int(v1_match)
-            except (TypeError, ValueError):
-                pass
-
-        # Pure CRYPTO-AUDITOR forward performance. This is independent of the
-        # displayed AI score; every canonically aligned pure-crypto T forecast is
-        # scored once against T+1.
-        crypto_match = None
-        ai_evidence = fusion.get("ai") or {}
-        ai_source = str(fusion.get("ai_source") or ai_evidence.get("source") or "")
-        if tick_aligned and ai_digit is not None and ai_source == "CRYPTO-AUDITOR":
-            try:
-                crypto_digit = int(ai_digit)
-                crypto_match = (crypto_digit == observed_digit)
-                state["crypto_total"] = int(state.get("crypto_total", 0) or 0) + 1
-                state["crypto_matches"] = int(state.get("crypto_matches", 0) or 0) + int(crypto_match)
-                recent = list(state.get("crypto_recent") or [])
-                recent.append(bool(crypto_match))
-                state["crypto_recent"] = recent[-20:]
-            except (TypeError, ValueError):
-                crypto_match = None
-
-        # GREEN AI is scored by the independent forward recorder armed by
-        # set_ai_signal(). Browser AI arrives asynchronously and must not depend
-        # on whether it happened to be present inside this V1 snapshot.
-        green_ai = False
-
-        if final_digit is not None and bool(fusion.get("executable")):
-            try:
-                final_digit = int(final_digit)
-                state["fusion_total"] += 1
-                fusion_match = (final_digit == observed_digit)
-                state["fusion_matches"] += int(fusion_match)
-            except (TypeError, ValueError):
-                pass
-
-        state["last_outcome"] = {
-            "prepared_rank_seq": prepared_seq,
-            "observed_seq": current_seq,
-            "observed_digit": observed_digit,
-            "v1_digit": v1_digit,
-            "v1_match": v1_match,
-            "green_ai_digit": int(ai_digit) if green_ai else None,
-            "green_ai_score": float(ai_score) if green_ai else None,
-            "green_ai_match": ai_match,
-            "crypto_source": ai_source or None,
-            "crypto_match": crypto_match,
-            "crypto_authority": self._crypto_authority_status(int(sid)),
-            "fusion_digit": final_digit,
-            "fusion_match": fusion_match,
-            "fusion_source": fusion.get("source"),
-        }
-        self.prediction_performance_last_seq[int(sid)] = prepared_seq
-
-    def crypto_early_performance_status(self, sid: int):
-        """Persisted CRYPTO_FIRST execution outcomes, with emphasis on early wins."""
-        db = SessionLocal()
-        try:
-            rows = (
-                db.query(TradeLog)
-                .filter(TradeLog.trading_session_id == int(sid))
-                .order_by(TradeLog.id.asc())
-                .all()
-            )
-            selected = []
-            for row in rows:
-                try:
-                    raw = json.loads(row.raw_json or "{}")
-                    if not isinstance(raw, dict):
-                        continue
-                except Exception:
-                    continue
-                evidence = raw.get("dms_score_evidence") or {}
-                research = raw.get("selection_research") or {}
-                source = str(
-                    research.get("selector_source")
-                    or evidence.get("selector_source")
-                    or ""
-                )
-                if source not in {"CRYPTO_FIRST", "CRYPTO_HOT_PRIMARY"}:
-                    continue
-                settled = str(row.status or "").upper() == "SETTLED" and row.profit is not None
-                if not settled:
-                    continue
-                win = float(row.profit) > 0
-                selected.append({
-                    "trade_no": int(row.trade_no or 0),
-                    "win": bool(win),
-                })
-
-            total = len(selected)
-            wins = sum(1 for x in selected if x["win"])
-            def band(limit):
-                rows2 = [x for x in selected if 1 <= x["trade_no"] <= limit]
-                w = sum(1 for x in rows2 if x["win"])
-                return {
-                    "trades": len(rows2),
-                    "wins": w,
-                    "win_rate": (float(w) / float(len(rows2))) if rows2 else None,
-                }
-            win_depths = [x["trade_no"] for x in selected if x["win"]]
-            return {
-                "selector": "CRYPTO_HOT_PRIMARY",
-                "settled_trades": total,
-                "wins": wins,
-                "win_rate": (float(wins) / float(total)) if total else None,
-                "trade1": band(1),
-                "trade1_3": band(3),
-                "trade1_5": band(5),
-                "winning_depths": win_depths[-500:],
-                "early_win_share_1_3": (
-                    float(sum(1 for d in win_depths if d <= 3)) / float(len(win_depths))
-                    if win_depths else None
-                ),
-            }
-        finally:
-            db.close()
 
     def _lock(self, sid: int) -> asyncio.Lock:
         lock = self.session_locks.get(sid)
@@ -1340,14 +456,13 @@ class MultiUserEngine:
     def _digit_history(self, sid: int):
         history = self.digit_history.get(sid)
         if history is None:
-            history = deque(maxlen=200)
+            history = deque(maxlen=100)
             self.digit_history[sid] = history
         return history
 
     def _score_all_digits(self, sid: int, exclude_digit=None):
-        previous_snapshot = self.digit_score_snapshots.get(int(sid))
         snapshot = self.digit_scorer.rank(
-            list(self._digit_history(sid))[-100:],
+            list(self._digit_history(sid)),
             exclude_digit=exclude_digit,
         )
 
@@ -1402,31 +517,6 @@ class MultiUserEngine:
             snapshot["canonical_tick"] = None
             snapshot["feed_state"] = "RANK_WITHOUT_LIVE_TICK"
 
-        # Maintain a short exact canonical tick ledger for asynchronous browser
-        # AI forecasts. Dedupe API-triggered re-scores of the same market tick.
-        canonical_now = snapshot.get("canonical_tick") or {}
-        if canonical_now.get("seq"):
-            ledger = self._canonical_tick_ledger(int(sid))
-            seq_now = int(canonical_now.get("seq") or 0)
-            if not ledger or int(ledger[-1].get("seq") or 0) != seq_now:
-                ledger.append(dict(canonical_now))
-            self._bind_waiting_ai_on_server_tick(int(sid), canonical_now)
-            self._advance_green_ai_forward_recorder(int(sid), canonical_now)
-
-        # Score the PREVIOUS prepared forecast against this newly-arrived
-        # canonical tick before publishing the new prediction.
-        current_tick = snapshot.get("canonical_tick") or {}
-        current_digit = current_tick.get("digit")
-        current_seq = snapshot.get("rank_seq")
-        if current_digit is not None and current_seq:
-            self._score_previous_prediction(
-                int(sid),
-                previous_snapshot,
-                observed_digit=current_digit,
-                current_seq=current_seq,
-            )
-        snapshot["prediction_performance"] = self.prediction_performance_status(int(sid))
-
         execution_state = self.execution_contract_state.get(int(sid))
         snapshot["execution_contract"] = (
             json.loads(json.dumps(execution_state))
@@ -1443,10 +533,8 @@ class MultiUserEngine:
         minimum_margin = self.get_minimum_v1_margin(sid)
         margin_eligible = bool(
             snapshot.get("ready")
-            and snapshot.get("selected_digit") is not None
-            and (minimum_margin <= 0 or (
-                margin_value is not None and margin_value >= minimum_margin
-            ))
+            and margin_value is not None
+            and margin_value >= minimum_margin
         )
 
         snapshot["minimum_v1_margin"] = minimum_margin
@@ -1457,54 +545,26 @@ class MultiUserEngine:
             else "WARMING"
         )
 
-        # 200-tick challenger is shadow research only: NEVER alters purchased digit.
-        history_200 = list(self._digit_history(sid))
-        shadow_200 = self.shadow_200_scorer.rank(history_200)
-        self.shadow_200_snapshots[sid] = {
-            "version": "DIGIT_SCORE_200_SHADOW",
-            "history_count": len(history_200),
-            "selected_digit": shadow_200.get("selected_digit"),
-            "top_margin": shadow_200.get("top_margin"),
-            "rank_seq": snapshot.get("rank_seq"),
-        }
-        snapshot["shadow_200"] = dict(self.shadow_200_snapshots[sid])
-
-        latest_symbol = None
-        if isinstance(snapshot.get("canonical_tick"), dict):
-            latest_symbol = snapshot["canonical_tick"].get("symbol")
-        self._fusion_select(sid, snapshot, symbol=latest_symbol)
-
         self.digit_score_snapshots[sid] = snapshot
         return snapshot
 
-    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False, prepared_snapshot=None):
-        snapshot = (
-            self._score_all_digits(sid, exclude_digit=exclude_digit)
-            if exclude_digit is not None
-            else (prepared_snapshot if prepared_snapshot is not None
-                  else self.digit_score_snapshots.get(sid) or {})
-        )
+    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
+        snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
+        digit = snapshot.get("selected_digit")
 
-        symbol = None
-        canonical = snapshot.get("canonical_tick")
-        if isinstance(canonical, dict):
-            symbol = canonical.get("symbol")
-
-        fusion = self._fusion_select(sid, snapshot, symbol=symbol)
-        digit = fusion.get("final_digit")
-
-        if digit is None:
+        # Execution gate: rank #1 is visible continuously, but it is not
+        # executable until the separation from rank #2 reaches the minimum.
+        if not snapshot.get("margin_eligible"):
             return None, snapshot
 
-        if lock_target:
+        if lock_target and digit is not None:
             self.locked_target_snapshots[sid] = {
                 "digit": int(digit),
                 "snapshot": json.loads(json.dumps(snapshot)),
                 "locked_at": datetime.utcnow().isoformat(),
-                "selector_source": fusion.get("source"),
             }
 
-        return int(digit), snapshot
+        return (int(digit) if digit is not None else None), snapshot
 
     def _trade_score_evidence(self, sid: int, digit: int):
         """Return the exact execution snapshot frozen when this block target was chosen."""
@@ -1515,7 +575,7 @@ class MultiUserEngine:
             not snapshot
             or int(locked.get("digit", -1)) != int(digit)
         ):
-            snapshot = self.digit_score_snapshots.get(sid) or {}
+            snapshot = self._score_all_digits(sid)
 
         row = None
         for item in snapshot.get("ranking") or []:
@@ -1545,13 +605,6 @@ class MultiUserEngine:
             "candidate": row,
             "locked_target_digit": int(digit),
             "locked_at": locked.get("locked_at"),
-            "selector_source": locked.get("selector_source"),
-            "fusion": snapshot.get("fusion"),
-            "ai_signal": (
-                snapshot.get("fusion", {}).get("ai")
-                if isinstance(snapshot.get("fusion"), dict)
-                else None
-            ),
             "shadow": {
                 "version": shadow.get("version"),
                 "selected_digit": shadow.get("selected_digit"),
@@ -1568,7 +621,7 @@ class MultiUserEngine:
         sid,
         symbol,
         client,
-        count=200,
+        count=100,
     ):
         """
         Rebuild the server-side DigitScore window from Deriv recent tick history.
@@ -1581,9 +634,8 @@ class MultiUserEngine:
         sid = int(sid)
         history = self._digit_history(sid)
         minimum = int(getattr(self.digit_scorer, "min_history", 10) or 10)
-        target_count = max(minimum, min(200, int(count or 200)))
 
-        if len(history) >= target_count:
+        if len(history) >= minimum:
             return True
 
         generation = int(
@@ -1596,13 +648,13 @@ class MultiUserEngine:
                 await asyncio.shield(existing)
             except Exception:
                 pass
-            return len(self._digit_history(sid)) >= target_count
+            return len(self._digit_history(sid)) >= minimum
 
         async def do_bootstrap():
             try:
                 result = await client.ticks_history(
                     str(symbol),
-                    count=max(200, int(count or 200)),
+                    count=max(50, int(count or 100)),
                 )
 
                 payload = result.get("history") or {}
@@ -1615,12 +667,12 @@ class MultiUserEngine:
 
                 # Replace an incomplete process-local window with the canonical
                 # recent history returned by Deriv, preserving chronological order.
-                rebuilt = deque(maxlen=200)
+                rebuilt = deque(maxlen=100)
 
                 usable_times = len(times) == len(prices)
                 last_epoch = 0
 
-                for idx, price in enumerate(prices[-200:]):
+                for idx, price in enumerate(prices[-100:]):
                     tick = {
                         "quote": price,
                     }
@@ -1635,7 +687,7 @@ class MultiUserEngine:
 
                     if usable_times:
                         try:
-                            epoch = int(times[-len(prices[-200:]) + idx])
+                            epoch = int(times[-len(prices[-100:]) + idx])
                             last_epoch = max(last_epoch, epoch)
                         except Exception:
                             pass
@@ -1644,25 +696,6 @@ class MultiUserEngine:
                     return False
 
                 self.digit_history[sid] = rebuilt
-
-                # Record the last observation already included by ticks_history.
-                # The first live subscription callback can repeat this exact
-                # market observation, which must not enter DigitScore twice.
-                last_bootstrap_tick = {"quote": prices[-1]}
-                if pip_size is not None:
-                    last_bootstrap_tick["pip_size"] = pip_size
-                self.history_bootstrap_last_tick[sid] = {
-                    "epoch": (
-                        int(times[-1])
-                        if usable_times and times
-                        else int(last_epoch or 0)
-                    ),
-                    "formatted_quote": self._canonical_tick_text(
-                        last_bootstrap_tick
-                    ),
-                    "digit": self._tick_last_digit(last_bootstrap_tick),
-                    "generation": int(generation),
-                }
 
                 if last_epoch:
                     self.latest_tick_epoch[sid] = max(
@@ -1730,12 +763,12 @@ class MultiUserEngine:
     ):
         # Warm canonical server scoring immediately after process restart.
         # This does not place a trade; it only fetches public market history.
-        if len(self._digit_history(int(sid))) < 200:
+        if len(self._digit_history(int(sid))) < int(self.digit_scorer.min_history):
             await self._bootstrap_digit_history(
                 sid=int(sid),
                 symbol=str(symbol),
                 client=client,
-                count=200,
+                count=100,
             )
 
         existing = self.tick_subscriptions.get(sid)
@@ -1819,41 +852,6 @@ class MultiUserEngine:
 
         epoch = int(tick.get("epoch") or 0)
 
-        # De-duplicate the ticks_history -> live-subscription boundary. Match
-        # BOTH epoch and canonical formatted quote, so a genuinely different
-        # tick within the same second is never suppressed.
-        skip_bootstrap_duplicate = False
-        boundary = self.history_bootstrap_last_tick.get(int(sid))
-        if tick and not is_replay and isinstance(boundary, dict):
-            live_text = self._canonical_tick_text(
-                tick,
-                fallback_decimals=self.tick_precision.get(int(sid)),
-            )
-            boundary_epoch = int(boundary.get("epoch") or 0)
-            boundary_text = boundary.get("formatted_quote")
-            same_epoch = bool(
-                epoch and boundary_epoch and int(epoch) == boundary_epoch
-            )
-            same_quote = bool(
-                live_text is not None
-                and boundary_text is not None
-                and str(live_text) == str(boundary_text)
-            )
-
-            if same_epoch and same_quote:
-                skip_bootstrap_duplicate = True
-                self.history_bootstrap_last_tick.pop(int(sid), None)
-                if not hasattr(self, "_last_scored_seq"):
-                    self._last_scored_seq = {}
-                if tick_seq:
-                    self._last_scored_seq[int(sid)] = max(
-                        int(self._last_scored_seq.get(int(sid), 0)),
-                        int(tick_seq),
-                    )
-            elif epoch and boundary_epoch and int(epoch) > boundary_epoch:
-                # The feed has moved beyond the bootstrap boundary.
-                self.history_bootstrap_last_tick.pop(int(sid), None)
-
         # Only a new market callback may replace latest_ticks.
         if tick and not is_replay:
             cached = dict(tick)
@@ -1864,18 +862,7 @@ class MultiUserEngine:
             previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
             self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
 
-        # Freeze the fully prepared rank BEFORE incorporating this incoming tick.
-        # A recovery triggered by this tick must use that previous-tick rank,
-        # rather than a new rank derived from the trigger tick itself.
-        prepared_for_this_tick = self.digit_score_snapshots.get(sid)
-        if isinstance(prepared_for_this_tick, dict):
-            prepared_for_this_tick = dict(prepared_for_this_tick)
-        else:
-            prepared_for_this_tick = {}
-
-        digit = self._tick_last_digit(
-            tick, fallback_decimals=self.tick_precision.get(int(sid))
-        )
+        digit = self._tick_last_digit(tick)
         if digit is not None:
             history = self._digit_history(sid)
 
@@ -1887,7 +874,6 @@ class MultiUserEngine:
             # Score each real market sequence exactly once.
             if (
                 not is_replay
-                and not skip_bootstrap_duplicate
                 and (not tick_seq or tick_seq > last_scored_seq)
             ):
                 history.append(int(digit))
@@ -1987,12 +973,12 @@ class MultiUserEngine:
                 if is_win:
                     # MATCH: target == exact strategy tick last digit.
                     #
-                    # A displayed local match is PROVISIONAL. The tick visible
-                    # to this websocket may not be the purchased contract's
-                    # Deriv expiry tick. Wait for authoritative settlement.
+                    # Stop immediately. Do not wait for official settlement.
+                    # Settlement remains active in the background.
+                    s.running = False
                     s.paused = False
                     s.pending_real_confirmation = False
-                    s.phase = "LOCAL_MATCH_AWAITING_OFFICIAL"
+                    s.phase = "FAST_WON"
                     self.locked_target_snapshots.pop(sid, None)
                     s.last_error = None
                     s.updated_at = datetime.utcnow()
@@ -2020,20 +1006,18 @@ class MultiUserEngine:
                     2,
                 )
 
-                # Consume the rank prepared BEFORE this trigger tick arrived.
-                # The newer rank is solely for the next trading opportunity.
+                # The 0-9 cache was warmed while the current contract was open.
+                # Selection happens AFTER this decision tick is scored, so the
+                # freshest live V1 rank #1 can be bought without requesting a
+                # new proposal on the critical path.
                 payload = None
 
-                # Freeze the previously published rank for THIS recovery.
-                # AI FUSION V1 may rescue a weak V1 margin when AI evidence is strong.
-                current_snapshot = prepared_for_this_tick
+                # The latest V1 rank #1 is the authoritative NEXT target,
+                # but it is executable only when the V1 margin gate is open.
+                current_snapshot = self._score_all_digits(sid)
+                margin_ok = bool(current_snapshot.get("margin_eligible"))
 
-                desired_next, current_snapshot = self._choose_scored_digit(
-                    sid,
-                    lock_target=True,
-                    prepared_snapshot=prepared_for_this_tick,
-                )
-                if desired_next is None:
+                if not margin_ok:
                     s.current_stake = expected_stake
                     s.phase = "RECOVERY_WAITING_MARGIN"
                     s.last_error = None
@@ -2041,10 +1025,15 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                self._set_live_next_target(
+                desired_next, current_snapshot = self._choose_scored_digit(
                     sid,
-                    desired_next,
+                    lock_target=True,
                 )
+                if desired_next is not None:
+                    self._set_live_next_target(
+                        sid,
+                        desired_next,
+                    )
 
                 if desired_next is not None:
                     next_digit = int(desired_next)
@@ -2763,22 +1752,19 @@ class MultiUserEngine:
         stake = round(float(payload.get("stake") or 0), 2)
         expected_trade_no = int(row.current_trade or 0) + 1
 
-        # AI FUSION V1 — final authoritative pre-BUY barrier.
-        # Only a target frozen by _choose_scored_digit may be purchased.
-        locked = self.locked_target_snapshots.get(int(sid)) or {}
-        gate_snapshot = locked.get("snapshot") or {}
-        fusion = (
-            gate_snapshot.get("fusion")
-            if isinstance(gate_snapshot, dict)
-            else None
-        ) or {}
-
-        gate_top = fusion.get("final_digit")
+        # STRICT V1 MARGIN GATE — final authoritative pre-BUY barrier.
+        # A target may have qualified a fraction of a second earlier and then
+        # lost its lead on a newer tick before the network BUY was sent.
+        # Re-score HERE, immediately before claiming the paid purchase.
+        gate_snapshot = self._score_all_digits(int(sid))
+        gate_margin = gate_snapshot.get("top_margin")
+        gate_minimum = self.get_minimum_v1_margin(int(sid))
+        gate_top = gate_snapshot.get("selected_digit")
         gate_ok = bool(
-            fusion.get("executable")
+            gate_snapshot.get("ready")
+            and gate_snapshot.get("margin_eligible")
             and gate_top is not None
             and int(gate_top) == int(digit)
-            and int(locked.get("digit", -1)) == int(digit)
         )
 
         if not gate_ok:
@@ -2790,20 +1776,20 @@ class MultiUserEngine:
                 if int(row.current_trade or 0) > 0
                 else "WAITING_V1_MARGIN"
             )
-            row.last_error = "Fusion target changed or is no longer executable"
+            row.candidate_digit = (
+                int(gate_top) if gate_top is not None else row.candidate_digit
+            )
+            row.last_error = None
             row.updated_at = datetime.utcnow()
             db.commit()
             return None
 
         # Freeze the exact gate evidence used to authorize this BUY.
         payload["margin_gate"] = {
+            "top_margin": float(gate_margin) if gate_margin is not None else None,
+            "minimum_v1_margin": float(gate_minimum),
             "selected_digit": int(gate_top),
             "eligible": True,
-            "selector_source": fusion.get("source"),
-            "v1_top_margin": gate_snapshot.get("top_margin"),
-            "minimum_v1_margin": gate_snapshot.get("minimum_v1_margin"),
-            "ai_score": fusion.get("ai_score"),
-            "ai_support_count": fusion.get("ai_support_count"),
             "rank_seq": gate_snapshot.get("rank_seq"),
             "rank_epoch": gate_snapshot.get("rank_epoch"),
             "checked_at": datetime.utcnow().isoformat(),
@@ -3207,21 +2193,6 @@ class MultiUserEngine:
                 raw_json=json.dumps({
                     "deriv_buy": result,
                     "dms_score_evidence": score_evidence,
-                    "selection_research": {
-                        "trade_no": int(payload["trade_no"]),
-                        "purchased_digit": int(payload["digit"]),
-                        "selector_source": score_evidence.get("selector_source"),
-                        "v1_candidate": (score_evidence.get("fusion") or {}).get("v1_digit"),
-                        "crypto_candidate": (
-                            (score_evidence.get("fusion") or {}).get("ai_digit")
-                            if (score_evidence.get("fusion") or {}).get("ai_source") == "CRYPTO-AUDITOR"
-                            else None
-                        ),
-                        "ai_source": (score_evidence.get("fusion") or {}).get("ai_source"),
-                        "crypto_authority": (score_evidence.get("fusion") or {}).get("crypto_authority"),
-                        "rank_seq": score_evidence.get("rank_seq"),
-                        "recorded_at": datetime.utcnow().isoformat(),
-                    },
                     "margin_gate": payload.get("margin_gate"),
                     "execution_integrity": {
                         "instance_id": self.instance_id,
@@ -3286,8 +2257,6 @@ class MultiUserEngine:
             "local_result": None,
             "official_result": None,
             "decided": False,
-            "selector_source": score_evidence.get("selector_source"),
-            "fusion": score_evidence.get("fusion"),
         }
         self.execution_contract_state[int(row.id)] = execution_state
 
@@ -3698,9 +2667,6 @@ class MultiUserEngine:
                         official = "WIN" if float(log.profit) > 0 else "LOSS"
                         official_digit = self._official_exit_digit(int(sid), poc)
                         execution_state["official_result"] = official
-                        execution_state["settlement_verified"] = True
-                        execution_state["barrier_matches_exit_digit"] = (official_digit == int(execution_state["target_digit"]) if official_digit is not None else None)
-                        execution_state["local_official_mismatch"] = (execution_state.get("local_result") != official if execution_state.get("local_result") is not None else None)
                         execution_state["official_exit_spot"] = poc.get("exit_spot")
                         execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                         execution_state["official_decision_digit"] = official_digit
@@ -3719,18 +2685,6 @@ class MultiUserEngine:
                                 json.dumps(execution_state)
                             )
 
-                    if (
-                        isinstance(execution_state, dict)
-                        and str(execution_state.get("contract_id") or "") == str(contract_id)
-                        and execution_state.get("local_result") == "WIN"
-                        and s.phase == "LOCAL_MATCH_AWAITING_OFFICIAL"
-                    ):
-                        s.running = False
-                        if execution_state.get("official_result") == "WIN":
-                            s.phase = "OFFICIAL_WON"
-                        else:
-                            s.phase = "RECONCILE_MISMATCH"
-                            s.last_error = f"Local/official disagreement for contract {contract_id}"
                     s.updated_at = datetime.utcnow()
                     db.commit()
                     return
@@ -3762,24 +2716,6 @@ class MultiUserEngine:
                         int(sid),
                         poc,
                     )
-                    selection_research = existing_raw.get("selection_research")
-                    if not isinstance(selection_research, dict):
-                        selection_research = {}
-                    actual_digit = existing_raw.get("settlement_exit_digit")
-                    selection_research.update({
-                        "actual_digit": actual_digit,
-                        "result": "WIN" if profit > 0 else "LOSS",
-                        "profit": float(profit),
-                        "settled_trade_no": int(log.trade_no or 0),
-                        "early_band": (
-                            "TRADE_1" if int(log.trade_no or 0) == 1
-                            else "TRADE_2_3" if int(log.trade_no or 0) <= 3
-                            else "TRADE_4_5" if int(log.trade_no or 0) <= 5
-                            else "TRADE_6_PLUS"
-                        ),
-                        "settled_at": datetime.utcnow().isoformat(),
-                    })
-                    existing_raw["selection_research"] = selection_research
                     log.raw_json = json.dumps(existing_raw)
 
                 s.pnl = float(s.pnl or 0) + profit
@@ -3836,9 +2772,6 @@ class MultiUserEngine:
                 ):
                     official_digit = self._official_exit_digit(int(sid), poc)
                     execution_state["official_result"] = official
-                    execution_state["settlement_verified"] = True
-                    execution_state["barrier_matches_exit_digit"] = (official_digit == int(execution_state["target_digit"]) if official_digit is not None else None)
-                    execution_state["local_official_mismatch"] = (execution_state.get("local_result") != official if execution_state.get("local_result") is not None else None)
                     execution_state["official_exit_spot"] = poc.get("exit_spot")
                     execution_state["official_exit_spot_time"] = poc.get("exit_spot_time")
                     execution_state["official_decision_digit"] = official_digit
@@ -3919,25 +2852,6 @@ class MultiUserEngine:
                             f"{fast['fast_result']} disagreed with "
                             f"Deriv settlement {official} for "
                             f"contract {contract_id}"
-                        )
-
-                # Never promote a provisional local match to a verified win.
-                if (
-                    fast
-                    and fast.get("fast_result") == "WIN"
-                    and str(fast.get("contract_id")) == str(contract_id)
-                ):
-                    if official == "WIN" and s.phase not in ("RECONCILE_MISMATCH", "RECONCILE_TICK_MISMATCH"):
-                        s.running = False
-                        s.paused = False
-                        s.phase = "OFFICIAL_WON"
-                    else:
-                        s.running = False
-                        s.paused = False
-                        s.phase = "RECONCILE_MISMATCH"
-                        s.last_error = (
-                            f"Local digit appeared to match, but Deriv official result "
-                            f"is {official} for contract {contract_id}"
                         )
 
                 # If FAST_WON has already occurred, an older losing contract

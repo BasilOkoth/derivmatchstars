@@ -512,66 +512,6 @@
 
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&amp;display=swap" rel="stylesheet"/>
-
-<style id="dms-lean-ui-v9">
-  #digit-analysis-panel { max-height:260px; overflow-y:auto; }
-  /* A compact default interface, advanced diagnostics remain accessible on demand. */
-  #digit-analysis-panel .text-\[11px\] { font-size:10px; }
-  #dms-frequency-study { box-shadow:none !important; margin-top:10px !important; }
-  #dms70-rec-panel { z-index:2147483646; }
-  @media(max-width:767px){
-    #dms-frequency-study { padding:9px !important; }
-    #dms70-rec-panel {max-width:160px !important;}
-  }
-</style>
-
-<!-- DMS V28 DISPLAY STABILITY: presentation only, never touches purchase logic -->
-<style id="dms-v28-stable-ui">
-/* Fixed metric geometry prevents moving adjacent cards as text changes. */
-#metricLiveTick, #metricLastDigit, #metricTickRate,
-#metricAccountBalance, #metricTradeCount, #metricTotalProfit,
-#metricCurrentStake {
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-  white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transform: none !important;
-}
-#metricLiveTick { min-height: 1.75rem; }
-#metricLastDigit, #metricAccountBalance, #metricTradeCount,
-#metricTotalProfit, #metricCurrentStake { min-height: 1.5rem; }
-#metricTickRate { min-height: 1.05rem; }
-#trade-result-container {
-  min-height: 8.6rem;
-  overflow: hidden;
-  contain: layout;
-}
-#metricTradeResult {
-  display: inline-block;
-  min-width: 4.5rem;
-  max-width: 70%;
-  text-align: right;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 500 !important;
-}
-#metricPreviousResult, #metricNextAction {
-  display: block;
-  min-height: 1.15rem;
-  line-height: 1.15rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 400 !important;
-}
-#metricTotalProfit.pnl-update-animation { animation: none !important; }
-@media (prefers-reduced-motion: reduce) {
-  #trade-result-container, #trade-result-container * { animation: none !important; transition: none !important; }
-}
-</style>
 </head>
 <body class="min-h-screen p-4 sm:p-8 flex items-start justify-center">
 <div class="w-full max-w-6xl bg-gray-800 text-gray-100 shadow-2xl rounded-xl p-5 md:p-6">
@@ -638,27 +578,16 @@
 <div class="text-sm font-bold text-yellow-400" id="engine-status-text">Warming up...</div>
 <div class="text-xs text-gray-400 mt-1" id="engine-regime-status">Regime: Unknown</div>
 </div>
-<!-- Next-tick AI Forecast -->
-<div class="mb-3 p-2 bg-gray-900 rounded border border-cyan-500/30">
-<div class="text-xs font-semibold text-cyan-300 mb-1">AI NEXT-TICK TARGET (T+1):</div>
-<div class="text-2xl font-bold text-center text-cyan-300" id="ai-recommended-digit">-</div>
+<!-- Selected Digit -->
+<div class="mb-3 p-2 bg-gray-900 rounded border border-green-500/30">
+<div class="text-xs font-semibold text-green-400 mb-1">AI Recommended Digit:</div>
+<div class="text-2xl font-bold text-center text-green-400" id="ai-recommended-digit">-</div>
 <div class="text-xs text-gray-400 text-center" id="ai-digit-score">Score: -</div>
-<div class="mt-2 grid grid-cols-2 gap-2 text-[10px]">
-  <div class="rounded border border-slate-700 bg-slate-950/60 px-2 py-1">
-    <span class="text-slate-500">Observed tick T:</span>
-    <span id="ai-source-tick-digit" class="ml-1 font-black text-white">—</span>
-  </div>
-  <div class="rounded border border-slate-700 bg-slate-950/60 px-2 py-1">
-    <span class="text-slate-500">Previous forecast:</span>
-    <span id="ai-prev-forecast-result" class="ml-1 font-black text-slate-300">WAITING</span>
-  </div>
-</div>
-<div class="mt-1 text-[9px] text-slate-500 text-center">This digit predicts the NEXT market tick. It is never scored against the tick that generated it.</div>
 </div>
 <!-- Digit Analysis (Collapsible) -->
 <div class="mt-2">
 <button class="w-full text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded mb-2" onclick="toggleDigitAnalysis()">
-                                Advanced diagnostics <span id="digit-analysis-toggle">▼</span>
+                                📊 Show Digit Analysis <span id="digit-analysis-toggle">▼</span>
 </button>
 <div class="digit-analysis-panel hidden p-2 bg-gray-900 rounded border border-gray-700" id="digit-analysis-panel">
 <div class="text-xs font-semibold text-gray-300 mb-2">Digit Statistics:</div>
@@ -833,7 +762,6 @@
 <p class="text-xl font-extrabold text-white" id="metricLiveTick">---</p>
 <p class="text-lg font-bold text-green-300" id="metricLastDigit">Digit: ?</p>
 <p class="text-xs font-bold text-blue-400" id="metricTickRate">Ticks/sec: --</p>
-<p class="text-sm font-extrabold text-gray-400" id="metricLockedLiveMatch" aria-live="polite">Locked digit: —</p>
 </div>
 <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50">
 <p class="text-[10px] font-semibold text-green-500 uppercase">Balance</p>
@@ -852,13 +780,19 @@
 <p class="text-lg font-bold text-white" id="metricCurrentStake">$0.00</p>
 </div>
 <!-- TRADE STATUS SECTION -->
-<div class="bg-gray-900 rounded-lg px-3 py-2 shadow-inner border border-gray-700/70 col-span-3" id="trade-result-container">
-<div class="flex justify-between items-center gap-2 mb-1">
-<p class="text-[10px] font-medium text-gray-400">Trade</p>
-<p class="text-xs font-medium text-gray-200" id="metricTradeResult">Ready</p>
+<div class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3" id="trade-result-container">
+<div class="flex justify-between items-center mb-2">
+<p class="text-[10px] font-semibold text-yellow-500 uppercase">TRADE STATUS</p>
+<p class="text-xs font-bold text-gray-400" id="metricTradeResult">READY</p>
 </div>
-<p class="text-xs font-normal text-gray-300 leading-snug" id="metricPreviousResult">Waiting for connection...</p>
-<p class="text-[11px] font-normal text-gray-400 leading-snug mt-1" id="metricNextAction">Start bot to begin</p>
+<div class="mb-2">
+<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Status:</p>
+<p class="text-sm font-bold text-gray-300" id="metricPreviousResult">Waiting for connection...</p>
+</div>
+<div>
+<p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
+<p class="text-sm font-bold text-yellow-400" id="metricNextAction">Start bot to begin</p>
+</div>
 
 <div class="trade-actions">
 <button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
@@ -1307,8 +1241,7 @@
                     events:0,
                     lagCounts:Array.from({length:cfg.lagDepth},()=>Array(10).fill(1)), // smoothing
                     contexts2:{}, contexts3:{}, contexts4:{},
-                    entropy5:[], entropy10:[], entropy20:[], entropy50:[], entropy100:[],
-                    entropySlopeFast:[], entropySlopeSlow:[], entropyCompression:[],
+                    entropy10:[], entropy20:[],
                     freq20:[], preGap:[], runLength:[]
                 }));
 
@@ -1330,19 +1263,8 @@
                         }
                     }
 
-                    const h5=this.entropy(arr.slice(Math.max(0,i-5),i));
-                    const h10=this.entropy(arr.slice(Math.max(0,i-10),i));
-                    const h20=this.entropy(arr.slice(Math.max(0,i-20),i));
-                    const h50=this.entropy(arr.slice(Math.max(0,i-50),i));
-                    const h100=this.entropy(arr.slice(Math.max(0,i-100),i));
-                    p.entropy5.push(h5);
-                    p.entropy10.push(h10);
-                    p.entropy20.push(h20);
-                    p.entropy50.push(h50);
-                    p.entropy100.push(h100);
-                    p.entropySlopeFast.push(h5-h20);
-                    p.entropySlopeSlow.push(h20-h100);
-                    p.entropyCompression.push(h10-h50);
+                    p.entropy10.push(this.entropy(arr.slice(Math.max(0,i-10),i)));
+                    p.entropy20.push(this.entropy(arr.slice(Math.max(0,i-20),i)));
                     p.freq20.push(this.freqBefore(arr,i,target,20));
                     p.preGap.push(this.previousGap(arr,i,target));
                     p.runLength.push(this.runLengthBefore(arr,i));
@@ -1371,22 +1293,10 @@
                         top2:topContexts(p.contexts2),
                         top3:topContexts(p.contexts3),
                         top4:topContexts(p.contexts4),
-                        meanEntropy5:mean(p.entropy5),
-                        sdEntropy5:sd(p.entropy5),
                         meanEntropy10:mean(p.entropy10),
                         sdEntropy10:sd(p.entropy10),
                         meanEntropy20:mean(p.entropy20),
                         sdEntropy20:sd(p.entropy20),
-                        meanEntropy50:mean(p.entropy50),
-                        sdEntropy50:sd(p.entropy50),
-                        meanEntropy100:mean(p.entropy100),
-                        sdEntropy100:sd(p.entropy100),
-                        meanEntropySlopeFast:mean(p.entropySlopeFast),
-                        sdEntropySlopeFast:sd(p.entropySlopeFast),
-                        meanEntropySlopeSlow:mean(p.entropySlopeSlow),
-                        sdEntropySlopeSlow:sd(p.entropySlopeSlow),
-                        meanEntropyCompression:mean(p.entropyCompression),
-                        sdEntropyCompression:sd(p.entropyCompression),
                         meanFreq20:mean(p.freq20),
                         sdFreq20:sd(p.freq20),
                         meanPreGap:mean(p.preGap),
@@ -1425,14 +1335,8 @@
                     lags:Array.from({length:window.DIGIT_DNA_CONFIG.lagDepth},(_,j)=>
                         n-1-j>=0 ? arr[n-1-j] : null
                     ),
-                    entropy5:this.entropy(arr.slice(-5)),
                     entropy10:this.entropy(arr.slice(-10)),
                     entropy20:this.entropy(arr.slice(-20)),
-                    entropy50:this.entropy(arr.slice(-50)),
-                    entropy100:this.entropy(arr.slice(-100)),
-                    entropySlopeFast:this.entropy(arr.slice(-5))-this.entropy(arr.slice(-20)),
-                    entropySlopeSlow:this.entropy(arr.slice(-20))-this.entropy(arr.slice(-100)),
-                    entropyCompression:this.entropy(arr.slice(-10))-this.entropy(arr.slice(-50)),
                     freq20:this.freqBefore(arr,n,target,20),
                     gap:this.previousGap(arr,n,target),
                     runLength:this.runLengthBefore(arr,n),
@@ -1459,29 +1363,11 @@
                 });
                 const lagScore=lagN ? 1/(1+Math.exp(-(lagLog/lagN))) : 0.5;
 
-                const e5=this.gaussianSimilarity(
-                    current.entropy5,profile.meanEntropy5,profile.sdEntropy5,0.07
-                );
                 const e10=this.gaussianSimilarity(
                     current.entropy10,profile.meanEntropy10,profile.sdEntropy10,0.05
                 );
                 const e20=this.gaussianSimilarity(
                     current.entropy20,profile.meanEntropy20,profile.sdEntropy20,0.04
-                );
-                const e50=this.gaussianSimilarity(
-                    current.entropy50,profile.meanEntropy50,profile.sdEntropy50,0.03
-                );
-                const e100=this.gaussianSimilarity(
-                    current.entropy100,profile.meanEntropy100,profile.sdEntropy100,0.025
-                );
-                const entropySlopeFast=this.gaussianSimilarity(
-                    current.entropySlopeFast,profile.meanEntropySlopeFast,profile.sdEntropySlopeFast,0.05
-                );
-                const entropySlopeSlow=this.gaussianSimilarity(
-                    current.entropySlopeSlow,profile.meanEntropySlopeSlow,profile.sdEntropySlopeSlow,0.04
-                );
-                const entropyCompression=this.gaussianSimilarity(
-                    current.entropyCompression,profile.meanEntropyCompression,profile.sdEntropyCompression,0.04
                 );
                 const f20=this.gaussianSimilarity(
                     current.freq20,profile.meanFreq20,profile.sdFreq20,0.03
@@ -1504,38 +1390,20 @@
                 const c3=ctxScore(current.c3,8);
                 const c4=ctxScore(current.c4,5);
 
-                // Entropy is now a first-class precursor signal. It does not name a
-                // digit on its own; instead we ask whether the CURRENT multi-horizon
-                // entropy state resembles the states that historically preceded THIS
-                // target digit. This avoids turning low entropy into a simplistic rule.
-                const entropyMatch=
-                    0.10*e5+
-                    0.17*e10+
-                    0.20*e20+
-                    0.14*e50+
-                    0.09*e100+
-                    0.12*entropySlopeFast+
-                    0.08*entropySlopeSlow+
-                    0.10*entropyCompression;
-
                 const score=
-                    0.22*lagScore+
-                    0.13*c2+
-                    0.09*c3+
-                    0.06*c4+
-                    0.22*entropyMatch+
-                    0.07*f20+
-                    0.14*gap+
-                    0.07*run;
+                    0.28*lagScore+
+                    0.15*c2+
+                    0.10*c3+
+                    0.07*c4+
+                    0.08*e10+
+                    0.07*e20+
+                    0.08*f20+
+                    0.12*gap+
+                    0.05*run;
 
                 return {
                     score,
-                    parts:{
-                        lagScore,c2,c3,c4,
-                        e5,e10,e20,e50,e100,
-                        entropySlopeFast,entropySlopeSlow,entropyCompression,entropyMatch,
-                        f20,gap,run
-                    }
+                    parts:{lagScore,c2,c3,c4,e10,e20,f20,gap,run}
                 };
             },
 
@@ -1886,13 +1754,7 @@
             },
 
             armNextForecast(symbol=null) {
-                // analyzeAndRecommend() already refreshed DNA for this canonical tick.
-                // Reuse that snapshot instead of rebuilding 1,500-tick profiles twice.
-                const requestedSymbol = String(symbol || this.forward.loadedSymbol || 'UNKNOWN');
-                const cached = this.lastSnapshot;
-                const s = (cached && String(cached.symbol || requestedSymbol) === requestedSymbol)
-                    ? cached
-                    : this.analyze(symbol);
+                const s=this.analyze(symbol);
                 if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
 
                 const featureTop=Number(window.digitFeatureEngine?.lastSnapshot?.topDigit);
@@ -2086,7 +1948,7 @@
         };
 
         // ============================================================================
-        // DIGITMATCHSTAR V55.2 — ENTROPY-STRENGTHENED DIGIT FEATURE ENGINE
+        // DIGITMATCHSTAR V55 — DIGIT FEATURE ENGINE
         //
         // Feature engineering discussed for cryptanalysis-style AI:
         //   • multi-window digit frequencies (5/20/50/100/200)
@@ -2094,7 +1956,7 @@
         //   • 10x10 transition probabilities
         //   • 2-, 3- and 4-gram conditional next-digit probabilities
         //   • current gap, gap/average-gap and recent run length
-        //   • entropy at 5/10/20/50/100/200 ticks, slope, acceleration and compression
+        //   • entropy at 20/50/100 ticks and entropy trend
         //   • lag-1 mutual information
         //   • tick interval, price direction and short volatility context
         //
@@ -2113,7 +1975,7 @@
         };
 
         window.digitFeatureEngine = {
-            version: 'DFE-2-ENTROPY-FUSION',
+            version: 'DFE-1',
             lastSnapshot: null,
 
             safeDigits() {
@@ -2252,24 +2114,10 @@
                 const n=arr.length;
                 const cfg=window.DIGIT_FEATURE_CONFIG;
 
-                const e5=this.entropyOf(arr.slice(-5));
-                const e10=this.entropyOf(arr.slice(-10));
                 const e20=this.entropyOf(arr.slice(-20));
                 const e50=this.entropyOf(arr.slice(-50));
                 const e100=this.entropyOf(arr.slice(-100));
-                const e200=this.entropyOf(arr.slice(-200));
                 const entropyTrend=e20-e100;
-                const entropySlopeFast=e5-e20;
-                const entropySlopeSlow=e20-e100;
-                const entropyCompression=e10-e50;
-                const entropyAcceleration=entropySlopeFast-entropySlopeSlow;
-                // 0 = highly disordered, 1 = comparatively structured/compressed.
-                const entropyStructure=Math.max(0,Math.min(1,
-                    0.45*(1-e20)+
-                    0.20*Math.max(0,-entropySlopeFast)+
-                    0.15*Math.max(0,-entropyCompression)+
-                    0.20*(1-e50)
-                ));
                 const mi=this.mutualInformationLag1(arr.slice(-Math.min(500,n)));
                 const runLength=this.runLength(arr);
                 const market=this.marketContext();
@@ -2277,9 +2125,8 @@
                 if(n<cfg.minHistory){
                     const snap={
                         ready:false,historyN:n,symbol,
-                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
-                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
-                        mutualInformation:mi,
+                        entropy20:e20,entropy50:e50,entropy100:e100,
+                        entropyTrend,mutualInformation:mi,
                         runLength,market,rows:[],topDigit:null,signalStrength:0
                     };
                     this.lastSnapshot=snap;
@@ -2287,19 +2134,13 @@
                     return snap;
                 }
 
-                // T+1 discipline: the just-arrived digit T is valid CONTEXT for
-                // transitions/ngrams, but it must not give itself a free +1 boost in
-                // unconditional recent-frequency features. Those frequencies are
-                // measured on history ending at T-1.
-                const frequencyHistory = arr.length > 1 ? arr.slice(0, -1) : arr;
-
                 const rows=[];
                 for(let d=0;d<10;d++){
-                    const f5=this.freq(frequencyHistory,d,5);
-                    const f20=this.freq(frequencyHistory,d,20);
-                    const f50=this.freq(frequencyHistory,d,50);
-                    const f100=this.freq(frequencyHistory,d,100);
-                    const f200=this.freq(frequencyHistory,d,200);
+                    const f5=this.freq(arr,d,5);
+                    const f20=this.freq(arr,d,20);
+                    const f50=this.freq(arr,d,50);
+                    const f100=this.freq(arr,d,100);
+                    const f200=this.freq(arr,d,200);
 
                     const momentum=f20-f100;
                     const acceleration=(f5-f20)-(f20-f50);
@@ -2321,28 +2162,18 @@
                     const p3=r3*n3.p+(1-r3)*0.10;
                     const p4=r4*n4.p+(1-r4)*0.10;
 
-                    // Entropy does not pick a digit directly. It controls how much
-                    // trust we place in conditional structure versus unconditional
-                    // frequency. When the stream compresses / entropy falls, genuine
-                    // transition and n-gram evidence gets more weight; in high entropy
-                    // states the engine shrinks back toward conservative weighting.
-                    const contextBoost = 1 + 0.85*entropyStructure;
-                    const frequencyShrink = 1 - 0.45*entropyStructure;
+                    // Feature score is a ranking score, not a probability.
                     const raw =
-                        contextBoost*(
-                            0.18*tr.p +
-                            0.18*p2 +
-                            0.12*p3 +
-                            0.07*p4
-                        ) +
-                        frequencyShrink*(
-                            0.15*f20 +
-                            0.10*f50 +
-                            0.08*f100 +
-                            0.05*f200 +
-                            0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
-                            0.03*Math.max(0,Math.min(0.30,0.10+acceleration))
-                        );
+                        0.18*tr.p +
+                        0.18*p2 +
+                        0.12*p3 +
+                        0.07*p4 +
+                        0.15*f20 +
+                        0.10*f50 +
+                        0.08*f100 +
+                        0.05*f200 +
+                        0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
+                        0.03*Math.max(0,Math.min(0.30,0.10+acceleration));
 
                     rows.push({
                         digit:d,score:raw,
@@ -2352,9 +2183,8 @@
                         ngram3P:p3,ngram3Support:n3.support,
                         ngram4P:p4,ngram4Support:n4.support,
                         gap,avgGap,gapRatio,
-                        entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
-                        entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
-                        mutualInformation:mi,runLength,
+                        entropy20:e20,entropy50:e50,entropy100:e100,
+                        entropyTrend,mutualInformation:mi,runLength,
                         priceDirection:market.direction,
                         priceVolatility:market.volatility,
                         meanTickInterval:market.meanInterval
@@ -2368,12 +2198,7 @@
 
                 const top=rows[0], second=rows[1];
                 const margin=Math.max(0,(top?.scoreShare||0)-(second?.scoreShare||0));
-                const entropySignal=Math.max(0,Math.min(1,
-                    0.50*entropyStructure +
-                    0.25*Math.max(0,1-e20) +
-                    0.15*Math.max(0,-entropySlopeFast) +
-                    0.10*Math.max(0,-entropyCompression)
-                ));
+                const entropySignal=Math.max(0,1-e20);
                 const miSignal=Math.min(1,mi/0.10);
                 const marginSignal=Math.min(1,margin/0.025);
                 const contextSupport=Math.min(
@@ -2388,9 +2213,8 @@
 
                 const snap={
                     ready:true,historyN:n,symbol,
-                    entropy5:e5,entropy10:e10,entropy20:e20,entropy50:e50,entropy100:e100,entropy200:e200,
-                    entropyTrend,entropySlopeFast,entropySlopeSlow,entropyCompression,entropyAcceleration,entropyStructure,
-                    mutualInformation:mi,runLength,market,
+                    entropy20:e20,entropy50:e50,entropy100:e100,
+                    entropyTrend,mutualInformation:mi,runLength,market,
                     topDigit:top?.digit ?? null,
                     topScore:top?.score ?? null,
                     topShare:top?.scoreShare ?? null,
@@ -2611,15 +2435,11 @@
                     return snap;
                 }
 
-                // Use T as conditional context, not as an unconditional vote for
-                // itself. The latest digit is excluded from recent/global frequency
-                // distributions but retained in transition/ngram context.
-                const unconditionalHistory = digits.length > 1 ? digits.slice(0, -1) : digits;
-                const recent=unconditionalHistory.slice(-100);
+                const recent=digits.slice(-100);
                 const recentP=this.distribution(recent);
                 const trans=this.transitionDistribution(digits);
                 const ng=this.ngram2Distribution(digits);
-                const globalP=this.distribution(unconditionalHistory);
+                const globalP=this.distribution(digits);
 
                 const globalEntropy=this.normalizedEntropy(globalP);
                 const conditionalEntropy=this.normalizedEntropy(ng.probs);
@@ -2890,64 +2710,12 @@
                 }
             },
             
-            // Process live tick. NEXT-TICK discipline:
-            // 1) score the PREVIOUS forecast against the newly-arrived tick;
-            // 2) ingest this tick into history;
-            // 3) generate a fresh forecast strictly for T+1.
-            processLiveTick: function(digit, providedTickBiasMeta = null) {
+            // Process live tick
+            processLiveTick: function(digit) {
                 if (!this.enabled) return;
                 
                 // 🔥 FIXED: digit 0 is valid, so check for NaN instead
                 if (isNaN(digit) || digit < 0 || digit > 9) return;
-
-                const previousForecast = this.currentRecommendation
-                    ? { ...this.currentRecommendation }
-                    : null;
-
-                // CURRENT-TICK BIAS AUDIT V2: accept this Deriv tick exactly once
-                // using its canonical browser-stream identity (symbol + epoch +
-                // canonical formatted quote). Duplicate deliveries of the same
-                // market tick must never mature or arm a T+1 forecast twice.
-                let currentTickBiasMeta = providedTickBiasMeta || null;
-                try {
-                    // Normal live path pre-validates the canonical tick in handleTick()
-                    // so duplicate Deriv deliveries never enter ANY model twice. Keep
-                    // this fallback for direct/test calls to processLiveTick().
-                    if (!currentTickBiasMeta) {
-                        currentTickBiasMeta = window.currentTickBiasAudit?.observeTick?.(
-                            window.lastTick,
-                            Number(digit)
-                        ) || null;
-                    }
-                    if (currentTickBiasMeta?.accepted) {
-                        window.currentTickBiasAudit?.settle?.(
-                            Number(digit),
-                            currentTickBiasMeta
-                        );
-                    } else if (currentTickBiasMeta) {
-                        return; // never learn/recompute from a duplicate canonical tick
-                    }
-                } catch (err) {
-                    console.warn('Current-tick bias audit settle skipped:', err);
-                }
-
-                const observedEl = document.getElementById('ai-source-tick-digit');
-                const previousResultEl = document.getElementById('ai-prev-forecast-result');
-                if (observedEl) observedEl.textContent = String(digit);
-                if (previousResultEl) {
-                    if (previousForecast && Number.isInteger(Number(previousForecast.digit))) {
-                        const hit = Number(previousForecast.digit) === Number(digit);
-                        previousResultEl.textContent = hit
-                            ? `HIT ✓ (${previousForecast.digit} → ${digit})`
-                            : `MISS (${previousForecast.digit} → ${digit})`;
-                        previousResultEl.className = hit
-                            ? 'ml-1 font-black text-emerald-300'
-                            : 'ml-1 font-black text-rose-300';
-                    } else {
-                        previousResultEl.textContent = 'WAITING';
-                        previousResultEl.className = 'ml-1 font-black text-slate-300';
-                    }
-                }
 
                 // SurvivalEngine rolling digits buffer
                 window.lastDigits.push(digit);
@@ -2976,31 +2744,9 @@
                 this.updateRegime(digit);
                 this.onNewDigit(digit);
                 
-                // AI FUSION V1: refresh recommendation after EVERY genuine live tick
-                // so a prepared AI target is available for the following market tick.
-                if (this.warmupDone) {
+                // Refresh AI ranking every 10 ticks.
+                if (this.tickIndex % 10 === 0) {
                     this.analyzeAndRecommend();
-
-                    // Freeze exactly one T -> T+1 audit observation. The
-                    // source digit is the just-observed market digit; the AI
-                    // target must not be scored until the following live tick.
-                    try {
-                        const symbol =
-                            document.getElementById('symbol')?.value ||
-                            window.currentSymbol ||
-                            window.tickFormat?.symbol ||
-                            'UNKNOWN';
-                        if (currentTickBiasMeta?.accepted) {
-                            window.currentTickBiasAudit?.arm?.(
-                                this.currentRecommendation,
-                                Number(digit),
-                                String(symbol),
-                                currentTickBiasMeta
-                            );
-                        }
-                    } catch (err) {
-                        console.warn('Current-tick bias audit arm skipped:', err);
-                    }
                 }
             },
             
@@ -3262,172 +3008,8 @@ expectedAdditionalTicks: function(gaps, g) {
                 return best;
             },
 
-            // FEATURE-DRIVEN CURRENT-DIGIT COPY GUARD
-            //
-            // The latest digit T is allowed to be selected again for T+1, but only
-            // when independent forward-context features support a repeat. This does
-            // NOT blacklist the current digit. It removes the failure mode where
-            // unconditional recency alone makes the AI echo T.
-            applyCurrentDigitCopyGuard: function(best, featureSnap, auditor, dnaSnap, survivalByDigit) {
-                if (!best) return best;
-
-                const sourceTick = window.lastTick || null;
-                const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
-                const rawDigit = Number(sourceTick?.lastDigit ?? sourceTick?.digit);
-                const currentDigit = Number.isInteger(rawDigit)
-                    ? rawDigit
-                    : (() => {
-                        const m = formatted.match(/(\d)(?!.*\d)/);
-                        return m ? Number(m[1]) : null;
-                    })();
-
-                if (!Number.isInteger(currentDigit) || Number(best.digit) !== currentDigit) {
-                    if (best) best.copyGuard = { applied:false, currentDigit, decision:'NOT_COPYING_CURRENT' };
-                    return best;
-                }
-
-                const fRows = Array.isArray(featureSnap?.rows) ? featureSnap.rows : [];
-                const aRows = Array.isArray(auditor?.rows) ? auditor.rows : [];
-                const dRows = Array.isArray(dnaSnap?.rows) ? dnaSnap.rows : [];
-
-                const fCur = fRows.find(r => Number(r.digit) === currentDigit) || null;
-                const aCur = aRows.find(r => Number(r.digit) === currentDigit) || null;
-                const dCur = dRows.find(r => Number(r.digit) === currentDigit) || null;
-                const sCur = survivalByDigit?.get?.(currentDigit) || null;
-
-                // Best alternative is selected from the SAME feature engines. Each
-                // engine contributes a normalized rank signal; no arbitrary digit is
-                // substituted.
-                const altRows = [];
-                for (let d=0; d<10; d++) {
-                    if (d === currentDigit) continue;
-                    const fr = fRows.find(r => Number(r.digit) === d) || null;
-                    const ar = aRows.find(r => Number(r.digit) === d) || null;
-                    const dr = dRows.find(r => Number(r.digit) === d) || null;
-                    const sr = survivalByDigit?.get?.(d) || null;
-
-                    const feature = Number(fr?.scoreShare ?? 0);
-                    const auditorP = Number(auditor?.predictions?.[d] ?? 0);
-                    const dna = Number(dr?.similarity ?? 0);
-                    const survivalRaw = sr
-                        ? (2.0*Number(sr.pm5||0) + 1.0*Number(sr.pm10||0) - 2.5*Number(sr.s20||0) - 0.05*Math.min(Number.isFinite(sr.etm)?Number(sr.etm):100,100))
-                        : -10;
-                    const survival = sr ? 1/(1+Math.exp(-survivalRaw)) : 0;
-
-                    const ensemble = 0.40*feature + 0.25*auditorP + 0.20*dna + 0.15*survival;
-                    altRows.push({digit:d, ensemble, fr, ar, dr, sr});
-                }
-                altRows.sort((a,b)=>b.ensemble-a.ensemble || a.digit-b.digit);
-                const alt = altRows[0] || null;
-                if (!alt) return best;
-
-                // STRICT STRUCTURAL REPEAT VALIDATION
-                //
-                // A current-digit repeat is NOT retained just because two correlated
-                // short-window features agree. It now needs evidence from BOTH:
-                //   (A) a forward contextual family: transition / n-gram structure
-                //   (B) an independent long-history family: DNA / survival structure
-                //
-                // This keeps the current digit available when the feature stack truly
-                // supports it, while preventing CRYPTO-AUDITOR/recent-window echoes
-                // from validating each other.
-                const transitionSupport = Number(fCur?.transitionSupport || 0);
-                const ngram2Support = Number(fCur?.ngram2Support || 0);
-                const ngram3Support = Number(fCur?.ngram3Support || 0);
-
-                const supports = {
-                    transition: !!(
-                        fCur && alt.fr &&
-                        transitionSupport >= 12 &&
-                        Number(fCur.transitionP||0) > Number(alt.fr.transitionP||0) + 0.010
-                    ),
-                    ngram2: !!(
-                        fCur && alt.fr &&
-                        ngram2Support >= 8 &&
-                        Number(fCur.ngram2P||0) > Number(alt.fr.ngram2P||0) + 0.010
-                    ),
-                    ngram3: !!(
-                        fCur && alt.fr &&
-                        ngram3Support >= 5 &&
-                        Number(fCur.ngram3P||0) > Number(alt.fr.ngram3P||0) + 0.010
-                    ),
-                    dna: !!(
-                        dCur && alt.dr &&
-                        Number(dCur.similarity||0) >= 0.55 &&
-                        Number(dCur.similarity||0) > Number(alt.dr.similarity||0) + 0.020
-                    ),
-                    survival: !!(
-                        sCur && alt.sr && (
-                            Number(sCur.pm5||0) > Number(alt.sr.pm5||0) + 0.05 ||
-                            Number(sCur.pm10||0) > Number(alt.sr.pm10||0) + 0.05
-                        )
-                    )
-                };
-
-                // Collapse correlated features into two genuinely different families.
-                // Auditor conditional evidence is diagnostic only here because its
-                // transition/ngram inputs overlap with the feature engine.
-                const contextualSupport = !!(supports.transition || supports.ngram2 || supports.ngram3);
-                const longHistorySupport = !!(supports.dna || supports.survival);
-                const supportCount = Object.values(supports).filter(Boolean).length;
-
-                if (contextualSupport && longHistorySupport) {
-                    best.copyGuard = {
-                        applied:true,
-                        currentDigit,
-                        decision:'REPEAT_STRUCTURALLY_VALIDATED',
-                        supportCount,
-                        contextualSupport,
-                        longHistorySupport,
-                        supports,
-                        supportThresholds:{
-                            transitionMinSupport:12,
-                            ngram2MinSupport:8,
-                            ngram3MinSupport:5,
-                            contextualMargin:0.010,
-                            dnaMinSimilarity:0.55,
-                            dnaMargin:0.020,
-                            survivalMargin:0.05
-                        },
-                        alternativeDigit:alt.digit,
-                        alternativeEnsemble:alt.ensemble
-                    };
-                    best.source = `${best.source||'AI'}+COPY-STRUCTURAL`;
-                    return best;
-                }
-
-                const ds = this.digitStats[alt.digit] || {};
-                const replacement = {
-                    ...best,
-                    digit:Number(alt.digit),
-                    gap:Number(ds.currentGap||0),
-                    persistenceScore:Number(ds.persistenceScore||0),
-                    isUnstable:!!ds.isUnstable,
-                    source:'FEATURE-DEBIASED',
-                    copyGuard:{
-                        applied:true, currentDigit, decision:'CURRENT_COPY_REJECTED',
-                        supportCount, contextualSupport, longHistorySupport, supports, rejectedDigit:currentDigit,
-                        alternativeDigit:alt.digit, alternativeEnsemble:alt.ensemble
-                    }
-                };
-
-                if (alt.fr && featureSnap) replacement.digitFeatures = featureSnap;
-                if (alt.dr && dnaSnap) replacement.digitDNA = dnaSnap;
-                if (alt.ar && auditor) replacement.auditor = auditor;
-                if (alt.sr) replacement.survival = alt.sr;
-
-                // Keep the displayed score explicitly as a ranking score. Use the
-                // alternative ensemble only to cap/shape it, never as probability.
-                replacement.score = Math.max(0, Math.min(1,
-                    0.55*Number(best.score||0) + 0.45*Math.min(1, alt.ensemble*4)
-                ));
-
-                return replacement;
-            },
-
             // Analyze and recommend digit
             analyzeAndRecommend: function() {
-                const __analysisStartedAt = performance.now();
                 const regimeStatus = this.computeRegimeStatus();
 
                 // V52: regime is now a ranking/context signal, not a blanket AI veto.
@@ -3717,86 +3299,11 @@ survivalTop = survivalTop3[0] || null;
                     }
                 }
 
-                // Final feature-driven de-bias pass. The current digit may still
-                // win, but not merely because it was the last observation.
-                best = this.applyCurrentDigitCopyGuard(
-                    best, featureSnap, auditor, dnaSnap, survivalByDigit
-                );
-
                 if (best) {
-                    // This recommendation is produced AFTER ingesting tick T and
-                    // is therefore a forecast for T+1. A repeated digit is valid:
-                    // T+1 may legitimately equal T. Never count that as a hit until
-                    // the following market tick actually arrives.
-                    const sourceTick = window.lastTick || null;
-                    const sourceTickDigit = (() => {
-                        const raw = sourceTick?.lastDigit ?? sourceTick?.digit;
-                        const n = Number(raw);
-                        if (Number.isInteger(n) && n >= 0 && n <= 9) return n;
-                        const formatted = String(sourceTick?.formattedPrice ?? sourceTick?.formatted_quote ?? '');
-                        const digits = formatted.replace(/\D/g, '');
-                        return digits ? Number(digits.slice(-1)) : null;
-                    })();
-                    // CRYPTO STATE V3: freeze the market-state evidence that existed
-                    // BEFORE T+1 arrived. These are ranking/structure diagnostics,
-                    // not calibrated probabilities. They are exported with the audit
-                    // so future gates can be learned from genuine wins vs losses.
-                    const targetFeatureRow = featureSnap?.rows?.find?.(r => Number(r.digit) === Number(best.digit)) || null;
-                    const targetSurvival = best.survival || survivalByDigit?.get?.(Number(best.digit)) || null;
-                    best.marketState = {
-                        entropy5: Number.isFinite(Number(featureSnap?.entropy5)) ? Number(featureSnap.entropy5) : null,
-                        entropy10: Number.isFinite(Number(featureSnap?.entropy10)) ? Number(featureSnap.entropy10) : null,
-                        entropy20: Number.isFinite(Number(featureSnap?.entropy20)) ? Number(featureSnap.entropy20) : null,
-                        entropy50: Number.isFinite(Number(featureSnap?.entropy50)) ? Number(featureSnap.entropy50) : null,
-                        entropy100: Number.isFinite(Number(featureSnap?.entropy100)) ? Number(featureSnap.entropy100) : null,
-                        entropyStructure: Number.isFinite(Number(featureSnap?.entropyStructure)) ? Number(featureSnap.entropyStructure) : null,
-                        entropySlopeFast: Number.isFinite(Number(featureSnap?.entropySlopeFast)) ? Number(featureSnap.entropySlopeFast) : null,
-                        entropyCompression: Number.isFinite(Number(featureSnap?.entropyCompression)) ? Number(featureSnap.entropyCompression) : null,
-                        mutualInformation: Number.isFinite(Number(featureSnap?.mutualInformation)) ? Number(featureSnap.mutualInformation) : null,
-                        featureStrength: Number.isFinite(Number(featureSnap?.signalStrength)) ? Number(featureSnap.signalStrength) : null,
-                        auditorStrength: Number.isFinite(Number(auditor?.signalStrength)) ? Number(auditor.signalStrength) : null,
-                        dnaSimilarity: Number.isFinite(Number(dnaSnap?.topSimilarity)) ? Number(dnaSnap.topSimilarity) : null,
-                        pm5: Number.isFinite(Number(targetSurvival?.pm5)) ? Number(targetSurvival.pm5) : null,
-                        pm10: Number.isFinite(Number(targetSurvival?.pm10)) ? Number(targetSurvival.pm10) : null,
-                        s20: Number.isFinite(Number(targetSurvival?.s20)) ? Number(targetSurvival.s20) : null,
-                        etm: Number.isFinite(Number(targetSurvival?.etm)) ? Number(targetSurvival.etm) : null,
-                        gap: Number.isFinite(Number(targetFeatureRow?.gap)) ? Number(targetFeatureRow.gap) : null,
-                        avgGap: Number.isFinite(Number(targetFeatureRow?.avgGap)) ? Number(targetFeatureRow.avgGap) : null,
-                        gapRatio: Number.isFinite(Number(targetFeatureRow?.gapRatio)) ? Number(targetFeatureRow.gapRatio) : null,
-                        transitionP: Number.isFinite(Number(targetFeatureRow?.transitionP)) ? Number(targetFeatureRow.transitionP) : null,
-                        transitionSupport: Number.isFinite(Number(targetFeatureRow?.transitionSupport)) ? Number(targetFeatureRow.transitionSupport) : null,
-                        ngram2P: Number.isFinite(Number(targetFeatureRow?.ngram2P)) ? Number(targetFeatureRow.ngram2P) : null,
-                        ngram2Support: Number.isFinite(Number(targetFeatureRow?.ngram2Support)) ? Number(targetFeatureRow.ngram2Support) : null,
-                        ngram3P: Number.isFinite(Number(targetFeatureRow?.ngram3P)) ? Number(targetFeatureRow.ngram3P) : null,
-                        ngram3Support: Number.isFinite(Number(targetFeatureRow?.ngram3Support)) ? Number(targetFeatureRow.ngram3Support) : null,
-                        runLength: Number.isFinite(Number(featureSnap?.runLength)) ? Number(featureSnap.runLength) : null
-                    };
-                    best.predictionHorizon = 'T+1';
-                    best.sourceTickDigit = sourceTickDigit;
-                    best.generatedAtMs = Date.now();
                     this.currentRecommendation = best;
-                try {
-                    const ms = performance.now() - __analysisStartedAt;
-                    this.lastAnalysisMs = ms;
-                    if (ms > 350) console.warn(`[AI-PERF] analyzeAndRecommend took ${ms.toFixed(1)} ms`);
-                } catch (_) {}
-
-                    // AI FUSION V1: publish the completed browser recommendation
-                    // to the server. The server remains the only BUY authority.
-                    try {
-                        publishAISignalToServer(best).catch(() => {});
-                    } catch (_) {}
 
                     // Update UI
-                    const aiDigitEl = document.getElementById('ai-recommended-digit');
-                    if (aiDigitEl) {
-                        aiDigitEl.textContent = best.digit;
-                        aiDigitEl.title = `Prediction for the next tick (T+1), generated after observing tick T${best.sourceTickDigit !== null ? ' digit ' + best.sourceTickDigit : ''}`;
-                    }
-                    const sourceTickEl = document.getElementById('ai-source-tick-digit');
-                    if (sourceTickEl && best.sourceTickDigit !== null && best.sourceTickDigit !== undefined) {
-                        sourceTickEl.textContent = String(best.sourceTickDigit);
-                    }
+                    document.getElementById('ai-recommended-digit').textContent = best.digit;
                     if (window.nextTickModel) window.nextTickModel.render();
 
                     const sourceLabel = best.source ? ` | ${best.source}` : '';
@@ -3824,13 +3331,8 @@ survivalTop = survivalTop3[0] || null;
                     const dnaLabel = best.digitDNA?.ready
                         ? ` | DNA:${(Number(best.digitDNA.topSimilarity||0)*100).toFixed(0)}%`
                         : '';
-                    const copyGuardLabel = best.copyGuard?.applied
-                        ? (best.copyGuard.decision === 'REPEAT_SUPPORTED'
-                            ? ` | CopyGuard:REPEAT ✓ ${best.copyGuard.supportCount}/6`
-                            : ` | CopyGuard:DEBIASED ${best.copyGuard.rejectedDigit}→${best.copyGuard.alternativeDigit}`)
-                        : '';
                     document.getElementById('ai-digit-score').textContent =
-                        `NEXT TICK · Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}${copyGuardLabel}`;
+                        `Score: ${(best.score * 100).toFixed(1)}% | P10: ${(best.P10 * 100).toFixed(1)}%${sourceLabel}${survivalLabel}${dnaLabel}${featureLabel}${auditorLabel}`;
 
                     // Color code based on score
                     const scoreElem = document.getElementById('ai-digit-score');
@@ -4675,7 +4177,7 @@ window.nextTickModel = {
                 : Number(window.EV_GATE_CONFIG.minEdge);
 
         if (gateApplies) {
-            const auditor = window.randomnessAuditor?.lastSnapshot || null;
+            const auditor = window.randomnessAuditor?.analyze?.(symbol) || window.randomnessAuditor?.lastSnapshot || null;
             const auditorSupports = !!(
                 mode === 'ai' &&
                 auditor?.ready &&
@@ -6571,9 +6073,6 @@ window.cyclePerformance = {
         if (window.postStopDepthTracker) {
             window.postStopDepthTracker.render();
         }
-        if (typeof renderCycleDepthPanel === 'function') {
-            renderCycleDepthPanel();
-        }
         if (typeof decorateDynamicMinimizablePanels === 'function') {
             decorateDynamicMinimizablePanels();
         }
@@ -7140,9 +6639,6 @@ window.cyclePerformance = {
         }
         
         function updateDigitAnalysisDisplay() {
-            // Performance: construct detailed research DOM only on demand.
-            const details = document.getElementById('digit-analysis-panel');
-            if (!details || details.classList.contains('hidden')) return;
             const engine = window.digitIntelligenceEngine;
             const thresholds = window.AI_THRESHOLDS;
             const scoreCutoff = 0.50; // ranking hint only
@@ -8282,7 +7778,9 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             }
 
             if (sessionState.mode === 'ai') {
-                const aud=window.randomnessAuditor?.lastSnapshot || null;
+                const aud=window.randomnessAuditor?.analyze?.(
+                    window.currentSymbol || document.getElementById('symbol')?.value || 'R_10'
+                );
                 if (aud?.ready && Number.isInteger(Number(aud.topDigit))) {
                     const m=window.nextTickModel.getPrediction(
                         window.currentSymbol || document.getElementById('symbol')?.value || 'R_10',
@@ -8629,26 +8127,15 @@ function rotateHybridDigit(reason = '') {
 
 // CONNECTION STATUS
         function updateConnectionStatus() {
-            const statusNow = Date.now();
             const publicConnected = window.marketWs && window.marketWs.readyState === WebSocket.OPEN;
             const tradingConnected = window.ws && window.ws.readyState === WebSocket.OPEN;
-            const serverFeedLastAt = Number(window.SERVER_AI_FEED?.lastTickAt || 0);
-            const serverFeedConnected = !!(
-                window.SERVER_EXECUTION?.enabled &&
-                serverFeedLastAt > 0 &&
-                (statusNow - serverFeedLastAt) < 6000
-            );
-            const isConnected = !!(publicConnected || tradingConnected || serverFeedConnected);
-            const isConnecting = !serverFeedConnected && !!(window.marketIsConnecting || window.isConnecting);
+            const isConnected = !!(publicConnected || tradingConnected);
+            const isConnecting = !!(window.marketIsConnecting || window.isConnecting);
             
             if (isConnected) {
-                document.getElementById('status-badge').textContent = serverFeedConnected && !publicConnected
-                    ? '🟢 SERVER FEED'
-                    : '🟢 CONNECTED';
+                document.getElementById('status-badge').textContent = '🟢 CONNECTED';
                 document.getElementById('status-badge').className = 'ml-3 inline-flex items-center px-3 py-1 text-sm font-medium rounded-full connection-badge-connected text-white shadow-md';
-                document.getElementById('market_status').textContent = serverFeedConnected && !publicConnected
-                    ? 'Live · Server'
-                    : 'Live';
+                document.getElementById('market_status').textContent = 'Live';
                 document.getElementById('market_status').className = 'ml-2 font-bold text-green-400';
                 if (!window.isBotRunning && !hasOpenContract()) {
                     updateTradeStatus('READY', 'Market analysis active · Trading idle', 'Press START BOT when ready', 'normal');
@@ -9253,29 +8740,9 @@ function rotateHybridDigit(reason = '') {
             log(`🔄 Public market reconnect scheduled in ${(delay / 1000).toFixed(1)}s`, 'NETWORK');
         }
 
-        window.browserMarketLastTickAt = window.browserMarketLastTickAt || 0;
-        window.browserMarketSocketOpenedAt = window.browserMarketSocketOpenedAt || 0;
-        window.browserMarketConnectStartedAt = window.browserMarketConnectStartedAt || 0;
-        window.browserMarketEndpointMode = window.browserMarketEndpointMode || 'modern';
-        window.browserMarketWatchdogStarted = window.browserMarketWatchdogStarted || false;
-
-        function getPublicMarketWsUrl() {
-            // Use the working Deriv public Options WebSocket only.
-            // Reconnects always return to this endpoint; no binary/legacy rotation.
-            window.browserMarketEndpointMode = 'modern';
-            return 'wss://api.derivws.com/trading/v1/options/ws/public';
-        }
-
-        function nextPublicMarketEndpointMode() {
-            // Kept as a compatibility shim for older watchdog call sites.
-            // The public market feed is modern-only.
-            return 'modern';
-        }
-
-        function connectPublicMarketData(force = false, endpointMode = null) {
+        function connectPublicMarketData(force = false) {
             const symbolEl = document.getElementById('symbol');
             const symbol = symbolEl ? symbolEl.value : 'R_10';
-            window.browserMarketEndpointMode = 'modern';
 
             if (!force && window.marketWs &&
                 (window.marketWs.readyState === WebSocket.OPEN ||
@@ -9289,23 +8756,18 @@ function rotateHybridDigit(reason = '') {
             }
 
             window.marketIsConnecting = true;
-            window.browserMarketConnectStartedAt = Date.now();
-            window.browserMarketSocketOpenedAt = 0;
-            window.browserMarketLastTickAt = 0;
             if (window.digitMatchScanner) window.digitMatchScanner.scanStarted = false;
             updateConnectionStatus();
             log('🌐 Connecting to Deriv public market data...', 'SYSTEM');
 
-            const publicWsUrl = getPublicMarketWsUrl();
-            window.marketWs = new WebSocket(publicWsUrl);
+            window.marketWs = new WebSocket(
+                'wss://api.derivws.com/trading/v1/options/ws/public'
+            );
 
             window.marketWs.onopen = () => {
-                window.browserMarketSocketOpenedAt = Date.now();
-                window.browserMarketConnectStartedAt = 0;
-                window.browserMarketLastTickAt = 0;
                 window.marketIsConnecting = false;
                 window.marketReconnectAttempts = 0;
-                log(`🟢 Public market WebSocket connected · ${window.browserMarketEndpointMode}`, 'SYSTEM');
+                log('🟢 Public market WebSocket connected', 'SYSTEM');
                 updateConnectionStatus();
 
                 requestActiveSymbolMetadata();
@@ -9401,10 +8863,6 @@ function rotateHybridDigit(reason = '') {
                         return;
                     }
 
-                    // Market analysis is connection-owned, not START/STOP-owned.
-                    // Always accept the public 200-tick history so the browser AI can
-                    // reach 200/200 immediately after connection, even in SERVER mode.
-                    // Trading execution remains server-controlled and is unaffected.
                     try {
                         if (window.digitIntelligenceEngine?.processWarmupTicks) {
                             window.digitIntelligenceEngine.processWarmupTicks(data.history.prices);
@@ -9444,20 +8902,6 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 if (data.msg_type === 'tick' && data.tick) {
-                    // Market streaming starts at connection and continues while the
-                    // bot is stopped. Only when the SERVER worker is actively running
-                    // do we suppress browser ticks and use the backend canonical ledger
-                    // as the single authoritative AI/trading clock.
-                    const serverState = window.SERVER_EXECUTION?.state || null;
-                    const serverWorkerActive = !!(
-                        window.SERVER_EXECUTION?.enabled &&
-                        serverState &&
-                        (serverState.running || serverState.open_contract_id || Number(serverState.current_trade || 0) > 0)
-                    );
-                    if (serverWorkerActive) {
-                        return;
-                    }
-
                     const selectedSymbol = document.getElementById('symbol')?.value;
                     const tickSymbol =
                         data.tick?.symbol ||
@@ -9502,85 +8946,15 @@ function rotateHybridDigit(reason = '') {
             };
             window.marketWs.onerror = (error) => {
                 console.error('Public market WebSocket error:', error);
-                log(`❌ Public market connection error · ${window.browserMarketEndpointMode}`, 'ERROR');
-                // Some browsers leave a failed WebSocket in CONNECTING for a long time.
-                // Force it closed so the watchdog can rotate immediately.
-                try { window.marketWs?.close?.(); } catch (_) {}
+                log('❌ Public market connection error', 'ERROR');
             };
 
             window.marketWs.onclose = () => {
                 window.marketIsConnecting = false;
-                window.browserMarketConnectStartedAt = 0;
                 log('🔌 Public market WebSocket disconnected', 'NETWORK');
                 updateConnectionStatus();
                 schedulePublicMarketReconnect();
             };
-        }
-
-
-        function startPublicMarketWatchdog() {
-            if (window.browserMarketWatchdogStarted) return;
-            window.browserMarketWatchdogStarted = true;
-
-            setInterval(() => {
-                try {
-                    const now = Date.now();
-                    const ws = window.marketWs;
-                    const open = !!(ws && ws.readyState === WebSocket.OPEN);
-                    const connecting = !!(ws && ws.readyState === WebSocket.CONNECTING);
-                    const openedAt = Number(window.browserMarketSocketOpenedAt || 0);
-                    const lastTickAt = Number(window.browserMarketLastTickAt || 0);
-                    const silentFor = lastTickAt ? now - lastTickAt : (openedAt ? now - openedAt : Infinity);
-
-                    const connectStartedAt = Number(window.browserMarketConnectStartedAt || 0);
-                    const connectingFor = connecting && connectStartedAt ? now - connectStartedAt : 0;
-
-                    // Critical: a browser WebSocket can remain stuck in CONNECTING
-                    // without firing open/close promptly. Never wait forever.
-                    if (connecting && connectingFor > 7000) {
-                        const nextMode = 'modern';
-                        console.warn(`[MARKET-FEED] Connect timeout ${(connectingFor/1000).toFixed(1)}s; reconnecting modern endpoint.`);
-                        try {
-                            ws.onclose = null;
-                            ws.close();
-                        } catch (_) {}
-                        window.marketWs = null;
-                        window.marketIsConnecting = false;
-                        window.browserMarketEndpointMode = nextMode;
-                        window.browserMarketConnectStartedAt = 0;
-                        window.browserMarketSocketOpenedAt = 0;
-                        window.browserMarketLastTickAt = 0;
-                        connectPublicMarketData(true, 'modern');
-                        return;
-                    }
-
-                    if (!open && !connecting) {
-                        const nextMode = 'modern';
-                        console.warn(`[MARKET-FEED] Browser public feed absent; reconnecting modern endpoint.`);
-                        connectPublicMarketData(true, 'modern');
-                        return;
-                    }
-
-                    // A healthy R_10 stream should not remain silent for many seconds.
-                    if (open && silentFor > 9000) {
-                        const nextMode = 'modern';
-                        console.warn(`[MARKET-FEED] Feed silent ${(silentFor/1000).toFixed(1)}s; reconnecting modern endpoint.`);
-                        try {
-                            ws.onclose = null;
-                            ws.close();
-                        } catch (_) {}
-                        window.marketWs = null;
-                        window.marketIsConnecting = false;
-                        window.browserMarketEndpointMode = nextMode;
-                        window.browserMarketConnectStartedAt = 0;
-                        window.browserMarketSocketOpenedAt = 0;
-                        window.browserMarketLastTickAt = 0;
-                        connectPublicMarketData(true, 'modern');
-                    }
-                } catch (e) {
-                    console.warn('[MARKET-FEED] watchdog check skipped:', e);
-                }
-            }, 3000);
         }
 
         function restartPublicMarketForSymbol() {
@@ -9678,32 +9052,39 @@ function rotateHybridDigit(reason = '') {
                 }
 
                 // V53: auditor UI is independent of the collapsible digit statistics panel.
-                // UI refresh is render-only. Heavy analytics run once per unique
-                // canonical market tick in analyzeAndRecommend(), not on this timer.
-                if (window.digitDNAEngine && !document.hidden) {
+                if (window.digitDNAEngine) {
                     try {
-                        if (window.digitDNAEngine.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
-                            window.digitDNAEngine.render(window.digitDNAEngine.lastSnapshot);
+                        const ds=window.digitDNAEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        );
+                        window.digitDNAEngine.render(ds);
                     } catch (e) {
-                        console.warn('Digit DNA Engine render skipped:', e);
+                        console.warn('Digit DNA Engine refresh skipped:', e);
                     }
                 }
 
-                if (window.digitFeatureEngine && !document.hidden) {
+                if (window.digitFeatureEngine) {
                     try {
-                        if (window.digitFeatureEngine.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
-                            window.digitFeatureEngine.render(window.digitFeatureEngine.lastSnapshot);
+                        const fs=window.digitFeatureEngine.analyze?.(
+                            document.getElementById('symbol')?.value || window.currentSymbol || null
+                        );
+                        window.digitFeatureEngine.render(fs);
                     } catch (e) {
-                        console.warn('Digit Feature Engine render skipped:', e);
+                        console.warn('Digit Feature Engine refresh skipped:', e);
                     }
                 }
 
-                if (window.randomnessAuditor && !document.hidden) {
+                if (window.randomnessAuditor) {
                     try {
-                        if (window.randomnessAuditor.lastSnapshot && document.getElementById('digit-analysis-panel')?.classList.contains('hidden') === false)
-                            window.randomnessAuditor.render(window.randomnessAuditor.lastSnapshot);
+                        window.randomnessAuditor.ensurePanel();
+                        const snap =
+                            window.randomnessAuditor.lastSnapshot ||
+                            window.randomnessAuditor.analyze?.(
+                                document.getElementById('symbol')?.value || window.currentSymbol || null
+                            );
+                        window.randomnessAuditor.render(snap);
                     } catch (e) {
-                        console.warn('Randomness Auditor UI render skipped:', e);
+                        console.warn('Randomness Auditor UI refresh skipped:', e);
                     }
                 }
             }, 2000);
@@ -9768,10 +9149,7 @@ function rotateHybridDigit(reason = '') {
             updatePnL();
             resetTradeStatus();
 
-            // Connect market data immediately and keep an independent watchdog.
-            // The watchdog survives optional analytics/UI failures and restores the
-            // browser-side feed if the socket opens but no ticks arrive.
-            startPublicMarketWatchdog();
+            // Connect market data immediately.
             setTimeout(() => connectPublicMarketData(), 250);
 
             // Connect the authenticated account channel too, so balance is visible
@@ -10030,7 +9408,6 @@ function rotateHybridDigit(reason = '') {
         function handleTick(tick) {
             // Process market ticks even while trading is stopped.
             if (!tick || tick.quote === undefined || tick.quote === null) return;
-            window.browserMarketLastTickAt = Date.now();
             
             const price = parseFloat(tick.quote);
 
@@ -10132,29 +9509,11 @@ function rotateHybridDigit(reason = '') {
                 document.getElementById('symbol')?.value ||
                 window.tickFormat.symbol;
 
-            // CANONICAL PIPELINE GATE: one Deriv market tick may update the
-            // statistical/AI stack exactly once. Previously only the bias audit
-            // rejected duplicates, while DNA/features/entropy still recomputed and
-            // learned them. That caused both lag and apparent UI hangs.
-            let canonicalBiasMeta = null;
-            try {
-                canonicalBiasMeta = window.currentTickBiasAudit?.observeTick?.(
-                    tickData,
-                    Number(digit)
-                ) || null;
-            } catch (e) {
-                console.warn('Canonical model gate unavailable:', e);
-            }
-            if (canonicalBiasMeta && !canonicalBiasMeta.accepted) {
-                updateConnectionStatus();
-                return;
-            }
-
             window.nextTickModel.onTickBeforeEngine(modelSymbol, digit);
 
             // Update the AI continuously even before START.
             if (window.digitIntelligenceEngine.enabled) {
-                window.digitIntelligenceEngine.processLiveTick(digit, canonicalBiasMeta);
+                window.digitIntelligenceEngine.processLiveTick(digit);
             }
 
             window.nextTickModel.onTickAfterEngine(modelSymbol, digit, tickData);
@@ -10273,12 +9632,6 @@ function rotateHybridDigit(reason = '') {
         
         // Add tick to queue
         function addTickToQueue(tick) {
-            // V34: browser queue cannot purchase in SERVER mode. Do not retain
-            // ticks for a legacy 50ms processor when server owns execution.
-            if (window.SERVER_EXECUTION?.enabled === true) {
-                window.tickQueue.length = 0;
-                return false;
-            }
             window.tickQueue.push(tick);
             if (window.tickQueue.length > window.maxQueueSize) {
                 window.tickQueue.shift();
@@ -11491,10 +10844,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             lastAutoRestartPhase: null,
             lastCompletedServerCycleTrade: 0,
             marginSyncPending: false,
-            lastMarginSyncAt: 0,
-            aiSignalPending: false,
-            lastAiSignalSentAt: 0,
-            lastAiSignalDigit: null
+            lastMarginSyncAt: 0
         };
 
         function serverExecEl(id){ return document.getElementById(id); }
@@ -11617,21 +10967,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
         }
 
 
-        // Compact display-only labels. Keep internal backend phase values unchanged.
-        function dmsCompactTradePhase(phase) {
-            const raw = String(phase || '').toUpperCase();
-            if (raw === 'TICK_MATCH_PENDING_DERIV') return 'Match · checking';
-            if (raw === 'TICK_MISS_PENDING_DERIV') return 'Miss · checking';
-            if (raw.startsWith('WAITING_OFFICIAL_SETTLEMENT')) return 'Settling';
-            if (raw === 'FAST_DECISION_APPLYING') return 'Checking trade';
-            if (raw === 'AWAITING_NEXT_TICK') return 'Watching tick';
-            if (raw === 'RECOVERY_READY' || raw === 'FAST_RECOVERING') return 'Next trade';
-            if (raw === 'WON' || raw === 'OFFICIAL_WON' || raw === 'FAST_WON') return 'WIN';
-            if (raw === 'BUYING' || raw === 'DIRECT_BUY_READY') return 'Buying';
-            if (raw === 'MAX_TRADES_REACHED') return 'Limit reached';
-            return raw ? raw.toLowerCase().replaceAll('_', ' ').replace(/^./, c => c.toUpperCase()) : 'Ready';
-        }
-
         function renderServerTradeNarrative(st) {
             if (!window.SERVER_EXECUTION?.enabled || !st) return;
 
@@ -11663,10 +10998,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 status = `Target ${parts[0] || '—'} → ${parts[1] || '—'} · next stake $${stake.toFixed(2)}`;
                 action = 'Latest V1 rank #1 is pre-armed for the next trade';
                 resultClass = 'text-xs font-bold text-cyan-300';
-                if (resultEl.textContent !== result) resultEl.textContent = result;
+                resultEl.textContent = result;
                 resultEl.className = resultClass;
-                if (statusEl.textContent !== status) statusEl.textContent = status;
-                if (actionEl.textContent !== action) actionEl.textContent = action;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
                 return;
             }
 
@@ -11676,10 +11011,10 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 status = `Digit ${d} remains V1 rank #1 · next stake $${stake.toFixed(2)}`;
                 action = 'Same top-ranked digit is pre-armed for the next trade';
                 resultClass = 'text-xs font-bold text-cyan-300';
-                if (resultEl.textContent !== result) resultEl.textContent = result;
+                resultEl.textContent = result;
                 resultEl.className = resultClass;
-                if (statusEl.textContent !== status) statusEl.textContent = status;
-                if (actionEl.textContent !== action) actionEl.textContent = action;
+                statusEl.textContent = status;
+                actionEl.textContent = action;
                 return;
             }
 
@@ -11814,8 +11149,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     break;
 
                 case 'WON':
-                case 'OFFICIAL_WON':
-                    result = 'WIN';
+                    result = 'WIN ✅';
                     status = `Cycle won on trade ${tradeNo} · Cycle P/L ${formatServerMoney(pnl)}`;
                     action = continuous
                         ? 'Auto Continue After Win ON · selecting and freezing the next AI candidate…'
@@ -11824,7 +11158,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     break;
 
                 case 'FAST_WON':
-                    result = 'WIN';
+                    result = 'WIN ✅';
                     status = `Cycle won on trade ${tradeNo} · P/L ${formatServerMoney(pnl)}`;
                     action = continuous
                         ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
@@ -11938,7 +11272,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 default:
                     if (st.running) {
                         result = 'TRADING ⚡';
-                        status = dmsCompactTradePhase(phase);
+                        status = `Server worker active · phase ${phase}`;
                         const scoreRows = Array.isArray(st?.digit_score?.ranking)
                             ? st.digit_score.ranking
                             : [];
@@ -11963,625 +11297,12 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     }
             }
 
-            // Explicit pending-tick states take precedence over generic worker copy.
-            if (phase === 'TICK_MATCH_PENDING_DERIV' || phase === 'TICK_MISS_PENDING_DERIV') {
-                result = phase === 'TICK_MATCH_PENDING_DERIV' ? 'Match' : 'Miss';
-                status = 'Checking Deriv result';
-                action = `Trade ${tradeNo}/${maxTrades || '—'} · $${stake.toFixed(2)}`;
-                resultClass = phase === 'TICK_MATCH_PENDING_DERIV'
-                    ? 'text-xs font-medium text-emerald-300'
-                    : 'text-xs font-medium text-amber-300';
-            }
-            if (resultEl.textContent !== result) resultEl.textContent = result;
+            resultEl.textContent = result;
             resultEl.className = resultClass;
-            if (statusEl.textContent !== status) statusEl.textContent = status;
-            statusEl.className = 'text-xs font-normal text-gray-300 leading-snug';
-            statusEl.title = String(st.phase || '');
-            if (actionEl.textContent !== action) actionEl.textContent = action;
-            actionEl.className = 'text-[11px] font-normal text-gray-400 leading-snug mt-1';
+            statusEl.textContent = status;
+            actionEl.textContent = action;
         }
 
-
-        // ============================================================================
-        // AI CURRENT-TICK BIAS AUDIT — strict forward T -> T+1 evaluation
-        // Purpose: distinguish genuine next-tick forecasting from a model that
-        // merely tends to echo the current digit. Only resolved unseen ticks are
-        // counted; the current tick can never score the forecast it generated.
-        // ============================================================================
-        window.currentTickBiasAudit = window.currentTickBiasAudit || {
-            version: 'CURRENT-TICK-BIAS-AUDIT-V3-MARKET-STATE',
-            pending: null,
-            symbol: null,
-            records: [],
-            maxRecords: 10000,
-            uniqueSeq: 0,
-            lastCanonicalKey: null,
-            duplicateDrops: 0,
-            invalidCanonicalDrops: 0,
-
-            storageKey(symbol) {
-                // V2 deliberately starts a clean evidence set. V1 contained
-                // duplicate tick deliveries and must not contaminate this audit.
-                return `matchstar_current_tick_bias_v3_${String(symbol || 'UNKNOWN')}`;
-            },
-
-            canonicalIdentity(tickData, digit = null) {
-                const raw = tickData?.raw || tickData?.tick || {};
-                const symbol = String(
-                    raw?.symbol ||
-                    tickData?.symbol ||
-                    document.getElementById('symbol')?.value ||
-                    window.currentSymbol ||
-                    window.tickFormat?.symbol ||
-                    'UNKNOWN'
-                );
-                const epoch = Number(raw?.epoch ?? tickData?.epoch ?? 0);
-                const quote = String(
-                    tickData?.formattedPrice ??
-                    tickData?.formatted_quote ??
-                    raw?.formatted_quote ??
-                    ''
-                );
-                const d = Number(
-                    digit ??
-                    tickData?.digit ??
-                    (quote ? Number(quote.slice(-1)) : NaN)
-                );
-
-                if (!(epoch > 0) || !quote || !Number.isInteger(d) || d < 0 || d > 9) {
-                    return null;
-                }
-
-                return {
-                    symbol,
-                    epoch,
-                    quote,
-                    digit: d,
-                    key: `${symbol}|${epoch}|${quote}|${d}`
-                };
-            },
-
-            load(symbol) {
-                const sym = String(symbol || 'UNKNOWN');
-                if (this.symbol === sym && Array.isArray(this.records)) return this.records;
-                this.symbol = sym;
-                this.pending = null;
-                this.uniqueSeq = 0;
-                this.lastCanonicalKey = null;
-                this.duplicateDrops = 0;
-                this.invalidCanonicalDrops = 0;
-                try {
-                    const raw = JSON.parse(localStorage.getItem(this.storageKey(sym)) || '[]');
-                    this.records = Array.isArray(raw) ? raw.slice(-this.maxRecords) : [];
-                } catch (_) {
-                    this.records = [];
-                }
-                return this.records;
-            },
-
-            save() {
-                if (!this.symbol) return;
-                try {
-                    localStorage.setItem(
-                        this.storageKey(this.symbol),
-                        JSON.stringify((this.records || []).slice(-this.maxRecords))
-                    );
-                } catch (_) {}
-            },
-
-            observeTick(tickData, digit) {
-                const identity = this.canonicalIdentity(tickData, digit);
-                if (!identity) {
-                    this.invalidCanonicalDrops++;
-                    this.render();
-                    return { accepted: false, reason: 'INVALID_CANONICAL_TICK' };
-                }
-
-                this.load(identity.symbol);
-
-                // Exact consecutive duplicates are the bug observed in the V1
-                // export: one Deriv market tick reached the browser pipeline more
-                // than once. It must count as one market observation only.
-                if (identity.key === this.lastCanonicalKey) {
-                    this.duplicateDrops++;
-                    this.render();
-                    return {
-                        accepted: false,
-                        reason: 'DUPLICATE_CANONICAL_TICK',
-                        key: identity.key,
-                        epoch: identity.epoch,
-                        quote: identity.quote,
-                        digit: identity.digit,
-                        seq: this.uniqueSeq,
-                        symbol: identity.symbol
-                    };
-                }
-
-                this.lastCanonicalKey = identity.key;
-                this.uniqueSeq += 1;
-                return {
-                    accepted: true,
-                    reason: 'NEW_CANONICAL_TICK',
-                    ...identity,
-                    seq: this.uniqueSeq
-                };
-            },
-
-            arm(recommendation, sourceDigit, symbol, tickMeta) {
-                const sym = String(symbol || 'UNKNOWN');
-                this.load(sym);
-
-                const predictedDigit = Number(recommendation?.digit);
-                const src = Number(sourceDigit);
-                const sourceSeq = Number(tickMeta?.seq);
-                if (!tickMeta?.accepted || !Number.isInteger(sourceSeq) || sourceSeq <= 0) {
-                    return false;
-                }
-                if (!Number.isInteger(predictedDigit) || predictedDigit < 0 || predictedDigit > 9) {
-                    this.pending = null;
-                    this.render();
-                    return false;
-                }
-                if (!Number.isInteger(src) || src < 0 || src > 9) {
-                    this.pending = null;
-                    this.render();
-                    return false;
-                }
-
-                // Forecast generated from unique canonical tick T is valid ONLY
-                // for the immediately following unique canonical tick T+1.
-                this.pending = {
-                    symbol: sym,
-                    sourceDigit: src,
-                    predictedDigit,
-                    sameAsCurrent: predictedDigit === src,
-                    score: Number.isFinite(Number(recommendation?.score))
-                        ? Number(recommendation.score)
-                        : null,
-                    source: String(recommendation?.source || 'AI'),
-                    generatedAtMs: Number(recommendation?.generatedAtMs || Date.now()),
-                    sourceSeq,
-                    validForSeq: sourceSeq + 1,
-                    sourceTickKey: String(tickMeta?.key || ''),
-                    sourceTickEpoch: Number(tickMeta?.epoch || 0),
-                    sourceTickQuote: String(tickMeta?.quote || ''),
-                    marketState: recommendation?.marketState ? JSON.parse(JSON.stringify(recommendation.marketState)) : null
-                };
-                this.render();
-                return true;
-            },
-
-            settle(observedNextDigit, tickMeta) {
-                const p = this.pending;
-                const actual = Number(observedNextDigit);
-                if (!p || !tickMeta?.accepted || !Number.isInteger(actual) || actual < 0 || actual > 9) {
-                    return false;
-                }
-
-                this.load(p.symbol);
-                const actualSeq = Number(tickMeta?.seq);
-                if (!Number.isInteger(actualSeq) || actualSeq <= 0) return false;
-
-                // Never score on the source tick itself and never reuse a stale
-                // forecast on T+2 or later. Only sourceSeq + 1 is a valid label.
-                if (actualSeq < Number(p.validForSeq)) return false;
-                if (actualSeq > Number(p.validForSeq)) {
-                    this.pending = null;
-                    this.render();
-                    return false;
-                }
-
-                const hit = Number(p.predictedDigit) === actual;
-                const actualRepeatedCurrent = Number(p.sourceDigit) === actual;
-                const score = Number(p.score);
-                const scorePct = Number.isFinite(score) ? score * 100 : null;
-                let scoreBand = 'UNKNOWN';
-                if (Number.isFinite(scorePct)) {
-                    if (scorePct < 70) scoreBand = '<70%';
-                    else if (scorePct < 80) scoreBand = '70–79%';
-                    else if (scorePct < 85) scoreBand = '80–84%';
-                    else if (scorePct < 90) scoreBand = '85–89%';
-                    else scoreBand = '90%+';
-                }
-
-                this.records.push({
-                    ts: Date.now(),
-                    symbol: p.symbol,
-                    sourceSeq: Number(p.sourceSeq),
-                    actualSeq,
-                    sourceTickKey: p.sourceTickKey,
-                    actualTickKey: String(tickMeta?.key || ''),
-                    sourceTickEpoch: Number(p.sourceTickEpoch || 0),
-                    actualTickEpoch: Number(tickMeta?.epoch || 0),
-                    sourceTickQuote: String(p.sourceTickQuote || ''),
-                    actualTickQuote: String(tickMeta?.quote || ''),
-                    sourceDigit: Number(p.sourceDigit),
-                    predictedDigit: Number(p.predictedDigit),
-                    actualNextDigit: actual,
-                    sameAsCurrent: !!p.sameAsCurrent,
-                    actualRepeatedCurrent,
-                    hit,
-                    score: Number.isFinite(score) ? score : null,
-                    scoreBand,
-                    source: p.source,
-                    marketState: p.marketState || null
-                });
-                if (this.records.length > this.maxRecords) {
-                    this.records.splice(0, this.records.length - this.maxRecords);
-                }
-                this.pending = null;
-                this.save();
-                this.render();
-                return true;
-            },
-
-            stats(symbol = null) {
-                const sym = String(
-                    symbol ||
-                    document.getElementById('symbol')?.value ||
-                    window.currentSymbol ||
-                    window.tickFormat?.symbol ||
-                    'UNKNOWN'
-                );
-                const rows = this.load(sym);
-                const n = rows.length;
-                const same = rows.filter(r => r.sameAsCurrent);
-                const different = rows.filter(r => !r.sameAsCurrent);
-                const actualRepeats = rows.filter(r => r.actualRepeatedCurrent).length;
-                const hits = rows.filter(r => r.hit).length;
-                const sameHits = same.filter(r => r.hit).length;
-                const differentHits = different.filter(r => r.hit).length;
-
-                const bands = ['<70%','70–79%','80–84%','85–89%','90%+'].map(label => {
-                    const b = rows.filter(r => r.scoreBand === label);
-                    const bh = b.filter(r => r.hit).length;
-                    return { label, n: b.length, hits: bh, rate: b.length ? bh / b.length : null };
-                });
-
-                const sameRate = n ? same.length / n : null;
-                const actualRepeatRate = n ? actualRepeats / n : null;
-                const excessCopy = (sameRate != null && actualRepeatRate != null)
-                    ? sameRate - actualRepeatRate
-                    : null;
-
-                let biasLabel = 'WAITING';
-                if (n >= 30 && Number.isFinite(excessCopy)) {
-                    if (excessCopy >= 0.15) biasLabel = 'HIGH COPY BIAS';
-                    else if (excessCopy >= 0.05) biasLabel = 'ELEVATED';
-                    else biasLabel = 'LOW';
-                } else if (n > 0) {
-                    biasLabel = 'COLLECTING DATA';
-                }
-
-                return {
-                    version: this.version,
-                    symbol: sym,
-                    n,
-                    hits,
-                    hitRate: n ? hits / n : null,
-                    sameN: same.length,
-                    sameHits,
-                    sameRate,
-                    sameHitRate: same.length ? sameHits / same.length : null,
-                    differentN: different.length,
-                    differentHits,
-                    differentHitRate: different.length ? differentHits / different.length : null,
-                    actualRepeats,
-                    actualRepeatRate,
-                    excessCopy,
-                    biasLabel,
-                    duplicateDrops: Number(this.duplicateDrops || 0),
-                    invalidCanonicalDrops: Number(this.invalidCanonicalDrops || 0),
-                    uniqueSeq: Number(this.uniqueSeq || 0),
-                    bands,
-                    pending: this.pending && this.pending.symbol === sym ? this.pending : null
-                };
-            },
-
-            render() {
-                const panel = document.getElementById('current-tick-bias-panel');
-                if (!panel) return;
-                const st = this.stats();
-                const pct = v => Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(1)}%` : '—';
-                const set = (id, value) => {
-                    const el = document.getElementById(id);
-                    if (el) el.textContent = value;
-                };
-
-                set('ctba-sample', st.n
-                    ? `${st.n} canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`
-                    : `Collecting canonical T→T+1 forecasts · ${st.symbol} · ${st.duplicateDrops} duplicate tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
-                set('ctba-ai-copy', `${st.sameN}/${st.n || 0} · ${pct(st.sameRate)}`);
-                set('ctba-natural-repeat', `${st.actualRepeats}/${st.n || 0} · ${pct(st.actualRepeatRate)}`);
-                set('ctba-copy-hit', `${st.sameHits}/${st.sameN || 0} · ${pct(st.sameHitRate)}`);
-                set('ctba-different-hit', `${st.differentHits}/${st.differentN || 0} · ${pct(st.differentHitRate)}`);
-                set('ctba-overall-hit', `${st.hits}/${st.n || 0} · ${pct(st.hitRate)}`);
-                set('ctba-bias-label', st.biasLabel);
-                set('ctba-excess-copy', Number.isFinite(st.excessCopy)
-                    ? `${st.excessCopy >= 0 ? '+' : ''}${(st.excessCopy * 100).toFixed(1)} pp vs natural repeat`
-                    : 'Need resolved forecasts');
-                set('ctba-duplicate-drops', `${st.duplicateDrops} exact duplicate canonical tick${st.duplicateDrops === 1 ? '' : 's'} rejected`);
-
-                const pending = st.pending;
-                set('ctba-pending', pending
-                    ? `Waiting for unique T+1 seq ${pending.validForSeq}: T=${pending.sourceDigit} · AI=${pending.predictedDigit}${pending.sameAsCurrent ? ' · SAME AS CURRENT' : ' · DIFFERENT'}${Number.isFinite(Number(pending.score)) ? ` · score ${(Number(pending.score)*100).toFixed(1)}%` : ''}`
-                    : 'Waiting for the next unique canonical live AI forecast');
-
-                const bandsEl = document.getElementById('ctba-score-bands');
-                if (bandsEl) {
-                    bandsEl.innerHTML = st.bands.map(b => `
-                        <div class="flex items-center justify-between gap-3 py-1 border-b border-slate-800/70 last:border-b-0">
-                            <span class="text-slate-400">${b.label}</span>
-                            <span class="font-black text-white">${b.hits}/${b.n} · ${pct(b.rate)}</span>
-                        </div>
-                    `).join('');
-                }
-            }
-        };
-
-        function downloadCurrentTickBiasAudit(format = 'json') {
-            const audit = window.currentTickBiasAudit;
-            if (!audit) {
-                alert('Current-tick bias audit is not available yet.');
-                return false;
-            }
-
-            const symbol = String(
-                document.getElementById('symbol')?.value ||
-                window.currentSymbol ||
-                window.tickFormat?.symbol ||
-                audit.symbol ||
-                'UNKNOWN'
-            );
-
-            const rows = [...(audit.load(symbol) || [])];
-            const summary = audit.stats(symbol);
-            const now = new Date();
-            const stamp = now.toISOString().replace(/[:.]/g, '-');
-            const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]+/g, '_');
-
-            const triggerDownload = (filename, content, mime) => {
-                const blob = new Blob([content], { type: mime });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 1500);
-            };
-
-            if (String(format).toLowerCase() === 'csv') {
-                const headers = [
-                    'timestamp_iso','symbol','source_seq','actual_seq','source_tick_epoch','actual_tick_epoch','source_tick_quote','actual_tick_quote','source_digit_t','ai_prediction_t1',
-                    'actual_t1','ai_equals_current_t','actual_t1_repeats_t',
-                    'hit','ai_score','ai_score_pct','score_band','source','source_tick_key','actual_tick_key'
-                ];
-
-                const esc = (value) => {
-                    if (value === null || value === undefined) return '';
-                    const text = String(value);
-                    return /[",\n\r]/.test(text)
-                        ? `"${text.replace(/"/g, '""')}"`
-                        : text;
-                };
-
-                const lines = [headers.join(',')];
-                for (const r of rows) {
-                    const score = Number(r.score);
-                    lines.push([
-                        Number.isFinite(Number(r.ts)) ? new Date(Number(r.ts)).toISOString() : '',
-                        r.symbol,
-                        r.sourceSeq,
-                        r.actualSeq,
-                        r.sourceTickEpoch,
-                        r.actualTickEpoch,
-                        r.sourceTickQuote,
-                        r.actualTickQuote,
-                        r.sourceDigit,
-                        r.predictedDigit,
-                        r.actualNextDigit,
-                        r.sameAsCurrent ? 1 : 0,
-                        r.actualRepeatedCurrent ? 1 : 0,
-                        r.hit ? 1 : 0,
-                        Number.isFinite(score) ? score : '',
-                        Number.isFinite(score) ? (score * 100).toFixed(3) : '',
-                        r.scoreBand,
-                        r.source,
-                        r.sourceTickKey,
-                        r.actualTickKey
-                    ].map(esc).join(','));
-                }
-
-                triggerDownload(
-                    `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.csv`,
-                    lines.join('\n'),
-                    'text/csv;charset=utf-8'
-                );
-                return true;
-            }
-
-            const payload = {
-                schema: 'DIGITMATCHSTAR_CURRENT_TICK_BIAS_AUDIT_V2_CANONICAL',
-                exportedAt: now.toISOString(),
-                symbol,
-                interpretation: {
-                    targetHorizon: 'T+1: first unseen live tick after the forecast is frozen',
-                    sameAsCurrent: 'AI prediction for T+1 equals source/current digit T',
-                    naturalRepeat: 'actual T+1 equals source/current digit T',
-                    hit: 'AI prediction frozen at T equals actual unseen T+1',
-                    canonicalScoring: 'Only the next unique canonical Deriv tick may score a forecast; exact duplicate deliveries are rejected.',
-                    caution: 'AI score is an internal model score, not a calibrated probability.'
-                },
-                summary,
-                pending: audit.pending && audit.pending.symbol === symbol
-                    ? { ...audit.pending }
-                    : null,
-                records: rows
-            };
-
-            triggerDownload(
-                `digitmatchstar_current_tick_bias_${safeSymbol}_${stamp}.json`,
-                JSON.stringify(payload, null, 2),
-                'application/json;charset=utf-8'
-            );
-            return true;
-        }
-
-        function toggleCurrentTickBiasPanel() {
-            const body = document.getElementById('current-tick-bias-body');
-            const btn = document.getElementById('current-tick-bias-min-btn');
-            if (!body) return;
-            const minimized = !body.classList.contains('hidden');
-            body.classList.toggle('hidden', minimized);
-            if (btn) {
-                btn.textContent = minimized ? '+' : '−';
-                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
-            }
-            savePanelMinimizedState('current-tick-bias', minimized);
-        }
-
-        function restoreCurrentTickBiasPanelState() {
-            const minimized = getPanelMinimizedState('current-tick-bias', false);
-            const body = document.getElementById('current-tick-bias-body');
-            const btn = document.getElementById('current-tick-bias-min-btn');
-            if (body) body.classList.toggle('hidden', minimized);
-            if (btn) {
-                btn.textContent = minimized ? '+' : '−';
-                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                btn.title = minimized ? 'Expand current-tick bias audit' : 'Minimize current-tick bias audit';
-            }
-        }
-
-        // ============================================================================
-        // CYCLE DEPTH — winning-cycle resolution distribution
-        // Uses completed cycle history for the currently selected symbol.
-        // ============================================================================
-        function cycleDepthQuantile(sortedDepths, q) {
-            if (!Array.isArray(sortedDepths) || !sortedDepths.length) return null;
-            const qq = Math.max(0, Math.min(1, Number(q)));
-            // Nearest-rank percentile: "90% resolved by Trade N" means at least
-            // 90% of observed winning cycles resolved on or before N.
-            const rank = Math.max(1, Math.ceil(qq * sortedDepths.length));
-            return Number(sortedDepths[rank - 1]);
-        }
-
-        window.CYCLE_DEPTH_SERVER = window.CYCLE_DEPTH_SERVER || {
-            sessionId: null, data: null, lastFetchAt: 0, pending: false, error: null
-        };
-
-        async function refreshCycleDepthFromServer(st = null, force = false) {
-            const cache = window.CYCLE_DEPTH_SERVER;
-            const sid = Number(st?.id ?? window.SERVER_EXECUTION?.state?.id ?? window.SERVER_EXECUTION?.sessionId ?? 0);
-            if (!Number.isInteger(sid) || sid <= 0) return false;
-
-            const now = Date.now();
-            const sameSession = Number(cache.sessionId || 0) === sid;
-            if (!force && cache.pending) return false;
-            if (!force && sameSession && cache.data && now - Number(cache.lastFetchAt || 0) < 3000) return false;
-
-            cache.pending = true;
-            cache.sessionId = sid;
-            cache.lastFetchAt = now;
-            try {
-                const data = await serverExecRequest(`/sessions/${sid}/cycle-depth`, { method: 'GET' });
-                cache.data = data && typeof data === 'object' ? data : null;
-                cache.error = null;
-                renderCycleDepthPanel();
-                return true;
-            } catch (err) {
-                cache.error = String(err?.message || err || 'Cycle depth fetch failed');
-                console.warn('Cycle depth server history fetch failed:', err);
-                renderCycleDepthPanel();
-                return false;
-            } finally {
-                cache.pending = false;
-            }
-        }
-
-        function getCycleDepthStats() {
-            const symbol = document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
-            const cache = window.CYCLE_DEPTH_SERVER || {};
-            const server = cache.data;
-            if (server && Number(server.session_id || 0) === Number(cache.sessionId || 0) && (!server.symbol || String(server.symbol) === String(symbol))) {
-                return {
-                    symbol: String(server.symbol || symbol),
-                    sample: Number(server.sample || 0),
-                    median: server.median == null ? null : Number(server.median),
-                    p90: server.p90 == null ? null : Number(server.p90),
-                    p95: server.p95 == null ? null : Number(server.p95),
-                    reached20Pct: server.reached20_pct == null ? null : Number(server.reached20_pct),
-                    reached20Count: Number(server.reached20_count || 0),
-                    worst: server.worst == null ? null : Number(server.worst),
-                    source: 'SERVER_SETTLED_HISTORY', loading: false, error: null
-                };
-            }
-            return {
-                symbol, sample: 0, median: null, p90: null, p95: null, reached20Pct: null,
-                reached20Count: 0, worst: null, source: 'SERVER_SETTLED_HISTORY',
-                loading: !!cache.pending, error: cache.error || null
-            };
-        }
-
-        function toggleCycleDepthPanel() {
-            const body = document.getElementById('cycle-depth-body');
-            const btn = document.getElementById('cycle-depth-min-btn');
-            if (!body) return;
-            const minimized = !body.classList.contains('hidden');
-            body.classList.toggle('hidden', minimized);
-            if (btn) {
-                btn.textContent = minimized ? '+' : '−';
-                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
-            }
-            savePanelMinimizedState('cycle-depth', minimized);
-        }
-
-        function restoreCycleDepthPanelState() {
-            const minimized = getPanelMinimizedState('cycle-depth', false);
-            const body = document.getElementById('cycle-depth-body');
-            const btn = document.getElementById('cycle-depth-min-btn');
-            if (body) body.classList.toggle('hidden', minimized);
-            if (btn) {
-                btn.textContent = minimized ? '+' : '−';
-                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                btn.title = minimized ? 'Expand cycle depth' : 'Minimize cycle depth';
-            }
-        }
-
-        function renderCycleDepthPanel() {
-            const panel = document.getElementById('cycle-depth-panel');
-            if (!panel) return;
-            const stats = getCycleDepthStats();
-            const set = (id, value) => {
-                const el = document.getElementById(id);
-                if (el) el.textContent = value;
-            };
-            const tradeLabel = value => Number.isFinite(Number(value)) ? `Trade ${Number(value)}` : '—';
-
-            set('cycle-depth-median', tradeLabel(stats.median));
-            set('cycle-depth-p90', tradeLabel(stats.p90));
-            set('cycle-depth-p95', tradeLabel(stats.p95));
-            set(
-                'cycle-depth-reached20',
-                stats.sample
-                    ? `${stats.reached20Pct.toFixed(1)}% (${stats.reached20Count}/${stats.sample})`
-                    : '—'
-            );
-            set('cycle-depth-worst', tradeLabel(stats.worst));
-            set(
-                'cycle-depth-sample',
-                stats.sample
-                    ? `${stats.sample} settled winning cycle${stats.sample === 1 ? '' : 's'} · ${stats.symbol} · SERVER`
-                    : stats.loading
-                        ? `Loading settled cycle history… · ${stats.symbol}`
-                        : stats.error
-                            ? `Server history unavailable · ${stats.symbol}`
-                            : `No settled winning cycles found · ${stats.symbol}`
-            );
-        }
 
         function ensureRecycleRuntimePanel() {
             if (document.getElementById('recycle-runtime-panel')) return;
@@ -12597,155 +11318,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     <div id="score-engine-state" class="text-[11px] font-bold text-gray-400">Live V1 ranking</div>
                 </div>
 
-                <div id="final-target-card" class="mb-3 rounded-2xl border border-emerald-400/40 bg-gradient-to-br from-emerald-950/70 to-slate-950/80 p-4 shadow-lg">
-                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                        <div>
-                            <div class="text-[10px] uppercase tracking-[0.20em] text-emerald-300 font-black">FINAL MATCH TARGET</div>
-                            <div class="flex items-end gap-3 mt-1">
-                                <div id="final-match-target" class="text-5xl font-black text-white leading-none">—</div>
-                                <div>
-                                    <div id="final-target-status" class="text-xs font-black text-amber-300">WAITING</div>
-                                    <div id="final-target-source" class="text-[11px] font-bold text-slate-300">Source: —</div>
-                                </div>
-                            </div>
-                            <div id="final-target-help" class="mt-2 text-[10px] text-slate-400">This is the only digit to treat as the active DIGITMATCH target.</div>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2 min-w-[280px]">
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
-                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AI</div>
-                                <div id="final-ai-digit" class="text-lg font-black text-white">—</div>
-                                <div id="final-ai-score" class="text-[9px] text-slate-400">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
-                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">V1 #1</div>
-                                <div id="final-v1-digit" class="text-lg font-black text-white">—</div>
-                                <div id="final-v1-margin" class="text-[9px] text-slate-400">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 text-center">
-                                <div class="text-[8px] uppercase tracking-wider text-slate-500 font-bold">ALIGNMENT</div>
-                                <div id="final-alignment" class="text-sm font-black text-slate-300">—</div>
-                                <div id="final-alignment-detail" class="text-[9px] text-slate-500">—</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
-                        <div class="rounded-lg border border-emerald-500/25 bg-emerald-950/30 px-3 py-2">
-                            <div class="text-[8px] uppercase tracking-wider text-emerald-300 font-black">AUDITOR CONFIRMATION</div>
-                            <div id="perf-crypto" class="text-sm font-black text-white">0 / 0 matched</div>
-                            <div id="crypto-authority-detail" class="text-[9px] text-emerald-200/80">Waiting for aligned AI</div>
-                        </div>
-                        <div class="rounded-lg border border-cyan-500/25 bg-cyan-950/25 px-3 py-2">
-                            <div class="text-[8px] uppercase tracking-wider text-cyan-300 font-black">V1 NEXT-TICK</div>
-                            <div id="perf-v1" class="text-sm font-black text-white">0 / 0 matched</div>
-                        </div>
-                        <div class="rounded-lg border border-violet-500/25 bg-violet-950/25 px-3 py-2">
-                            <div class="text-[8px] uppercase tracking-wider text-violet-300 font-black">FINAL FUSION</div>
-                            <div id="perf-fusion" class="text-sm font-black text-white">0 / 0 matched</div>
-                        </div>
-                    </div>
-
-
-                    <div id="cycle-depth-panel" class="mt-3 rounded-xl border border-fuchsia-500/30 bg-fuchsia-950/20 px-3 py-3">
-                        <div class="flex items-center gap-2">
-                            <div>
-                                <div class="text-[9px] uppercase tracking-[0.18em] text-fuchsia-300 font-black">CYCLE DEPTH</div>
-                                <div id="cycle-depth-sample" class="text-[9px] text-slate-500">No completed winning cycles yet</div>
-                            </div>
-                            <button
-                                id="cycle-depth-min-btn"
-                                type="button"
-                                aria-controls="cycle-depth-body"
-                                aria-expanded="true"
-                                onclick="toggleCycleDepthPanel()"
-                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
-                                title="Minimize cycle depth"
-                            >−</button>
-                        </div>
-                        <div id="cycle-depth-body" class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2">
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                <div class="text-[8px] uppercase text-slate-500 font-bold">Median win</div>
-                                <div id="cycle-depth-median" class="mt-1 text-sm font-black text-white">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                <div class="text-[8px] uppercase text-slate-500 font-bold">90% resolved by</div>
-                                <div id="cycle-depth-p90" class="mt-1 text-sm font-black text-white">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                <div class="text-[8px] uppercase text-slate-500 font-bold">95% resolved by</div>
-                                <div id="cycle-depth-p95" class="mt-1 text-sm font-black text-white">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                <div class="text-[8px] uppercase text-slate-500 font-bold">Reached trade 20</div>
-                                <div id="cycle-depth-reached20" class="mt-1 text-sm font-black text-amber-300">—</div>
-                            </div>
-                            <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2 col-span-2 md:col-span-1">
-                                <div class="text-[8px] uppercase text-slate-500 font-bold">Worst observed</div>
-                                <div id="cycle-depth-worst" class="mt-1 text-sm font-black text-rose-300">—</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div id="current-tick-bias-panel" class="mt-3 rounded-xl border border-amber-500/30 bg-amber-950/15 px-3 py-3">
-                        <div class="flex items-center gap-2">
-                            <div>
-                                <div class="text-[9px] uppercase tracking-[0.18em] text-amber-300 font-black">AI CURRENT-TICK BIAS AUDIT</div>
-                                <div id="ctba-sample" class="text-[9px] text-slate-500">Collecting strictly forward T→T+1 forecasts</div>
-                            </div>
-                            <button
-                                id="current-tick-bias-min-btn"
-                                type="button"
-                                aria-controls="current-tick-bias-body"
-                                aria-expanded="true"
-                                onclick="toggleCurrentTickBiasPanel()"
-                                class="ml-auto shrink-0 text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded font-black text-white"
-                                title="Minimize current-tick bias audit"
-                            >−</button>
-                        </div>
-                        <div id="current-tick-bias-body" class="mt-3">
-                            <div id="ctba-pending" class="mb-2 rounded-lg border border-amber-500/20 bg-slate-950/60 px-2 py-2 text-[10px] font-bold text-amber-200">Waiting for the next live AI forecast</div>
-                            <div id="ctba-duplicate-drops" class="mb-2 text-[9px] font-bold text-slate-500">0 exact duplicate canonical ticks rejected</div>
-                            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                    <div class="text-[8px] uppercase text-slate-500 font-bold">AI = current T</div>
-                                    <div id="ctba-ai-copy" class="mt-1 text-sm font-black text-white">0/0 · —</div>
-                                </div>
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Actual T+1 repeats T</div>
-                                    <div id="ctba-natural-repeat" class="mt-1 text-sm font-black text-white">0/0 · —</div>
-                                </div>
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI = T</div>
-                                    <div id="ctba-copy-hit" class="mt-1 text-sm font-black text-emerald-300">0/0 · —</div>
-                                </div>
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Hit when AI ≠ T</div>
-                                    <div id="ctba-different-hit" class="mt-1 text-sm font-black text-cyan-300">0/0 · —</div>
-                                </div>
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/70 p-2">
-                                    <div class="text-[8px] uppercase text-slate-500 font-bold">Overall AI T+1</div>
-                                    <div id="ctba-overall-hit" class="mt-1 text-sm font-black text-violet-300">0/0 · —</div>
-                                </div>
-                            </div>
-                            <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-                                <div class="rounded-lg border border-amber-500/20 bg-slate-900/60 p-2">
-                                    <div class="text-[8px] uppercase text-amber-300 font-black">Copy-bias diagnostic</div>
-                                    <div id="ctba-bias-label" class="mt-1 text-sm font-black text-white">WAITING</div>
-                                    <div id="ctba-excess-copy" class="text-[9px] text-slate-400">Need resolved forecasts</div>
-                                </div>
-                                <div class="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
-                                    <div class="text-[8px] uppercase text-slate-400 font-black">T+1 hit rate by AI score band</div>
-                                    <div id="ctba-score-bands" class="mt-1 text-[9px]">—</div>
-                                </div>
-                            </div>
-                            <div class="mt-3 flex flex-wrap gap-2">
-                                <button type="button" onclick="downloadCurrentTickBiasAudit('json')" class="text-[10px] font-black rounded-lg border border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-2 text-amber-200" title="Export summary plus every resolved T→T+1 observation as JSON">⬇ EXPORT JSON</button>
-                                <button type="button" onclick="downloadCurrentTickBiasAudit('csv')" class="text-[10px] font-black rounded-lg border border-cyan-400/30 bg-cyan-500/10 hover:bg-cyan-500/20 px-3 py-2 text-cyan-200" title="Export every resolved T→T+1 observation as CSV">⬇ EXPORT CSV</button>
-                            </div>
-                            <div class="mt-2 text-[9px] text-slate-500">Strict rule: a forecast created after unique canonical tick T is scored only by the immediately following unique canonical tick T+1. Exact duplicate deliveries are rejected before scoring. “Copy bias” is descriptive, not proof of causal leakage.</div>
-                        </div>
-                    </div>
-                </div>
-
                                 <div class="mb-3 rounded-xl border border-slate-700/60 bg-slate-950/55 px-3 py-2">
                     <div class="grid grid-cols-3 md:grid-cols-6 divide-x divide-slate-700/50">
                         <div class="px-2 py-1 text-center">
@@ -12757,7 +11329,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                             <div id="recycle-decision-digit" class="mt-0.5 text-base font-black text-white leading-none">—</div>
                         </div>
                         <div class="px-2 py-1 text-center">
-                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Live V1 (changes)</div>
+                            <div class="text-[8px] uppercase tracking-[0.16em] text-slate-500 font-bold">Next V1</div>
                             <div id="recycle-attempt" class="mt-0.5 text-base font-black text-white leading-none">—</div>
                         </div>
                         <div class="px-2 py-1 text-center">
@@ -12776,21 +11348,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 </div>
 <div id="digit-score-ranking" class="grid grid-cols-5 md:grid-cols-10 gap-1"></div>
                 <div id="digit-score-note" class="mt-2 text-[10px] text-gray-400">
-                    Purchased barrier is authoritative. Locked recovery uses that barrier; live V1 may change and is only a candidate at a new block boundary.
+                    The bot buys only when V1 rank #1 leads rank #2 by your configured Minimum V1 Margin. Below the threshold it keeps watching ticks without buying.
                 </div>
             `;
             host.appendChild(el);
-            restoreCycleDepthPanelState();
-            renderCycleDepthPanel();
-            restoreCurrentTickBiasPanelState();
-            window.currentTickBiasAudit?.render?.();
         }
 
         function renderRecycleRuntimePanel(st) {
             ensureRecycleRuntimePanel();
-            renderCycleDepthPanel();
-            window.currentTickBiasAudit?.render?.();
-            try { refreshCycleDepthFromServer(st).catch(() => {}); } catch (_) {}
 
             const score = st?.digit_score || null;
             const currentTrade = Number(st?.current_trade || 0);
@@ -12810,21 +11375,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             // Number(null) === 0, which previously rendered a missing target
             // as both "null" and "0" in this panel.
             const execution = score?.execution_contract || null;
-            // V41: live matching is distinct from the contract's actual result.
-            const matchElement = document.getElementById('metricLockedLiveMatch');
-            if (matchElement) {
-                const hasTarget = execution && execution.target_digit !== null && execution.target_digit !== undefined;
-                const hasLive = execution && execution.live_tick_digit !== null && execution.live_tick_digit !== undefined;
-                const isCurrent = hasLive && !execution.settlement_verified && (st?.running !== false);
-                if (isCurrent && hasTarget) {
-                    const matched = execution.live_tick_match === true;
-                    matchElement.textContent = `Locked ${execution.target_digit} · Tick ${execution.live_tick_digit} · ${matched ? 'LIVE MATCH' : 'LIVE MISS'}`;
-                    matchElement.className = matched ? 'text-sm font-extrabold text-green-400' : 'text-sm font-bold text-amber-300';
-                } else {
-                    matchElement.textContent = 'Locked digit: —';
-                    matchElement.className = 'text-sm font-bold text-gray-400';
-                }
-            }
             const rawPurchasedTarget = execution?.target_digit;
             const purchasedTarget = (
                 rawPurchasedTarget !== null &&
@@ -12861,147 +11411,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 rawLiveNext !== '' &&
                 Number.isInteger(Number(rawLiveNext))
             ) ? Number(rawLiveNext) : rankingTopDigit;
-
-            // FINAL MATCH TARGET: when a contract is open, the purchased barrier
-            // is authoritative and immutable. Otherwise show the prepared fused
-            // target for the next BUY. Never ask the user to infer between AI/V1.
-            const fusion = st?.fusion || score?.fusion || null;
-            const purchasedFusion = execution?.fusion || null;
-            const hasOpenContract = !!st?.open_contract_id && purchasedTarget !== null;
-            const preparedFusionDigit = (
-                fusion?.final_digit !== null &&
-                fusion?.final_digit !== undefined &&
-                Number.isInteger(Number(fusion.final_digit))
-            ) ? Number(fusion.final_digit) : null;
-            // The last purchased barrier is the block anchor for Trades 2/3 and 5/6.
-            // Only a VERIFIED purchased barrier is shown as locked; changing live V1
-            // scores are never represented as the next executable lock.
-            const inLockedBlock = currentTrade > 0 && currentTrade % 3 !== 0;
-            const lockedBlockTarget = inLockedBlock && purchasedTarget !== null
-                ? purchasedTarget : null;
-            const finalTarget = hasOpenContract ? purchasedTarget
-                : (lockedBlockTarget !== null ? lockedBlockTarget : preparedFusionDigit);
-            const finalSource = hasOpenContract
-                ? String(execution?.selector_source || purchasedFusion?.source || 'PURCHASED')
-                : (lockedBlockTarget !== null ? 'THREE_TRADE_LOCK_FROM_LAST_PURCHASE' : String(fusion?.source || 'WAITING'));
-
-            const finalTargetEl = document.getElementById('final-match-target');
-            const finalStatusEl = document.getElementById('final-target-status');
-            const finalSourceEl = document.getElementById('final-target-source');
-            const finalHelpEl = document.getElementById('final-target-help');
-            const finalAiDigitEl = document.getElementById('final-ai-digit');
-            const finalAiScoreEl = document.getElementById('final-ai-score');
-            const finalV1DigitEl = document.getElementById('final-v1-digit');
-            const finalV1MarginEl = document.getElementById('final-v1-margin');
-            const finalAlignmentEl = document.getElementById('final-alignment');
-            const finalAlignmentDetailEl = document.getElementById('final-alignment-detail');
-
-            const displayFusion = hasOpenContract ? (purchasedFusion || fusion || {}) : (fusion || {});
-            const aiDigitRaw = displayFusion?.ai_digit;
-            const aiDigit = (aiDigitRaw !== null && aiDigitRaw !== undefined && Number.isInteger(Number(aiDigitRaw)))
-                ? Number(aiDigitRaw) : null;
-            const aiScore = Number(displayFusion?.ai_score);
-            const v1DigitRaw = displayFusion?.v1_digit;
-            const v1Digit = (v1DigitRaw !== null && v1DigitRaw !== undefined && Number.isInteger(Number(v1DigitRaw)))
-                ? Number(v1DigitRaw) : rankingTopDigit;
-            const v1Margin = Number(displayFusion?.v1_top_margin ?? score?.top_margin);
-            const tickAligned = displayFusion?.tick_aligned === true;
-            const mismatchReason = String(displayFusion?.tick_mismatch_reason || '');
-
-            if (finalTargetEl) {
-                finalTargetEl.textContent = finalTarget !== null ? String(finalTarget) : '—';
-                finalTargetEl.className = finalTarget !== null
-                    ? 'text-5xl font-black text-emerald-300 leading-none'
-                    : 'text-5xl font-black text-slate-500 leading-none';
-            }
-            if (finalStatusEl) {
-                finalStatusEl.textContent = hasOpenContract
-                    ? 'PURCHASED · MATCH THIS DIGIT'
-                    : (lockedBlockTarget !== null ? 'LOCKED RECOVERY TARGET · WAIT SETTLEMENT'
-                        : (preparedFusionDigit !== null ? 'LIVE CANDIDATE · NOT PURCHASED' : 'WAITING · NO BUY TARGET'));
-                finalStatusEl.className = hasOpenContract
-                    ? 'text-xs font-black text-emerald-300'
-                    : (preparedFusionDigit !== null
-                        ? 'text-xs font-black text-cyan-300'
-                        : 'text-xs font-black text-amber-300');
-            }
-            if (finalSourceEl) {
-                const aiOverride = finalSource === 'AI_AUDITOR_CONFIRMED_OVERRIDE';
-                const aiFallback = finalSource === 'AI_AUDITOR_CONFIRMED_FALLBACK';
-                const agreement = finalSource === 'AI_V1_AGREEMENT';
-                finalSourceEl.textContent = aiOverride
-                    ? 'Source: AI + AUDITOR OVERRIDE'
-                    : (aiFallback
-                        ? 'Source: AI + AUDITOR FALLBACK'
-                        : (agreement ? 'Source: V1 + AI AGREEMENT' : `Source: ${finalSource}`));
-                finalSourceEl.className = (aiOverride || aiFallback || agreement)
-                    ? 'text-xs font-black text-emerald-300'
-                    : 'text-xs font-bold text-slate-300';
-            }
-            if (finalHelpEl) {
-                const aiOverride = finalSource === 'AI_AUDITOR_CONFIRMED_OVERRIDE';
-                const aiFallback = finalSource === 'AI_AUDITOR_CONFIRMED_FALLBACK';
-                finalHelpEl.textContent = hasOpenContract
-                    ? `Deriv barrier ${finalTarget} is already purchased. Raw AI/V1 values below cannot change this contract.`
-                    : (lockedBlockTarget !== null
-                        ? `Digit ${lockedBlockTarget} was purchased on this three-trade block; the server must verify settled losses before reusing it.`
-                        : (preparedFusionDigit !== null
-                        ? ((aiOverride || aiFallback)
-                            ? `Digit ${preparedFusionDigit} is the canonically aligned AI challenger confirmed by the auditor. V1 remains the default primary selector.`
-                            : `Digit ${preparedFusionDigit} is the V1-led server target. AI and auditor are supporting evidence only.`)
-                        : 'No executable target yet; the server should not buy until V1 or a canonically aligned auditor-confirmed AI target qualifies.'));
-            }
-            if (finalAiDigitEl) {
-                finalAiDigitEl.textContent = aiDigit !== null ? String(aiDigit) : '—';
-                finalAiDigitEl.className = Number.isFinite(aiScore) && aiScore >= 0.85
-                    ? 'text-lg font-black text-emerald-300'
-                    : 'text-lg font-black text-white';
-            }
-            if (finalAiScoreEl) finalAiScoreEl.textContent = Number.isFinite(aiScore)
-                ? `model ${(aiScore * 100).toFixed(1)}`
-                : '—';
-            if (finalV1DigitEl) finalV1DigitEl.textContent = v1Digit !== null ? String(v1Digit) : '—';
-            if (finalV1MarginEl) finalV1MarginEl.textContent = Number.isFinite(v1Margin)
-                ? `margin ${v1Margin.toFixed(2)}` : '—';
-            if (finalAlignmentEl) {
-                finalAlignmentEl.textContent = tickAligned ? 'CANONICAL ✓' : 'WAITING';
-                finalAlignmentEl.className = tickAligned
-                    ? 'text-sm font-black text-emerald-300'
-                    : 'text-sm font-black text-amber-300';
-            }
-            if (finalAlignmentDetailEl) {
-                finalAlignmentDetailEl.textContent = tickAligned
-                    ? `server seq ${displayFusion?.ai_bound_source_seq ?? displayFusion?.expected_tick?.rank_seq ?? '—'}`
-                    : (mismatchReason || displayFusion?.ai_binding_status || 'waiting');
-            }
-
-            const perf = st?.prediction_performance || score?.prediction_performance || {};
-            const perfText = (matches, total, rate) => {
-                const m = Number(matches || 0), t = Number(total || 0), r = Number(rate);
-                return `${m} / ${t} matched${t > 0 && Number.isFinite(r) ? ` · ${(r * 100).toFixed(1)}%` : ''}`;
-            };
-            const cryptoPerfEl = document.getElementById('perf-crypto');
-            const cryptoAuthorityEl = document.getElementById('crypto-authority-detail');
-            const v1PerfEl = document.getElementById('perf-v1');
-            const fusionPerfEl = document.getElementById('perf-fusion');
-            if (cryptoPerfEl) {
-                const a = Number(displayFusion?.auditor_strength ?? displayFusion?.ai?.auditor);
-                cryptoPerfEl.textContent = Number.isFinite(a)
-                    ? `${(a * 100).toFixed(1)}% support`
-                    : 'No aligned auditor signal';
-            }
-            if (cryptoAuthorityEl) {
-                const confirmed = displayFusion?.auditor_confirmed === true;
-                const supportN = Number(displayFusion?.ai_support_count || 0);
-                cryptoAuthorityEl.textContent = confirmed
-                    ? `CONFIRMED ✓ · threshold 55% · independent supports ${supportN}/4`
-                    : `NOT CONFIRMED · threshold 55% · V1 keeps priority`;
-                cryptoAuthorityEl.className = confirmed
-                    ? 'text-[9px] font-black text-emerald-200'
-                    : 'text-[9px] font-black text-amber-200';
-            }
-            if (v1PerfEl) v1PerfEl.textContent = perfText(perf.v1_matches, perf.v1_total, perf.v1_rate);
-            if (fusionPerfEl) fusionPerfEl.textContent = perfText(perf.fusion_matches, perf.fusion_total, perf.fusion_rate);
 
             if (targetEl) {
                 targetEl.textContent = purchasedTarget !== null
@@ -13414,15 +11823,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             try { renderRecycleRuntimePanel(st); } catch (_) {}
             try { publishFastWinToTelegram(st); } catch (_) {}
-            try {
-                if (String(st?.last_settlement?.result || '').toUpperCase() === 'WIN' && st?.last_settlement?.settled_at) {
-                    const settleKey = String(st.last_settlement.contract_id || st.last_settlement.settled_at);
-                    if (window.__cycleDepthLastWinRefresh !== settleKey) {
-                        window.__cycleDepthLastWinRefresh = settleKey;
-                        refreshCycleDepthFromServer(st, true).catch(() => {});
-                    }
-                }
-            } catch (_) {}
 
             // V1.6 deterministic server audio.
             // Compare the newly received server state with the previous state;
@@ -13471,8 +11871,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 if (
                     !outcomePlayed &&
-                    (phase === 'WON' || phase === 'FAST_WON' || phase === 'OFFICIAL_WON') &&
-                    !['WON','FAST_WON','OFFICIAL_WON'].includes(prev.phase)
+                    (phase === 'WON' || phase === 'FAST_WON') &&
+                    !['WON','FAST_WON'].includes(prev.phase)
                 ) {
                     playAudioFeedback('WIN');
                 } else if (
@@ -13522,8 +11922,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 phaseEl.textContent = recoveryActive
                     ? `TOP4_REAL_RECOVERY_R${Number(rr.next_round || 1)}`
-                    : dmsCompactTradePhase(st.phase);
-                phaseEl.title = String(st.phase || '');
+                    : (st.phase || '—');
             }
 
             const errorCard = serverExecEl('serverExecErrorCard');
@@ -13546,7 +11945,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
                 el.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
 
-                const won = ['WON', 'OFFICIAL_WON', 'FAST_WON'].includes(String(st.phase || '').toUpperCase());
+                const won = String(st.phase || '').toUpperCase() === 'WON';
                 if (won || pnl > 0) {
                     el.style.color = '#4ade80';
                     el.style.fontWeight = '900';
@@ -13629,7 +12028,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     // Research display requirement:
                     // red while the cycle has not yet produced a positive win,
                     // bold green once the cycle is net-positive / WON.
-                    const won = ['WON', 'OFFICIAL_WON', 'FAST_WON'].includes(String(st.phase || '').toUpperCase());
+                    const won = String(st.phase || '').toUpperCase() === 'WON';
                     const positive = serverPnl > 0;
 
                     if (won || positive) {
@@ -13683,111 +12082,6 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
             }
             return data;
-        }
-
-        // ------------------------------------------------------------------
-        // AI FUSION V1 — browser intelligence -> server execution evidence
-        // ------------------------------------------------------------------
-        async function publishAISignalToServer(best) {
-  const s = window.SERVER_EXECUTION;
-  if (!s?.enabled || !s.sessionId || !best) return false;
-  if (s.aiSignalPending) return false;
-
-  const digit = Number(best.digit);
-  const score = Number(best.score);
-  if (!Number.isInteger(digit) || digit < 0 || digit > 9) return false;
-  if (!Number.isFinite(score)) return false;
-
-  const now = Date.now();
-  if (now - Number(s.lastAiSignalSentAt || 0) < 120) return false;
-
-  const survival = best.survival || null;
-  const dna = best.digitDNA || null;
-  const features = best.digitFeatures || null;
-  const auditor = best.auditor || null;
-
-  const n = (value) => {
-      const x = Number(value);
-      return Number.isFinite(x) ? x : null;
-  };
-
-  const lastTick = window.lastTick || null;
-  const tickEpoch = n(
-      lastTick?.raw?.epoch ??
-      lastTick?.epoch ??
-      lastTick?.tick?.epoch ??
-      window.lastTickEpoch
-  );
-  const tickQuote = String(
-      lastTick?.formattedPrice ??
-      lastTick?.formatted_quote ??
-      lastTick?.tick?.formatted_quote ??
-      ''
-  );
-  const tickDigit = (() => {
-      if (!tickQuote) return null;
-      const match = tickQuote.match(/(\d)(?!.*\d)/);
-      return match ? Number(match[1]) : null;
-  })();
-
-  // Exact cross-stream tick identity is mandatory for AI execution.
-  // Browser/server websocket sequence numbers are process-local, so fusion
-  // binds by canonical epoch + formatted quote + last digit instead.
-  if (!(tickEpoch > 0) || !tickQuote || !Number.isInteger(tickDigit)) {
-      return false;
-  }
-
-  const payload = {
-      digit,
-      score,
-      source: String(best.source || 'AI'),
-      symbol: String(
-          document.getElementById('symbol')?.value ||
-          window.currentSymbol ||
-          ''
-      ),
-      pm5: n(survival?.pm5 ?? best.pm5),
-      pm10: n(survival?.pm10 ?? best.pm10),
-      s20: n(survival?.s20 ?? best.s20),
-      etm: n(survival?.etm ?? best.etm),
-      dna: n(dna?.topSimilarity),
-      features: n(features?.signalStrength),
-      auditor: n(auditor?.signalStrength),
-      entropy_structure: n(best?.marketState?.entropyStructure),
-      entropy20: n(best?.marketState?.entropy20),
-      entropy_slope_fast: n(best?.marketState?.entropySlopeFast),
-      entropy_compression: n(best?.marketState?.entropyCompression),
-      mutual_information: n(best?.marketState?.mutualInformation),
-      gap_ratio: n(best?.marketState?.gapRatio),
-      transition_p: n(best?.marketState?.transitionP),
-      transition_support: n(best?.marketState?.transitionSupport),
-      ngram2_p: n(best?.marketState?.ngram2P),
-      ngram2_support: n(best?.marketState?.ngram2Support),
-      ngram3_p: n(best?.marketState?.ngram3P),
-      ngram3_support: n(best?.marketState?.ngram3Support),
-      run_length: n(best?.marketState?.runLength),
-      source_tick_epoch: tickEpoch,
-      source_tick_quote: tickQuote,
-      source_tick_digit: tickDigit,
-      client_ts_ms: now
-  };
-
-  s.aiSignalPending = true;
-  s.lastAiSignalSentAt = now;
-
-  try {
-      const result = await serverExecRequest(
-          `/sessions/${s.sessionId}/ai-signal`,
-          { method: 'POST', body: payload }
-      );
-      s.lastAiSignalDigit = digit;
-      return !!result?.ok;
-  } catch (error) {
-      console.warn('AI fusion signal sync failed:', error);
-      return false;
-  } finally {
-      s.aiSignalPending = false;
-  }
         }
 function toggleServerContinuousResearch() {
             const s = window.SERVER_EXECUTION;
@@ -14227,226 +12521,10 @@ function toggleServerContinuousResearch() {
         }
 
 
-
-        // =====================================================================
-        // SERVER CANONICAL TICK FALLBACK
-        // If direct browser WebSockets are unavailable/stuck, reuse the exact
-        // canonical tick stream already held by the Render execution engine.
-        // This path updates browser research/AI only; it NEVER submits trades.
-        // =====================================================================
-        window.SERVER_AI_FEED = window.SERVER_AI_FEED || {
-            warmupLoaded: false,
-            warmupHistoryN: 0,
-            lastSeq: 0,
-            lastKey: null,
-            lastTickAt: 0,
-            source: 'server-poll'
-        };
-
-        function processServerWarmupDigits(digits) {
-            const engine = window.digitIntelligenceEngine;
-            if (!engine?.enabled || !Array.isArray(digits) || !digits.length) return false;
-
-            const clean = digits.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 9);
-            if (!clean.length) return false;
-
-            const needed = Number(engine.targetWarmupTicks || 200);
-            const seed = clean.slice(-Math.min(needed, 200));
-
-            // Do not overwrite a healthy browser feed that has already warmed.
-            if (engine.warmupDone && Number(engine.warmupTicks || 0) >= needed) {
-                window.SERVER_AI_FEED.warmupLoaded = true;
-                window.SERVER_AI_FEED.warmupHistoryN = clean.length;
-                return true;
-            }
-
-            // Partial server history may grow one tick at a time. Keep topping
-            // up until the full warm-up target is available; do not declare a
-            // 30/200 or 40/200 seed as permanently loaded.
-            const previousHistoryN = Number(window.SERVER_AI_FEED.warmupHistoryN || 0);
-            if (clean.length <= previousHistoryN && !engine.warmupDone) return false;
-
-            engine.reset();
-            window.lastDigits = [];
-
-            for (const digit of seed) {
-                window.lastDigits.push(digit);
-                if (window.lastDigits.length > (window.SURVIVAL_WINDOW || 2000)) window.lastDigits.shift();
-                engine.tickIndex++;
-                engine.updateRegime(digit);
-                engine.onNewDigit(digit);
-                engine.warmupTicks++;
-            }
-
-            const progress = Math.min(100, Math.round((engine.warmupTicks / needed) * 100));
-            if (engine.warmupTicks >= needed) {
-                engine.warmupDone = true;
-                updateEngineStatus('Analyzing market...', 'ANALYZING', 100);
-                try { engine.analyzeAndRecommend(); } catch (e) { console.warn('[SERVER-AI-FEED] warm-up analysis skipped:', e); }
-            } else {
-                updateEngineStatus(`Warming up... ${engine.warmupTicks}/${needed}`, 'WARMUP', progress);
-            }
-
-            window.SERVER_AI_FEED.warmupHistoryN = clean.length;
-            window.SERVER_AI_FEED.warmupLoaded =
-                engine.warmupDone && Number(engine.warmupTicks || 0) >= needed;
-            console.info(`[SERVER-AI-FEED] Warmed browser AI from ${seed.length}/${needed} canonical server digits.`);
-            return window.SERVER_AI_FEED.warmupLoaded;
-        }
-
-        function ingestServerCanonicalTick(state) {
-            try {
-                if (!state) return false;
-                const feed = state.server_tick_feed || null;
-                const latest = feed?.latest || state.digit_score?.canonical_tick || null;
-                const history = Array.isArray(feed?.history_digits) ? feed.history_digits : [];
-                const recentTicks = Array.isArray(feed?.recent_ticks) ? feed.recent_ticks : [];
-
-                // A single /sessions poll can span multiple Deriv ticks. Process
-                // every unseen canonical server sequence in order so the browser
-                // AI never jumps from T to T+2/T+3 and leaves forecasts WAITING.
-                if (recentTicks.length) {
-                    const lastSeq = Number(window.SERVER_AI_FEED.lastSeq || 0);
-                    const unseen = recentTicks
-                        .filter(t => Number(t?.seq || t?._dms_seq || 0) > lastSeq)
-                        .sort((a,b) => Number(a?.seq || a?._dms_seq || 0) - Number(b?.seq || b?._dms_seq || 0));
-
-                    if (unseen.length) {
-                        let processed = false;
-                        for (const canonical of unseen) {
-                            const canonicalSeq = Number(canonical?.seq || canonical?._dms_seq || 0);
-                            const childState = {
-                                ...state,
-                                server_tick_feed: {
-                                    ...feed,
-                                    recent_ticks: [],
-                                    latest: canonical,
-                                    seq: canonicalSeq,
-                                    epoch: Number(canonical?.epoch || 0)
-                                }
-                            };
-                            processed = ingestServerCanonicalTick(childState) || processed;
-                        }
-                        return processed;
-                    }
-                }
-
-                // Use server history when the direct browser feed has not warmed.
-                if (!window.SERVER_AI_FEED.warmupLoaded && history.length) {
-                    processServerWarmupDigits(history);
-                }
-
-                if (!latest || typeof latest !== 'object') return false;
-                const seq = Number(feed?.seq || latest._dms_seq || latest.seq || state.digit_score?.rank_seq || 0);
-                const epoch = Number(latest.epoch || feed?.epoch || state.digit_score?.rank_epoch || 0);
-                const symbol = String(latest.symbol || state.symbol || document.getElementById('symbol')?.value || 'R_10');
-                const quote = latest.quote ?? state.digit_score?.canonical_tick?.quote;
-                const formatted = String(
-                    latest.formatted_quote ||
-                    state.digit_score?.canonical_tick?.formatted_quote ||
-                    (quote ?? '')
-                );
-                let digit = Number(latest.digit ?? state.digit_score?.canonical_tick?.digit);
-                if (!Number.isInteger(digit) && formatted) {
-                    digit = Number.parseInt(formatted[formatted.length - 1], 10);
-                }
-                if (!Number.isInteger(digit) || digit < 0 || digit > 9 || !epoch) return false;
-
-                const key = `${symbol}|${epoch}|${formatted}|${digit}`;
-                const duplicateForModel = !!(
-                    (seq && seq <= Number(window.SERVER_AI_FEED.lastSeq || 0)) ||
-                    key === window.SERVER_AI_FEED.lastKey
-                );
-
-                if (!duplicateForModel) {
-                    window.SERVER_AI_FEED.lastSeq = seq || (Number(window.SERVER_AI_FEED.lastSeq || 0) + 1);
-                    window.SERVER_AI_FEED.lastKey = key;
-                }
-                window.SERVER_AI_FEED.lastTickAt = Date.now();
-                window.browserMarketLastTickAt = window.SERVER_AI_FEED.lastTickAt;
-
-                // Canonical tick object expected by bias audit / UI.
-                const tick = {
-                    symbol,
-                    epoch,
-                    quote,
-                    formattedQuote: formatted,
-                    formatted_quote: formatted,
-                    pip_size: latest.pip_size ?? state.digit_score?.canonical_tick?.pip_size,
-                    digit,
-                    _dms_seq: seq || undefined,
-                    canonical: true,
-                    source: 'SERVER_CANONICAL_POLL'
-                };
-                // Always rehydrate visible market state, even when this exact
-                // canonical tick was already learned before START/reset. Duplicate
-                // ticks are UI-only here and never re-enter the model pipeline.
-                window.lastTick = {
-                    ...tick,
-                    formattedPrice: formatted,
-                    lastDigit: digit,
-                    price: Number(quote),
-                    time: Date.now(),
-                    raw: tick
-                };
-                try { rememberMarketTick(window.lastTick); } catch (_) {}
-
-                const liveEl = document.getElementById('metricLiveTick');
-                const digitEl = document.getElementById('metricLastDigit');
-                if (liveEl) liveEl.textContent = formatted || String(quote ?? '---');
-                if (digitEl) digitEl.textContent = `Digit: ${digit}`;
-
-                if (!duplicateForModel) {
-                    window.totalTicksReceived = Number(window.totalTicksReceived || 0) + 1;
-                    window.stats.totalTicks = Number(window.stats?.totalTicks || 0) + 1;
-                    window.tickTimestamps = Array.isArray(window.tickTimestamps) ? window.tickTimestamps : [];
-                    window.tickTimestamps.push(Date.now());
-                    window.botTickTimestamps = Array.isArray(window.botTickTimestamps) ? window.botTickTimestamps : [];
-                    window.botTickTimestamps.push(Date.now());
-                }
-
-                window.tickTimestamps = Array.isArray(window.tickTimestamps)
-                    ? window.tickTimestamps.filter(ts => ts > Date.now() - 10000)
-                    : [];
-                window.botTickTimestamps = Array.isArray(window.botTickTimestamps)
-                    ? window.botTickTimestamps.filter(ts => ts > Date.now() - 5000)
-                    : [];
-
-                const recv = document.getElementById('ticks_received');
-                const rate = document.getElementById('current_tick_rate');
-                const metricRate = document.getElementById('metricTickRate');
-                if (recv) recv.textContent = String(window.totalTicksReceived);
-                if (rate) rate.textContent = `${(window.tickTimestamps.length / 10).toFixed(1)}/s`;
-                if (metricRate) metricRate.textContent = `Ticks/sec: ${(window.botTickTimestamps.length / 5).toFixed(1)}`;
-                updateConnectionStatus();
-
-                if (duplicateForModel) return true;
-
-                // Research/model pipeline only. No proposal/buy/contract calls here.
-                const modelSymbol = symbol;
-                try { window.nextTickModel?.onTickBeforeEngine?.(modelSymbol, digit); } catch (e) { console.warn('[SERVER-AI-FEED] nextTick before skipped:', e); }
-                try {
-                    if (window.digitIntelligenceEngine?.enabled) {
-                        window.digitIntelligenceEngine.processLiveTick(digit);
-                    }
-                } catch (e) { console.error('[SERVER-AI-FEED] AI tick failed:', e); }
-                try { window.nextTickModel?.onTickAfterEngine?.(modelSymbol, digit, tick); } catch (e) { console.warn('[SERVER-AI-FEED] nextTick after skipped:', e); }
-                try { window.digitDNAEngine?.onNewTick?.(digit, modelSymbol); } catch (e) { console.warn('[SERVER-AI-FEED] DNA forward update skipped:', e); }
-
-                return true;
-            } catch (e) {
-                console.warn('[SERVER-AI-FEED] ingest skipped:', e);
-                return false;
-            }
-        }
-
-        // Single-flight polling: never launch overlapping /sessions requests.
-        let dmsServerPollInFlight = false;
         async function pollServerExecutionState() {
             const s = window.SERVER_EXECUTION;
-            if (!s.enabled || !s.apiUrl || dmsServerPollInFlight) return;
-            if (document.hidden && !(s.state?.running || s.state?.open_contract_id)) return;
-            dmsServerPollInFlight = true;
+            if (!s.enabled || !s.apiUrl) return;
+
             try {
                 const rows = await serverExecRequest('/sessions');
 
@@ -14510,10 +12588,6 @@ function toggleServerContinuousResearch() {
 
                 if (s.state && s.sessionId) {
                     syncServerMarginGate(false).catch(() => {});
-                    // Feed browser AI from the authoritative server stream whenever
-                    // a new canonical server tick is present. Direct browser WS may
-                    // coexist; model-level canonical dedupe prevents double scoring.
-                    ingestServerCanonicalTick(s.state);
                 }
 
                 renderServerExecutionState();
@@ -14523,8 +12597,6 @@ function toggleServerContinuousResearch() {
                     badge.textContent = 'SERVER OFFLINE';
                     badge.className = 'edge-pill text-rose-300';
                 }
-            } finally {
-                dmsServerPollInFlight = false;
             }
         }
 
@@ -14535,7 +12607,7 @@ function toggleServerContinuousResearch() {
             if (s.pollTimer) clearInterval(s.pollTimer);
 s.pollTimer = setInterval(
                 pollServerExecutionState,
-                1500
+                750
             );
 pollServerExecutionState();
 }
@@ -15582,10 +13654,6 @@ window.isBotRunning = true;
         // QUEUE PROCESSOR - CRITICAL FOR TRADE EXECUTION
         function startQueueProcessor() {
             setInterval(() => {
-                if (window.SERVER_EXECUTION?.enabled === true) {
-                    if (window.tickQueue.length) window.tickQueue.length = 0;
-                    return;
-                }
                 if (!window.isBotRunning || window.stopAfterWin) return;
                 if (!mayPlaceNextTrade()) return;
 
@@ -16962,6 +15030,10 @@ window.isBotRunning = true;
 
         log('📊 Precision Matcher loaded', 'SYSTEM');
     </script>
+<script src="/screen-recorder-safe-v5-2.js"></script>
+<!-- Digit Differs Lab removed in V51 CORE CLEAN -->
+<!-- Multi-Digit Match Basket Lab removed in V51 CORE CLEAN -->
+<!-- Experimental lab helpers removed in V51 CORE CLEAN -->
 <script>
 (function () {
     function installBalanceRefreshButton() {
@@ -17010,72 +15082,5 @@ window.isBotRunning = true;
 </script>
 
 
-
-<script>
-(function(){
-  function ensureBrowserFeedBoot(){
-    try {
-      if (typeof startPublicMarketWatchdog === 'function') startPublicMarketWatchdog();
-      if (typeof connectPublicMarketData === 'function') {
-        const ws = window.marketWs;
-        if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
-          connectPublicMarketData(true);
-        }
-      }
-    } catch (e) { console.warn('[MARKET-FEED] independent boot skipped:', e); }
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(ensureBrowserFeedBoot, 800));
-  else setTimeout(ensureBrowserFeedBoot, 800);
-})();
-</script>
-<!-- Read-only market frequency and 3-tick research; does not start trading -->
-<script defer src="dms-frequency-stream-v1.js"></script>
-
-<!-- Original screen recorder: unchanged; compact floating/minimizable UI only. -->
-<script src="/screen-recorder-safe-v5-2.js"></script>
-<style id="dms-mini-recorder-css">
-  #dms70-rec-panel { width: 178px !important; max-width: calc(100vw - 16px) !important;
-    padding: 7px 9px !important; border-radius: 11px !important;
-    box-shadow: 0 10px 26px rgba(0,0,0,.35) !important; box-sizing: border-box !important; }
-  #dms70-rec-drag { min-height: 26px; touch-action: none; user-select: none; }
-  #dms70-rec-drag > span:nth-child(2) { font-size: 9px !important; letter-spacing: 0 !important; }
-  #dms70-rec-drag > span:first-child { font-size: 13px; }
-  #dms70-rec-badge { font-size: 8px !important; }
-  #dms70-rec-status { font-size: 9px !important; line-height: 1.25 !important; margin: 4px 0 !important; }
-  #dms70-rec-panel button { font-size: 9px !important; padding: 6px 5px !important; }
-  #dms70-rec-toggle { border: 1px solid rgba(148,163,184,.25) !important;
-    background: rgba(30,41,59,.9) !important; color: #cbd5e1 !important;
-    border-radius: 6px !important; font-size: 13px !important; line-height: 1 !important;
-    padding: 3px 5px !important; cursor: pointer; }
-  #dms70-rec-panel.dms-rec-minimized { width: 145px !important; padding: 5px 7px !important; }
-  #dms70-rec-panel.dms-rec-minimized > :not(#dms70-rec-drag) { display: none !important; }
-  #dms70-rec-panel.dms-rec-minimized #dms70-rec-drag > span:nth-child(2) { font-size: 9px !important; }
-</style>
-<script>
-(function miniRecorderUI(){
-  'use strict';
-  function init(){
-    const panel=document.getElementById('dms70-rec-panel');
-    const drag=document.getElementById('dms70-rec-drag');
-    if(!panel||!drag||document.getElementById('dms70-rec-toggle'))return;
-    const toggle=document.createElement('button');
-    toggle.id='dms70-rec-toggle';toggle.type='button';
-    toggle.title='Minimize / expand recorder';toggle.setAttribute('aria-label','Minimize or expand screen recorder');
-    drag.appendChild(toggle);
-    // Keep recording even while the panel is minimized.
-    let minimized=false;
-    try{minimized=localStorage.getItem('dms_recorder_minimized')==='1';}catch(_){}
-    function apply(){
-      panel.classList.toggle('dms-rec-minimized',minimized);
-      toggle.textContent=minimized?'+':'−';toggle.setAttribute('aria-expanded',String(!minimized));
-      try{localStorage.setItem('dms_recorder_minimized',minimized?'1':'0');}catch(_){}
-    }
-    toggle.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();minimized=!minimized;apply();});
-    // Recorder retains its original drag handler and browser permission flow.
-    apply();
-  }
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
-})();
-</script>
 </body>
 </html>
