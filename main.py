@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .config import settings
 from .db import SessionLocal
@@ -17,7 +17,7 @@ from .engine import engine
 
 app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
-    version="3.9.0-shared-account-execution",
+    version="3.8.0-live-v1-target-tracking",
 )
 
 
@@ -88,10 +88,6 @@ class Candidate(BaseModel):
     digit: int
 
 
-class MarginGateRequest(BaseModel):
-    minimum_margin: float = Field(ge=0.0, le=50.0)
-
-
 @app.on_event("startup")
 async def startup():
     await engine.start()
@@ -101,7 +97,7 @@ async def startup():
 def health():
     return {
         "ok": True,
-        "version": "3.9.0-shared-account-execution",
+        "version": "3.8.0-live-v1-target-tracking",
         "frontend_origin": _normalise_origin(settings.frontend_url),
         "allowed_origins": ALLOWED_ORIGINS,
         "strategy": {
@@ -155,8 +151,24 @@ def digit_score_for_session(session_id: int):
     snapshot["raw_top_score"] = score
     snapshot["target_eligible"] = eligible
     snapshot["selected_digit"] = digit if eligible else None
-    snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("rank_epoch") else
-                              "RANK_MISSING_EPOCH")
+    snapshot["display_digit"] = digit
+    snapshot["display_score"] = score
+    snapshot["ranking_status"] = ("WARMING" if not snapshot.get("ready") else ("ELIGIBLE" if eligible else "BELOW_THRESHOLD"))
+    # Report the age of the server's canonical market tick, independently of
+    # whether score>=9 allows execution. No rank calculations on read.
+    from datetime import datetime, timezone
+    tick_epoch = int((snapshot.get("canonical_tick") or {}).get("epoch") or 0)
+    age = max(0, int(datetime.now(timezone.utc).timestamp()) - tick_epoch) if tick_epoch else None
+    snapshot["server_tick_age_seconds"] = age
+    snapshot["feed_state"] = (
+        "WAITING_FOR_SERVER_RANK" if not tick_epoch else
+        "STALE_SERVER_TICK" if age is not None and age > 20 else
+        "LIVE_RANK"
+    )
+    snapshot["ranking_status"] = (
+        "WARMING" if not snapshot.get("ready") else
+        "ELIGIBLE" if eligible else "BELOW_THRESHOLD"
+    )
     return snapshot
 
 
@@ -626,11 +638,6 @@ def create_session(
 
         account_type = str(acct.account_type or "").lower()
         mode = "DEMO" if account_type == "demo" else "REAL"
-        if mode == "REAL" and not settings.allow_real_mode:
-            raise HTTPException(
-                status_code=403,
-                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
-            )
 
         s = (
             db.query(TradingSession)
@@ -779,45 +786,6 @@ def candidate(
         db.close()
 
 
-@app.post("/sessions/{sid}/margin-gate")
-def set_margin_gate(
-    sid: int,
-    body: MarginGateRequest,
-    user_id: str = Depends(current_user_id),
-):
-    if body.minimum_margin < 0 or body.minimum_margin > 50:
-        raise HTTPException(
-            status_code=400,
-            detail="minimum_margin must be between 0 and 50",
-        )
-
-    db = SessionLocal()
-    try:
-        s = owns_session(db, user_id, sid)
-        value = engine.set_minimum_v1_margin(
-            int(s.id),
-            float(body.minimum_margin),
-        )
-        try:
-            snapshot = engine._score_all_digits(int(s.id))
-        except Exception:
-            snapshot = (
-                getattr(engine, "digit_score_snapshots", {}) or {}
-            ).get(int(s.id)) or {}
-
-        return {
-            "ok": True,
-            "session_id": int(s.id),
-            "account_mode": str(s.account_mode),
-            "minimum_v1_margin": float(value),
-            "top_margin": snapshot.get("top_margin"),
-            "margin_eligible": snapshot.get("margin_eligible"),
-            "margin_status": snapshot.get("margin_status"),
-        }
-    finally:
-        db.close()
-
-
 @app.post("/sessions/{sid}/start")
 def start(
     sid: int,
@@ -827,14 +795,6 @@ def start(
 
     try:
         s = owns_session(db, user_id, sid)
-        if (
-            str(s.account_mode or "").upper() == "REAL"
-            and not settings.allow_real_mode
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="REAL trading is disabled; set ALLOW_REAL_MODE=true to enable it",
-            )
 
         if s.open_contract_id:
             s.running = True
@@ -913,19 +873,6 @@ def stop(
 
     try:
         s = owns_session(db, user_id, sid)
-        was_running = bool(s.running)
-        old_phase = str(s.phase or '')
-        # Deliberately do not trust client-provided stop source for authorization;
-        # useful as diagnostics only.  Server state decides the operation.
-        print(
-            f"DMS_STOP_REQUEST sid={sid} running_before={was_running} "
-            f"phase_before={old_phase} open_contract={bool(s.open_contract_id)}",
-            flush=True,
-        )
-        if not was_running:
-            # Duplicate STOP is a no-op; retain terminal/reconciliation phase.
-            return {"ok": True, "already_stopped": True,
-                    "phase": s.phase, "open_contract_id": s.open_contract_id}
 
         s.running = False
         s.paused = False
@@ -948,3 +895,26 @@ def stop(
         db.close()
 
 
+@app.post("/sessions/{sid}/real/confirm")
+async def confirm_real(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    try:
+        await engine.confirm_real(user_id, sid)
+
+        return {
+            "ok": True,
+            "session_id": sid,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        )
+
+
+# Explicitly confirmed, one-purchase-at-a-time REAL API.
+from .real_manual import router as real_manual_router
+app.include_router(real_manual_router)

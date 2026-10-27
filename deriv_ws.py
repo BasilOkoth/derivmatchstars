@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import time
 from collections import defaultdict
 from typing import Awaitable, Callable, Optional
@@ -8,18 +7,18 @@ from typing import Awaitable, Callable, Optional
 import websockets
 
 
-ws_log = logging.getLogger("digitmatchstar.websocket")
-
 MessageCallback = Callable[[dict], Awaitable[None]]
 
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client for the selected Deriv account.
+    Event-driven Deriv WebSocket client for DEMO execution plus read-only
+    proposal/subscription support for REAL-account previews.
 
-    The WebSocket URL is created for the session's account_id. Both DEMO and
-    REAL purchases use that account-bound connection; account_mode is required
-    at each buy call so callers cannot silently omit the intended mode.
+    Safety boundary:
+    - `buy(..., demo=True)` must be explicitly marked DEMO.
+    - REAL-money purchases are never submitted by this client.
+    - REAL mode may request/read proposals, but execution stays disabled.
     """
 
     def __init__(self, url: str):
@@ -33,8 +32,6 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
-        self.connection_generation = 0
-        self.last_message_at = 0.0
 
         # Proposal flow control.
         # Every proposal request on this account/socket is serialized here.
@@ -50,16 +47,8 @@ class DerivWS:
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
 
-        # Direct-buy pacing. The bot normally sees ~1-2 ticks/sec; 480 ms keeps
-        # BUY bursts bounded without materially slowing R_10.
-        self._buy_lock = asyncio.Lock()
-        self._last_buy_at = 0.0
-        self._buy_min_interval = 0.48
-
     def is_open(self) -> bool:
         if not self.ws:
-            return False
-        if self.reader_task is not None and self.reader_task.done():
             return False
         closed = getattr(self.ws, "closed", None)
         if isinstance(closed, bool):
@@ -85,8 +74,6 @@ class DerivWS:
                 open_timeout=15,
                 max_queue=None,
             )
-            self.connection_generation += 1
-            self.last_message_at = time.monotonic()
             self.reader_task = asyncio.create_task(self._reader())
 
     async def close(self):
@@ -151,7 +138,6 @@ class DerivWS:
     async def _reader(self):
         try:
             async for msg in self.ws:
-                self.last_message_at = time.monotonic()
                 data = json.loads(msg)
                 req_id = data.get("req_id")
 
@@ -177,21 +163,11 @@ class DerivWS:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            ws_log.exception("Deriv WebSocket reader failed")
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(exc)
             self.pending.clear()
             self.pending_subscription_callbacks.clear()
-        finally:
-            error = ConnectionError("Deriv WebSocket reader stopped; reconnect required")
-            for future in list(self.pending.values()):
-                if not future.done():
-                    future.set_exception(error)
-            self.pending.clear()
-            self.pending_subscription_callbacks.clear()
-            self.subscriptions.clear()
-            ws_log.warning("Deriv WebSocket reader stopped")
 
     async def request(
         self,
@@ -269,6 +245,17 @@ class DerivWS:
         }
 
         # ONE proposal lane per account/socket.
+        #
+        # The previous build allowed a prefetch request to remain in-flight and,
+        # after 800 ms, the engine could start a fallback proposal for the same
+        # recovery. Even though requests were serialized, that still generated
+        # too many proposal calls in a short period and triggered Deriv RateLimit.
+        #
+        # This client therefore:
+        #   1) serializes every proposal request,
+        #   2) enforces minimum spacing,
+        #   3) applies a shared adaptive cooldown after RateLimit,
+        #   4) treats RateLimit as recoverable instead of immediately failing.
         async with self._proposal_lock:
             timeout_retry_used = False
 
@@ -288,6 +275,7 @@ class DerivWS:
                     self._last_proposal_at = time.monotonic()
                     data = await self.request(payload)
 
+                    # Success: reset throttling state.
                     self._rate_limit_streak = 0
                     self._proposal_cooldown_until = 0.0
                     return data
@@ -296,11 +284,13 @@ class DerivWS:
                     text = str(exc).lower()
 
                     if "timed out" in text and not timeout_retry_used:
+                        # Proposal is read-only, so reconnecting once is safe.
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
+                        # Recoverable back-pressure from Deriv.
                         self._rate_limit_streak = min(
                             self._rate_limit_streak + 1,
                             6,
@@ -315,73 +305,20 @@ class DerivWS:
                             time.monotonic() + backoff
                         )
 
+                        # Hold the proposal lock during backoff. This is
+                        # intentional: no other prefetch/fallback should send
+                        # another proposal while Deriv is throttling us.
                         await asyncio.sleep(backoff)
                         continue
 
                     raise
 
-    async def buy_digitmatch_direct(
-        self,
-        *,
-        symbol: str,
-        digit: int,
-        amount: float,
-        currency: str = "USD",
-        duration: int = 1,
-        account_mode: str,
-    ):
-        """
-        Buy DIGITMATCH directly from contract parameters.
-
-        This removes the proposal request from the tick-critical path. Deriv
-        executes on the account bound to this WebSocket connection. A small
-        pacing guard prevents BUY bursts from colliding with Deriv's shared
-        trading-request budget.
-        """
-        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
+    async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
+        if not demo:
             raise RuntimeError(
-                "An explicit DEMO or REAL account mode is required for BUY"
-            )
-
-        params = {
-            "amount": round(float(amount), 2),
-            "basis": "stake",
-            "contract_type": "DIGITMATCH",
-            "currency": str(currency or "USD").upper(),
-            "duration": int(duration),
-            "duration_unit": "t",
-            "barrier": str(int(digit)),
-            "underlying_symbol": str(symbol),
-        }
-
-        async with self._buy_lock:
-            now = time.monotonic()
-            wait = self._buy_min_interval - (now - self._last_buy_at)
-            if wait > 0:
-                await asyncio.sleep(wait)
-
-            self._last_buy_at = time.monotonic()
-
-            # price is the maximum acceptable purchase price. With basis=stake,
-            # the requested stake is the natural cap.
-            return await self.request(
-                {
-                    "buy": "1",
-                    "price": round(float(amount), 2),
-                    "parameters": params,
-                }
-            )
-
-    async def buy(
-        self,
-        proposal_id: str,
-        price: float,
-        *,
-        account_mode: str,
-    ):
-        if str(account_mode or "").upper() not in {"DEMO", "REAL"}:
-            raise RuntimeError(
-                "An explicit DEMO or REAL account mode is required for BUY"
+                "REAL-money execution is disabled. "
+                "Use proposal generation for REAL preview/review only; "
+                "this client only submits DEMO purchases."
             )
 
         return await self.request(
@@ -391,37 +328,23 @@ class DerivWS:
             }
         )
 
-    @staticmethod
-    def _contract_id_value(contract_id):
-        """
-        Deriv's current proposal_open_contract schema requires contract_id to
-        be an integer. Keep DB/session storage free to use strings, but convert
-        at the WebSocket boundary.
-        """
-        try:
-            return int(contract_id)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"Invalid Deriv contract_id {contract_id!r}; expected integer"
-            ) from exc
-
-    async def contract_status(self, contract_id):
+    async def contract_status(self, contract_id: str):
         return await self.request(
             {
                 "proposal_open_contract": 1,
-                "contract_id": self._contract_id_value(contract_id),
+                "contract_id": str(contract_id),
             }
         )
 
     async def subscribe_contract(
         self,
-        contract_id,
+        contract_id: str,
         callback: MessageCallback,
     ) -> Optional[str]:
         data = await self.request(
             {
                 "proposal_open_contract": 1,
-                "contract_id": self._contract_id_value(contract_id),
+                "contract_id": str(contract_id),
                 "subscribe": 1,
             },
             subscription_callback=callback,
@@ -444,18 +367,6 @@ class DerivWS:
 
         # None tells the engine to use the contract-status polling fallback.
         return None
-
-    async def ticks_history(self, symbol: str, count: int = 100):
-        """Fetch recent market ticks for score warm-up after process restart."""
-        count = max(10, min(int(count or 100), 1000))
-        return await self.request(
-            {
-                "ticks_history": str(symbol),
-                "count": count,
-                "end": "latest",
-                "style": "ticks",
-            }
-        )
 
     async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:
         data = await self.request(
